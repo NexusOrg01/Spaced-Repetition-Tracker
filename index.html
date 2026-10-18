@@ -86,20 +86,14 @@
     /* Persistent undo bar — theme-aware surface, clear actions, and reduced-motion support. */
     #toast.toast{left:50%;bottom:calc(16px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(18px) scale(.985);background:var(--surface);color:var(--text);border:1px solid var(--border);border-top:2px solid var(--accent);padding:10px 12px;border-radius:16px;display:flex;align-items:center;gap:11px;box-shadow:var(--shadow),0 16px 38px rgba(0,0,0,.12);opacity:0;pointer-events:none;transition:opacity .22s ease,transform .32s cubic-bezier(.16,1,.3,1);max-width:min(92vw,540px);width:max-content;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);position:fixed;z-index:30001}
     #toast.toast.show{transform:translateX(-50%) translateY(0) scale(1);opacity:1;pointer-events:auto}
-    .toast-mark{width:36px;height:36px;flex:none;display:grid;place-items:center;border-radius:12px;background:var(--accentSoft);color:var(--accent)}
-    .toast-mark svg{display:block;width:18px;height:18px}
-    .toast-mark-undo{display:none}
-    #toast.toast.undoable .toast-mark-default{display:none}
-    #toast.toast.undoable .toast-mark-undo{display:block}
     #toastText{font-size:13px;font-weight:620;line-height:1.45;flex:1;min-width:0;overflow-wrap:anywhere}
     #undoBtn{display:inline-flex;align-items:center;justify-content:center;gap:6px;background:var(--accentSoft);color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 34%,var(--border));padding:8px 12px;border-radius:10px;font-weight:760;font-size:13px;white-space:nowrap;flex:none;box-shadow:none;transition:background .18s ease,transform .18s ease,border-color .18s ease}
-    #undoBtn svg{width:15px;height:15px;display:block}
     #undoBtn:hover{background:color-mix(in srgb,var(--accentSoft) 74%,var(--surface));border-color:var(--accent);transform:translateY(-1px)}
     #undoBtn:focus-visible,#closeUndoBtn:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
     #closeUndoBtn{width:32px;height:32px;flex:none;border-radius:9px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);display:grid;place-items:center;font-size:16px;margin-left:0;transition:background .18s ease,color .18s ease,border-color .18s ease}
     #closeUndoBtn:hover{background:var(--accentSoft);color:var(--text);border-color:color-mix(in srgb,var(--accent) 34%,var(--border))}
     #closeUndoBtn svg{width:15px;height:15px;display:block}
-    @media(max-width:540px){#toast.toast{width:calc(100vw - 24px);max-width:calc(100vw - 24px);padding:10px;gap:8px;bottom:calc(12px + env(safe-area-inset-bottom))}#toastText{font-size:12px}.toast-mark{width:32px;height:32px;border-radius:10px}#undoBtn{padding:8px 10px;font-size:12px}#closeUndoBtn{width:30px;height:30px}}
+    @media(max-width:540px){#toast.toast{width:calc(100vw - 24px);max-width:calc(100vw - 24px);padding:10px;gap:8px;bottom:calc(12px + env(safe-area-inset-bottom))}#toastText{font-size:12px}#undoBtn{padding:8px 10px;font-size:12px}#closeUndoBtn{width:30px;height:30px}}
     .confirm-extra{margin-top:10px;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;font-size:12.5px;color:var(--muted)}
     .danger-zone{border:1px solid color-mix(in srgb, var(--red) 30%, var(--border));background:color-mix(in srgb, var(--redSoft) 60%, var(--surface));border-radius:14px}
     
@@ -1098,12 +1092,8 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
   </div></dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite">
-    <span class="toast-mark" aria-hidden="true">
-      <svg class="toast-mark-default" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4 4L19 6"/></svg>
-      <svg class="toast-mark-undo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h9a6 6 0 0 1 0 12h-1"/></svg>
-    </span>
     <span id="toastText">Saved.</span>
-    <button id="undoBtn" style="display:none"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h9a6 6 0 0 1 0 12h-1"/></svg><span>Undo</span></button>
+    <button id="undoBtn" style="display:none">Undo</button>
     <button id="closeUndoBtn" aria-label="Dismiss notification"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
   </div>
 
@@ -1509,7 +1499,7 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
     const due=customDueInput||autoDue;
     const note=$('reviewNote').value.trim();
     const finalNote=[note,customDueInput?`[Custom next: ${customDueInput}]`:'' ].filter(Boolean).join(' ');
-    startUndo('Review saved. Undo is available briefly.');
+    startUndo('Review recorded.');
     if(rating===1)t.lapses=(t.lapses||0)+1;
     t.streak=rating>=3?(t.streak||0)+1:0;
     t.lastReviewed=reviewed;t.lastRating=rating;t.intervalDays=days;t.dueDate=due;t.reviewCount=(t.reviewCount||0)+1;
@@ -1543,9 +1533,9 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
   const csvCell=v=>`"${String(v??'').replace(/"/g,'""')}"`;
   function exportHistory(){const rows=[['Review date','Stream','Subject','Topic','Rating','Rating meaning','Interval days','Next due','Note'],...state.history.map(h=>[h.reviewedAt,h.streamName,h.subjectName,h.topicName,h.rating,RATING_LABELS[h.rating],h.intervalDays,h.dueDate,h.note])];downloadFile(`nexus-history-${today()}.csv`,'\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('History CSV exported.');}
   function exportTopics(){const rows=[['Stream','Subject','Topic','Notes','Last reviewed','Last rating','Next due','Interval days','Review count','Streak','Lapses','Status'],...state.topics.map(t=>{const d=subjectDisplay(t);return[d.stream,d.subject,t.name,t.notes,t.lastReviewed,t.lastRating,t.dueDate,t.intervalDays,t.reviewCount,t.streak,t.lapses,status(t)];})];downloadFile(`nexus-topics-${today()}.csv`,'\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('Topics CSV exported.');}
-  async function importBackup(file){if(!file)return;try{const parsed=JSON.parse(await file.text()),raw=parsed?.state||parsed;const restored=normalizeState(raw);if(!restored.topics||!restored.history||!restored.subjects)throw new Error('Required backup sections are missing.');if(!confirm(`Import ${restored.topics.length} topics, ${restored.history.length} history records, and ${restored.exams.length} exams? This replaces current local data.`))return;startUndo('Backup imported.');state=restored;save();renderAll();switchView('overview');notify('Backup restored. Undo is available briefly.',true);}catch(err){alert(`Could not import this backup. ${err.message||'Check the file format.'}`);}finally{$('importFile').value='';}}
+  async function importBackup(file){if(!file)return;try{const parsed=JSON.parse(await file.text()),raw=parsed?.state||parsed;const restored=normalizeState(raw);if(!restored.topics||!restored.history||!restored.subjects)throw new Error('Required backup sections are missing.');if(!confirm(`Import ${restored.topics.length} topics, ${restored.history.length} history records, and ${restored.exams.length} exams? This replaces current local data.`))return;startUndo('Backup imported.');state=restored;save();renderAll();switchView('overview');notify('Backup restored.',true);}catch(err){alert(`Could not import this backup. ${err.message||'Check the file format.'}`);}finally{$('importFile').value='';}}
   function clearHistory(){if(!state.history.length){notify('History is already empty.');return;}if(!confirm('DANGER ZONE — Clear every saved review-history entry?\n\nAll rating analytics, review-history exports and historical counts based on these records will be lost. Topic schedules may remain unchanged. Use Undo immediately or restore a backup if this was accidental. Continue?'))return;startUndo('History cleared.');state.history=[];save();renderAll();notify('History cleared; schedules remain unchanged.',true);}
-  function resetAll(){if(!confirm('Reset all local data, including topics, custom streams, subjects, exams, settings and history? Download a backup first if you may need it.'))return;startUndo('Tracker reset.');state=baseState();save();renderAll();switchView('overview');notify('Tracker reset. Undo is available briefly.',true);}
+  function resetAll(){if(!confirm('Reset all local data, including topics, custom streams, subjects, exams, settings and history? Download a backup first if you may need it.'))return;startUndo('Tracker reset.');state=baseState();save();renderAll();switchView('overview');notify('Tracker reset.',true);}
   function applyTheme(){document.documentElement.dataset.theme=state.settings.theme;$('themeSelect').value=state.settings.theme;$('themeBtn').textContent=state.settings.theme==='light'?'☀':state.settings.theme==='dark'?'☾':'◐';$('themeBtn').title=`Theme: ${state.settings.theme}. Click to cycle.`;}
   function cycleTheme(){const seq=['system','light','dark'];state.settings.theme=seq[(seq.indexOf(state.settings.theme)+1)%seq.length];save();applyTheme();notify(`Theme: ${state.settings.theme}.`);}
   function openHelp(){$('helpDialog').showModal();}
@@ -1587,61 +1577,86 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
   // On secure hosting, cache the application shell for later offline use.
   if('serviceWorker' in navigator && (location.protocol==='https:'||location.hostname==='localhost')){window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Offline support could not be registered',err)));}
 
-  // --- Enhanced: Persistent Undo with Close Button + Data Protection ---
+  // --- Persistent Undo toast: one source of truth for message, visibility, and timers. ---
   (function(){
-    // Override toast/undo to be persistent
     const toastEl = document.getElementById('toast');
     const toastTextEl = document.getElementById('toastText');
     const undoBtnEl = document.getElementById('undoBtn');
     const closeUndoBtnEl = document.getElementById('closeUndoBtn');
-    
-    // Store original functions
-    const origStartUndo = window.startUndo;
-    const origNotify = window.notify;
-    
-    // New persistent undo - does NOT auto-hide
+    let transientToastTimer = null;
+    let clearUndoAfterCloseTimer = null;
+
+    function clearToastTimers(){
+      clearTimeout(toastTimer);
+      toastTimer = null;
+      clearTimeout(transientToastTimer);
+      transientToastTimer = null;
+    }
+    function showUndoAction(){
+      undoBtnEl.style.display = 'inline-flex';
+      toastEl.classList.add('undoable','show');
+    }
+    function clearUndoAction(){
+      undoBtnEl.style.display = 'none';
+      toastEl.classList.remove('undoable');
+    }
+
     window.startUndo = function(msg){
       if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+      clearToastTimers();
+      clearTimeout(undoTimer);
+      undoTimer = null;
+      clearTimeout(clearUndoAfterCloseTimer);
+      clearUndoAfterCloseTimer = null;
       undoState = clone(state);
-      // clear any existing auto-hide timer if present
-      if(window.undoTimer){ clearTimeout(window.undoTimer); window.undoTimer=null; }
-      toastTextEl.textContent = msg + ' — Undo available';
-      undoBtnEl.style.display = 'inline-flex';
-      toastEl.classList.add('show');
-      // No auto hide - stays until close or next action
+      toastTextEl.textContent = msg;
+      showUndoAction();
     };
-    
+
     window.notify = function(msg, isPersistent){
-      // For normal saves, show briefly but undo stays
-      if(isPersistent){
-        // this is from startUndo, already handled
+      clearToastTimers();
+      if(undoState){
+        // Theme changes and unrelated notifications must not hide an active Undo action.
+        if(isPersistent) toastTextEl.textContent = msg;
+        showUndoAction();
         return;
       }
+
       toastTextEl.textContent = msg;
-      // If undo is not active, show toast briefly
-      if(!undoState){
-        undoBtnEl.style.display = 'none';
-        toastEl.classList.add('show');
-        setTimeout(()=>{ if(!undoState) toastEl.classList.remove('show'); }, 2500);
-      } else {
-        // If undo active, keep it
-        toastEl.classList.add('show');
-      }
+      clearUndoAction();
+      toastEl.classList.add('show');
+      transientToastTimer = setTimeout(()=>{
+        if(!undoState) toastEl.classList.remove('show');
+      },2600);
     };
-    
+
     window.hideUndo = function(){
       toastEl.classList.remove('show');
-      // Don't clear undoState immediately - keep for manual close? Actually clear on close
     };
-    
+
+    undoBtnEl.addEventListener('click',()=>{
+      clearToastTimers();
+      clearTimeout(clearUndoAfterCloseTimer);
+      undoState = null;
+      clearUndoAction();
+      toastEl.classList.remove('show');
+    });
+
     if(closeUndoBtnEl){
-      closeUndoBtnEl.addEventListener('click', ()=>{
+      closeUndoBtnEl.addEventListener('click',()=>{
+        clearTimeout(clearUndoAfterCloseTimer);
         toastEl.classList.remove('show');
-        // Keep undoState? User closed, so clear after delay to prevent accidental restore
-        setTimeout(()=>{ undoState=null; undoBtnEl.style.display='none'; }, 300);
+        clearUndoAfterCloseTimer = setTimeout(()=>{
+          // A new undoable action may have started while the close animation was running.
+          if(!toastEl.classList.contains('show')){
+            undoState = null;
+            clearUndoAction();
+          }
+          clearUndoAfterCloseTimer = null;
+        },300);
       });
     }
-    
+
     // Enhanced confirm for data protection
     const origConfirm = window.confirm;
     window.confirmAction = function({title, desc}){
@@ -1715,7 +1730,7 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
       if(!confirm('Reset ALL data?\n\nDeletes ALL topics, subjects, streams, exams, history, settings.\nDefault Sinhala syllabus (Accounting, BS, Econ) will be restored on next load.\n\nExport backup first!')) return;
       const typed = prompt('To confirm, type RESET in capital letters:');
       if(typed!=='RESET'){ alert('Cancelled'); return; }
-      startUndo('All data reset — you can undo this!');
+      startUndo('All data reset.');
       localStorage.removeItem(STORAGE_KEY);
       OLD_KEYS.forEach(k=>localStorage.removeItem(k));
       state = baseState();
