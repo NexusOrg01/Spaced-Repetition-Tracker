@@ -49,7 +49,7 @@ Each entry in `packs` describes one installable collection:
 - `subjects`: an array of subjects. Each subject has a unique `id`, a `name`, and a `topics` array containing plain text strings.
 - Optional `streamId` and `workspaceId` retain stable workspace IDs. Optional `legacyIdPrefix` is only for maintaining the original IDs of migrated starter topics; omit it for new packs.
 
-Use this workflow for a community request:
+Use this workflow for a curriculum suggestion received through the request form:
 
 1. Confirm the syllabus and source/edition, then arrange its official sections into subjects and ordered topic names.
 2. Add a new pack object to `curricula/catalog.json`; keep existing pack IDs and subject IDs stable. Do not duplicate topic names within one subject.
@@ -100,60 +100,26 @@ The database and client connection are configured. To allow authentication redir
 
 The Supabase project-management connection available here does not expose Auth URL/provider settings, and Google OAuth requires credentials from your Google account. Those settings must be completed in the dashboard before sign-in can be fully verified. The app will continue to work offline and keep local data while cloud sign-in is not configured.
 
-## Community syllabus requests (Vercel)
+## Curriculum requests (Google Forms)
 
-The Explore Curriculum view includes a request form and community wishlist. The API route is `/api/syllabus-requests`.
+The Explore page uses a simple external Google Form link for curriculum suggestions. Nexus does not create a public wishlist, accept in-app submissions, store votes, or mirror new submissions to GitHub.
 
-To persist submissions and populate the shared wishlist, configure the following in **Vercel → Project → Settings → Environment Variables**, then redeploy:
+### Configure the request link
 
-- `GITHUB_TOKEN` — a fine-grained GitHub token with **Issues: Read and write** permission for this repository. The API creates one issue per request and lists those issues in the wishlist.
-- `GITHUB_REPOSITORY` — optional; defaults to `NexusOrg01/Spaced-Repetition-Tracker`.
-- `SYLLABUS_REQUEST_WEBHOOK_URL` — optional private HTTPS webhook for notifications. If configured, it receives the submitted fields including the optional email address. Email addresses are deliberately excluded from public GitHub issues.
+1. Create a Google Form using your Google account.
+2. Copy the **responder link** (the link people use to fill out the form), not the owner's edit link.
+3. Send that responder link to the maintainer to add it to the `CURRICULUM_REQUEST_FORM_URL` setting in the `curriculumRequestFormLink` script in `index.html`.
+4. Verify the link in the Vercel Preview on a phone and desktop before merging.
+5. The public Google Forms responder URL is not a secret. Do not put any edit link, account password, or secret credential in the app.
 
-Without `GITHUB_TOKEN` or `SYLLABUS_REQUEST_WEBHOOK_URL`, the API returns a clear unavailable response; the app keeps an offline request draft in that user's browser, but it is not shared with other users until successfully submitted. Configure secrets only in Vercel environment variables, never in client-side code.
+Suggested fields are curriculum/subject name, country, exam board or qualification, language, official syllabus/source URL, topics or chapters, and an optional contact email. Keep contact information optional and do not collect more personal information than needed.
 
+### Retiring the old community backend
 
-## Community syllabus wishlist setup (upvotes and owner-only deletion)
+The old community request API has been removed from the application branch. Existing Supabase request and vote rows are preserved as a historical archive, but must no longer be publicly accessible.
 
-The community wishlist uses the app's existing Supabase authentication. Users must sign in to submit a request, upvote it, or delete a request they own. Each account can upvote a request once; no downvotes are available. Supabase Row Level Security (RLS) enforces ownership and vote uniqueness on the database, not just in the UI.
+**For an existing live installation, do not revoke the old table access until the replacement app is deployed and verified in Production.** After confirming that the Production app uses the Google Form and the old `/api/syllabus-requests` endpoint is gone, open the Supabase SQL Editor and run `supabase/migrations/20261020_retire_community_wishlist.sql` once. This migration revokes direct access from anonymous and signed-in client roles, removes the old wishlist policies, disables access to known legacy RPCs if present, and preserves stored rows.
 
-### One-time Supabase setup
+Do not run `supabase/syllabus-community.sql` or `supabase/harden-syllabus-community-privileges.sql`; both are now marked deprecated and would not be part of the supported setup. The remaining cloud-sync setup uses `public.nexus_user_data` and is separate from the retired wishlist.
 
-1. Open the Supabase project used by Nexus: https://supabase.com/dashboard/project/txugbdavblpettcnhcxl
-2. Open **SQL Editor** and create a new query.
-3. Open `supabase/syllabus-community.sql` in this repository, copy its full contents into the SQL Editor, and run it.
-4. Confirm that the `nexus_syllabus_requests` and `nexus_syllabus_votes` tables were created.
-
-### Vercel environment variables
-
-The API uses the same public Supabase project as Nexus. In the Vercel project settings, add these variables for **Preview** and **Production** if they are not already present:
-
-- `SUPABASE_URL` = `https://txugbdavblpettcnhcxl.supabase.co`
-- `SUPABASE_ANON_KEY` = the project's **publishable/anon key** (never use a service-role or secret key here).
-
-Redeploy the preview after adding environment variables. No service-role key is required; requests are made with each user's session token and database RLS policies.
-
-### Manual test checklist
-
-- Sign in as Account A and submit a request.
-- Sign in as Account B (preferably in a separate browser profile) and confirm the request appears.
-- Account B upvotes it; the count increases by one. Repeated clicks must not create additional votes.
-- Account B must not see a delete button for Account A's request. Even a crafted API call must be rejected by RLS.
-- Account A sees **Delete my request** and can delete it; its votes are removed automatically.
-- Verify signed-out users can browse the wishlist but are prompted to sign in before submitting or upvoting.
-
-
-## Public request tracker and administrator controls
-
-Nexus mirrors community curriculum requests to the public GitHub Issues tracker at https://github.com/NexusOrg01/Spaced-Repetition-Tracker/issues. New submissions are saved to the shared Supabase wishlist and mirrored to GitHub. Existing wishlist items can be synchronised in batches using the administrator-only **Sync existing requests to GitHub** button in Explore Curriculum. Each mirrored issue contains a stable Nexus request ID so it can be found and closed later.
-
-### Vercel environment variables for the public request tracker
-
-Set these in Vercel Project → Settings → Environment Variables for Preview and Production, then redeploy the matching deployment:
-
-- `GITHUB_TOKEN`: a fine-grained GitHub token with **Issues: Read and write** access to this repository.
-- `GITHUB_REPOSITORY`: optional; defaults to `NexusOrg01/Spaced-Repetition-Tracker`.
-- `NEXUS_ADMIN_USER_ID`: the UUID of the owner's Nexus Supabase Auth user. Find it in Supabase Dashboard → Authentication → Users. Only this authenticated account receives administrator controls and can remove any community request.
-- `SUPABASE_SERVICE_ROLE_KEY`: the Supabase service-role key for this project. It is used only inside the Vercel serverless function for administrator deletion. **Never add this key to browser code, GitHub, or any public file.**
-
-Regular users can still delete only requests they created. The configured Nexus administrator can mark any request fulfilled and remove it from the in-app wishlist; the corresponding GitHub issue is closed as completed. The administrator sync action mirrors pre-existing requests in batches, avoiding a large single serverless request. If the GitHub mirror is temporarily unavailable, a newly submitted request remains saved in the shared Supabase wishlist and can be synced later.
+Any historical GitHub issues created by the previous wishlist are not automatically deleted. They can be retained as a record or manually closed later. After the replacement is confirmed live, remove community-only Vercel environment variables such as `NEXUS_ADMIN_USER_ID`, `SUPABASE_SERVICE_ROLE_KEY`, community-only `GITHUB_TOKEN` / `GITHUB_REPOSITORY` overrides, and `Nexus_KV_REST_API_URL` / `Nexus_KV_REST_API_TOKEN` only after confirming that no other deployed function uses them. Never remove credentials used by any unrelated service.
