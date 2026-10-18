@@ -2048,7 +2048,19 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
       '<h2 id="report-study-sessions">9. Logged focus sessions <span class="muted">('+studyLogs.length+' records)</span></h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Subject</th><th>Topic</th><th class="num">Minutes</th><th>Session type</th><th>Note</th></tr></thead><tbody>'+studyRows+'</tbody></table></div>'+
       '<h2 id="report-paper-records">10. Paper / practice results <span class="muted">('+paperList.length+' records)</span></h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Paper / practice</th><th>Subject</th><th class="num">Score</th><th class="num">Percent</th><th>Notes / weak areas</th></tr></thead><tbody>'+paperRows+'</tbody></table></div>'+
       '<h2 id="report-journal">11. Mistakes and lesson journal <span class="muted">('+journals.length+' records)</span></h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Category</th><th>Subject</th><th>Topic</th><th>Issue</th><th>Correction / fix</th><th>Status</th></tr></thead><tbody>'+journalRows+'</tbody></table></div>'+
-      '<div class="footer"><span>Nexus · Spaced Repetition Tracker</span><span>Private report generated locally in your browser</span></div></body></html>';
+      '<div class="footer"><span>Nexus · Spaced Repetition Tracker</span><span>Private report generated locally in your browser</span></div>
+<style id="curriculum-request-premium-arrow">
+  .curriculum-request-link{gap:11px;padding:9px 11px 9px 15px;border-radius:12px;box-shadow:0 5px 16px color-mix(in srgb,var(--accent) 17%,transparent);transition:transform .18s ease,box-shadow .18s ease,background .18s ease}
+  .curriculum-request-link:hover{transform:translateY(-2px);box-shadow:0 8px 22px color-mix(in srgb,var(--accent) 25%,transparent)}
+  .curriculum-request-arrow{display:grid;place-items:center;width:29px;height:29px;flex:0 0 29px;border-radius:9px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.22);transition:transform .2s cubic-bezier(.2,.8,.2,1),background .2s ease}
+  .curriculum-request-arrow svg{display:block;width:17px;height:17px;transition:transform .2s cubic-bezier(.2,.8,.2,1)}
+  .curriculum-request-link:hover .curriculum-request-arrow{background:rgba(255,255,255,.24)}
+  .curriculum-request-link:hover .curriculum-request-arrow svg{transform:translate(1px,-1px)}
+  .curriculum-request-link:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 48%,transparent);outline-offset:3px}
+  @media(prefers-reduced-motion:reduce){.curriculum-request-link,.curriculum-request-arrow,.curriculum-request-arrow svg{transition:none!important}}
+</style>
+
+</body></html>';
     const reportWindow=window.open('','_blank');
     if(!reportWindow){notify('Allow pop-ups for Nexus to open the print-ready report, then choose Save as PDF.');return;}
     try{reportWindow.document.open();reportWindow.document.write(report);reportWindow.document.close();setTimeout(function(){try{reportWindow.focus();reportWindow.print();}catch(e){notify('The report opened, but printing was blocked. Use the browser menu to Print / Save as PDF.');}},450);}catch(e){try{reportWindow.close();}catch(_){}notify('Could not open the PDF report. Try allowing pop-ups and retry.');}
@@ -2664,7 +2676,7 @@ dialog .dialog-inner,dialog>div{max-height:none}
 (()=> {
   'use strict';
   // This is the public responder link, not the owner's edit link.
-  // The link will be added after the Google Form is created and tested.
+  // Public responder URL for curriculum suggestions.
   const CURRICULUM_REQUEST_FORM_URL = 'https://docs.google.com/forms/d/e/1FAIpQLSemYy3Kme4IlSCGPEbudvzYV7K-BRefBbIzQLNVx5cdmWkt0Q/viewform';
   const boot=()=>{
     const explore=document.querySelector('#view-explore');
@@ -2674,7 +2686,7 @@ dialog .dialog-inner,dialog>div{max-height:none}
     const card=document.createElement('section');
     card.id='curriculumRequestCard';
     card.className='curriculum-request-card';
-    card.innerHTML='<div><span class="explore-eyebrow">HELP EXPAND NEXUS</span><h3>Can’t find your curriculum?</h3><p>Suggest a subject, course, or exam syllabus for future inclusion. Requests are reviewed manually, and submitting a suggestion does not guarantee that it will be added.</p></div><div class="curriculum-request-actions"><a class="btn btn-primary curriculum-request-link" id="openCurriculumRequestForm" href="#" aria-disabled="true">Suggest a curriculum ↗</a></div>';
+    card.innerHTML='<div><span class="explore-eyebrow">HELP EXPAND NEXUS</span><h3>Can’t find your curriculum?</h3><p>Suggest a subject, course, or exam syllabus for future inclusion. Requests are reviewed manually, and submitting a suggestion does not guarantee that it will be added.</p></div><div class="curriculum-request-actions"><a class="btn btn-primary curriculum-request-link" id="openCurriculumRequestForm" href="#" aria-disabled="true"><span>Suggest a curriculum</span><span class="curriculum-request-arrow" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none"><path d="M5.5 14.5 14 6M6.5 6H14v7.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a></div>';
     const link=card.querySelector('#openCurriculumRequestForm');
     if(CURRICULUM_REQUEST_FORM_URL){
       link.href=CURRICULUM_REQUEST_FORM_URL;
@@ -2692,7 +2704,7 @@ dialog .dialog-inner,dialog>div{max-height:none}
   };
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
 })();
-</script></script>
+</script>
 
 
 
