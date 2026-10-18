@@ -888,7 +888,7 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
 <body>
   <main class="app">
     <header class="topbar">
-      <div class="brand"><div class="brandmark" aria-hidden="true" style="background:#0f1723;padding:0;overflow:hidden;border-radius:14px"><img src="./icon-192.png" alt="Nexus logo" style="width:100%;height:100%;object-fit:cover"></div><div><h1>Nexus: Spaced Repetition Tracker</h1><p class="subtitle">v5.0</p></div></div>
+      <div class="brand"><div class="brandmark" aria-hidden="true" style="background:#0f1723;padding:0;overflow:hidden;border-radius:14px"><img src="./icon-192.png" alt="Nexus logo" style="width:100%;height:100%;object-fit:cover"></div><div><h1>Nexus: Spaced Repetition Tracker</h1></div></div>
       <div class="header-actions">
         <span class="statusline" id="saveStatus" role="status">Saved on this device</span>
         <button class="btn btn-icon" id="themeBtn" aria-label="Change theme" title="Change theme">◐</button>
@@ -901,10 +901,7 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19.414 14.414C21 12.828 22 11.5 22 9.5a5.5 5.5 0 0 0-9.591-3.676.6.6 0 0 1-.818.001A5.5 5.5 0 0 0 2 9.5c0 2.3 1.5 4 3 5.5l5.535 5.362a2 2 0 0 0 2.879.052 2.12 2.12 0 0 0-.004-3 2.124 2.124 0 1 0 3-3 2.124 2.124 0 0 0 3.004 0 2 2 0 0 0 0-2.828l-1.881-1.882a2.41 2.41 0 0 0-3.409 0l-1.71 1.71a2 2 0 0 1-2.828 0 2 2 0 0 1 0-2.828l2.823-2.762"/></svg>
           <span>Support Nexus</span>
         </button>
-        <button class="btn" id="helpBtn" type="button" title="Open the Nexus usage guide" aria-haspopup="dialog" aria-controls="helpDialog">
-          <svg class="help-trigger-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.6 9a2.45 2.45 0 0 1 4.7.8c0 1.7-2.3 1.9-2.3 3.7"/><path d="M12 17h.01"/></svg>
-          <span>How to use</span>
-        </button>
+        
         <div class="more-menu" id="moreMenu"><button type="button" class="btn btn-icon" aria-label="More options" title="More options">⋯</button><div class="menu-pop"><button type="button" id="menuBackup">↓ Download backup</button><button type="button" id="menuRestore">↑ Import backup</button><button type="button" id="menuHistoryCsv">⇩ Export history CSV</button><button type="button" id="menuTopicsCsv">⇩ Export topics CSV</button><button type="button" id="menuSettings">⚙ Settings & setup</button></div></div>
         <input type="file" id="importFile" accept=".json,application/json" hidden>
       </div>
@@ -969,7 +966,7 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
       <div class="panel" style="margin-top:15px"><div class="panel-head"><div><h3>Reset local data</h3><p>Deletes topics, exams, settings, and review history from this browser.</p></div><button class="btn btn-danger" id="resetBtn">Reset all data</button></div></div>
     </section>
 
-    <footer class="footer"><span>Nexus: Spaced Repetition Tracker · v5.0</span><span id="appMode" hidden></span><span>How to use: select “How to use” in the header.</span></footer>
+    
       <!-- RECALL STUDY HUB ADDON START -->
     <section class="view" id="view-studyhub">
       <div class="hub-premium-heading panel"><div class="hub-premium-art" aria-hidden="true"><svg viewBox="0 0 64 64" fill="none"><path d="M8 48V16h20c5 0 8 3 8 8v25c0-5-3-8-8-8H8Z" stroke="#8978f8" stroke-width="2.6" stroke-linejoin="round"/><path d="M56 48V16H40c-2 0-4 1-4 4v29c0-5 3-8 8-8h12Z" stroke="#c27aff" stroke-width="2.6" stroke-linejoin="round"/><path d="m15 29 5 5 9-11M43 29h7M43 35h7" stroke="#8978f8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div class="hub-premium-copy"><span>YOUR STUDY WORKSPACE</span><h2>Study Hub</h2><p>Your plan, practice, and progress — connected.</p></div><button class="btn btn-primary hub-premium-action" id="hubQuickBackup">⇩ Backup now</button></div>
@@ -982,6 +979,14 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
         <button class="hub-tab" data-hub-tab="tools">Search & settings</button>
       </nav>
       <div id="hubContent"></div>
+      <div class="hub-bottom-info panel" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:22px;padding:14px 16px;color:var(--muted);font-size:12px">
+        <span id="appMode" hidden></span>
+        <span>Nexus: Spaced Repetition Tracker · v5.0</span>
+        <button class="btn" id="helpBtn" type="button" title="Open the Nexus usage guide" aria-haspopup="dialog" aria-controls="helpDialog">
+          <svg class="help-trigger-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.6 9a2.45 2.45 0 0 1 4.7.8c0 1.7-2.3 1.9-2.3 3.7"/><path d="M12 17h.01"/></svg>
+          <span>How to use</span>
+        </button>
+      </div>
     </section>
     <!-- RECALL STUDY HUB ADDON END -->
 
