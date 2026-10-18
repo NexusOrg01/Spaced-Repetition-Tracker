@@ -1,6 +1,6 @@
 -- Nexus Community Wishlist: least-privilege table grants
--- This script removes direct vote-table reads. Vote totals and the signed-in
--- user's own vote state are served by restricted database functions instead.
+-- This script removes direct client access to both community tables. Public request
+-- fields, ownership state, vote totals, and personal vote state use restricted RPCs instead.
 -- Review before running in Supabase SQL Editor.
 
 BEGIN;
