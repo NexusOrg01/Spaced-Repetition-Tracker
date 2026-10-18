@@ -601,13 +601,11 @@ dialog::backdrop{background:rgba(0,0,0,.68);backdrop-filter:blur(14px);-webkit-b
 @media(prefers-reduced-motion:reduce){#startReviewBtn{animation:none!important}}
 
 
-/* Nexus community curriculum requests */
-.community-request-card{display:flex;align-items:center;justify-content:space-between;gap:18px;margin:18px 0;padding:22px;border:1px solid var(--border);border-radius:18px;background:linear-gradient(135deg,var(--surface),var(--surface2))}
-.community-request-card h3{margin:0 0 6px;font-size:1.12rem}.community-request-card p{margin:0;color:var(--muted);max-width:58ch}.community-request-actions{display:flex;gap:8px;flex-wrap:wrap}.community-request-actions #syncSyllabusRequests[hidden]{display:none!important}.community-tabs{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap}.community-tab{border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:999px;padding:9px 14px;cursor:pointer}.community-tab[aria-selected=true]{background:var(--text);color:var(--bg)}.community-list{display:grid;gap:10px;margin:12px 0 24px;max-height: min(68vh, 760px);overflow-y:auto;overscroll-behavior-y:auto;scrollbar-gutter:stable;padding:2px 8px 8px 2px;align-content:start;-webkit-overflow-scrolling:touch}.community-list[hidden]{display:none!important}.community-item{border:1px solid var(--border);border-radius:14px;padding:15px;background:var(--surface)}.community-item h4{margin:0 0 6px}.community-item p{margin:4px 0;color:var(--muted);white-space:pre-wrap}.community-meta{font-size:.82rem;color:var(--muted)}.community-empty{padding:22px;text-align:center;color:var(--muted);border:1px dashed var(--border);border-radius:14px}
-#syllabusRequestDialog{width:min(560px,calc(100vw - 28px));max-height:calc(100dvh - 32px);padding:0;border:1px solid var(--border);border-radius:20px;background:var(--surface);color:var(--text);box-shadow:0 24px 80px #0003}#syllabusRequestDialog::backdrop{background:#07111dcc;backdrop-filter:blur(4px)}.syllabus-dialog-inner{padding:22px;max-height:calc(100dvh - 34px);overflow:auto}.syllabus-dialog-inner h3{margin:0 0 5px}.syllabus-dialog-inner .field{width:100%;margin:5px 0 13px}.syllabus-dialog-inner label{display:block;font-size:.9rem;font-weight:600}.syllabus-dialog-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:18px}.syllabus-dialog-foot{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.community-notice{margin:10px 0;padding:10px 12px;border-radius:10px;background:var(--surface2);color:var(--muted);font-size:.88rem}
-@media(max-width:600px){.community-request-card{align-items:stretch;flex-direction:column;padding:17px}.community-request-actions>*{flex:1}.syllabus-dialog-inner{padding:17px}}
-
-
+/* External Google Forms curriculum request */
+.curriculum-request-card{display:flex;align-items:center;justify-content:space-between;gap:18px;margin:18px 0;padding:22px;border:1px solid var(--border);border-radius:18px;background:linear-gradient(135deg,var(--surface),var(--surface2))}
+.curriculum-request-card h3{margin:0 0 6px;font-size:1.12rem}.curriculum-request-card p{margin:0;color:var(--muted);max-width:58ch}.curriculum-request-actions{display:flex;gap:8px;flex-wrap:wrap}.curriculum-request-link[aria-disabled="true"]{opacity:.58;cursor:not-allowed}
+@media(max-width:600px){.curriculum-request-card{align-items:stretch;flex-direction:column;padding:17px}.curriculum-request-actions>*{flex:1}}
+ 
 /* Nexus refinement: selectable rating legend and premium Study Hub title card. */
 .ra-legend-item{appearance:none;-webkit-appearance:none;display:inline-flex;align-items:center;gap:5px;font:inherit;font-size:10px;line-height:1.45;color:var(--muted);white-space:nowrap;cursor:pointer;transition:opacity .16s ease,transform .16s ease,border-color .16s ease,background .16s ease}
 .ra-legend-item:hover{transform:translateY(-1px);border-color:color-mix(in srgb,#8978f8 48%,var(--border))}
@@ -2525,7 +2523,7 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
 <script>
 (function(){'use strict';
 const CFG_KEY='nexus.cloud.config.v1',OWNER_KEY='nexus.cloud.last-user-id',DEFAULT_CONFIG={url:'https://txugbdavblpettcnhcxl.supabase.co',key:'sb_publishable_sQkKOf-CfHlG7mvA2sFjIg_qcezI2Fa'};
-let client=null,session=null,syncing=false,ready=false,timer=null,lastRemoteStamp=null,supabaseLoadPromise=null,pendingSync=false,lastUserId=null,initializing=false,initializingUserId=null,queuedSession=null,hasQueuedSession=false,communityRealtimeChannel=null;
+let client=null,session=null,syncing=false,ready=false,timer=null,lastRemoteStamp=null,supabaseLoadPromise=null,pendingSync=false,lastUserId=null,initializing=false,initializingUserId=null,queuedSession=null,hasQueuedSession=false;
 const el=id=>document.getElementById(id),status=m=>{if(el('cloudStatus'))el('cloudStatus').textContent=m;},say=m=>{if(el('cloudHelpText'))el('cloudHelpText').textContent=m;},config=()=>{try{return {...DEFAULT_CONFIG,...JSON.parse(localStorage.getItem(CFG_KEY)||'{}')}}catch(_){return {...DEFAULT_CONFIG}}};
 function loadSupabaseLibrary(){if(window.supabase&&window.supabase.createClient)return Promise.resolve();if(supabaseLoadPromise)return supabaseLoadPromise;supabaseLoadPromise=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3';script.async=true;script.onload=()=>window.supabase&&window.supabase.createClient?resolve():reject(new Error('Supabase client did not initialize.'));script.onerror=()=>reject(new Error('Could not load Supabase client. Check internet access.'));document.head.appendChild(script);});return supabaseLoadPromise;}
 function setControls(){const logged=!!session,connected=logged&&ready&&!initializing,busy=logged&&!connected;const google=el('cloudGoogleSignInBtn'),email=el('cloudEmailSignInBtn'),out=el('cloudSignOutBtn');if(out){out.disabled=!logged;out.setAttribute('aria-disabled',String(!logged));}if(google){google.hidden=false;google.disabled=logged;google.classList.toggle('auth-signin-busy',logged);google.setAttribute('aria-disabled',String(logged));google.setAttribute('aria-label','Sign in with Google');const label=google.querySelector('span');if(label)label.textContent='Sign in with Google';}if(email){email.hidden=false;email.disabled=logged;email.classList.toggle('auth-signin-busy',logged);email.setAttribute('aria-disabled',String(logged));email.setAttribute('aria-label','Sign in with email');const label=email.querySelector('span');if(label)label.textContent='Sign in with email';}if(el('cloudAccount'))el('cloudAccount').textContent=logged?(session.user.email||'Signed-in account'):'Not signed in — offline mode is available';if(el('cloudAccount'))el('cloudAccount').title=logged?'Account ID: '+session.user.id:'Your data stays on this device while signed out.';}
@@ -2543,12 +2541,12 @@ async function initializeSession(s){const requestedSession=s||null,requestedUser
 function stableJson(v){if(Array.isArray(v))return '['+v.map(stableJson).join(',')+']';if(v&&typeof v==='object')return '{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+stableJson(v[k])).join(',')+'}';return JSON.stringify(v);}
 async function upload(){if(!client||!session||!ready)return false;if(syncing){pendingSync=true;return false;}const uploadUserId=session.user.id;syncing=true;status('Syncing…');let uploaded=false;try{const {data:authData,error:authError}=await client.auth.getUser();if(authError)throw new Error('Supabase could not verify the active login before cloud write: '+authError.message);if(!authData.user||authData.user.id!==uploadUserId||!session||session.user.id!==uploadUserId)throw new Error('The active Google/account session changed or could not be verified. Cloud write paused to protect the other account. Sign in again and retry.');const payload=snapshot(),stamp=new Date().toISOString();const {error}=await client.from('nexus_user_data').upsert({user_id:uploadUserId,payload,updated_at:stamp},{onConflict:'user_id'});if(error)throw error;const verify=await fetchRemote(uploadUserId);if(!verify||!verify.payload||stableJson(verify.payload)!==stableJson(payload))throw new Error('Cloud write could not be verified.');lastRemoteStamp=verify.updated_at||stamp;status('Synced');uploaded=true;}catch(e){status('Sync error');say('Cloud upload failed or could not be verified. Your local data is preserved; cloud sync is paused. Reconnect to sync again.');console.error('Nexus cloud sync failed',e);}finally{syncing=false;if(pendingSync){pendingSync=false;schedule();}}return uploaded;}
 function schedule(){if(!client||!session||!ready)return;clearTimeout(timer);timer=setTimeout(()=>{if(syncing){pendingSync=true;return;}upload();},650);}
-async function ensureClient(){if(client)return client;const c=config();if(!window.supabase||!window.supabase.createClient)await loadSupabaseLibrary();if(!client){client=window.supabase.createClient(c.url,c.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});client.auth.onAuthStateChange((event,newSession)=>{session=newSession||null;try{window.dispatchEvent(new CustomEvent('nexus:community-session',{detail:{event,authenticated:!!(session&&session.access_token)}}));}catch(_){}if(event==='TOKEN_REFRESHED'||event==='USER_UPDATED'){session=newSession;setControls();return;}if(event==='SIGNED_OUT'){session=null;ready=false;clearTimeout(timer);if(initializing&&initializingUserId){queuedSession=null;hasQueuedSession=true;}status('Not signed in · offline ready');say('You can continue using your local data offline. Signing out does not erase it.');setControls();return;}if(event==='SIGNED_IN'||event==='INITIAL_SESSION'){const uid=newSession&&newSession.user?newSession.user.id:null;if(uid!==lastUserId||!ready)setTimeout(()=>initializeSession(newSession),0);else{session=newSession;setControls();}}});}return client;}
+async function ensureClient(){if(client)return client;const c=config();if(!window.supabase||!window.supabase.createClient)await loadSupabaseLibrary();if(!client){client=window.supabase.createClient(c.url,c.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});client.auth.onAuthStateChange((event,newSession)=>{session=newSession||null;if(event==='TOKEN_REFRESHED'||event==='USER_UPDATED'){session=newSession;setControls();return;}if(event==='SIGNED_OUT'){session=null;ready=false;clearTimeout(timer);if(initializing&&initializingUserId){queuedSession=null;hasQueuedSession=true;}status('Not signed in · offline ready');say('You can continue using your local data offline. Signing out does not erase it.');setControls();return;}if(event==='SIGNED_IN'||event==='INITIAL_SESSION'){const uid=newSession&&newSession.user?newSession.user.id:null;if(uid!==lastUserId||!ready)setTimeout(()=>initializeSession(newSession),0);else{session=newSession;setControls();}}});}return client;}
 let connectPromise=null;function connect(){if(connectPromise)return connectPromise;connectPromise=(async()=>{try{await ensureClient();const {data:{session:s},error}=await client.auth.getSession();if(error)throw error;await initializeSession(s);}catch(e){status('Connection error');say('Connection error: '+((e&&e.message)||'unknown error')+'. You can still use Nexus offline; reconnect to sign in and sync.');console.error('Nexus connection failed',e);}finally{connectPromise=null;}})();return connectPromise;}
 async function googleSignIn(){try{if(session){say('You are already signed in. Sign out before connecting a different account.');return;}if(!confirm("IMPORTANT: If you sign in with a different account from the one you used last time, your unsynced offline data on this device will be deleted. To preserve it, sign in with your previous account so you can merge it with that account’s cloud data. If you continue with a different account, your unsynced offline data will be discarded. The previous account’s cloud data will remain unchanged. Continue?")){status('Sign-in cancelled');return;}status('Opening Google sign-in…');await ensureClient();const {data,error}=await client.auth.signInWithOAuth({provider:'google',options:{redirectTo:location.origin+location.pathname,queryParams:{prompt:'select_account'}}});if(error)throw error;if(data&&data.url)location.assign(data.url);}catch(e){status('Google sign-in failed');say((e&&e.message)||'Could not start Google sign-in. Check your connection and try again.');console.error('Nexus Google sign-in failed',e);}}
 async function emailSignIn(){try{if(session){say('You are already signed in. Sign out before connecting a different account.');return;}if(!confirm("IMPORTANT: If you sign in with a different account from the one you used last time, your unsynced offline data on this device will be deleted. To preserve it, sign in with your previous account so you can merge it with that account’s cloud data. If you continue with a different account, your unsynced offline data will be discarded. The previous account’s cloud data will remain unchanged. Continue?")){status('Sign-in cancelled');return;}status('Preparing email sign-in…');await ensureClient();const email=prompt('Enter your email address to receive a sign-in link:');if(!email){status(session&&ready?'Synced':'Not signed in · offline ready');return;}const {error}=await client.auth.signInWithOtp({email,options:{emailRedirectTo:location.origin+location.pathname}});if(error)throw error;say('Check your email for the sign-in link.');status('Email sign-in link sent');}catch(e){status('Email sign-in failed');say((e&&e.message)||'Could not send the sign-in link. Check your connection and try again.');console.error('Nexus email sign-in failed',e);}}
 async function signOut(){if(client)await client.auth.signOut();session=null;ready=false;clearTimeout(timer);status('Not signed in · offline ready');say('You are signed out. Continue using this device offline; data remains local.');setControls();}
-window.NexusCloudSync={schedule,upload};window.NexusCommunitySession=()=>session;window.NexusCommunitySessionReady=async()=>{if(!client||!session||!ready)await connect();return session;};window.NexusCommunitySubscribe=callback=>{ensureClient().then(c=>{if(communityRealtimeChannel)return;communityRealtimeChannel=c.channel('nexus-community-wishlist-live').on('postgres_changes',{event:'*',schema:'public',table:'nexus_syllabus_requests'},payload=>callback(payload)).on('postgres_changes',{event:'*',schema:'public',table:'nexus_syllabus_votes'},payload=>callback(payload)).subscribe();}).catch(e=>console.warn('Community live updates unavailable; polling remains active.',e));};document.addEventListener('DOMContentLoaded',()=>{el('cloudGoogleSignInBtn')?.addEventListener('click',googleSignIn);el('cloudEmailSignInBtn')?.addEventListener('click',emailSignIn);el('cloudSignOutBtn')?.addEventListener('click',signOut);connect();});
+window.NexusCloudSync={schedule,upload};document.addEventListener('DOMContentLoaded',()=>{el('cloudGoogleSignInBtn')?.addEventListener('click',googleSignIn);el('cloudEmailSignInBtn')?.addEventListener('click',emailSignIn);el('cloudSignOutBtn')?.addEventListener('click',signOut);connect();});
 })();
 </script>
 
@@ -2662,148 +2660,41 @@ dialog .dialog-inner,dialog>div{max-height:none}
 @media(prefers-reduced-motion:reduce){#undoBtn{transition:none}}
 </style>
 
-<script id="syllabusCommunityFeature">
+<script id="curriculumRequestFormLink">
 (()=> {
   'use strict';
+  // This is the public responder link, not the owner's edit link.
+  // The link will be added after the Google Form is created and tested.
+  const CURRICULUM_REQUEST_FORM_URL = '';
   const boot=()=>{
     const explore=document.querySelector('#view-explore');
-    if(!explore || document.querySelector('#communityRequestCard')) return;
-    const hero=explore.querySelector('.explore-hero'); if(!hero)return;
-    const card=document.createElement('section');card.id='communityRequestCard';card.className='community-request-card';
-    card.innerHTML='<div><span class="explore-eyebrow">COMMUNITY CURRICULUM</span><h3>Can’t find your subject? Request a curriculum</h3><p>Suggest an exam, course, or qualification. Each account may have only one active request at a time. To request a different syllabus, delete your current request first, or ask the admin to remove it.</p></div><div class="community-request-actions"><a class="btn btn-ghost" href="https://github.com/NexusOrg01/Spaced-Repetition-Tracker/issues?q=is%3Aissue+is%3Aopen+%5BNexus+Curriculum+Request%5D" target="_blank" rel="noopener noreferrer">View open requests on GitHub ↗</a><button type="button" class="btn btn-ghost" id="syncSyllabusRequests" hidden>Sync existing requests to GitHub</button><button type="button" class="btn btn-primary" id="openSyllabusRequest">Request a syllabus</button></div>';
+    if(!explore || document.querySelector('#curriculumRequestCard')) return;
+    const hero=explore.querySelector('.explore-hero');
+    if(!hero) return;
+    const card=document.createElement('section');
+    card.id='curriculumRequestCard';
+    card.className='curriculum-request-card';
+    card.innerHTML='<div><span class="explore-eyebrow">HELP EXPAND NEXUS</span><h3>Can’t find your curriculum?</h3><p>Suggest a subject, course, or exam syllabus for future inclusion. Requests are reviewed manually, and submitting a suggestion does not guarantee that it will be added.</p></div><div class="curriculum-request-actions"><a class="btn btn-primary curriculum-request-link" id="openCurriculumRequestForm" href="#" aria-disabled="true">Suggest a curriculum ↗</a></div>';
+    const link=card.querySelector('#openCurriculumRequestForm');
+    if(CURRICULUM_REQUEST_FORM_URL){
+      link.href=CURRICULUM_REQUEST_FORM_URL;
+      link.target='_blank';
+      link.rel='noopener noreferrer';
+      link.removeAttribute('aria-disabled');
+    }else{
+      link.title='The request form link has not been connected yet.';
+      link.addEventListener('click',event=>{
+        event.preventDefault();
+        alert('The Google Form link has not been connected yet. This will be enabled before the updated version is released.');
+      });
+    }
     hero.insertAdjacentElement('afterend',card);
-    const tabs=document.createElement('div');tabs.className='community-tabs';tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Curriculum lists');
-    tabs.innerHTML='<button type="button" class="community-tab" role="tab" aria-selected="true" data-community-tab="available">Available curricula</button><button type="button" class="community-tab" role="tab" aria-selected="false" data-community-tab="requests">Community wishlist / requests</button>';
-    card.insertAdjacentElement('afterend',tabs);
-    const list=document.createElement('div');list.id='communityRequestList';list.className='community-list';list.hidden=true;tabs.insertAdjacentElement('afterend',list);
-    const dialog=document.createElement('dialog');dialog.id='syllabusRequestDialog';
-    dialog.innerHTML='<div class="syllabus-dialog-inner"><div class="syllabus-dialog-head"><div><h3>Request a syllabus</h3><p class="muted">Each account can have one active request at a time. To request a different syllabus, delete your current request first, or ask the admin to remove it.</p></div><button type="button" class="btn btn-ghost" id="closeSyllabusRequest" aria-label="Close">✕</button></div><form id="syllabusRequestForm"><label for="syllabusName">Subject / course name *</label><input class="field" id="syllabusName" name="name" maxlength="120" required placeholder="e.g. AP Physics 1, JLPT N3"><label for="syllabusCategory">Category / exam board *</label><input class="field" id="syllabusCategory" name="category" maxlength="100" required placeholder="e.g. High School, University, Professional"><label for="syllabusTopics">Key topics / chapters (optional)</label><textarea class="field" id="syllabusTopics" name="topics" maxlength="3000" rows="4" placeholder="Paste a rough syllabus outline, if available"></textarea><p class="community-notice">You must sign in to submit a shared request. You can have only one active request per account; delete your current request before submitting a different one. Your email address is not collected or published.</p><div id="syllabusFormStatus" class="community-meta" role="status" aria-live="polite"></div><div class="syllabus-dialog-foot"><button type="button" class="btn btn-ghost" id="cancelSyllabusRequest">Cancel</button><button type="submit" class="btn btn-primary" id="submitSyllabusRequest">Submit request</button></div></form></div>';
-    document.body.appendChild(dialog);
-    const form=dialog.querySelector('#syllabusRequestForm'),status=dialog.querySelector('#syllabusFormStatus'),submit=dialog.querySelector('#submitSyllabusRequest'),syncButton=document.querySelector('#syncSyllabusRequests');
-    let community=[],activeTab='available',signedIn=false,isAdminUser=false,requestLoadId=0,loadErrorVisible=false;const pendingRequests=new Set(),pendingDeletes=new Set(),deletedRequestIds=new Set();
-    const escapeHTML=s=>String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    const norm=s=>String(s||'').trim().toLocaleLowerCase();
-    // Read only the current Supabase session token from the app's existing browser session.
-    const accessToken=async()=>{try{if(window.NexusCommunitySessionReady)await window.NexusCommunitySessionReady();const live=window.NexusCommunitySession&&window.NexusCommunitySession();return live&&live.access_token?live.access_token:'';}catch(_){const live=window.NexusCommunitySession&&window.NexusCommunitySession();return live&&live.access_token?live.access_token:''}};
-    const api=async(path,options={})=>{const headers={Accept:'application/json',...(options.headers||{})};const token=await accessToken();if(token)headers.Authorization='Bearer '+token;return fetch('/api/syllabus-requests'+(path||''),{...options,headers,cache:'no-store'});};
-    const render=()=>{
-      const search=(document.querySelector('#exploreSearch')?.value||'').trim().toLocaleLowerCase();
-      const requestButton=document.querySelector('#openSyllabusRequest');
-      const hasOwnActiveRequest=signedIn&&community.some(x=>x.isOwner);
-      if(requestButton){
-        requestButton.disabled=hasOwnActiveRequest;
-        requestButton.textContent=hasOwnActiveRequest?'You have an active request':'Request a syllabus';
-        requestButton.title=hasOwnActiveRequest?'Delete your active request before submitting another.':'Request a syllabus';
-      }
-      list.hidden=activeTab!=='requests';const grid=explore.querySelector('#exploreGrid');if(grid)grid.hidden=activeTab==='requests';
-      const toolbar=explore.querySelector('.explore-toolbar');if(toolbar)toolbar.hidden=false;
-      const searchField=explore.querySelector('#exploreSearch');if(searchField)searchField.placeholder=activeTab==='requests'?'Search community requests…':'Search streams, subjects, topics…';
-      tabs.querySelectorAll('[data-community-tab]').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.communityTab===activeTab)));
-      if(activeTab!=='requests')return;
-      const filtered=community.filter(x=>(norm(x.name)+' '+norm(x.category)+' '+norm(x.topics)).includes(search)).sort((a,b)=>(Number(b.votes)||0)-(Number(a.votes)||0)||new Date(b.createdAt||0)-new Date(a.createdAt||0));
-      if(!filtered.length){list.innerHTML='<div class="community-empty">No community requests yet. Be the first to suggest a curriculum.</div>';return}
-      list.innerHTML=filtered.map(x=>'<article class="community-item" data-request-id="'+escapeHTML(x.id)+'"><div class="community-item-main"><h4>'+escapeHTML(x.name)+'</h4><div class="community-meta">'+escapeHTML(x.category||'Uncategorised')+' · '+new Date(x.createdAt||Date.now()).toLocaleDateString()+'</div>'+(x.topics?'<p>'+escapeHTML(x.topics)+'</p>':'')+'</div><div class="community-item-actions"><button type="button" class="btn community-vote" data-action="'+(x.hasUpvoted?'remove-upvote':'upvote')+'" data-id="'+escapeHTML(x.id)+'" aria-pressed="'+String(!!x.hasUpvoted)+'" title="'+(x.hasUpvoted?'Remove your upvote':'Upvote this request')+'" '+(pendingRequests.has(String(x.id))?'disabled':'')+' >'+(x.hasUpvoted?'▲ Upvoted':'▲ Upvote')+' · '+(Number(x.votes)||0)+'</button>'+(isAdminUser?'<button type="button" class="btn btn-danger community-delete" data-action="admin-delete" data-id="'+escapeHTML(x.id)+'" '+(pendingRequests.has(String(x.id))?'disabled':'')+'>Mark fulfilled &amp; remove</button>':(x.isOwner?'<button type="button" class="btn btn-danger community-delete" data-action="delete" data-id="'+escapeHTML(x.id)+'" '+(pendingRequests.has(String(x.id))?'disabled':'')+'>Delete my request</button>':''))+'</div></article>').join('');
-    };
-    const loadRequests=async()=>{const loadId=++requestLoadId;try{const r=await api('',{});const data=await r.json();if(loadId!==requestLoadId)return;if(!r.ok)throw new Error(data.error||'Wishlist unavailable');const pendingItems=new Map(community.filter(x=>pendingRequests.has(String(x.id))).map(x=>[String(x.id),x]));const nextCommunity=(Array.isArray(data.requests)?data.requests:[]).filter(x=>!deletedRequestIds.has(String(x.id))&&!pendingDeletes.has(String(x.id))).map(x=>pendingItems.get(String(x.id))||x);const nextSignedIn=!!data.signedIn,nextAdminUser=!!data.isAdmin;const signature=items=>JSON.stringify(items.map(x=>[String(x.id),String(x.name||''),String(x.category||''),String(x.topics||''),String(x.createdAt||''),Number(x.votes)||0,!!x.isOwner,!!x.hasUpvoted]).sort((a,b)=>a[0].localeCompare(b[0])));const changed=loadErrorVisible||signature(nextCommunity)!==signature(community)||signedIn!==nextSignedIn||isAdminUser!==nextAdminUser;community=nextCommunity;signedIn=nextSignedIn;isAdminUser=nextAdminUser;if(syncButton)syncButton.hidden=!isAdminUser;loadErrorVisible=false;if(changed)render()}catch(e){if(loadId!==requestLoadId)return;loadErrorVisible=true;list.innerHTML='<div class="community-empty">'+escapeHTML(e.message||'Community wishlist is temporarily unavailable.')+'</div>'}};
-    tabs.addEventListener('click',e=>{const b=e.target.closest('[data-community-tab]');if(!b)return;activeTab=b.dataset.communityTab;render();if(activeTab==='requests')loadRequests()});
-    // Refresh ownership/upvote state when the shared app session becomes available or changes.
-    window.addEventListener('nexus:community-session',()=>{if(activeTab==='requests')loadRequests()});
-    if(window.NexusCommunitySubscribe)window.NexusCommunitySubscribe(()=>{if(!document.hidden&&activeTab==='requests'&&!pendingRequests.size)loadRequests()});
-    // Refresh promptly when returning to the app, and poll more frequently as a fallback
-    // when Realtime events are delayed or unavailable.
-    const refreshVisibleWishlist=()=>{if(!document.hidden&&activeTab==='requests'&&!pendingRequests.size)loadRequests()};
-    setInterval(refreshVisibleWishlist,15000);
-    document.addEventListener('visibilitychange',refreshVisibleWishlist);
-    window.addEventListener('focus',refreshVisibleWishlist);
-    window.addEventListener('pageshow',refreshVisibleWishlist);
-    document.querySelector('#openSyllabusRequest').addEventListener('click',()=>{status.textContent='';form.reset();if(dialog.showModal)dialog.showModal();else dialog.setAttribute('open','')});
-    const close=()=>dialog.close?dialog.close():dialog.removeAttribute('open');dialog.querySelector('#closeSyllabusRequest').addEventListener('click',close);dialog.querySelector('#cancelSyllabusRequest').addEventListener('click',close);dialog.addEventListener('click',e=>{if(e.target===dialog)close()});
-    list.addEventListener('click',async e=>{
-      const b=e.target.closest('button[data-action]');if(!b)return;const id=b.dataset.id,action=b.dataset.action,key=String(id);
-      if(pendingRequests.has(key))return;
-      if(!accessToken()){alert('Please sign in to Nexus before upvoting or deleting community requests.');return}
-      if((action==='delete'||action==='admin-delete')&&!confirm(action==='admin-delete'?'Mark this request as fulfilled, remove it from Nexus, and close its GitHub issue?':'Delete your request permanently? Other users’ requests cannot be deleted.'))return;
-      const priorIndex=community.findIndex(x=>String(x.id)===key),prior=priorIndex>=0?community[priorIndex]:null,priorState=prior?{...prior}:null;
-      pendingRequests.add(key);
-      requestLoadId++; // Invalidate list reads that began before this mutation.
-      if(action==='delete'||action==='admin-delete'){pendingDeletes.add(key);community=community.filter(x=>String(x.id)!==key);}
-      else if(prior){prior.hasUpvoted=action==='upvote';prior.votes=Math.max(0,(Number(priorState.votes)||0)+(action==='upvote'?(priorState.hasUpvoted?0:1):(priorState.hasUpvoted?-1:0)));}
-      render(); // Optimistic UI: reflect the intended action without waiting for the network.
-      try{
-        const response=(action==='delete'||action==='admin-delete')
-          ?await api('',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})})
-          :await api('',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,id})});
-        const result=await response.json();if(!response.ok)throw new Error(result.error||'Action failed');
-        if(action==='delete'||action==='admin-delete'){
-          deletedRequestIds.add(key);pendingDeletes.delete(key);community=community.filter(x=>String(x.id)!==key);
-          if(action==='admin-delete'&&!result.githubIssueClosed)alert('Removed from Nexus, but the GitHub issue could not be closed automatically. You can close it from the tracker.');
-        }else if(prior){
-          prior.hasUpvoted=!!result.upvoted;
-          if(typeof result.votes==='number')prior.votes=Math.max(0,result.votes);
-          else if(result.changed===false&&priorState)prior.votes=Math.max(0,Number(priorState.votes)||0);
-        }
-        // Do not reload the whole list after a successful mutation: a stale in-flight GET
-        // must not restore a deleted item or overwrite the immediately updated vote state.
-      }catch(err){
-        pendingDeletes.delete(key);
-        if((action==='delete'||action==='admin-delete')&&priorState&&!community.some(x=>String(x.id)===key))community.splice(Math.min(Math.max(priorIndex,0),community.length),0,priorState);
-        else if(priorState){const current=community.find(x=>String(x.id)===key);if(current)Object.assign(current,priorState);}
-        await loadRequests();alert(err.message||'Could not complete the action.');
-      }finally{pendingRequests.delete(key);render();if(activeTab==='requests')loadRequests()}
-    });
-
-    if(syncButton)syncButton.addEventListener('click',async()=>{
-      if(!accessToken()){alert('Sign in with the Nexus administrator account to synchronise requests.');return}
-      syncButton.disabled=true;let totalSynced=0;
-      try{
-        let remaining=1;
-        while(remaining>0){
-          syncButton.textContent=totalSynced?'Syncing… '+totalSynced+' added':'Syncing requests…';
-          const response=await api('',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'sync-github'})});
-          const result=await response.json();if(!response.ok)throw new Error(result.error||'Could not synchronise requests.');
-          totalSynced+=Number(result.synced)||0;remaining=Number(result.remaining)||0;
-          if(remaining>0)syncButton.textContent='Syncing… '+totalSynced+' added';
-        }
-        alert(totalSynced?('GitHub tracker updated. '+totalSynced+' request(s) added.'): 'GitHub tracker is already up to date.');
-        if(activeTab==='requests')await loadRequests();
-      }catch(error){alert(error.message||'Could not synchronise requests.')}
-      finally{syncButton.disabled=false;syncButton.textContent='Sync existing requests to GitHub'}
-    });
-    form.addEventListener('submit',async e=>{
-      e.preventDefault();if(!form.reportValidity())return;
-      if(!accessToken()){status.textContent='Sign in to Nexus first. Shared requests must be linked to your account so only you can delete them.';return}
-      if(community.some(x=>x.isOwner)){status.textContent='You already have an active request. Delete it, or ask the admin to remove it, before submitting another.';return}
-      const payload={name:form.elements.name.value.trim(),category:form.elements.category.value.trim(),topics:form.elements.topics.value.trim()};
-      if(community.some(x=>norm(x.name)===norm(payload.name)&&norm(x.category)===norm(payload.category))){status.textContent='A similar request already exists. Please upvote it instead.';return}
-      submit.disabled=true;submit.textContent='Submitting…';status.textContent='Sending request…';
-      try{const response=await api('',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json();if(!response.ok)throw new Error(result.error||'The server could not accept the request.');community.unshift(result.request);status.textContent=result.githubSynced?'Request submitted and added to the public GitHub tracker.':'Request saved to the community wishlist, but GitHub mirroring is not configured or is temporarily unavailable.';render();setTimeout(close,1400)}
-      catch(err){
-        let message=err.message||'Could not submit the request.';
-        if(/could not save the request|active request|duplicate key|unique constraint/i.test(message)){
-          await loadRequests();
-          if(community.some(x=>x.isOwner)){
-            message='You already have an active syllabus request. Each account can have only one at a time. Delete your current request, or ask the admin to remove it, before submitting another.';
-          }
-        }
-        status.textContent=message;
-      }
-      finally{submit.disabled=false;submit.textContent='Submit request'}
-    });
-    const originalSearch=document.querySelector('#exploreSearch');if(originalSearch)originalSearch.addEventListener('input',render);
-    render();loadRequests();
   };
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
 })();
-</script>
+</script></script>
 
-<style id="community-vote-delete-styles">
-.community-item{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
-.community-item-main{min-width:0;flex:1}
-.community-item-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
-.community-item .community-vote[aria-pressed="true"],.community-item .community-vote[data-upvoted="true"]{border-color:var(--green)!important;background:var(--greenSoft)!important;color:var(--green)!important;font-weight:800;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--green) 30%,transparent)!important}.community-item .community-vote[aria-pressed="false"]{background:var(--surface)!important;color:var(--text)!important;border-color:var(--border)!important}.community-item .community-vote[aria-pressed="true"]:hover{background:var(--greenSoft)!important;border-color:var(--green)!important;color:var(--green)!important}
-.community-delete{color:var(--red);border-color:color-mix(in srgb,var(--red) 35%,var(--border))}
-@media(max-width:600px){.community-item{flex-direction:column}.community-item-actions{width:100%;justify-content:flex-start}.community-item-actions .btn{min-height:40px}}
-</style>
+
 
 <style id="nexus-preview-645de2-visuals">
   /* Visual-only port of preview commit 645de2fb5a01ecb28b1ab241b957a73ab184c7ed. */
