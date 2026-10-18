@@ -120,6 +120,21 @@ async function db(path, token, options = {}) {
     body: options.body === undefined ? undefined : JSON.stringify(options.body)
   });
 }
+async function serviceDb(path, options = {}) {
+  if (!SUPABASE_SERVICE_ROLE_KEY) throw new Error('Server-side community database access is not configured.');
+  return fetch(SUPABASE_URL + '/rest/v1/' + path, {
+    method: options.method || 'GET',
+    cache: 'no-store',
+    headers: {
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: 'Bearer ' + SUPABASE_SERVICE_ROLE_KEY,
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      Prefer: options.prefer || 'return=representation'
+    },
+    body: options.body === undefined ? undefined : JSON.stringify(options.body)
+  });
+}
 async function fetchVoteCounts() {
   const response = await fetch(SUPABASE_URL + '/rest/v1/rpc/get_nexus_syllabus_vote_counts', {
     method: 'POST', cache: 'no-store',
@@ -283,9 +298,16 @@ module.exports = async function handler(req, res) {
   try {
     if (req.method === 'GET') {
       const user = await currentUser(token);
-      const requestsResponse = await fetch(SUPABASE_URL + '/rest/v1/nexus_syllabus_requests?select=id,name,category,topics,created_at,owner_id&order=created_at.desc&limit=200', {
-        cache: 'no-store',
-        headers: { apikey: SUPABASE_ANON_KEY, ...(token ? { Authorization: 'Bearer ' + token } : {}), Accept: 'application/json', 'Cache-Control': 'no-cache, no-store, max-age=0' }
+      const requestsResponse = await fetch(SUPABASE_URL + '/rest/v1/rpc/get_nexus_syllabus_requests', {
+        method: 'POST', cache: 'no-store',
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          ...(token ? { Authorization: 'Bearer ' + token } : {}),
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache, no-store, max-age=0'
+        },
+        body: '{}'
       });
       if (!requestsResponse.ok) return json(res, 503, { error: 'Community wishlist storage is not configured or is temporarily unavailable. Check the Supabase setup guide.' });
       const requests = await requestsResponse.json();
@@ -299,7 +321,7 @@ module.exports = async function handler(req, res) {
       return json(res, 200, { requests: requests.map(x => ({
         id: x.id, name: x.name, category: x.category, topics: x.topics || '',
         createdAt: x.created_at, votes: voteCounts.get(x.id) || 0,
-        isOwner: !!user && user.id === x.owner_id, hasUpvoted: myVotes.has(x.id), status: 'community'
+        isOwner: x.is_owner === true, hasUpvoted: myVotes.has(x.id), status: 'community'
       })), signedIn: !!user, isAdmin: isAdmin(user) });
     }
     if (req.method !== 'POST' && req.method !== 'DELETE') {
@@ -322,7 +344,7 @@ module.exports = async function handler(req, res) {
     if (!(await applyUserRateLimit(user, req, res, requestedAction))) return;
     if (req.method === 'POST' && requestedAction === 'sync-github') {
       if (!isAdmin(user)) return json(res, 403, { error: 'Only the Nexus administrator can synchronise requests to GitHub.' });
-      const response = await db('nexus_syllabus_requests?select=id,name,category,topics,created_at&order=created_at.desc&limit=200', token);
+      const response = await serviceDb('nexus_syllabus_requests?select=id,name,category,topics,created_at&order=created_at.desc&limit=200');
       if (!response.ok) return json(res, 502, { error: 'Could not read the community request list for synchronisation.' });
       const result = await syncGithubBatch(await response.json());
       return json(res, 200, { ...result, issuesUrl: 'https://github.com/' + GITHUB_REPOSITORY + '/issues?q=is%3Aissue+is%3Aopen+%5BNexus+Curriculum+Request%5D' });
@@ -332,11 +354,28 @@ module.exports = async function handler(req, res) {
       if (!isUuid(id)) return json(res, 400, { error: 'A valid request ID is required.' });
       const admin = isAdmin(user);
       let deleted;
-      if (admin) deleted = await adminDeleteRequest(id);
-      else deleted = await db('nexus_syllabus_requests?id=eq.' + encodeURIComponent(id) + '&owner_id=eq.' + encodeURIComponent(user.id), token, { method: 'DELETE', prefer: 'return=representation' });
-      if (!deleted.ok) return json(res, 502, { error: 'Could not delete this request. Please check the server configuration and try again.' });
-      const rows = await deleted.json();
-      if (!rows.length) return json(res, admin ? 404 : 403, { error: admin ? 'This request no longer exists.' : 'You can delete only requests you created.' });
+      if (admin) {
+        deleted = await adminDeleteRequest(id);
+        if (!deleted.ok) return json(res, 502, { error: 'Could not delete this request. Please check the server configuration and try again.' });
+        const rows = await deleted.json();
+        if (!rows.length) return json(res, 404, { error: 'This request no longer exists.' });
+      } else {
+        deleted = await fetch(SUPABASE_URL + '/rest/v1/rpc/delete_my_nexus_syllabus_request', {
+          method: 'POST', cache: 'no-store',
+          headers: {
+            apikey: SUPABASE_ANON_KEY,
+            Authorization: 'Bearer ' + token,
+            Accept: 'application/json',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ p_request_id: id })
+        });
+        if (!deleted.ok) return json(res, 502, { error: 'Could not delete this request. Please try again.' });
+        const result = await deleted.json();
+        if (!Array.isArray(result) || !result[0] || result[0].deleted !== true) {
+          return json(res, 403, { error: 'You can delete only requests you created.' });
+        }
+      }
       const githubResult = await closeGithubIssueForRequest(id, admin ? 'completed' : 'not_planned');
       return json(res, 200, { deleted: true, id, isAdmin: admin, githubIssueClosed: githubResult.closed, githubConfigured: githubResult.configured });
     }
@@ -358,17 +397,25 @@ module.exports = async function handler(req, res) {
     // Enforce one active request per authenticated user. The unique database index
     // in supabase/migrations/20261014_one_active_syllabus_request_per_user.sql
     // closes the race between simultaneous submissions; this check provides a clear message.
-    const activeRequest = await db('nexus_syllabus_requests?select=id&owner_id=eq.' + encodeURIComponent(user.id) + '&limit=1', token);
+    const activeRequest = await fetch(SUPABASE_URL + '/rest/v1/rpc/has_my_active_nexus_syllabus_request', {
+      method: 'POST', cache: 'no-store',
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + token, Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: '{}'
+    });
     if (!activeRequest.ok) return json(res, 503, { error: 'Could not verify your existing requests. Please try again shortly.' });
-    const activeRows = await activeRequest.json();
-    if (Array.isArray(activeRows) && activeRows.length) {
+    const hasActiveRequest = await activeRequest.json();
+    if (hasActiveRequest === true) {
       return json(res, 409, {
         code: 'ACTIVE_REQUEST_EXISTS',
         error: 'You already have an active syllabus request. Delete your current request, or ask the admin to remove it, before submitting another.'
       });
     }
 
-    const inserted = await db('nexus_syllabus_requests', token, { method: 'POST', body: { name, category, topics, owner_id: user.id } });
+    const inserted = await fetch(SUPABASE_URL + '/rest/v1/rpc/create_nexus_syllabus_request', {
+      method: 'POST', cache: 'no-store',
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + token, Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_name: name, p_category: category, p_topics: topics })
+    });
     if (!inserted.ok) {
       const insertError = await inserted.json().catch(() => ({}));
       const errorText = [insertError.message, insertError.details, insertError.hint].filter(Boolean).join(' ');
