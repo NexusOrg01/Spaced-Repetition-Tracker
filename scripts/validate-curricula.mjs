@@ -60,7 +60,7 @@ assert(html.includes("fsState.analyticsVisibleRatings=current.filter(r=>r!==rati
 assert(html.includes('getVisibleAnalyticsRatings()') && html.includes('data-rating-line=') && html.includes('data-scale-max=') && html.includes('same count scale'), 'Difficulty toggles must filter lines that share the same count axis.');
 assert(html.includes("data-rating-line=\"'+rating+'\""), 'Each rating curve must remain individually addressable for visibility filters.');
 assert(html.includes('class="hub-premium-heading panel"') && html.includes('.hub-premium-heading{'), 'Study Hub must use the premium purple title card.');
-assert(html.includes('<p class="subtitle">v5.0</p>') && html.includes('How to use: select “How to use” in the header.'), 'Main screen branding should retain only app version v5.0 and the How to use reference.');
+assert(html.includes('<p class="subtitle">v5.0</p>') && html.includes('How to use: tap “? How to use” in the header.'), 'Main screen branding should retain only app version v5.0 and the How to use reference.');
 assert(html.includes('id="appMode" hidden'), 'The hidden legacy app-mode node must remain available to existing runtime code without displaying verbose status copy.');
 assert(html.includes("new URL('icon-192.png',window.location.href)") && html.includes('class="cover-brand"') && html.includes('class="cover-logo"') && html.includes('<strong>NEXUS</strong>') && html.includes('SPACED REPETITION TRACKER'), 'The Analytics PDF cover must show the Nexus logo and app name in a premium branded header.');
 
