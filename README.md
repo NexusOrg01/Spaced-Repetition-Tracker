@@ -124,7 +124,14 @@ The community wishlist uses the app's existing Supabase authentication. Users mu
 3. Open `supabase/syllabus-community.sql` in this repository, copy its full contents into the SQL Editor, and run it.
 4. Confirm that the `nexus_syllabus_requests` and `nexus_syllabus_votes` tables were created.
 
-**For an existing live installation:** do not rerun the entire setup SQL to apply the voter-privacy fix. It removes direct vote-table read access and would break an older Production API until the API update is deployed. Use the staged migrations in order: first apply `supabase/migrations/20261016_hide_syllabus_vote_identities.sql` (additive; safe before the API deploy), test the Preview deployment, merge and wait for Production to update, then apply `supabase/migrations/20261017_revoke_public_syllabus_vote_reads.sql`. Do not run the second migration before Production is using the updated API.
+**For an existing live installation:** do not rerun the entire setup SQL to apply the privacy fix. Use the staged migrations in this order:
+
+1. Apply `supabase/migrations/20261016_hide_syllabus_vote_identities.sql` and `supabase/migrations/20261018_hide_syllabus_request_owner_ids.sql`. These add restricted RPCs without revoking the current table grants, so the existing Production API remains compatible.
+2. Test the Preview API against those RPCs: signed-out wishlist, vote totals, signed-in owner status, own-vote status, request submission, owner-only deletion, upvote and remove-upvote.
+3. Merge the reviewed PR and wait until the updated API is deployed to Production.
+4. Only then apply `supabase/migrations/20261017_revoke_public_syllabus_vote_reads.sql` and `supabase/migrations/20261019_revoke_public_syllabus_request_reads.sql`.
+
+**Do not run either revoke migration before Production is using the updated API.** The additive migrations do not modify existing table grants; the revoke migrations do.
 
 ### Vercel environment variables
 
@@ -156,6 +163,6 @@ Set these in Vercel Project → Settings → Environment Variables for Preview a
 - `GITHUB_TOKEN`: a fine-grained GitHub token with **Issues: Read and write** access to this repository.
 - `GITHUB_REPOSITORY`: optional; defaults to `kkmalithmalshan2000-png/Spaced-Repetition-Tracker`.
 - `NEXUS_ADMIN_USER_ID`: the UUID of the owner's Nexus Supabase Auth user. Find it in Supabase Dashboard → Authentication → Users. Only this authenticated account receives administrator controls and can remove any community request.
-- `SUPABASE_SERVICE_ROLE_KEY`: the Supabase service-role key for this project. It is used only inside the Vercel serverless function for administrator deletion. **Never add this key to browser code, GitHub, or any public file.**
+- `SUPABASE_SERVICE_ROLE_KEY`: the Supabase service-role key for this project. It is used only inside the Vercel serverless function for administrator deletion and administrator-only request synchronisation. **Never add this key to browser code, GitHub, or any public file.**
 
 Regular users can still delete only requests they created. The configured Nexus administrator can mark any request fulfilled and remove it from the in-app wishlist; the corresponding GitHub issue is closed as completed. The administrator sync action mirrors pre-existing requests in batches, avoiding a large single serverless request. If the GitHub mirror is temporarily unavailable, a newly submitted request remains saved in the shared Supabase wishlist and can be synced later.
