@@ -118,7 +118,7 @@ Suggested fields are curriculum/subject name, country, exam board or qualificati
 
 The old community request API has been removed from the application branch. Existing Supabase request and vote rows are preserved as a historical archive, but must no longer be publicly accessible.
 
-**For an existing live installation, do not revoke the old table access until the replacement app is deployed and verified in Production.** After confirming that the Production app uses the Google Form and the old `/api/syllabus-requests` endpoint is gone, open the Supabase SQL Editor and run `supabase/migrations/20261020_retire_community_wishlist.sql` once. This migration revokes direct access from anonymous and signed-in client roles, removes the old wishlist policies, disables access to known legacy RPCs if present, and preserves stored rows.
+**For an existing live installation, do not revoke the old table access until the replacement app is deployed and verified in Production.** After confirming that the Production app uses the Google Form and the old `/api/syllabus-requests` endpoint is gone, open the Supabase SQL Editor and run `supabase/migrations/20261018_retire_community_wishlist.sql` once. This migration revokes direct access from anonymous and signed-in client roles, removes the old wishlist policies, disables access to known legacy RPCs if present, and preserves stored rows.
 
 Do not run `supabase/syllabus-community.sql` or `supabase/harden-syllabus-community-privileges.sql`; both are now marked deprecated and would not be part of the supported setup. The remaining cloud-sync setup uses `public.nexus_user_data` and is separate from the retired wishlist.
 
