@@ -106,20 +106,6 @@ async function currentUser(token) {
   const user = await response.json();
   return user && user.id ? user : null;
 }
-async function db(path, token, options = {}) {
-  return fetch(SUPABASE_URL + '/rest/v1/' + path, {
-    method: options.method || 'GET',
-    cache: 'no-store',
-    headers: {
-      apikey: SUPABASE_ANON_KEY,
-      Authorization: 'Bearer ' + token,
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      Prefer: options.prefer || 'return=representation'
-    },
-    body: options.body === undefined ? undefined : JSON.stringify(options.body)
-  });
-}
 async function serviceDb(path, options = {}) {
   if (!SUPABASE_SERVICE_ROLE_KEY) throw new Error('Server-side community database access is not configured.');
   return fetch(SUPABASE_URL + '/rest/v1/' + path, {
@@ -429,15 +415,16 @@ module.exports = async function handler(req, res) {
       // Some PostgREST/database configurations return a generic error body for a
       // unique-index rejection. Verify whether the account already owns a request
       // before showing the unrelated schema/policy troubleshooting message.
-      const existingAfterFailure = await db('nexus_syllabus_requests?select=id&owner_id=eq.' + encodeURIComponent(user.id) + '&limit=1', token);
-      if (existingAfterFailure.ok) {
-        const existingRows = await existingAfterFailure.json();
-        if (Array.isArray(existingRows) && existingRows.length) {
-          return json(res, 409, {
-            code: 'ACTIVE_REQUEST_EXISTS',
-            error: 'You already have an active syllabus request. Each account can have only one at a time. Delete your current request, or ask the admin to remove it, before submitting another.'
-          });
-        }
+      const existingAfterFailure = await fetch(SUPABASE_URL + '/rest/v1/rpc/has_my_active_nexus_syllabus_request', {
+        method: 'POST', cache: 'no-store',
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + token, Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+      if (existingAfterFailure.ok && await existingAfterFailure.json() === true) {
+        return json(res, 409, {
+          code: 'ACTIVE_REQUEST_EXISTS',
+          error: 'You already have an active syllabus request. Each account can have only one at a time. Delete your current request, or ask the admin to remove it, before submitting another.'
+        });
       }
       return json(res, 502, { error: 'Could not save the request. Ensure the Supabase syllabus tables and policies are installed.' });
     }
