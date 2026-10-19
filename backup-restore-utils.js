@@ -211,6 +211,36 @@
     return true;
   }
 
+  function cloudConflict(message) {
+    const error = new Error(message || 'Cloud data changed on another device. Local changes were preserved; reload and merge before syncing again.');
+    error.code = 'NEXUS_CLOUD_CONFLICT';
+    return error;
+  }
+
+  async function writeCloudSnapshot(client, userId, payload, expectedStamp, stamp) {
+    if (!client || typeof userId !== 'string' || !userId || !isRecord(payload) || typeof stamp !== 'string') {
+      throw new Error('Invalid cloud snapshot write.');
+    }
+    let result;
+    if (expectedStamp) {
+      result = await client.from('nexus_user_data')
+        .update({ payload, updated_at: stamp })
+        .eq('user_id', userId)
+        .eq('updated_at', expectedStamp)
+        .select('updated_at');
+    } else {
+      result = await client.from('nexus_user_data')
+        .insert({ user_id: userId, payload, updated_at: stamp })
+        .select('updated_at');
+    }
+    if (result && result.error) {
+      if (!expectedStamp && result.error.code === '23505') throw cloudConflict();
+      throw result.error;
+    }
+    if (!result || !Array.isArray(result.data) || result.data.length !== 1) throw cloudConflict();
+    return result.data[0];
+  }
+
   function parseCsv(input) {
     const source = String(input ?? '').replace(/^\uFEFF/, '');
     const maxCharacters = 5 * 1024 * 1024;
@@ -271,5 +301,5 @@
     return rows;
   }
 
-  return { validateBackupState, normalizeFeatureState, mergeFeatureState, commitLocalStorageAtomically, parseCsv };
+  return { validateBackupState, normalizeFeatureState, mergeFeatureState, commitLocalStorageAtomically, writeCloudSnapshot, parseCsv };
 });
