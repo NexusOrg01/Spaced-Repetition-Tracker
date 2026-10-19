@@ -9,8 +9,8 @@ const html = readFileSync(resolve(root, 'index.html'), 'utf8');
 const bundle = readFileSync(resolve(root, 'fsrs-bundle.js'), 'utf8');
 const serviceWorker = readFileSync(resolve(root, 'sw.js'), 'utf8');
 
-const integrationMarker = '/*!\\n * nexus-fsrs.js';
-const coreEnd = bundle.indexOf(integrationMarker);
+const integrationAt = bundle.indexOf('nexus-fsrs.js — glue between Nexus topics');
+const coreEnd = integrationAt > 0 ? bundle.lastIndexOf('/*!', integrationAt) : -1;
 assert.ok(coreEnd > 0, 'FSRS core and Nexus integration must remain separable for isolated scheduler tests');
 const sandbox = { self: {}, Date, Math };
 vm.createContext(sandbox);
