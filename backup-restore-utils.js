@@ -173,5 +173,65 @@
     return true;
   }
 
-  return { normalizeFeatureState, mergeFeatureState, commitLocalStorageAtomically };
+  function parseCsv(input) {
+    const source = String(input ?? '').replace(/^\\uFEFF/, '');
+    const maxCharacters = 5 * 1024 * 1024;
+    const maxRows = 10001;
+    const maxColumns = 64;
+    const maxFieldLength = 10000;
+    if (source.length > maxCharacters) throw new Error('CSV is too large. Use a file no larger than 5 MiB.');
+    const rows = [];
+    let row = [], field = '', quoted = false, afterQuote = false;
+    const append = c => {
+      if (field.length >= maxFieldLength) throw new Error('CSV contains a field longer than 10,000 characters.');
+      field += c;
+    };
+    const endField = () => {
+      row.push(field);
+      if (row.length > maxColumns) throw new Error('CSV contains more than 64 columns.');
+      field = '';
+      afterQuote = false;
+    };
+    const endRow = () => {
+      endField();
+      if (row.some(cell => String(cell).trim())) {
+        rows.push(row.slice());
+        if (rows.length > maxRows) throw new Error('CSV contains more than 10,000 data rows plus a header.');
+      }
+      row = [];
+    };
+    for (let i = 0; i < source.length; i++) {
+      const c = source[i];
+      if (quoted) {
+        if (c === '"') {
+          if (source[i + 1] === '"') { append('"'); i++; }
+          else { quoted = false; afterQuote = true; }
+        } else append(c);
+        continue;
+      }
+      if (afterQuote) {
+        if (c === ',') { endField(); continue; }
+        if (c === '\\n' || c === '\\r') {
+          if (c === '\\r' && source[i + 1] === '\\n') i++;
+          endRow();
+          continue;
+        }
+        if (c === ' ' || c === '\\t') continue;
+        throw new Error('Malformed CSV: unexpected character after a quoted field.');
+      }
+      if (c === '"') {
+        if (field.length !== 0) throw new Error('Malformed CSV: quote inside an unquoted field.');
+        quoted = true;
+      } else if (c === ',') endField();
+      else if (c === '\\n' || c === '\\r') {
+        if (c === '\\r' && source[i + 1] === '\\n') i++;
+        endRow();
+      } else append(c);
+    }
+    if (quoted) throw new Error('Malformed CSV: a quoted field was not closed.');
+    if (field.length || row.length || afterQuote) endRow();
+    return rows;
+  }
+
+  return { normalizeFeatureState, mergeFeatureState, commitLocalStorageAtomically, parseCsv };
 });
