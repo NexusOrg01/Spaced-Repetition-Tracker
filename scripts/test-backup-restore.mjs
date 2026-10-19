@@ -7,6 +7,7 @@ const {
   mergeFeatureState,
   commitLocalStorageAtomically,
   writeCloudSnapshot,
+  csvCell,
   parseCsv
 } = require('../backup-restore-utils.js');
 
@@ -114,6 +115,16 @@ assert.throws(() => parseCsv('Topic\n"closed"x'), /unexpected character after a 
 assert.throws(() => parseCsv('Topic\n' + 'x'.repeat(10001)), /field longer than 10,000/);
 assert.throws(() => parseCsv(Array(66).fill('x').join(',')), /more than 64 columns/);
 assert.throws(() => parseCsv('Topic\n' + 'row\n'.repeat(10001)), /more than 10,000 data rows/);
+
+assert.equal(csvCell('ordinary text'), '"ordinary text"');
+assert.equal(csvCell('He said "yes"'), '"He said ""yes"""');
+assert.equal(csvCell('=1+1'), '"\'=1+1"', 'formula-leading cells must be exported as text');
+assert.equal(csvCell('  =HYPERLINK("https://example.invalid")'), '"\'  =HYPERLINK(""https://example.invalid"")"',
+  'leading whitespace must not bypass spreadsheet formula protection');
+assert.equal(csvCell('+cmd'), '"\'+cmd"');
+assert.equal(csvCell('-1+2'), '"\'-1+2"');
+assert.equal(csvCell('@SUM(A1:A2)'), '"\'@SUM(A1:A2)"');
+assert.equal(csvCell('safe, comma'), '"safe, comma"');
 
 function mockCloudClient(result) {
   const calls = [];
