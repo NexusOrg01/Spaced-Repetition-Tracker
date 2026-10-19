@@ -29,9 +29,10 @@ const restore = section(index, 'async function restoreOrMerge(file){', 'function
 const restoreCommit = restore.indexOf('commitLocalStorageAtomically(localStorage,');
 const restoreAssignment = restore.indexOf('state=nextState;');
 assert.ok(restore.includes('const modern=Array.isArray(raw.streams)'), 'recognize the full backup structure before restoring');
-assert.ok(restore.includes('This file is not a recognized Nexus backup'), 'reject unrelated JSON backups');
+assert.ok(restore.includes('window.NexusBackupRestoreUtils.validateBackupState(raw)'), 'validate backup records before normalization can silently discard malformed entries');
 assert.ok(restoreCommit >= 0 && restoreAssignment > restoreCommit, 'persist both backup sections before replacing in-memory app state');
 assert.ok(restore.includes('window.NexusCloudSync.schedule()'), 'schedule cloud sync only after a successful restore commit');
+assert.ok(index.includes("function backupPayload(){return {app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state,featureState:fsState};}"), 'full backups must include schema 4 and Study Hub state');
 
 const cloud = section(index, 'function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){', 'async function initializeSession(s)', 'cloud workspace hydration');
 const cloudCommit = cloud.indexOf('commitLocalStorageAtomically(localStorage,entries)');
