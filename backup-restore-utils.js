@@ -61,7 +61,7 @@
     if (typeof fallback === 'string') {
       if (typeof value !== 'string' || value.length > 100) return fallback;
       if (key === 'scheduler' && !['classic', 'adaptive'].includes(value)) return fallback;
-      if (key === 'reminderTime' && !/^([01]\\d|2[0-3]):[0-5]\\d$/.test(value)) return fallback;
+      if (key === 'reminderTime' && !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) return fallback;
       return value;
     }
     return fallback;
