@@ -10,7 +10,7 @@
   const copy = value => JSON.parse(JSON.stringify(value));
 
   function cleanRecordMap(value, field, valueKind) {
-    if (value === undefined || value === null) return {};
+    if (value === undefined) return {};
     if (!isRecord(value)) throw new Error('Backup section "' + field + '" must be an object.');
     const keys = Object.keys(value);
     if (keys.length > 50000) throw new Error('Backup section "' + field + '" has too many entries.');
@@ -36,7 +36,7 @@
   }
 
   function cleanRows(value, field) {
-    if (value === undefined || value === null) return [];
+    if (value === undefined) return [];
     if (!Array.isArray(value)) throw new Error('Backup section "' + field + '" must be an array.');
     if (value.length > 100000) throw new Error('Backup section "' + field + '" has too many records.');
     return value.map((row, index) => {
@@ -117,7 +117,7 @@
     if (!isRecord(defaults) || !isRecord(defaults.settings)) throw new Error('Internal Study Hub defaults are invalid.');
     if (input === undefined) return copy(defaults);
     if (!isRecord(input)) throw new Error('The backup Study Hub section must be an object.');
-    const rawSettings = input.settings === undefined || input.settings === null ? {} : input.settings;
+    const rawSettings = input.settings === undefined ? {} : input.settings;
     if (!isRecord(rawSettings)) throw new Error('Backup Study Hub settings must be an object.');
     const settings = { ...defaults.settings };
     for (const key of Object.keys(defaults.settings)) {
@@ -134,7 +134,7 @@
       goals: cleanRows(input.goals, 'goals'),
       studyLogs: cleanRows(input.studyLogs, 'studyLogs'),
       selectedTopicIds: (() => {
-        const ids = input.selectedTopicIds === undefined || input.selectedTopicIds === null ? [] : input.selectedTopicIds;
+        const ids = input.selectedTopicIds === undefined ? [] : input.selectedTopicIds;
         if (!Array.isArray(ids) || ids.length > 100000 || ids.some(id => typeof id !== 'string' && typeof id !== 'number')) {
           throw new Error('Backup section "selectedTopicIds" must be an array of topic IDs.');
         }
