@@ -75,6 +75,44 @@
     return Number.isFinite(stamp) ? (typeof value === 'number' ? stamp : new Date(stamp).toISOString()) : fallback;
   }
 
+  function validateBackupState(input) {
+    if (!isRecord(input)) throw new Error('Invalid backup state.');
+    const modern = Array.isArray(input.streams) && Array.isArray(input.subjects) && Array.isArray(input.topics);
+    const legacy = Array.isArray(input.topics) && (Array.isArray(input.history) || Array.isArray(input.subjects));
+    if (!modern && !legacy) throw new Error('This file is not a recognized Nexus backup.');
+    for (const key of ['streams', 'subjects', 'topics', 'history', 'exams']) {
+      if (own(input, key) && !Array.isArray(input[key])) {
+        throw new Error('Backup section "' + key + '" must be an array.');
+      }
+      if (Array.isArray(input[key]) && input[key].length > 200000) {
+        throw new Error('Backup section "' + key + '" contains too many records.');
+      }
+    }
+    if (modern) {
+      if (own(input, 'settings') && !isRecord(input.settings)) {
+        throw new Error('Backup section "settings" must be an object.');
+      }
+      const requireNamedRows = (rows, field, requireId) => {
+        rows.forEach(row => {
+          if (!isRecord(row) || typeof row.name !== 'string' || !row.name.trim() ||
+              (requireId && !((typeof row.id === 'string' && row.id.trim()) ||
+                (typeof row.id === 'number' && Number.isFinite(row.id))))) {
+            throw new Error('Backup section "' + field + '" contains a malformed record.');
+          }
+        });
+      };
+      requireNamedRows(input.streams, 'streams', true);
+      requireNamedRows(input.subjects, 'subjects', true);
+      requireNamedRows(input.topics, 'topics', true);
+      for (const field of ['history', 'exams']) {
+        if (Array.isArray(input[field]) && input[field].some(row => !isRecord(row))) {
+          throw new Error('Backup section "' + field + '" contains a malformed record.');
+        }
+      }
+    }
+    return input;
+  }
+
   function normalizeFeatureState(input, defaults) {
     if (!isRecord(defaults) || !isRecord(defaults.settings)) throw new Error('Internal Study Hub defaults are invalid.');
     if (input === undefined) return copy(defaults);
