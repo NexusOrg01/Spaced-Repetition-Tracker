@@ -47,6 +47,8 @@ assert.ok(index.includes('applyRemote(remote.payload,newUserId)'), 'account swit
 assert.ok(index.includes('window.NexusBackupRestoreUtils.writeCloudSnapshot(client,uploadUserId,payload,lastRemoteStamp,stamp)'), 'cloud writes must compare against the last observed version');
 assert.ok(index.includes("status('Cloud conflict')") && index.includes("ready=false;status('Cloud conflict')"), 'a detected cloud conflict must pause automatic uploads');
 assert.ok(!index.includes(".upsert({user_id:uploadUserId,payload,updated_at:stamp}"), 'cloud sync must not blindly overwrite a newer remote snapshot');
+assert.ok(index.includes("conflict.code='NEXUS_CLOUD_CONFLICT'"), 'verification mismatches must be treated as cloud conflicts');
+assert.ok(index.includes("else{ready=false;status('Sync error')"), 'failed cloud writes must pause automatic retries until reinitialization');
 
 assert.ok(serviceWorker.includes("const CACHE_NAME='nexus-rating-analytics-v10';"), 'cache version must be bumped after adding the helper');
 assert.ok(serviceWorker.includes("'./backup-restore-utils.js'"), 'offline app shell must cache the helper');
