@@ -51,7 +51,7 @@ assert.ok(!index.includes(".upsert({user_id:uploadUserId,payload,updated_at:stam
 assert.ok(index.includes("conflict.code='NEXUS_CLOUD_CONFLICT'"), 'verification mismatches must be treated as cloud conflicts');
 assert.ok(index.includes("else{ready=false;status('Sync error')"), 'failed cloud writes must pause automatic retries until reinitialization');
 
-assert.ok(serviceWorker.includes("const CACHE_NAME='nexus-rating-analytics-v11';"), 'cache version must be bumped after adding the helper');
+assert.ok(serviceWorker.includes("const CACHE_NAME='nexus-rating-analytics-v12';"), 'cache version must be bumped after adding the helper');
 assert.ok(serviceWorker.includes("'./backup-restore-utils.js'"), 'offline app shell must cache the helper');
 assert.ok(workflow.includes('node scripts/test-data-safety-wiring.mjs'), 'CI must run these integration-wiring checks');
 
