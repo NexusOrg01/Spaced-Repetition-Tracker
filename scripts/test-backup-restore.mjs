@@ -55,6 +55,10 @@ assert.equal(normalized.studyLogs[0].id, 'studyLogs-restored-0', 'legacy feature
 assert.deepEqual(normalized.taskChecks['2026-10-19'], ['taskA', '7']);
 assert.deepEqual(normalized.selectedTopicIds, ['topicA', '7']);
 assert.throws(() => normalizeFeatureState({ journal: {} }, defaults), /must be an array/);
+assert.throws(() => normalizeFeatureState({ journal: null }, defaults), /must be an array/, 'explicit null must not silently clear journal data');
+assert.throws(() => normalizeFeatureState({ settings: null }, defaults), /settings must be an object/);
+assert.throws(() => normalizeFeatureState({ taskChecks: null }, defaults), /must be an object/);
+assert.throws(() => normalizeFeatureState({ selectedTopicIds: null }, defaults), /must be an array/);
 assert.throws(() => normalizeFeatureState({ taskChecks: { today: true } }, defaults), /task checklist/);
 assert.throws(() => normalizeFeatureState({ settings: [] }, defaults), /settings must be an object/);
 assert.throws(() => normalizeFeatureState(null, defaults), /Study Hub section must be an object/);
