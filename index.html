@@ -1543,8 +1543,9 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
   document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>switchView(b.dataset.view)));
   
   $('viewDueBtn').addEventListener('click',()=>{switchView('topics');$('topicStatusFilter').value='due-now';renderTopics();});
-  $('dueQueue').addEventListener('click',e=>{const b=e.target.closest('[data-action="review"]');if(b)openReview(b.dataset.id);});
-  $('topicGrid').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='review')openReview(id);if(action==='edit-topic')openTopic(id);if(action==='delete-topic')deleteTopic(id);});
+  // Delegate review actions once so dynamically rendered due and upcoming queues work consistently.
+  document.addEventListener('click',e=>{const b=e.target.closest('button[data-action="review"]');if(!b)return;openReview(b.dataset.id);});
+  $('topicGrid').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='edit-topic')openTopic(id);if(action==='delete-topic')deleteTopic(id);});
   $('historyList').addEventListener('click',e=>{const b=e.target.closest('button[data-action="delete-history"]');if(!b)return;const id=b.dataset.id;const entry=state.history.find(h=>h.id===id);if(!entry||!confirm('DANGER ZONE — Delete this review record?\n\nThis review will disappear from rating analytics and future history exports. The topic schedule will not change. Use Undo immediately or restore a backup if needed. Continue?'))return;startUndo('History entry deleted.');state.history=state.history.filter(h=>h.id!==id);historyInsightsDirty=true;historySortedCache=null;save();renderHistory();notify('History entry deleted.',true);});
   $('structureList').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='edit-stream')openStream(id);if(action==='delete-stream')deleteStream(id);if(action==='add-subject-to-stream')openSubject(null,id);if(action==='edit-subject')openSubject(id);if(action==='delete-subject')deleteSubject(id);});
   $('examList').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;if(b.dataset.action==='edit-exam')openExam(b.dataset.id);if(b.dataset.action==='delete-exam')deleteExam(b.dataset.id);});
@@ -2459,7 +2460,7 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
       let nextState, nextFeatures;
       if(mode==='REPLACE'){
         nextState=imported;
-        nextFeatures=importedFeatures;
+        nextFeatures=window.NexusBackupRestoreUtils.resolveReplaceFeatureState(hasFeatureState,fsState,importedFeatures,defaults);
       }else{
         const combined={schema:4,streams:[...state.streams],subjects:[...state.subjects],topics:[...state.topics],history:[...state.history],exams:[...state.exams],settings:state.settings};
         const pushUnique=(target,source)=>{const ids=new Set(target.map(x=>x.id));source.forEach(x=>{if(!ids.has(x.id)){target.push(x);ids.add(x.id);}});};
@@ -2495,7 +2496,7 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
       renderAll();
       renderHub();
       if(focusStart)refreshLiveFocusUi();
-      notify('Backup '+mode.toLowerCase()+' completed and saved. Review imported topics and dates.');
+      notify(mode==='REPLACE'&&!hasFeatureState?'Tracker data restored. Existing Study Hub data was kept because this backup does not include it.':'Backup '+mode.toLowerCase()+' completed and saved. Review imported topics and dates.');
     }catch(e){
       console.error(e);
       if(committed){
@@ -2983,6 +2984,29 @@ dialog .dialog-inner,dialog>div{max-height:none}
   .curriculum-request-link:hover .curriculum-request-arrow svg{transform:translate(1px,-1px)}
   .curriculum-request-link:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 48%,transparent);outline-offset:3px}
   @media(prefers-reduced-motion:reduce){.curriculum-request-link,.curriculum-request-arrow,.curriculum-request-arrow svg{transition:none!important}}
+</style>
+
+<style id="nexus-performance-guardrails">
+  /* Reduce avoidable large-surface animation and compositing work on mobile and desktop. */
+  html { scroll-behavior: auto !important; }
+  .app, .brandmark { animation: none !important; }
+  .panel, .stat, .topic-card, .queue-item {
+    animation: none !important;
+    transition: box-shadow .14s ease, border-color .14s ease !important;
+  }
+  .panel:hover, .topic-card:hover, .stat:hover { transform: none !important; }
+  .tabs, dialog::backdrop {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  .collapsible-body { transition: none !important; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation: none !important;
+      transition: none !important;
+      scroll-behavior: auto !important;
+    }
+  }
 </style>
 </body>
 </html>
