@@ -2652,7 +2652,7 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
   const studyHubView=hubEl('view-studyhub');
   if(studyHubView?.classList.contains('active'))renderHub();
   try{renderHomeConsistencySummary();}catch(error){console.error('Nexus Overview consistency summary failed',error);}
-  refreshLiveFocusUi();
+  if(focusStart){openFocusMode();}else{refreshLiveFocusUi();}
 })();
 </script>
 
