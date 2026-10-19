@@ -113,6 +113,23 @@
     return input;
   }
 
+  function sanitizeFocusState(input) {
+    const cleanTimestamp = value => {
+      if (typeof value !== 'string' || !value.trim()) return null;
+      const ms = Date.parse(value);
+      return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+    };
+    const started = isRecord(input) ? cleanTimestamp(input.focusStartedAt) : null;
+    let paused = isRecord(input) ? cleanTimestamp(input.focusPausedAt) : null;
+    if (!started || !paused || Date.parse(paused) < Date.parse(started)) paused = null;
+    return {
+      focusStartedAt: started,
+      focusPausedAt: paused,
+      focusTopicId: isRecord(input) && typeof input.focusTopicId === 'string' ? input.focusTopicId.slice(0, 300) : '',
+      focusSubjectId: isRecord(input) && typeof input.focusSubjectId === 'string' ? input.focusSubjectId.slice(0, 300) : ''
+    };
+  }
+
   function normalizeFeatureState(input, defaults) {
     if (!isRecord(defaults) || !isRecord(defaults.settings)) throw new Error('Internal Study Hub defaults are invalid.');
     if (input === undefined) return copy(defaults);
@@ -307,5 +324,5 @@
     return rows;
   }
 
-  return { validateBackupState, normalizeFeatureState, mergeFeatureState, commitLocalStorageAtomically, writeCloudSnapshot, csvCell, parseCsv };
+  return { validateBackupState, sanitizeFocusState, normalizeFeatureState, mergeFeatureState, commitLocalStorageAtomically, writeCloudSnapshot, csvCell, parseCsv };
 });
