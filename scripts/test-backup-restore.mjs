@@ -2,11 +2,28 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const {
+  validateBackupState,
   normalizeFeatureState,
   mergeFeatureState,
   commitLocalStorageAtomically,
   parseCsv
 } = require('../backup-restore-utils.js');
+
+const validBackup = {
+  schema: 4,
+  streams: [{ id: 's1', name: 'Commerce' }],
+  subjects: [{ id: 'sub1', name: 'Economics', streamId: 's1' }],
+  topics: [{ id: 't1', name: 'Demand', subjectId: 'sub1' }],
+  history: [],
+  exams: [],
+  settings: { theme: 'system' }
+};
+assert.equal(validateBackupState(validBackup), validBackup, 'valid full backups should be accepted');
+assert.throws(() => validateBackupState({ state: 'not a Nexus backup' }), /recognized Nexus backup/);
+assert.throws(() => validateBackupState({ ...validBackup, topics: [{ name: 'Demand', subjectId: 'sub1' }] }), /malformed record/);
+assert.throws(() => validateBackupState({ ...validBackup, settings: [] }), /settings must be an object/);
+assert.throws(() => validateBackupState({ ...validBackup, history: 'not an array' }), /must be an array/);
+assert.throws(() => validateBackupState({ ...validBackup, exams: [null] }), /malformed record/);
 
 const defaults = {
   version: 1,
