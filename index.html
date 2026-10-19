@@ -2652,7 +2652,8 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
   const studyHubView=hubEl('view-studyhub');
   if(studyHubView?.classList.contains('active'))renderHub();
   try{renderHomeConsistencySummary();}catch(error){console.error('Nexus Overview consistency summary failed',error);}
-  if(focusStart){openFocusMode();}else{refreshLiveFocusUi();}
+  const restoreFocusUi=()=>{if(focusStart)openFocusMode();else refreshLiveFocusUi();};
+  if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',restoreFocusUi,{once:true});}else{restoreFocusUi();}
 })();
 </script>
 
