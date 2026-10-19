@@ -1,5 +1,5 @@
 const CACHE_PREFIX='nexus-rating-analytics-';
-const CACHE_NAME=CACHE_PREFIX+'v12';
+const CACHE_NAME=CACHE_PREFIX+'v13';
 const CORE_APP_SHELL=['./','./index.html','./fsrs-bundle.js','./backup-restore-utils.js','./manifest.webmanifest'];
 const OPTIONAL_APP_SHELL=['./curricula/catalog.json','./icon.svg','./icon-192.png','./icon-512.png'];
 self.addEventListener('install',event=>{event.waitUntil(caches.open(CACHE_NAME).then(async cache=>{
