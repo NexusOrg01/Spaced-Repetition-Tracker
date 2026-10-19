@@ -174,7 +174,7 @@
   }
 
   function parseCsv(input) {
-    const source = String(input ?? '').replace(/^\\uFEFF/, '');
+    const source = String(input ?? '').replace(/^\uFEFF/, '');
     const maxCharacters = 5 * 1024 * 1024;
     const maxRows = 10001;
     const maxColumns = 64;
@@ -211,20 +211,20 @@
       }
       if (afterQuote) {
         if (c === ',') { endField(); continue; }
-        if (c === '\\n' || c === '\\r') {
-          if (c === '\\r' && source[i + 1] === '\\n') i++;
+        if (c === '\n' || c === '\r') {
+          if (c === '\r' && source[i + 1] === '\n') i++;
           endRow();
           continue;
         }
-        if (c === ' ' || c === '\\t') continue;
+        if (c === ' ' || c === '\t') continue;
         throw new Error('Malformed CSV: unexpected character after a quoted field.');
       }
       if (c === '"') {
         if (field.length !== 0) throw new Error('Malformed CSV: quote inside an unquoted field.');
         quoted = true;
       } else if (c === ',') endField();
-      else if (c === '\\n' || c === '\\r') {
-        if (c === '\\r' && source[i + 1] === '\\n') i++;
+      else if (c === '\n' || c === '\r') {
+        if (c === '\r' && source[i + 1] === '\n') i++;
         endRow();
       } else append(c);
     }
