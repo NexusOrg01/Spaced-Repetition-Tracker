@@ -41,7 +41,8 @@ assert.ok(cloud.includes('entries.push({key:OWNER_KEY,value:String(ownerId)})'),
 assert.ok(cloud.includes('function applyRemote(payload,ownerId)'), 'cloud hydration accepts an account owner to commit atomically');
 assert.ok(cloud.includes('window.NexusMergeFeatureState(localFeatures,remoteFeatures,{})'), 'local/cloud merges must preserve non-conflicting Study Hub records while local values win conflicts');
 assert.ok(cloud.includes('window.NexusSetFeatureState(nextFeatures,{persist:false,render:false})'), 'hydration does not perform a second, independent feature-state write');
-assert.ok(cloud.includes('function resetToEmpty(){') && cloud.includes('applyWorkspaceSnapshot(emptyState(),{})'), 'new-account reset uses the safe workspace transaction');
+assert.ok(cloud.includes('function resetToEmpty(ownerId){') && cloud.includes('applyWorkspaceSnapshot(emptyState(),{},ownerId)'), 'new-account reset commits the owner marker with the empty workspace');
+assert.ok(cloud.includes('resetToEmpty(newUserId)'), 'account switching must pass the new owner into every clean-workspace reset');
 assert.ok(index.includes('applyRemote(remote.payload,newUserId)'), 'account switch passes the active user into atomic hydration');
 
 assert.ok(serviceWorker.includes("const CACHE_NAME='nexus-rating-analytics-v10';"), 'cache version must be bumped after adding the helper');
