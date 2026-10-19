@@ -17,7 +17,7 @@ function putInCache(req,response){
 }
 self.addEventListener('fetch',event=>{
   const req=event.request;const url=new URL(req.url);
-  if(req.method!=='GET'||url.origin!==self.location.origin||url.pathname.startsWith('/downloads/')||url.pathname.endsWith('.apk')||url.pathname.startsWith('/.well-known/'))return;
+  if(req.method!=='GET'||url.origin!==self.location.origin||url.pathname.startsWith('/api/')||url.pathname.startsWith('/downloads/')||url.pathname.endsWith('.apk')||url.pathname.startsWith('/.well-known/'))return;
   const networkFirst=req.mode==='navigate'||url.pathname==='/'||url.pathname.endsWith('.html')||url.pathname.endsWith('.webmanifest')||url.pathname.endsWith('/curricula/catalog.json');
   if(networkFirst){event.respondWith(fetch(req,{cache:'no-store'}).then(r=>putInCache(req,r)).catch(()=>caches.match(req).then(c=>c||caches.match('./index.html'))));return;}
   event.respondWith(caches.match(req).then(cached=>{const network=fetch(req).then(r=>putInCache(req,r)).catch(()=>cached);return cached||network;}));
