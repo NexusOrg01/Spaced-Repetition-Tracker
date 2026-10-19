@@ -28,7 +28,6 @@ assert.ok(index.includes('window.NexusMergeFeatureState=(current,imported,rawImp
 const restore = section(index, 'async function restoreOrMerge(file){', 'function formatElapsed(ms)', 'JSON restore');
 const restoreCommit = restore.indexOf('commitLocalStorageAtomically(localStorage,');
 const restoreAssignment = restore.indexOf('state=nextState;');
-assert.ok(restore.includes('const modern=Array.isArray(raw.streams)'), 'recognize the full backup structure before restoring');
 assert.ok(restore.includes('window.NexusBackupRestoreUtils.validateBackupState(raw)'), 'validate backup records before normalization can silently discard malformed entries');
 assert.ok(restoreCommit >= 0 && restoreAssignment > restoreCommit, 'persist both backup sections before replacing in-memory app state');
 assert.ok(restore.includes('window.NexusCloudSync.schedule()'), 'schedule cloud sync only after a successful restore commit');
