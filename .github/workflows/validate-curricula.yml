@@ -18,5 +18,5 @@ jobs:
           node-version: 22
       - name: Validate catalogue and inline JavaScript syntax
         run: node scripts/validate-curricula.mjs
-      - name: Check and test backup/restore safety helpers
+      - name: Check and test backup, restore, and account-switch safety helpers
         run: node --check backup-restore-utils.js && node scripts/test-backup-restore.mjs
