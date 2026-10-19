@@ -21,7 +21,7 @@ const validBackup = {
 assert.equal(validateBackupState(validBackup), validBackup, 'valid full backups should be accepted');
 assert.throws(() => validateBackupState({ state: 'not a Nexus backup' }), /recognized Nexus backup/);
 assert.throws(() => validateBackupState({ ...validBackup, topics: [{ name: 'Demand', subjectId: 'sub1' }] }), /malformed record/);
-assert.throws(() => validateBackupState({ ...validBackup, settings: [] }), /settings must be an object/);
+assert.throws(() => validateBackupState({ ...validBackup, settings: [] }), /settings.*must be an object/);
 assert.throws(() => validateBackupState({ ...validBackup, history: 'not an array' }), /must be an array/);
 assert.throws(() => validateBackupState({ ...validBackup, exams: [null] }), /malformed record/);
 
