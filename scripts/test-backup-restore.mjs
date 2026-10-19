@@ -6,6 +6,7 @@ const {
   normalizeFeatureState,
   mergeFeatureState,
   commitLocalStorageAtomically,
+  writeCloudSnapshot,
   parseCsv
 } = require('../backup-restore-utils.js');
 
@@ -113,5 +114,51 @@ assert.throws(() => parseCsv('Topic\n"closed"x'), /unexpected character after a 
 assert.throws(() => parseCsv('Topic\n' + 'x'.repeat(10001)), /field longer than 10,000/);
 assert.throws(() => parseCsv(Array(66).fill('x').join(',')), /more than 64 columns/);
 assert.throws(() => parseCsv('Topic\n' + 'row\n'.repeat(10001)), /more than 10,000 data rows/);
+
+function mockCloudClient(result) {
+  const calls = [];
+  const client = {
+    from(table) {
+      calls.push({ kind: 'from', table });
+      return {
+        update(values) {
+          calls.push({ kind: 'update', values });
+          const query = {
+            eq(column, value) { calls.push({ kind: 'eq', column, value }); return query; },
+            select(columns) { calls.push({ kind: 'select', columns }); return Promise.resolve(result); }
+          };
+          return query;
+        },
+        insert(values) {
+          calls.push({ kind: 'insert', values });
+          return { select(columns) { calls.push({ kind: 'select', columns }); return Promise.resolve(result); } };
+        }
+      };
+    }
+  };
+  return { client, calls };
+}
+const updatedCloud = mockCloudClient({ data: [{ updated_at: 'new-stamp' }], error: null });
+assert.deepEqual(
+  await writeCloudSnapshot(updatedCloud.client, 'user-1', { state: {} }, 'old-stamp', 'new-stamp'),
+  { updated_at: 'new-stamp' }
+);
+assert.ok(updatedCloud.calls.some(call => call.kind === 'update'), 'existing cloud rows must use conditional UPDATE, not upsert');
+assert.ok(updatedCloud.calls.some(call => call.kind === 'eq' && call.column === 'updated_at' && call.value === 'old-stamp'), 'updates must compare against the last observed timestamp');
+
+const insertedCloud = mockCloudClient({ data: [{ updated_at: 'first-stamp' }], error: null });
+await writeCloudSnapshot(insertedCloud.client, 'user-2', { state: {} }, null, 'first-stamp');
+assert.ok(insertedCloud.calls.some(call => call.kind === 'insert'), 'new cloud rows must use INSERT so a race cannot overwrite an existing row');
+
+const staleCloud = mockCloudClient({ data: [], error: null });
+await assert.rejects(
+  writeCloudSnapshot(staleCloud.client, 'user-1', { state: {} }, 'stale-stamp', 'new-stamp'),
+  error => error.code === 'NEXUS_CLOUD_CONFLICT'
+);
+const racedInsert = mockCloudClient({ data: null, error: { code: '23505', message: 'duplicate key' } });
+await assert.rejects(
+  writeCloudSnapshot(racedInsert.client, 'user-1', { state: {} }, null, 'new-stamp'),
+  error => error.code === 'NEXUS_CLOUD_CONFLICT'
+);
 
 console.log('Backup/restore safety tests passed.');
