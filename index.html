@@ -1093,6 +1093,7 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
     <button id="closeUndoBtn" aria-label="Dismiss notification"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
   </div>
 
+  <script src="./backup-restore-utils.js"></script>
   <script>
   'use strict';
   const STORAGE_KEY = 'recall.study.tracker.v1';
@@ -1762,7 +1763,7 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
   'use strict';
   const FEATURE_KEY='recall.study.features.v1';
   const hubEl=id=>document.getElementById(id);
-  const freshFeatureState=()=>({version:1,settings:{dailyMinutes:90,sessionMinutes:25,scheduler:'classic',weeklyReviewGoal:100,backlogDays:7,reminders:false,reminderTime:'08:00',maxInterval:120,finalRevision:false,workloadDays:7},syllabusTargets:{},taskChecks:{},journal:[],papers:[],goals:[],studyLogs:[],selectedTopicIds:[],lastBackupAt:'',lastReminderAt:'',focusStartedAt:null});
+  const freshFeatureState=()=>({version:1,settings:{dailyMinutes:90,sessionMinutes:25,scheduler:'classic',weeklyReviewGoal:100,backlogDays:7,reminders:false,reminderTime:'08:00',maxInterval:120,finalRevision:false,workloadDays:7},syllabusTargets:{},taskChecks:{},journal:[],papers:[],goals:[],studyLogs:[],selectedTopicIds:[],lastBackupAt:'',lastReminderAt:'',focusStartedAt:null,focusPausedAt:null,focusTopicId:'',focusSubjectId:''});
   function loadFeatureState(){try{const x=JSON.parse(localStorage.getItem(FEATURE_KEY)||'null');if(!x||typeof x!=='object')return freshFeatureState();const d=freshFeatureState();return {...d,...x,settings:{...d.settings,...(x.settings||{})},syllabusTargets:x.syllabusTargets||{},taskChecks:x.taskChecks||{},journal:Array.isArray(x.journal)?x.journal:[],papers:Array.isArray(x.papers)?x.papers:[],goals:Array.isArray(x.goals)?x.goals:[],studyLogs:Array.isArray(x.studyLogs)?x.studyLogs:[],selectedTopicIds:Array.isArray(x.selectedTopicIds)?x.selectedTopicIds:[]};}catch(e){console.warn('Study Hub data could not be read',e);return freshFeatureState();}}
   let fsState=loadFeatureState();let hubTab='planner';let focusTimer=null;let focusStart=fsState.focusStartedAt?new Date(fsState.focusStartedAt).getTime():null;let focusPausedAt=fsState.focusPausedAt?new Date(fsState.focusPausedAt).getTime():null;let focusTopicId=fsState.focusTopicId||'';let focusSubjectId=fsState.focusSubjectId||'';
   const fid=()=>`hub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,9)}`;
@@ -2368,9 +2369,80 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
     save();renderAll();saveFs();notify(`CSV import complete: ${added} added, ${dupes} duplicates skipped, ${invalid} invalid rows skipped.`);}
   function backupPayload(){return {app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state,featureState:fsState};}
   function fullBackup(){fsState.lastBackupAt=today();saveFs();downloadBlob(`nexus-full-backup-${today()}.json`,JSON.stringify(backupPayload(),null,2),'application/json;charset=utf-8');notify('Full backup downloaded. Keep an extra copy outside the browser.');renderHub();}
-  async function restoreOrMerge(file){if(!file)return;try{if(file.name.toLowerCase().endsWith('.csv')){await importTopicCsv(file);return;}const data=JSON.parse(await file.text());const raw=data?.state||data;const imported=normalizeState(raw);let mode=prompt('Restore mode: type REPLACE to replace app data, or MERGE to keep current data and add imported entries.');if(!mode)return;mode=mode.trim().toUpperCase();if(!['REPLACE','MERGE'].includes(mode)){alert('Import cancelled: enter REPLACE or MERGE.');return;}if(mode==='REPLACE'){state=imported;fsState={...freshFeatureState(),...(data.featureState||{}),settings:{...freshFeatureState().settings,...(data.featureState?.settings||{})}};}else{const combined={schema:4,streams:[...state.streams],subjects:[...state.subjects],topics:[...state.topics],history:[...state.history],exams:[...state.exams],settings:state.settings};const pushUnique=(target,source)=>{const ids=new Set(target.map(x=>x.id));source.forEach(x=>{if(!ids.has(x.id)){target.push(x);ids.add(x.id);}});};pushUnique(combined.streams,imported.streams);pushUnique(combined.subjects,imported.subjects);pushUnique(combined.topics,imported.topics);pushUnique(combined.history,imported.history);pushUnique(combined.exams,imported.exams);state=normalizeState(combined);const f=data.featureState||{};for(const k of ['journal','papers','goals','studyLogs']){const ids=new Set((fsState[k]||[]).map(x=>x.id));for(const x of (f[k]||[]))if(!ids.has(x.id)){fsState[k].push(x);ids.add(x.id);}}fsState.syllabusTargets={...(f.syllabusTargets||{}),...fsState.syllabusTargets};fsState.settings={...fsState.settings,...(f.settings||{})};}
-      save();saveFs();renderAll();renderHub();notify(`Backup ${mode.toLowerCase()} complete. Review imported topics and dates.`);
-    }catch(e){console.error(e);alert('Could not import file: '+(e.message||'invalid format'));}}
+  async function restoreOrMerge(file){
+    if(!file)return;
+    let committed=false;
+    try{
+      if(String(file.name||'').toLowerCase().endsWith('.csv')){await importTopicCsv(file);return;}
+      const data=JSON.parse(await file.text());
+      if(!data||typeof data!=='object'||Array.isArray(data))throw new Error('Choose a valid Nexus JSON backup.');
+      const raw=Object.prototype.hasOwnProperty.call(data,'state')?data.state:data;
+      if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('The file does not contain a valid backup state.');
+      const modern=Array.isArray(raw.streams)&&Array.isArray(raw.subjects)&&Array.isArray(raw.topics);
+      const legacy=Array.isArray(raw.topics)&&(Array.isArray(raw.history)||Array.isArray(raw.subjects));
+      if(!modern&&!legacy)throw new Error('This file is not a recognized Nexus backup. Select a full JSON backup, not a CSV export or unrelated JSON file.');
+      for(const key of ['streams','subjects','topics','history','exams']){
+        if(raw[key]!==undefined&&!Array.isArray(raw[key]))throw new Error('Backup section "'+key+'" must be an array.');
+      }
+      const imported=normalizeState(raw);
+      const defaults=freshFeatureState();
+      const hasFeatureState=Object.prototype.hasOwnProperty.call(data,'featureState');
+      const importedFeatures=window.NexusBackupRestoreUtils.normalizeFeatureState(hasFeatureState?data.featureState:undefined,defaults);
+      let mode=prompt('Restore mode: type REPLACE to replace app data, or MERGE to keep current data and add imported entries.');
+      if(!mode)return;
+      mode=mode.trim().toUpperCase();
+      if(!['REPLACE','MERGE'].includes(mode)){alert('Import cancelled: enter REPLACE or MERGE.');return;}
+      let nextState, nextFeatures;
+      if(mode==='REPLACE'){
+        nextState=imported;
+        nextFeatures=importedFeatures;
+      }else{
+        const combined={schema:4,streams:[...state.streams],subjects:[...state.subjects],topics:[...state.topics],history:[...state.history],exams:[...state.exams],settings:state.settings};
+        const pushUnique=(target,source)=>{const ids=new Set(target.map(x=>x.id));source.forEach(x=>{if(!ids.has(x.id)){target.push(x);ids.add(x.id);}});};
+        pushUnique(combined.streams,imported.streams);
+        pushUnique(combined.subjects,imported.subjects);
+        pushUnique(combined.topics,imported.topics);
+        pushUnique(combined.history,imported.history);
+        pushUnique(combined.exams,imported.exams);
+        nextState=normalizeState(combined);
+        nextFeatures=hasFeatureState
+          ? window.NexusBackupRestoreUtils.mergeFeatureState(fsState,importedFeatures,defaults,data.featureState)
+          : window.NexusBackupRestoreUtils.normalizeFeatureState(fsState,defaults);
+      }
+      const serializedState=JSON.stringify(nextState);
+      const serializedFeatures=JSON.stringify(nextFeatures);
+      window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,[
+        {key:STORAGE_KEY,value:serializedState},
+        {key:FEATURE_KEY,value:serializedFeatures}
+      ]);
+      committed=true;
+      state=nextState;
+      fsState=nextFeatures;
+      focusGoalCacheKey='';
+      focusStart=fsState.focusStartedAt?new Date(fsState.focusStartedAt).getTime():null;
+      focusPausedAt=fsState.focusPausedAt?new Date(fsState.focusPausedAt).getTime():null;
+      focusTopicId=fsState.focusTopicId||'';
+      focusSubjectId=fsState.focusSubjectId||'';
+      if(focusTimer){clearInterval(focusTimer);focusTimer=null;}
+      if(focusStart){focusTimer=setInterval(refreshLiveFocusUi,1000);}
+      if(window.NexusCloudSync)window.NexusCloudSync.schedule();
+      $('saveStatus').textContent='Saved on this device';
+      $('saveStatus').style.color='';
+      renderAll();
+      renderHub();
+      if(focusStart)refreshLiveFocusUi();
+      notify('Backup '+mode.toLowerCase()+' completed and saved. Review imported topics and dates.');
+    }catch(e){
+      console.error(e);
+      if(committed){
+        alert('The backup was saved, but the screen did not refresh cleanly. Reload Nexus to view the restored data.');
+      }else if(e&&e.rollbackSucceeded===false){
+        alert((e.message||'Backup restore failed.')+' Export or copy any visible unsaved work before closing this tab.');
+      }else{
+        alert('Could not import this backup. '+(e.message||'Check the file format. The current app data was not changed.'));
+      }
+    }
+  }
   function formatElapsed(ms){const sec=Math.max(0,Math.floor(ms/1000)),h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60;return h?`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;}
   function refreshLiveFocusUi(){if(!focusStart)return;const elapsed=focusPausedAt?focusPausedAt-focusStart:Date.now()-focusStart;const clock=hubEl('hubFocusClock');if(clock)clock.textContent=formatElapsed(elapsed);const bigClock=document.getElementById('focusModeClock');if(bigClock)bigClock.textContent=formatElapsed(elapsed);const status=document.getElementById('focusModeStatus');if(status)status.textContent=focusPausedAt?'Paused · take your time':'Stay present · one task at a time';const pauseBtn=document.getElementById('focusPauseBtn');if(pauseBtn){pauseBtn.textContent=focusPausedAt?'▶':'Ⅱ';pauseBtn.setAttribute('aria-label',focusPausedAt?'Resume timer':'Pause timer');}const focusDialog=document.getElementById('focusModeDialog');if(focusDialog)focusDialog.classList.toggle('is-paused',!!focusPausedAt);const liveMinutes=liveFocusMinutesToday(),daily=fNum(fsState.settings.dailyMinutes)||90,goalKey=today()+'|'+liveMinutes+'|'+fsState.studyLogs.length+'|'+daily;if(goalKey!==focusGoalCacheKey){focusGoalCacheKey=goalKey;focusGoalLoggedMinutes=loggedMinutesToday();const total=focusGoalLoggedMinutes+liveMinutes,pct=Math.round(total/Math.max(1,daily)*100);const n=hubEl('hubDoneMinutes'),b=hubEl('hubGoalBadge'),m=hubEl('hubGoalMeter');if(n)n.textContent=String(total);if(b){b.textContent=pct+'% of daily goal';b.classList.toggle('good',total>=daily);b.classList.toggle('warn',total<daily);}if(m)m.style.width=Math.min(100,total/Math.max(1,daily)*100)+'%';}}
   function logFocusStop(){if(!focusStart){notify('No focus session is currently running.');return;}const start=focusStart,end=focusPausedAt||Date.now(),mins=Math.max(1,Math.round((end-start)/60000));const note=`Started ${new Date(start).toLocaleString()} · ended ${new Date(end).toLocaleString()}`;fsState.studyLogs.unshift({id:fid(),date:today(),minutes:mins,type:'Focus session',subjectId:focusSubjectId||'',topicId:focusTopicId||'',note:(focusTopicId?'Topic: '+(getTopic(focusTopicId)?.name||'Selected topic')+' · ':'')+note});focusStart=null;focusPausedAt=null;fsState.focusStartedAt=null;fsState.focusPausedAt=null;const focusDialog=document.getElementById('focusModeDialog');if(focusDialog?.open)focusDialog.close();if(focusTimer){clearInterval(focusTimer);focusTimer=null;}saveFs();notify(`Logged ${mins} focus minute(s).`);renderHub();}
