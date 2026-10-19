@@ -36,7 +36,7 @@ assert.ok(firstGood.card.stability > 0 && firstGood.card.difficulty >= 1 && firs
 assert.equal(firstGood.card.reps, 1);
 const expectedDue = sandbox.self.FSRS.util.isoDay(sandbox.self.FSRS.util.addDays(now, firstGood.intervalDays));
 assert.equal(firstGood.due, expectedDue, 'due date must match the scheduled interval');
-assert.match(firstGood.due, /^\\d{4}-\\d{2}-\\d{2}$/);
+assert.ok(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(firstGood.due), 'due date must use YYYY-MM-DD format');
 
 const secondReview = scheduler.review(firstGood.card, 1, new Date(2026, 9, 25, 12, 0, 0));
 assert.equal(secondReview.intervalDays, 1, 'Again must reset the next interval to one day');
