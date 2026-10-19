@@ -73,6 +73,8 @@ assert.ok(serviceWorker.includes("'./fsrs-bundle.js'") && serviceWorker.includes
   'offline app shell must cache the scheduler and backup safety helpers');
 assert.ok(serviceWorker.includes("nexus-rating-analytics-v11"), 'the service-worker cache must be versioned when the app shell changes');
 assert.ok(serviceWorker.includes('if(url.search)return response'), 'OAuth callback and other query-bearing URLs must not be cached');
+assert.ok(serviceWorker.includes('event.waitUntil(network.then(()=>undefined,()=>undefined))'), 'background cache refreshes must keep the service worker alive until writes finish');
+assert.ok(serviceWorker.includes('return caches.open(CACHE_NAME).then(cache=>cache.put(req,copy)).then(()=>response).catch(()=>response)'), 'cache writes must be awaited and must not discard a successful network response if storage fails');
 assert.ok(serviceWorker.includes("url.pathname.startsWith('/api/')"), 'same-origin API responses must bypass the service-worker cache');
 assert.ok(serviceWorker.includes('const CORE_APP_SHELL=') && serviceWorker.includes('const OPTIONAL_APP_SHELL=') && serviceWorker.includes('cache.add(new Request(u,{cache:\'reload\'})).catch(()=>{})'), 'optional icons and catalogue failures must not block offline shell installation');
 
