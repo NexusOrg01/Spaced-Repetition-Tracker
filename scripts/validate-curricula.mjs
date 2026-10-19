@@ -300,7 +300,7 @@ if (safeDateSourceMatch) {
 }
 
 
-assert(html.includes("function isUnsafeCloudOrigin()") && html.includes("host!=='spaced-repetition-tracker-delta.vercel.app'") && html.includes("host!=='kkmalithmalshan2000-png.github.io'"), 'Live Supabase cloud sync must be blocked on other origins by default.');
+assert(html.includes("function isUnsafeCloudOrigin()") && html.includes("new URL(url).hostname.toLowerCase()") && html.includes("host!=='spaced-repetition-tracker-delta.vercel.app'") && html.includes("host!=='kkmalithmalshan2000-png.github.io'"), 'Live Supabase cloud sync must be blocked on other origins by default, including URL hostname casing variations.');
 assert(html.includes("if(isUnsafeCloudOrigin())throw new Error('Cloud sync is disabled on this preview/local copy to protect real cloud data.')") && html.includes('google.disabled=logged||previewBlocked') && html.includes('email.disabled=logged||previewBlocked'), 'Preview cloud isolation must guard client creation and disable sign-in controls.');
 
 if (errors.length) {
