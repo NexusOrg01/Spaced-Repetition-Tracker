@@ -271,5 +271,5 @@
     return rows;
   }
 
-  return { normalizeFeatureState, mergeFeatureState, commitLocalStorageAtomically, parseCsv };
+  return { validateBackupState, normalizeFeatureState, mergeFeatureState, commitLocalStorageAtomically, parseCsv };
 });
