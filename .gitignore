@@ -1,0 +1,13 @@
+# Local environment files and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local tooling state
+.vercel/
+.netlify/
+node_modules/
+.DS_Store
+*.log

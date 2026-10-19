@@ -1093,9 +1093,11 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
     <button id="closeUndoBtn" aria-label="Dismiss notification"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
   </div>
 
+  <script src="./backup-restore-utils.js"></script>
   <script>
   'use strict';
   const STORAGE_KEY = 'recall.study.tracker.v1';
+  window.NexusStorageKey = STORAGE_KEY;
   const OLD_KEYS = ['alSrsTrackerV2','alTrackerData','alHistoryLog'];
   const SEED = [
     ['BS','ව්‍යාපාර අධ්‍යයනය','1. ව්‍යාපාර පදනම හා ව්‍යාපාර පරිසරය'],
@@ -1526,7 +1528,7 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
   function deleteExam(id){const ex=state.exams.find(e=>e.id===id);if(!ex||!confirm(`Delete “${ex.name}”?`))return;startUndo('Exam deleted.');state.exams=state.exams.filter(e=>e.id!==id);save();renderAll();notify('Exam deleted.',true);}
   function downloadFile(filename,content,type){const blob=new Blob([content],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);}
   function exportBackup(){const packet={app:'Nexus Spaced Repetition Tracker',schema:3,exportedAt:new Date().toISOString(),state};downloadFile(`nexus-backup-${today()}.json`,JSON.stringify(packet,null,2),'application/json;charset=utf-8');notify('Full backup downloaded. Keep it somewhere safe.');}
-  const csvCell=v=>`"${String(v??'').replace(/"/g,'""')}"`;
+  const csvCell=v=>window.NexusBackupRestoreUtils.csvCell(v);
   function exportHistory(){const rows=[['Review date','Stream','Subject','Topic','Rating','Rating meaning','Interval days','Next due','Note'],...state.history.map(h=>[h.reviewedAt,h.streamName,h.subjectName,h.topicName,h.rating,RATING_LABELS[h.rating],h.intervalDays,h.dueDate,h.note])];downloadFile(`nexus-history-${today()}.csv`,'\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('History CSV exported.');}
   function exportTopics(){const rows=[['Stream','Subject','Topic','Notes','Last reviewed','Last rating','Next due','Interval days','Review count','Streak','Lapses','Status'],...state.topics.map(t=>{const d=subjectDisplay(t);return[d.stream,d.subject,t.name,t.notes,t.lastReviewed,t.lastRating,t.dueDate,t.intervalDays,t.reviewCount,t.streak,t.lapses,status(t)];})];downloadFile(`nexus-topics-${today()}.csv`,'\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('Topics CSV exported.');}
   async function importBackup(file){if(!file)return;try{const parsed=JSON.parse(await file.text()),raw=parsed?.state||parsed;const restored=normalizeState(raw);if(!restored.topics||!restored.history||!restored.subjects)throw new Error('Required backup sections are missing.');if(!confirm(`Import ${restored.topics.length} topics, ${restored.history.length} history records, and ${restored.exams.length} exams? This replaces current local data.`))return;startUndo('Backup imported.');state=restored;save();renderAll();switchView('overview');notify('Backup restored.',true);}catch(err){alert(`Could not import this backup. ${err.message||'Check the file format.'}`);}finally{$('importFile').value='';}}
@@ -1541,8 +1543,9 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
   document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>switchView(b.dataset.view)));
   
   $('viewDueBtn').addEventListener('click',()=>{switchView('topics');$('topicStatusFilter').value='due-now';renderTopics();});
-  $('dueQueue').addEventListener('click',e=>{const b=e.target.closest('[data-action="review"]');if(b)openReview(b.dataset.id);});
-  $('topicGrid').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='review')openReview(id);if(action==='edit-topic')openTopic(id);if(action==='delete-topic')deleteTopic(id);});
+  // Delegate review actions once so dynamically rendered due and upcoming queues work consistently.
+  document.addEventListener('click',e=>{const b=e.target.closest('button[data-action="review"]');if(!b)return;openReview(b.dataset.id);});
+  $('topicGrid').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='edit-topic')openTopic(id);if(action==='delete-topic')deleteTopic(id);});
   $('historyList').addEventListener('click',e=>{const b=e.target.closest('button[data-action="delete-history"]');if(!b)return;const id=b.dataset.id;const entry=state.history.find(h=>h.id===id);if(!entry||!confirm('DANGER ZONE — Delete this review record?\n\nThis review will disappear from rating analytics and future history exports. The topic schedule will not change. Use Undo immediately or restore a backup if needed. Continue?'))return;startUndo('History entry deleted.');state.history=state.history.filter(h=>h.id!==id);historyInsightsDirty=true;historySortedCache=null;save();renderHistory();notify('History entry deleted.',true);});
   $('structureList').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='edit-stream')openStream(id);if(action==='delete-stream')deleteStream(id);if(action==='add-subject-to-stream')openSubject(null,id);if(action==='edit-subject')openSubject(id);if(action==='delete-subject')deleteSubject(id);});
   $('examList').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;if(b.dataset.action==='edit-exam')openExam(b.dataset.id);if(b.dataset.action==='delete-exam')deleteExam(b.dataset.id);});
@@ -1762,8 +1765,8 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
   'use strict';
   const FEATURE_KEY='recall.study.features.v1';
   const hubEl=id=>document.getElementById(id);
-  const freshFeatureState=()=>({version:1,settings:{dailyMinutes:90,sessionMinutes:25,scheduler:'classic',weeklyReviewGoal:100,backlogDays:7,reminders:false,reminderTime:'08:00',maxInterval:120,finalRevision:false,workloadDays:7},syllabusTargets:{},taskChecks:{},journal:[],papers:[],goals:[],studyLogs:[],selectedTopicIds:[],lastBackupAt:'',lastReminderAt:'',focusStartedAt:null});
-  function loadFeatureState(){try{const x=JSON.parse(localStorage.getItem(FEATURE_KEY)||'null');if(!x||typeof x!=='object')return freshFeatureState();const d=freshFeatureState();return {...d,...x,settings:{...d.settings,...(x.settings||{})},syllabusTargets:x.syllabusTargets||{},taskChecks:x.taskChecks||{},journal:Array.isArray(x.journal)?x.journal:[],papers:Array.isArray(x.papers)?x.papers:[],goals:Array.isArray(x.goals)?x.goals:[],studyLogs:Array.isArray(x.studyLogs)?x.studyLogs:[],selectedTopicIds:Array.isArray(x.selectedTopicIds)?x.selectedTopicIds:[]};}catch(e){console.warn('Study Hub data could not be read',e);return freshFeatureState();}}
+  const freshFeatureState=()=>({version:1,settings:{dailyMinutes:90,sessionMinutes:25,scheduler:'classic',weeklyReviewGoal:100,backlogDays:7,reminders:false,reminderTime:'08:00',maxInterval:120,finalRevision:false,workloadDays:7},syllabusTargets:{},taskChecks:{},journal:[],papers:[],goals:[],studyLogs:[],selectedTopicIds:[],lastBackupAt:'',lastReminderAt:'',focusStartedAt:null,focusPausedAt:null,focusTopicId:'',focusSubjectId:''});
+  function loadFeatureState(){try{const x=JSON.parse(localStorage.getItem(FEATURE_KEY)||'null');if(!x||typeof x!=='object'||Array.isArray(x))return freshFeatureState();const d=freshFeatureState(),focus=window.NexusBackupRestoreUtils.sanitizeFocusState(x);return {...d,...x,settings:{...d.settings,...(x.settings&&typeof x.settings==='object'&&!Array.isArray(x.settings)?x.settings:{})},syllabusTargets:x.syllabusTargets&&typeof x.syllabusTargets==='object'&&!Array.isArray(x.syllabusTargets)?x.syllabusTargets:{},taskChecks:x.taskChecks&&typeof x.taskChecks==='object'&&!Array.isArray(x.taskChecks)?x.taskChecks:{},journal:Array.isArray(x.journal)?x.journal:[],papers:Array.isArray(x.papers)?x.papers:[],goals:Array.isArray(x.goals)?x.goals:[],studyLogs:Array.isArray(x.studyLogs)?x.studyLogs:[],selectedTopicIds:Array.isArray(x.selectedTopicIds)?x.selectedTopicIds:[],...focus};}catch(e){console.warn('Study Hub data could not be read',e);return freshFeatureState();}}
   let fsState=loadFeatureState();let hubTab='planner';let focusTimer=null;let focusStart=fsState.focusStartedAt?new Date(fsState.focusStartedAt).getTime():null;let focusPausedAt=fsState.focusPausedAt?new Date(fsState.focusPausedAt).getTime():null;let focusTopicId=fsState.focusTopicId||'';let focusSubjectId=fsState.focusSubjectId||'';
   const fid=()=>`hub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,9)}`;
   const dateShift=(d,n)=>{const x=new Date((d||today())+'T12:00:00');x.setDate(x.getDate()+n);return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`;};
@@ -1773,7 +1776,7 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
   // Cache daily focus-goal totals between minute boundaries; the visible clock still ticks every second.
   let focusGoalCacheKey='',focusGoalLoggedMinutes=0;
   function saveFs(){focusGoalCacheKey='';try{localStorage.setItem(FEATURE_KEY,JSON.stringify(fsState));if(window.NexusCloudSync)window.NexusCloudSync.schedule();return true;}catch(e){console.error(e);try{notify('Study Hub data could not be saved. Export a backup now.');}catch(_){}return false;}}
-  window.NexusGetFeatureState=()=>clone(fsState);window.NexusSetFeatureState=value=>{focusGoalCacheKey='';const d=freshFeatureState(),x=value&&typeof value==='object'?value:{};fsState={...d,...x,settings:{...d.settings,...(x.settings||{})},syllabusTargets:x.syllabusTargets||{},taskChecks:x.taskChecks||{},journal:Array.isArray(x.journal)?x.journal:[],papers:Array.isArray(x.papers)?x.papers:[],goals:Array.isArray(x.goals)?x.goals:[],studyLogs:Array.isArray(x.studyLogs)?x.studyLogs:[],selectedTopicIds:Array.isArray(x.selectedTopicIds)?x.selectedTopicIds:[]};saveFs();renderHub();};
+  window.NexusFeatureStorageKey=FEATURE_KEY;window.NexusNormalizeFeatureState=value=>window.NexusBackupRestoreUtils.normalizeFeatureState(value,freshFeatureState());window.NexusMergeFeatureState=(current,imported,rawImported)=>window.NexusBackupRestoreUtils.mergeFeatureState(current,imported,freshFeatureState(),rawImported);window.NexusGetFeatureState=()=>clone(fsState);window.NexusSetFeatureState=(value,options={})=>{focusGoalCacheKey='';fsState=window.NexusNormalizeFeatureState(value);focusStart=fsState.focusStartedAt?new Date(fsState.focusStartedAt).getTime():null;focusPausedAt=fsState.focusPausedAt?new Date(fsState.focusPausedAt).getTime():null;focusTopicId=fsState.focusTopicId||'';focusSubjectId=fsState.focusSubjectId||'';if(focusTimer){clearInterval(focusTimer);focusTimer=null;}if(focusStart)focusTimer=setInterval(refreshLiveFocusUi,1000);if(options.persist!==false)saveFs();if(options.render!==false)renderHub();if(focusStart&&options.render!==false)refreshLiveFocusUi();return true;};
   let cascadeUndoState=null;window.NexusCascadeDeleteSubject=(subjectId,topicIds)=>{cascadeUndoState=clone(fsState);fsState.journal=fsState.journal.filter(x=>x.subjectId!==subjectId&&!topicIds.includes(x.topicId));fsState.papers=fsState.papers.filter(x=>x.subjectId!==subjectId);delete fsState.syllabusTargets[subjectId];fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIds.includes(id));saveFs();renderHub();};window.NexusCascadeDeleteStream=(streamId,subjectIds,topicIds)=>{cascadeUndoState=clone(fsState);fsState.journal=fsState.journal.filter(x=>!subjectIds.includes(x.subjectId)&&!topicIds.includes(x.topicId));fsState.papers=fsState.papers.filter(x=>!subjectIds.includes(x.subjectId));subjectIds.forEach(id=>delete fsState.syllabusTargets[id]);fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIds.includes(id));saveFs();renderHub();};window.NexusUndoCascadeDelete=()=>{if(cascadeUndoState){fsState=clone(cascadeUndoState);cascadeUndoState=null;saveFs();renderHub();}};window.NexusClearCascadeUndo=()=>{cascadeUndoState=null;};window.NexusRenderHub=()=>renderHub();
   function featureMeta(t){const hs=state.history.filter(h=>h.topicId===t.id).sort((a,b)=>(b.reviewedAt||'').localeCompare(a.reviewedAt||''));const recent=hs.slice(0,5);const avg=recent.length?recent.reduce((n,h)=>n+fNum(h.rating),0)/recent.length:(t.lastRating||0);const allAvg=hs.length?hs.reduce((n,h)=>n+fNum(h.rating),0)/hs.length:(t.lastRating||0);const weak=Boolean(t.lapses||avg&&avg<3||status(t)==='overdue'&&dayDiff(t.dueDate,today())>5);let score=0;if(t.reviewCount>0){score=Math.round(Math.max(0,Math.min(100,(avg/5)*65+Math.min(t.reviewCount,6)/6*20+Math.min(t.intervalDays,30)/30*15)));if(t.lastRating===1)score=Math.max(5,score-15);}return {hs,avg,allAvg,score,weak};}
   function estimateMinutes(t){const m=featureMeta(t);return Math.max(6,Math.min(30,Math.round(10+(m.weak?7:0)+(m.avg&&m.avg<3?5:0)+(status(t)==='overdue'?Math.min(5,Math.ceil(Math.max(0,dayDiff(t.dueDate,today()))/5)):0))));}
@@ -1991,7 +1994,7 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
         const subject=state.subjects.find(x=>x.id===j.subjectId)?.name||'General',topic=getTopic(j.topicId);
         add('Mistake journal record',j.date,'',subject,topic?.name||j.category||'Other',j.solved?'Status: resolved':'Status: open',j.severity??'','severity',[j.issue,j.fix].filter(Boolean).join(' · '));
       });
-      const csv='\uFEFF'+rows.map(row=>row.map(value=>'"'+String(value??'').replace(/"/g,'""')+'"').join(',')).join('\r\n');
+      const csv='\uFEFF'+rows.map(row=>row.map(value=>window.NexusBackupRestoreUtils.csvCell(value)).join(',')).join('\r\n');
       downloadBlob('nexus-analytics-'+from+'-to-'+to+'.csv',csv,'text/csv;charset=utf-8');
       notify('Analytics CSV exported for '+from+' to '+to+'.');
     }catch(error){console.error('Nexus analytics CSV export failed',error);notify('Could not export analytics CSV. Please try again.');}
@@ -2359,22 +2362,157 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
   function hubSwitch(tab){hubTab=tab;renderHub();try{hubEl('view-studyhub').scrollIntoView({behavior:'smooth',block:'start'});}catch(_){}}
   function persistAndRender(base=false){saveFs();if(base){save();renderAll();}renderHub();}
   function downloadBlob(filename,text,type){const blob=new Blob([text],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;a.rel='noopener';a.style.position='fixed';a.style.left='-10000px';document.body.appendChild(a);try{a.click();}finally{a.remove();setTimeout(()=>URL.revokeObjectURL(url),15000);}}
-  function csvCellHub(v){return `"${String(v??'').replace(/"/g,'""')}"`;}
+  function csvCellHub(v){return window.NexusBackupRestoreUtils.csvCell(v);}
   function exportHubCsv(which){let rows=[],filename='nexus-hub-export.csv';if(which==='papers'){filename=`nexus-papers-${today()}.csv`;rows=[['Name','Subject','Kind','Date','Score','Max score','Duration minutes','Error count','Weak areas','Notes'],...fsState.papers.map(p=>[p.name,state.subjects.find(s=>s.id===p.subjectId)?.name||'',p.kind,p.date,p.score,p.maxScore,p.duration,p.errorCount,p.weakAreas,p.notes])];}else if(which==='journal'){filename=`nexus-journal-${today()}.csv`;rows=[['Date','Type','Subject','Topic','Severity','Issue','Correction','Resolved'],...fsState.journal.map(j=>[j.date,j.category,state.subjects.find(s=>s.id===j.subjectId)?.name||'',getTopic(j.topicId)?.name||'',j.severity,j.issue,j.fix,j.solved?'yes':'no'])];}else if(which==='selected'){filename=`nexus-selected-topics-${today()}.csv`;const ts=state.topics.filter(t=>fsState.selectedTopicIds.includes(t.id));rows=[['Stream','Subject','Topic','Notes','Last reviewed','Last rating','Next due','Review count','Status'],...ts.map(t=>{const d=subjectDisplay(t);return[d.stream,d.subject,t.name,t.notes,t.lastReviewed,t.lastRating,t.dueDate,t.reviewCount,status(t)];})];}else{filename=`nexus-study-log-${today()}.csv`;rows=[['Date','Minutes','Type','Note'],...fsState.studyLogs.map(x=>[x.date,x.minutes,x.type,x.note||''])];}downloadBlob(filename,'\uFEFF'+rows.map(r=>r.map(csvCellHub).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('Study Hub CSV exported.');}
   function exportTemplate(){const rows=[['Stream','Subject','Topic','Notes','Last reviewed','Last rating','Next due','Interval days','Review count'],['Commerce','Economics','Demand and supply','','','','','','']];downloadBlob('nexus-topic-import-template.csv','\uFEFF'+rows.map(r=>r.map(csvCellHub).join(',')).join('\r\n'),'text/csv;charset=utf-8');}
-  function parseCsvHub(text){const out=[];let row=[],field='',quoted=false;const s=String(text||'').replace(/^\uFEFF/,'');for(let i=0;i<s.length;i++){const c=s[i];if(quoted){if(c==='"'&&s[i+1]==='"'){field+='"';i++;}else if(c==='"')quoted=false;else field+=c;}else if(c==='"')quoted=true;else if(c===','){row.push(field);field='';}else if(c==='\n'){row.push(field);if(row.some(x=>String(x).trim()))out.push(row);row=[];field='';}else if(c!=='\r')field+=c;}row.push(field);if(row.some(x=>String(x).trim()))out.push(row);return out;}
-  async function importTopicCsv(file){const txt=await file.text(),rows=parseCsvHub(txt);if(rows.length<2)throw new Error('CSV needs a header and at least one topic row.');const heads=rows[0].map(x=>String(x).trim().toLocaleLowerCase());const idx=(...names)=>heads.findIndex(h=>names.includes(h));const iStream=idx('stream','stream name','course'),iSub=idx('subject','subject name'),iName=idx('topic','lesson','topic name','lesson name');if(iName<0)throw new Error('CSV requires a Topic or Lesson column.');let added=0,dupes=0,invalid=0;const streamMap=new Map(state.streams.map(s=>[s.name.toLocaleLowerCase(),s]));const subjectMap=new Map(state.subjects.map(s=>[`${s.streamId}|${s.name.toLocaleLowerCase()}`,s]));const known=new Set(state.topics.map(t=>`${t.subjectId}|${t.name.trim().toLocaleLowerCase()}`));
-    for(const row of rows.slice(1)){const get=i=>i<0?'':String(row[i]??'').trim();const name=get(iName);if(!name){invalid++;continue;}const streamName=get(iStream)||'Imported';const subName=get(iSub)||'Imported subject';let stream=streamMap.get(streamName.toLocaleLowerCase());if(!stream){stream={id:fid(),name:streamName.slice(0,100)};state.streams.push(stream);streamMap.set(streamName.toLocaleLowerCase(),stream);}const sk=`${stream.id}|${subName.toLocaleLowerCase()}`;let sub=subjectMap.get(sk);if(!sub){sub={id:fid(),name:subName.slice(0,100),streamId:stream.id,order:state.subjects.length};state.subjects.push(sub);subjectMap.set(sk,sub);}const key=`${sub.id}|${name.toLocaleLowerCase()}`;if(known.has(key)){dupes++;continue;}const read=i=>get(i);const parsedRating=Number(read(idx('last rating','lastrating')));const rt={id:fid(),subjectId:sub.id,name:name.slice(0,240),notes:read(idx('notes','note')).slice(0,1000),custom:true,createdAt:today(),lastReviewed:safeDate(read(idx('last reviewed','lastreviewed')))?read(idx('last reviewed','lastreviewed')):'',lastRating:parsedRating>=1&&parsedRating<=5?parsedRating:null,dueDate:safeDate(read(idx('next due','due date','next review date')))?read(idx('next due','due date','next review date')):'',intervalDays:Math.max(0,Math.min(365,Number(read(idx('interval days','intervaldays')))||0)),reviewCount:Math.max(0,Number(read(idx('review count','reviewcount')))||0),streak:0,lapses:0,archived:false};state.topics.push(rt);known.add(key);added++;}
-    save();renderAll();saveFs();notify(`CSV import complete: ${added} added, ${dupes} duplicates skipped, ${invalid} invalid rows skipped.`);}
+  function parseCsvHub(text){
+    if(!window.NexusBackupRestoreUtils||typeof window.NexusBackupRestoreUtils.parseCsv!=='function')throw new Error('CSV safety support is unavailable. No data was changed.');
+    return window.NexusBackupRestoreUtils.parseCsv(text);
+  }
+  async function importTopicCsv(file){
+    if(!file)return;
+    const maxBytes=5*1024*1024;
+    if(Number.isFinite(file.size)&&file.size>maxBytes)throw new Error('CSV files must be 5 MiB or smaller.');
+    const txt=await file.text();
+    if(txt.length>maxBytes)throw new Error('CSV files must be 5 MiB or smaller.');
+    const rows=parseCsvHub(txt);
+    if(rows.length<2)throw new Error('CSV needs a header and at least one topic row.');
+    const heads=rows[0].map(x=>String(x).trim().toLocaleLowerCase());
+    const populatedHeads=heads.filter(Boolean);
+    if(new Set(populatedHeads).size!==populatedHeads.length)throw new Error('CSV contains duplicate column names. Rename duplicate headers and try again.');
+    const idx=(...names)=>heads.findIndex(h=>names.includes(h));
+    const iStream=idx('stream','stream name','course'),iSub=idx('subject','subject name'),iName=idx('topic','lesson','topic name','lesson name');
+    if(iName<0)throw new Error('CSV requires a Topic or Lesson column.');
+    if(!window.NexusBackupRestoreUtils||typeof window.NexusBackupRestoreUtils.commitLocalStorageAtomically!=='function'||!window.NexusStorageKey)throw new Error('Safe local storage support is unavailable. No data was changed.');
+    const nextState=clone(state);
+    let added=0,dupes=0,invalid=0;
+    const streamMap=new Map(nextState.streams.map(x=>[x.name.toLocaleLowerCase(),x]));
+    const subjectMap=new Map(nextState.subjects.map(x=>[`${x.streamId}|${x.name.toLocaleLowerCase()}`,x]));
+    const known=new Set(nextState.topics.map(x=>`${x.subjectId}|${x.name.trim().toLocaleLowerCase()}`));
+    const read=(row,i)=>i<0?'':String(row[i]??'').trim();
+    for(const row of rows.slice(1)){
+      if(row.length>heads.length){invalid++;continue;}
+      const name=read(row,iName);
+      if(!name||name.length>240){invalid++;continue;}
+      const streamName=read(row,iStream)||'Imported';
+      const subName=read(row,iSub)||'Imported subject';
+      if(streamName.length>100||subName.length>100){invalid++;continue;}
+      let stream=streamMap.get(streamName.toLocaleLowerCase());
+      if(!stream){stream={id:fid(),name:streamName};nextState.streams.push(stream);streamMap.set(streamName.toLocaleLowerCase(),stream);}
+      const subjectKey=`${stream.id}|${subName.toLocaleLowerCase()}`;
+      let subject=subjectMap.get(subjectKey);
+      if(!subject){subject={id:fid(),name:subName,streamId:stream.id,order:nextState.subjects.length};nextState.subjects.push(subject);subjectMap.set(subjectKey,subject);}
+      const topicKey=`${subject.id}|${name.toLocaleLowerCase()}`;
+      if(known.has(topicKey)){dupes++;continue;}
+      const lastRatingRaw=Number(read(row,idx('last rating','lastrating')));
+      const lastRating=Number.isInteger(lastRatingRaw)&&lastRatingRaw>=1&&lastRatingRaw<=5?lastRatingRaw:null;
+      const intervalRaw=Number(read(row,idx('interval days','intervaldays')));
+      const reviewCountRaw=Number(read(row,idx('review count','reviewcount')));
+      const intervalDays=Number.isFinite(intervalRaw)?Math.max(0,Math.min(365,Math.trunc(intervalRaw))):0;
+      const reviewCount=Number.isFinite(reviewCountRaw)?Math.max(0,Math.min(100000,Math.trunc(reviewCountRaw))):0;
+      const lastReviewed=read(row,idx('last reviewed','lastreviewed'));
+      const dueDate=read(row,idx('next due','due date','next review date'));
+      nextState.topics.push({
+        id:fid(),subjectId:subject.id,name,notes:read(row,idx('notes','note')).slice(0,1000),
+        custom:true,createdAt:today(),lastReviewed:safeDate(lastReviewed)?lastReviewed:'',
+        lastRating,dueDate:safeDate(dueDate)?dueDate:'',intervalDays,reviewCount,
+        streak:0,lapses:0,archived:false
+      });
+      known.add(topicKey);
+      added++;
+    }
+    if(!added){notify(`CSV import complete: 0 added, ${dupes} duplicates skipped, ${invalid} invalid rows skipped.`);return;}
+    window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,[
+      {key:window.NexusStorageKey,value:JSON.stringify(nextState)}
+    ]);
+    state=nextState;
+    const saveStatus=$('saveStatus');
+    if(saveStatus){saveStatus.textContent='Saved on this device';saveStatus.style.color='';}
+    if(window.NexusCloudSync)window.NexusCloudSync.schedule();
+    try{
+      renderAll();
+      notify(`CSV import complete: ${added} added, ${dupes} duplicates skipped, ${invalid} invalid rows skipped.`);
+    }catch(e){
+      console.error('CSV import saved but rendering failed',e);
+      alert('CSV data was saved, but the screen did not refresh cleanly. Reload Nexus to view the imported topics.');
+    }
+  }
   function backupPayload(){return {app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state,featureState:fsState};}
   function fullBackup(){fsState.lastBackupAt=today();saveFs();downloadBlob(`nexus-full-backup-${today()}.json`,JSON.stringify(backupPayload(),null,2),'application/json;charset=utf-8');notify('Full backup downloaded. Keep an extra copy outside the browser.');renderHub();}
-  async function restoreOrMerge(file){if(!file)return;try{if(file.name.toLowerCase().endsWith('.csv')){await importTopicCsv(file);return;}const data=JSON.parse(await file.text());const raw=data?.state||data;const imported=normalizeState(raw);let mode=prompt('Restore mode: type REPLACE to replace app data, or MERGE to keep current data and add imported entries.');if(!mode)return;mode=mode.trim().toUpperCase();if(!['REPLACE','MERGE'].includes(mode)){alert('Import cancelled: enter REPLACE or MERGE.');return;}if(mode==='REPLACE'){state=imported;fsState={...freshFeatureState(),...(data.featureState||{}),settings:{...freshFeatureState().settings,...(data.featureState?.settings||{})}};}else{const combined={schema:4,streams:[...state.streams],subjects:[...state.subjects],topics:[...state.topics],history:[...state.history],exams:[...state.exams],settings:state.settings};const pushUnique=(target,source)=>{const ids=new Set(target.map(x=>x.id));source.forEach(x=>{if(!ids.has(x.id)){target.push(x);ids.add(x.id);}});};pushUnique(combined.streams,imported.streams);pushUnique(combined.subjects,imported.subjects);pushUnique(combined.topics,imported.topics);pushUnique(combined.history,imported.history);pushUnique(combined.exams,imported.exams);state=normalizeState(combined);const f=data.featureState||{};for(const k of ['journal','papers','goals','studyLogs']){const ids=new Set((fsState[k]||[]).map(x=>x.id));for(const x of (f[k]||[]))if(!ids.has(x.id)){fsState[k].push(x);ids.add(x.id);}}fsState.syllabusTargets={...(f.syllabusTargets||{}),...fsState.syllabusTargets};fsState.settings={...fsState.settings,...(f.settings||{})};}
-      save();saveFs();renderAll();renderHub();notify(`Backup ${mode.toLowerCase()} complete. Review imported topics and dates.`);
-    }catch(e){console.error(e);alert('Could not import file: '+(e.message||'invalid format'));}}
+  async function restoreOrMerge(file){
+    if(!file)return;
+    let committed=false;
+    try{
+      if(String(file.name||'').toLowerCase().endsWith('.csv')){await importTopicCsv(file);return;}
+      const data=JSON.parse(await file.text());
+      if(!data||typeof data!=='object'||Array.isArray(data))throw new Error('Choose a valid Nexus JSON backup.');
+      const raw=Object.prototype.hasOwnProperty.call(data,'state')?data.state:data;
+      if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('The file does not contain a valid backup state.');
+      window.NexusBackupRestoreUtils.validateBackupState(raw);
+      const imported=normalizeState(raw);
+      const defaults=freshFeatureState();
+      const hasFeatureState=Object.prototype.hasOwnProperty.call(data,'featureState');
+      const importedFeatures=window.NexusBackupRestoreUtils.normalizeFeatureState(hasFeatureState?data.featureState:undefined,defaults);
+      let mode=prompt('Restore mode: type REPLACE to replace app data, or MERGE to keep current data and add imported entries.');
+      if(!mode)return;
+      mode=mode.trim().toUpperCase();
+      if(!['REPLACE','MERGE'].includes(mode)){alert('Import cancelled: enter REPLACE or MERGE.');return;}
+      let nextState, nextFeatures;
+      if(mode==='REPLACE'){
+        nextState=imported;
+        nextFeatures=window.NexusBackupRestoreUtils.resolveReplaceFeatureState?window.NexusBackupRestoreUtils.resolveReplaceFeatureState(hasFeatureState,fsState,importedFeatures,defaults):window.NexusBackupRestoreUtils.normalizeFeatureState(hasFeatureState?importedFeatures:fsState,defaults);
+      }else{
+        const combined={schema:4,streams:[...state.streams],subjects:[...state.subjects],topics:[...state.topics],history:[...state.history],exams:[...state.exams],settings:state.settings};
+        const pushUnique=(target,source)=>{const ids=new Set(target.map(x=>x.id));source.forEach(x=>{if(!ids.has(x.id)){target.push(x);ids.add(x.id);}});};
+        pushUnique(combined.streams,imported.streams);
+        pushUnique(combined.subjects,imported.subjects);
+        pushUnique(combined.topics,imported.topics);
+        pushUnique(combined.history,imported.history);
+        pushUnique(combined.exams,imported.exams);
+        nextState=normalizeState(combined);
+        nextFeatures=hasFeatureState
+          ? window.NexusBackupRestoreUtils.mergeFeatureState(fsState,importedFeatures,defaults,data.featureState)
+          : window.NexusBackupRestoreUtils.normalizeFeatureState(fsState,defaults);
+      }
+      const serializedState=JSON.stringify(nextState);
+      const serializedFeatures=JSON.stringify(nextFeatures);
+      window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,[
+        {key:STORAGE_KEY,value:serializedState},
+        {key:FEATURE_KEY,value:serializedFeatures}
+      ]);
+      committed=true;
+      state=nextState;
+      fsState=nextFeatures;
+      focusGoalCacheKey='';
+      focusStart=fsState.focusStartedAt?new Date(fsState.focusStartedAt).getTime():null;
+      focusPausedAt=fsState.focusPausedAt?new Date(fsState.focusPausedAt).getTime():null;
+      focusTopicId=fsState.focusTopicId||'';
+      focusSubjectId=fsState.focusSubjectId||'';
+      if(focusTimer){clearInterval(focusTimer);focusTimer=null;}
+      if(focusStart){focusTimer=setInterval(refreshLiveFocusUi,1000);}
+      if(window.NexusCloudSync)window.NexusCloudSync.schedule();
+      $('saveStatus').textContent='Saved on this device';
+      $('saveStatus').style.color='';
+      renderAll();
+      renderHub();
+      if(focusStart)refreshLiveFocusUi();
+      notify(mode==='REPLACE'&&!hasFeatureState?'Tracker data restored. Existing Study Hub data was kept because this backup does not include it.':'Backup '+mode.toLowerCase()+' completed and saved. Review imported topics and dates.');
+    }catch(e){
+      console.error(e);
+      if(committed){
+        alert('The backup was saved, but the screen did not refresh cleanly. Reload Nexus to view the restored data.');
+      }else if(e&&e.rollbackSucceeded===false){
+        alert((e.message||'Backup restore failed.')+' Export or copy any visible unsaved work before closing this tab.');
+      }else{
+        alert('Could not import this backup. '+(e.message||'Check the file format. The current app data was not changed.'));
+      }
+    }
+  }
   function formatElapsed(ms){const sec=Math.max(0,Math.floor(ms/1000)),h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60;return h?`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;}
   function refreshLiveFocusUi(){if(!focusStart)return;const elapsed=focusPausedAt?focusPausedAt-focusStart:Date.now()-focusStart;const clock=hubEl('hubFocusClock');if(clock)clock.textContent=formatElapsed(elapsed);const bigClock=document.getElementById('focusModeClock');if(bigClock)bigClock.textContent=formatElapsed(elapsed);const status=document.getElementById('focusModeStatus');if(status)status.textContent=focusPausedAt?'Paused · take your time':'Stay present · one task at a time';const pauseBtn=document.getElementById('focusPauseBtn');if(pauseBtn){pauseBtn.textContent=focusPausedAt?'▶':'Ⅱ';pauseBtn.setAttribute('aria-label',focusPausedAt?'Resume timer':'Pause timer');}const focusDialog=document.getElementById('focusModeDialog');if(focusDialog)focusDialog.classList.toggle('is-paused',!!focusPausedAt);const liveMinutes=liveFocusMinutesToday(),daily=fNum(fsState.settings.dailyMinutes)||90,goalKey=today()+'|'+liveMinutes+'|'+fsState.studyLogs.length+'|'+daily;if(goalKey!==focusGoalCacheKey){focusGoalCacheKey=goalKey;focusGoalLoggedMinutes=loggedMinutesToday();const total=focusGoalLoggedMinutes+liveMinutes,pct=Math.round(total/Math.max(1,daily)*100);const n=hubEl('hubDoneMinutes'),b=hubEl('hubGoalBadge'),m=hubEl('hubGoalMeter');if(n)n.textContent=String(total);if(b){b.textContent=pct+'% of daily goal';b.classList.toggle('good',total>=daily);b.classList.toggle('warn',total<daily);}if(m)m.style.width=Math.min(100,total/Math.max(1,daily)*100)+'%';}}
+  if(focusStart&&!focusTimer)focusTimer=setInterval(refreshLiveFocusUi,1000);
   function logFocusStop(){if(!focusStart){notify('No focus session is currently running.');return;}const start=focusStart,end=focusPausedAt||Date.now(),mins=Math.max(1,Math.round((end-start)/60000));const note=`Started ${new Date(start).toLocaleString()} · ended ${new Date(end).toLocaleString()}`;fsState.studyLogs.unshift({id:fid(),date:today(),minutes:mins,type:'Focus session',subjectId:focusSubjectId||'',topicId:focusTopicId||'',note:(focusTopicId?'Topic: '+(getTopic(focusTopicId)?.name||'Selected topic')+' · ':'')+note});focusStart=null;focusPausedAt=null;fsState.focusStartedAt=null;fsState.focusPausedAt=null;const focusDialog=document.getElementById('focusModeDialog');if(focusDialog?.open)focusDialog.close();if(focusTimer){clearInterval(focusTimer);focusTimer=null;}saveFs();notify(`Logged ${mins} focus minute(s).`);renderHub();}
-  function startFocus(){if(focusStart){notify('A focus session is already running.');return;}focusTopicId=hubEl('hubStudyTopic')?.value||'';focusSubjectId=focusTopicId?(subjectFor(getTopic(focusTopicId))?.id||''):(hubEl('hubStudySubject')?.value||'');fsState.focusTopicId=focusTopicId;fsState.focusSubjectId=focusSubjectId;focusStart=Date.now();fsState.focusStartedAt=new Date(focusStart).toISOString();saveFs();if(focusTimer)clearInterval(focusTimer);focusPausedAt=null;fsState.focusPausedAt=null;focusTimer=setInterval(refreshLiveFocusUi,1000);notify('Focus timer started. Elapsed time is timestamp-based and survives app backgrounding and offline use.');renderHub();refreshLiveFocusUi();openFocusMode();}
+  function startFocus(){if(focusStart){notify('A focus session is already running.');return;}focusTopicId=hubEl('hubStudyTopic')?.value||'';focusSubjectId=focusTopicId?(subjectFor(getTopic(focusTopicId))?.id||''):(hubEl('hubStudySubject')?.value||'');fsState.focusTopicId=focusTopicId;fsState.focusSubjectId=focusSubjectId;focusStart=Date.now();focusPausedAt=null;fsState.focusStartedAt=new Date(focusStart).toISOString();fsState.focusPausedAt=null;saveFs();if(focusTimer)clearInterval(focusTimer);focusTimer=setInterval(refreshLiveFocusUi,1000);notify('Focus timer started. Elapsed time is timestamp-based and survives app backgrounding and offline use.');renderHub();refreshLiveFocusUi();openFocusMode();}
   function openFocusMode(){const d=document.getElementById('focusModeDialog');if(!d)return;const t=getTopic(focusTopicId);const sub=state.subjects.find(x=>x.id===focusSubjectId);const title=t?.name||sub?.name||'Independent study session';const target=Number(fsState.settings.sessionMinutes)||25;const label=document.getElementById('focusModeTopic');if(label)label.textContent=title;const goal=document.getElementById('focusModeGoal');if(goal)goal.textContent='Session target · '+target+' min';if(!d.open)d.showModal();refreshLiveFocusUi();}function toggleFocusPause(){if(!focusStart)return;if(focusPausedAt){const pausedFor=Date.now()-focusPausedAt;focusStart+=pausedFor;fsState.focusStartedAt=new Date(focusStart).toISOString();focusPausedAt=null;fsState.focusPausedAt=null;}else{focusPausedAt=Date.now();fsState.focusPausedAt=new Date(focusPausedAt).toISOString();}saveFs();refreshLiveFocusUi();}function markTask(id,checked){const arr=new Set(fsState.taskChecks[today()]||[]);if(checked)arr.add(id);else arr.delete(id);fsState.taskChecks[today()]=Array.from(arr);saveFs();renderHub();}
   function spreadBacklog(){const n=Math.max(1,Math.min(60,fNum(fsState.settings.backlogDays)||7));const over=activeTopics().filter(t=>status(t)==='overdue').sort((a,b)=>(a.dueDate||'').localeCompare(b.dueDate||''));if(!over.length){notify('No overdue topics to redistribute.');return;}if(!confirm(`Spread ${over.length} overdue topic(s) across the next ${n} days?\n\nThis changes due dates but does not add review history. Export a backup first if unsure.`))return;startUndo('Overdue backlog rescheduled');over.forEach((t,i)=>{t.dueDate=dateShift(today(),Math.floor(i*n/over.length));});save();renderAll();renderHub();notify(`Spread ${over.length} overdue topics across ${n} days.`,true);}
   function balanceWorkload(){const days=Math.max(1,Math.min(90,Number(hubEl('hubWorkloadDays')?.value)||7));fsState.settings.workloadDays=days;const candidates=activeTopics().filter(t=>!t.archived&&['overdue','due','new'].includes(status(t))).sort((a,b)=>topicPriority(b)-topicPriority(a));if(!candidates.length){saveFs();renderHub();notify('No active due, overdue, or new topics to balance.');return;}if(!confirm(`Distribute ${candidates.length} due/new topic(s) across ${days} day(s)? This changes due dates only and does not add review history.`)){saveFs();return;}startUndo('Study workload balanced');const loads=Array(days).fill(0);const buckets=Array.from({length:days},()=>[]);for(const t of candidates){const mins=estimateMinutes(t);let best=0;for(let i=1;i<days;i++){if(loads[i]<loads[best])best=i;}buckets[best].push(t);loads[best]+=mins;}buckets.forEach((items,i)=>items.forEach(t=>{t.dueDate=dateShift(today(),i);}));save();saveFs();renderAll();renderHub();notify(`Balanced ${candidates.length} topics over ${days} days. Review history was not changed.`,true);}
@@ -2514,7 +2652,8 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
   const studyHubView=hubEl('view-studyhub');
   if(studyHubView?.classList.contains('active'))renderHub();
   try{renderHomeConsistencySummary();}catch(error){console.error('Nexus Overview consistency summary failed',error);}
-  refreshLiveFocusUi();
+  const restoreFocusUi=()=>{if(focusStart)openFocusMode();else refreshLiveFocusUi();};
+  if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',restoreFocusUi,{once:true});}else{restoreFocusUi();}
 })();
 </script>
 
@@ -2532,12 +2671,46 @@ function emptyState(){return {schema:3,streams:[{id:'stream-general',name:'Gener
 function mergeState(local,remote){const l=normalizeState(local),r=normalizeState(remote),union=(a,b)=>{const m=new Map();for(const x of b||[])m.set(String(x.id),clone(x));for(const x of a||[])m.set(String(x.id),clone(x));return Array.from(m.values());};const streams=union(l.streams,r.streams),subjects=union(l.subjects,r.subjects),topics=union(l.topics,r.topics),exams=union(l.exams,r.exams),history=union(l.history,r.history);if(!streams.length)streams.push({id:'stream-general',name:'General'});const streamIds=new Set(streams.map(x=>x.id));for(const sub of subjects)if(!streamIds.has(sub.streamId))sub.streamId=streams[0].id;const subjectIds=new Set(subjects.map(x=>x.id));for(const t of topics)if(!subjectIds.has(t.subjectId)){const fallback=subjects[0]||{id:'subject-general',name:'General',streamId:streams[0].id,order:0};if(!subjectIds.has(fallback.id))subjects.push(fallback);t.subjectId=fallback.id;}return normalizeState({...r,streams,subjects,topics,exams,history,settings:{...r.settings,...l.settings}});}
 function hasLocalWork(s){if(!s)return false;const core=s.state||s||{},f=s.featureState||{};const coreWork=!!(core.topics?.length||core.history?.length||core.exams?.length||core.streams?.length>1||core.subjects?.length>1);const featureWork=['journal','papers','goals','studyLogs','selectedTopicIds'].some(k=>Array.isArray(f[k])&&f[k].length>0)||Object.keys(f.syllabusTargets||{}).length>0||Object.keys(f.taskChecks||{}).length>0||!!(f.lastBackupAt||f.lastReminderAt||f.focusStartedAt||f.focusPausedAt||f.focusTopicId||f.focusSubjectId);const defaults={dailyMinutes:90,sessionMinutes:25,scheduler:'classic',weeklyReviewGoal:100,backlogDays:7,reminders:false,reminderTime:'08:00',maxInterval:120,finalRevision:false,workloadDays:7};const settings=f.settings||{};const settingsWork=Object.keys(defaults).some(k=>settings[k]!==undefined&&settings[k]!==defaults[k]);return coreWork||featureWork||settingsWork;}
 function chooseLocalData(){return new Promise(resolve=>{const dlg=el('accountChoiceDialog');if(!dlg){resolve('cancel');return;}let done=false;const onCancel=e=>e.preventDefault();const finish=v=>{if(done)return;done=true;dlg.removeEventListener('cancel',onCancel);if(dlg.open)dlg.close();resolve(v);};dlg.addEventListener('cancel',onCancel);dlg.querySelectorAll('[data-account-choice]').forEach(b=>b.onclick=()=>finish(b.dataset.accountChoice));if(!dlg.open)dlg.showModal();});}
-function applyRemote(payload){if(!payload||!payload.state||!Array.isArray(payload.state.streams))throw new Error('Cloud backup format is invalid.');ready=false;state=normalizeState(payload.state);if(window.NexusSetFeatureState)window.NexusSetFeatureState(payload.featureState||{});save();renderAll();if(window.NexusRenderHub)window.NexusRenderHub();ready=true;}
-function applyLocalMerged(localPayload,remotePayload){ready=false;state=mergeState(localPayload.state,remotePayload?.state||emptyState());if(window.NexusSetFeatureState){const remote=remotePayload?.featureState||{},local=localPayload.featureState||{};window.NexusSetFeatureState({...remote,...local});}save();renderAll();if(window.NexusRenderHub)window.NexusRenderHub();ready=true;}
-function resetToEmpty(){ready=false;state=emptyState();if(window.NexusSetFeatureState)window.NexusSetFeatureState({});save();renderAll();if(window.NexusRenderHub)window.NexusRenderHub();}
-async function initializeSession(s){const requestedSession=s||null,requestedUserId=requestedSession&&requestedSession.user?requestedSession.user.id:null;if(initializing){if(requestedUserId!==initializingUserId){queuedSession=requestedSession;hasQueuedSession=true;}return;}initializing=true;initializingUserId=requestedUserId;try{const newSession=requestedSession,newUserId=requestedUserId;session=newSession;ready=false;lastRemoteStamp=null;clearTimeout(timer);setControls();if(!session){status(client?'Not signed in · offline ready':'Offline ready');say('You can continue studying offline. Your local data remains on this device when you sign out.');return;}status('Loading account…');await assertActiveUser(newUserId);const owner=localStorage.getItem(OWNER_KEY)||'',localPayload=snapshot(),remote=await fetchRemote(newUserId);await assertActiveUser(newUserId);if(owner!==newUserId){if(remote&&remote.payload){applyRemote(remote.payload);lastRemoteStamp=remote.updated_at;say('Loaded this account’s own cloud data. Offline data from the previous account was not merged or uploaded.');}else{resetToEmpty();ready=true;const uploaded=await upload();if(!uploaded){ready=false;throw new Error('A clean workspace was created for this account, but its initial cloud state could not be verified. Previous-account data was not uploaded.');}say('A clean workspace was created for this account. Previous-account data was not merged or uploaded.');}localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;if(ready){status('Synced');}return;}const localData={state:localPayload.state,featureState:localPayload.featureState||{}},remoteData=remote&&remote.payload?{state:remote.payload.state,featureState:remote.payload.featureState||{}}:null,localHasWork=remoteData?stableJson(localData)!==stableJson(remoteData):hasLocalWork(localPayload);if(localHasWork){const choice=await chooseLocalData();if(choice==='cancel'){ready=false;status('Data choice required');say('Your offline data is preserved. Choose one of the available data options before cloud sync can continue.');return;}if(choice==='merge'){applyLocalMerged(localPayload,remote&&remote.payload?remote.payload:null);ready=true;const uploaded=await upload();if(uploaded){say(remote&&remote.payload?'Offline work was merged with this account’s cloud data.':'Offline work was kept and uploaded as this account’s first backup.');}else{ready=false;status('Sync not verified');say('The merge is saved locally, but cloud sync was not verified. Your local data is preserved; reconnect and retry before assuming the cloud has it.');}}else if(choice==='replace-cloud'){if(!confirm('FINAL CONFIRMATION: overwrite this account’s entire cloud backup with the offline data on this device? Download a backup first if needed.')){if(remote&&remote.payload){applyRemote(remote.payload);lastRemoteStamp=remote.updated_at;ready=true;say('Cloud replacement cancelled; the account cloud data was loaded.');}else{ready=true;say('Cloud replacement cancelled. Your offline workspace remains local and has not been uploaded.');}}else{ready=true;lastRemoteStamp=null;const uploaded=await upload();if(uploaded){say('Verified: the cloud backup now matches this device’s offline data.');}else{ready=false;status('Cloud replacement not verified');say('The cloud replacement was NOT confirmed. Your offline data remains on this device. Reconnect and retry the data choice; do not assume the cloud was updated.');}}}else{if(remote&&remote.payload){applyRemote(remote.payload);lastRemoteStamp=remote.updated_at;}else resetToEmpty();ready=true;await upload();say(remote&&remote.payload?'Replaced this device’s local work with this account’s cloud data.':'Started this account with a clean workspace; offline work was not uploaded.');}}else if(remote&&remote.payload){applyRemote(remote.payload);lastRemoteStamp=remote.updated_at;say('Loaded this account’s cloud data. Future changes sync automatically.');}else{resetToEmpty();ready=true;await upload();say('A clean workspace was created for this account.');}localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;if(ready){status('Synced');}}catch(e){ready=false;status('Sync unavailable');say('Cloud sync error: '+((e&&e.message)||'unknown error')+'. Local changes are preserved and sync is paused. Reconnect to sync again.');console.error('Nexus account initialization failed',e);}finally{initializing=false;initializingUserId=null;setControls();if(hasQueuedSession){const nextSession=queuedSession;queuedSession=null;hasQueuedSession=false;setTimeout(()=>initializeSession(nextSession),0);}}}
+function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
+  if(!window.NexusBackupRestoreUtils||!window.NexusStorageKey||!window.NexusFeatureStorageKey||!window.NexusNormalizeFeatureState||!window.NexusSetFeatureState)throw new Error('Safe local workspace storage is unavailable. Cloud data was not applied.');
+  const nextFeatures=window.NexusNormalizeFeatureState(rawFeatures);
+  const entries=[
+    {key:window.NexusStorageKey,value:JSON.stringify(nextState)},
+    {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)}
+  ];
+  if(ownerId)entries.push({key:OWNER_KEY,value:String(ownerId)});
+  window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,entries);
+  state=nextState;
+  window.NexusSetFeatureState(nextFeatures,{persist:false,render:false});
+  renderAll();
+  if(window.NexusRenderHub)window.NexusRenderHub();
+  return true;
+}
+function applyRemote(payload,ownerId){
+  if(!payload||!payload.state||!Array.isArray(payload.state.streams))throw new Error('Cloud backup format is invalid.');
+  const nextState=normalizeState(payload.state);
+  const hasFeatures=Object.prototype.hasOwnProperty.call(payload,'featureState');
+  const nextFeatures=window.NexusNormalizeFeatureState(hasFeatures?payload.featureState:undefined);
+  ready=false;
+  applyWorkspaceSnapshot(nextState,nextFeatures,ownerId);
+  ready=true;
+}
+function applyLocalMerged(localPayload,remotePayload){
+  const nextState=mergeState(localPayload.state,remotePayload?.state||emptyState());
+  const remoteFeatures=remotePayload?.featureState||{},localFeatures=localPayload.featureState||{};
+  // Keep local settings and same-ID records, while preserving non-conflicting Study Hub records from cloud.
+  const nextFeatures=window.NexusMergeFeatureState(localFeatures,remoteFeatures,{});
+  ready=false;
+  applyWorkspaceSnapshot(nextState,nextFeatures);
+  ready=true;
+}
+function resetToEmpty(ownerId){
+  ready=false;
+  applyWorkspaceSnapshot(emptyState(),{},ownerId);
+}
+async function initializeSession(s){const requestedSession=s||null,requestedUserId=requestedSession&&requestedSession.user?requestedSession.user.id:null;if(initializing){if(requestedUserId!==initializingUserId){queuedSession=requestedSession;hasQueuedSession=true;}return;}initializing=true;initializingUserId=requestedUserId;try{const newSession=requestedSession,newUserId=requestedUserId;session=newSession;ready=false;lastRemoteStamp=null;clearTimeout(timer);setControls();if(!session){status(client?'Not signed in · offline ready':'Offline ready');say('You can continue studying offline. Your local data remains on this device when you sign out.');return;}status('Loading account…');await assertActiveUser(newUserId);const owner=localStorage.getItem(OWNER_KEY)||'',localPayload=snapshot(),remote=await fetchRemote(newUserId);await assertActiveUser(newUserId);if(owner!==newUserId){if(remote&&remote.payload){applyRemote(remote.payload,newUserId);lastRemoteStamp=remote.updated_at;say('Loaded this account’s own cloud data. Offline data from the previous account was not merged or uploaded.');}else{resetToEmpty(newUserId);ready=true;const uploaded=await upload();if(!uploaded){ready=false;throw new Error('A clean workspace was created for this account, but its initial cloud state could not be verified. Previous-account data was not uploaded.');}say('A clean workspace was created for this account. Previous-account data was not merged or uploaded.');}localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;if(ready){status('Synced');}return;}const localData={state:localPayload.state,featureState:localPayload.featureState||{}},remoteData=remote&&remote.payload?{state:remote.payload.state,featureState:remote.payload.featureState||{}}:null,localHasWork=remoteData?stableJson(localData)!==stableJson(remoteData):hasLocalWork(localPayload);if(localHasWork){const choice=await chooseLocalData();if(choice==='cancel'){ready=false;status('Data choice required');say('Your offline data is preserved. Choose one of the available data options before cloud sync can continue.');return;}if(choice==='merge'){applyLocalMerged(localPayload,remote&&remote.payload?remote.payload:null);ready=true;const uploaded=await upload();if(uploaded){say(remote&&remote.payload?'Offline work was merged with this account’s cloud data.':'Offline work was kept and uploaded as this account’s first backup.');}else{ready=false;status('Sync not verified');say('The merge is saved locally, but cloud sync was not verified. Your local data is preserved; reconnect and retry before assuming the cloud has it.');}}else if(choice==='replace-cloud'){if(!confirm('FINAL CONFIRMATION: overwrite this account’s entire cloud backup with the offline data on this device? Download a backup first if needed.')){if(remote&&remote.payload){applyRemote(remote.payload);lastRemoteStamp=remote.updated_at;ready=true;say('Cloud replacement cancelled; the account cloud data was loaded.');}else{ready=true;say('Cloud replacement cancelled. Your offline workspace remains local and has not been uploaded.');}}else{ready=true;lastRemoteStamp=null;const uploaded=await upload();if(uploaded){say('Verified: the cloud backup now matches this device’s offline data.');}else{ready=false;status('Cloud replacement not verified');say('The cloud replacement was NOT confirmed. Your offline data remains on this device. Reconnect and retry the data choice; do not assume the cloud was updated.');}}}else{if(remote&&remote.payload){applyRemote(remote.payload);lastRemoteStamp=remote.updated_at;}else resetToEmpty(newUserId);ready=true;await upload();say(remote&&remote.payload?'Replaced this device’s local work with this account’s cloud data.':'Started this account with a clean workspace; offline work was not uploaded.');}}else if(remote&&remote.payload){applyRemote(remote.payload);lastRemoteStamp=remote.updated_at;say('Loaded this account’s cloud data. Future changes sync automatically.');}else{resetToEmpty(newUserId);ready=true;await upload();say('A clean workspace was created for this account.');}localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;if(ready){status('Synced');}}catch(e){ready=false;status('Sync unavailable');say('Cloud sync error: '+((e&&e.message)||'unknown error')+'. Local changes are preserved and sync is paused. Reconnect to sync again.');console.error('Nexus account initialization failed',e);}finally{initializing=false;initializingUserId=null;setControls();if(hasQueuedSession){const nextSession=queuedSession;queuedSession=null;hasQueuedSession=false;setTimeout(()=>initializeSession(nextSession),0);}}}
 function stableJson(v){if(Array.isArray(v))return '['+v.map(stableJson).join(',')+']';if(v&&typeof v==='object')return '{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+stableJson(v[k])).join(',')+'}';return JSON.stringify(v);}
-async function upload(){if(!client||!session||!ready)return false;if(syncing){pendingSync=true;return false;}const uploadUserId=session.user.id;syncing=true;status('Syncing…');let uploaded=false;try{const {data:authData,error:authError}=await client.auth.getUser();if(authError)throw new Error('Supabase could not verify the active login before cloud write: '+authError.message);if(!authData.user||authData.user.id!==uploadUserId||!session||session.user.id!==uploadUserId)throw new Error('The active Google/account session changed or could not be verified. Cloud write paused to protect the other account. Sign in again and retry.');const payload=snapshot(),stamp=new Date().toISOString();const {error}=await client.from('nexus_user_data').upsert({user_id:uploadUserId,payload,updated_at:stamp},{onConflict:'user_id'});if(error)throw error;const verify=await fetchRemote(uploadUserId);if(!verify||!verify.payload||stableJson(verify.payload)!==stableJson(payload))throw new Error('Cloud write could not be verified.');lastRemoteStamp=verify.updated_at||stamp;status('Synced');uploaded=true;}catch(e){status('Sync error');say('Cloud upload failed or could not be verified. Your local data is preserved; cloud sync is paused. Reconnect to sync again.');console.error('Nexus cloud sync failed',e);}finally{syncing=false;if(pendingSync){pendingSync=false;schedule();}}return uploaded;}
+async function upload(){if(!client||!session||!ready)return false;if(syncing){pendingSync=true;return false;}const uploadUserId=session.user.id;syncing=true;status('Syncing…');let uploaded=false;try{const {data:authData,error:authError}=await client.auth.getUser();if(authError)throw new Error('Supabase could not verify the active login before cloud write: '+authError.message);if(!authData.user||authData.user.id!==uploadUserId||!session||session.user.id!==uploadUserId)throw new Error('The active Google/account session changed or could not be verified. Cloud write paused to protect the other account. Sign in again and retry.');const payload=snapshot(),stamp=new Date().toISOString();await window.NexusBackupRestoreUtils.writeCloudSnapshot(client,uploadUserId,payload,lastRemoteStamp,stamp);const verify=await fetchRemote(uploadUserId);if(!verify||!verify.payload||stableJson(verify.payload)!==stableJson(payload)){const conflict=new Error('The remote cloud snapshot changed during write verification.');conflict.code='NEXUS_CLOUD_CONFLICT';throw conflict;}lastRemoteStamp=verify.updated_at||stamp;status('Synced');uploaded=true;}catch(e){if(e&&e.code==='NEXUS_CLOUD_CONFLICT'){ready=false;status('Cloud conflict');say('Another device changed the cloud backup after this device loaded it. Your local data is preserved and automatic cloud writes are paused. Reload Nexus to compare and merge the latest data before syncing again.');}else{ready=false;status('Sync error');say('Cloud upload failed or could not be verified. Your local data is preserved; cloud sync is paused. Reconnect to sync again.');}console.error('Nexus cloud sync failed',e);}finally{syncing=false;if(pendingSync){pendingSync=false;schedule();}}return uploaded;}
 function schedule(){if(!client||!session||!ready)return;clearTimeout(timer);timer=setTimeout(()=>{if(syncing){pendingSync=true;return;}upload();},650);}
 async function ensureClient(){if(client)return client;const c=config();if(!window.supabase||!window.supabase.createClient)await loadSupabaseLibrary();if(!client){client=window.supabase.createClient(c.url,c.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});client.auth.onAuthStateChange((event,newSession)=>{session=newSession||null;if(event==='TOKEN_REFRESHED'||event==='USER_UPDATED'){session=newSession;setControls();return;}if(event==='SIGNED_OUT'){session=null;ready=false;clearTimeout(timer);if(initializing&&initializingUserId){queuedSession=null;hasQueuedSession=true;}status('Not signed in · offline ready');say('You can continue using your local data offline. Signing out does not erase it.');setControls();return;}if(event==='SIGNED_IN'||event==='INITIAL_SESSION'){const uid=newSession&&newSession.user?newSession.user.id:null;if(uid!==lastUserId||!ready)setTimeout(()=>initializeSession(newSession),0);else{session=newSession;setControls();}}});}return client;}
 let connectPromise=null;function connect(){if(connectPromise)return connectPromise;connectPromise=(async()=>{try{await ensureClient();const {data:{session:s},error}=await client.auth.getSession();if(error)throw error;await initializeSession(s);}catch(e){status('Connection error');say('Connection error: '+((e&&e.message)||'unknown error')+'. You can still use Nexus offline; reconnect to sign in and sync.');console.error('Nexus connection failed',e);}finally{connectPromise=null;}})();return connectPromise;}
@@ -2812,6 +2985,29 @@ dialog .dialog-inner,dialog>div{max-height:none}
   .curriculum-request-link:hover .curriculum-request-arrow svg{transform:translate(1px,-1px)}
   .curriculum-request-link:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 48%,transparent);outline-offset:3px}
   @media(prefers-reduced-motion:reduce){.curriculum-request-link,.curriculum-request-arrow,.curriculum-request-arrow svg{transition:none!important}}
+</style>
+
+<style id="nexus-performance-guardrails">
+  /* Reduce avoidable large-surface animation and compositing work on mobile and desktop. */
+  html { scroll-behavior: auto !important; }
+  .app, .brandmark { animation: none !important; }
+  .panel, .stat, .topic-card, .queue-item {
+    animation: none !important;
+    transition: box-shadow .14s ease, border-color .14s ease !important;
+  }
+  .panel:hover, .topic-card:hover, .stat:hover { transform: none !important; }
+  .tabs, dialog::backdrop {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  .collapsible-body { transition: none !important; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation: none !important;
+      transition: none !important;
+      scroll-behavior: auto !important;
+    }
+  }
 </style>
 </body>
 </html>
