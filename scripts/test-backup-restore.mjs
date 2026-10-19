@@ -53,28 +53,31 @@ assert.equal(merged.settings.reminders, false, 'explicit imported settings shoul
 assert.ok(merged.settings.dailyMinutes === defaults.settings.dailyMinutes);
 
 class MemoryStorage {
-  constructor(initial) { this.values = new Map(Object.entries(initial)); this.failOnce = true; }
+  constructor(initial, failKey = 'feature') { this.values = new Map(Object.entries(initial)); this.failOnce = true; this.failKey = failKey; }
   getItem(key) { return this.values.has(key) ? this.values.get(key) : null; }
   setItem(key, value) {
-    if (key === 'feature' && this.failOnce) { this.failOnce = false; throw new Error('simulated quota failure'); }
+    if (key === this.failKey && this.failOnce) { this.failOnce = false; throw new Error('simulated quota failure'); }
     this.values.set(key, String(value));
   }
   removeItem(key) { this.values.delete(key); }
 }
-const storage = new MemoryStorage({ state: 'old-state', feature: 'old-feature' });
+const storage = new MemoryStorage({ state: 'old-state', feature: 'old-feature', owner: 'old-owner' }, 'owner');
 assert.throws(() => commitLocalStorageAtomically(storage, [
   { key: 'state', value: 'new-state' },
-  { key: 'feature', value: 'new-feature' }
+  { key: 'feature', value: 'new-feature' },
+  { key: 'owner', value: 'new-owner' }
 ]), error => error.rollbackSucceeded === true && /previous saved data has been restored/.test(error.message));
 assert.equal(storage.getItem('state'), 'old-state', 'partial restore should roll the main data back');
 assert.equal(storage.getItem('feature'), 'old-feature', 'partial restore should preserve feature data');
+assert.equal(storage.getItem('owner'), 'old-owner', 'failed account switch should restore the previous owner marker');
 
 const successStorage = new MemoryStorage({});
 successStorage.failOnce = false;
 assert.equal(commitLocalStorageAtomically(successStorage, [
-  { key: 'state', value: 'new-state' }, { key: 'feature', value: 'new-feature' }
+  { key: 'state', value: 'new-state' }, { key: 'feature', value: 'new-feature' }, { key: 'owner', value: 'new-owner' }
 ]), true);
 assert.equal(successStorage.getItem('state'), 'new-state');
 assert.equal(successStorage.getItem('feature'), 'new-feature');
+assert.equal(successStorage.getItem('owner'), 'new-owner');
 
 console.log('Backup/restore safety tests passed.');
