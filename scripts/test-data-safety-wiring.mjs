@@ -44,6 +44,9 @@ assert.ok(cloud.includes('window.NexusSetFeatureState(nextFeatures,{persist:fals
 assert.ok(cloud.includes('function resetToEmpty(ownerId){') && cloud.includes('applyWorkspaceSnapshot(emptyState(),{},ownerId)'), 'new-account reset commits the owner marker with the empty workspace');
 assert.ok(index.includes('resetToEmpty(newUserId)'), 'account switching must pass the new owner into every clean-workspace reset');
 assert.ok(index.includes('applyRemote(remote.payload,newUserId)'), 'account switch passes the active user into atomic hydration');
+assert.ok(index.includes('window.NexusBackupRestoreUtils.writeCloudSnapshot(client,uploadUserId,payload,lastRemoteStamp,stamp)'), 'cloud writes must compare against the last observed version');
+assert.ok(index.includes("status('Cloud conflict')") && index.includes("ready=false;status('Cloud conflict')"), 'a detected cloud conflict must pause automatic uploads');
+assert.ok(!index.includes(".upsert({user_id:uploadUserId,payload,updated_at:stamp}"), 'cloud sync must not blindly overwrite a newer remote snapshot');
 
 assert.ok(serviceWorker.includes("const CACHE_NAME='nexus-rating-analytics-v10';"), 'cache version must be bumped after adding the helper');
 assert.ok(serviceWorker.includes("'./backup-restore-utils.js'"), 'offline app shell must cache the helper');
