@@ -9,9 +9,7 @@ self.addEventListener('activate',event=>{event.waitUntil(caches.keys().then(keys
 function putInCache(req,response){
   const url=new URL(req.url);
   // Do not cache callback URLs or other query-bearing pages (OAuth codes can arrive in the query).
-  if(url.search||response&&response.status===200&&response.type==='basic'){
-    if(url.search||!response||response.status!==200||response.type!=='basic')return response;
-  }
+  if(url.search)return response;
   if(response&&response.status===200&&response.type==='basic'){
     const copy=response.clone();caches.open(CACHE_NAME).then(cache=>cache.put(req,copy));
   }
