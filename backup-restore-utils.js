@@ -241,6 +241,12 @@
     return result.data[0];
   }
 
+  function csvCell(value) {
+    const text = String(value ?? '');
+    const safe = /^[\uFEFF\u0000-\u0020]*[=+\-@]/.test(text) ? "'" + text : text;
+    return '"' + safe.replace(/"/g, '""') + '"';
+  }
+
   function parseCsv(input) {
     const source = String(input ?? '').replace(/^\uFEFF/, '');
     const maxCharacters = 5 * 1024 * 1024;
@@ -301,5 +307,5 @@
     return rows;
   }
 
-  return { validateBackupState, normalizeFeatureState, mergeFeatureState, commitLocalStorageAtomically, writeCloudSnapshot, parseCsv };
+  return { validateBackupState, normalizeFeatureState, mergeFeatureState, commitLocalStorageAtomically, writeCloudSnapshot, csvCell, parseCsv };
 });
