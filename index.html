@@ -2447,12 +2447,7 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
       if(!data||typeof data!=='object'||Array.isArray(data))throw new Error('Choose a valid Nexus JSON backup.');
       const raw=Object.prototype.hasOwnProperty.call(data,'state')?data.state:data;
       if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('The file does not contain a valid backup state.');
-      const modern=Array.isArray(raw.streams)&&Array.isArray(raw.subjects)&&Array.isArray(raw.topics);
-      const legacy=Array.isArray(raw.topics)&&(Array.isArray(raw.history)||Array.isArray(raw.subjects));
-      if(!modern&&!legacy)throw new Error('This file is not a recognized Nexus backup. Select a full JSON backup, not a CSV export or unrelated JSON file.');
-      for(const key of ['streams','subjects','topics','history','exams']){
-        if(raw[key]!==undefined&&!Array.isArray(raw[key]))throw new Error('Backup section "'+key+'" must be an array.');
-      }
+      window.NexusBackupRestoreUtils.validateBackupState(raw);
       const imported=normalizeState(raw);
       const defaults=freshFeatureState();
       const hasFeatureState=Object.prototype.hasOwnProperty.call(data,'featureState');
