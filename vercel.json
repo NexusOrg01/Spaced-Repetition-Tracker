@@ -40,6 +40,10 @@
         {
           "key": "Permissions-Policy",
           "value": "camera=(), microphone=(), geolocation=()"
+        },
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; manifest-src 'self'; worker-src 'self' blob:; script-src 'self' 'sha256-tLU5RBMHCDhVW/t+CL2XiCiC1j2P1M2vs2Jbo304tH8=' 'sha256-A9vpmH8GGxqgubqw6efSgSyxFwG8jqz/L5oIDt7bx0Q=' 'sha256-bUQeSwhNcJFFrlBOn67AO8b/vCD/tUTW/t0DrYck5o4=' 'sha256-cRRW8b3+cfTtIUu6NvfEagXuDeA34/+Nqg4YK5kgs+U=' 'sha256-MvkY35Uur16vATB9ktLSXK3SErd65mi9FRSaZc3yjb8=' 'sha256-wyhxjjbo0OJs0Lhs/HzE+vBVdVq9IaKR5ZVA/K6t7JI=' 'sha256-Fgon/ZGkKi+anOkSca5Hp/muM839zg2aSNCrGAAt9NQ=' https://cdn.jsdelivr.net; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' https://txugbdavblpettcnhcxl.supabase.co wss://txugbdavblpettcnhcxl.supabase.co"
         }
       ]
     }
