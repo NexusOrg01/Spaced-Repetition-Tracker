@@ -34,8 +34,8 @@ const firstGood = scheduler.review(empty, 3, now);
 assert.ok(firstGood.card.stability > 0 && firstGood.card.difficulty >= 1 && firstGood.card.difficulty <= 10,
   'a saved FSRS review must produce valid memory stability and difficulty');
 assert.equal(firstGood.card.reps, 1);
-assert.equal(firstGood.due, '2026-10-' + String(19 + firstGood.intervalDays).padStart(2, '0') === 'never' ? '' : firstGood.due,
-  'due date must be a valid scheduler-generated date');
+const expectedDue = sandbox.self.FSRS.util.isoDay(sandbox.self.FSRS.util.addDays(now, firstGood.intervalDays));
+assert.equal(firstGood.due, expectedDue, 'due date must match the scheduled interval');
 assert.match(firstGood.due, /^\\d{4}-\\d{2}-\\d{2}$/);
 
 const secondReview = scheduler.review(firstGood.card, 1, new Date(2026, 9, 25, 12, 0, 0));
