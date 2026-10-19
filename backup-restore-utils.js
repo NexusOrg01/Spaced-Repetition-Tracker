@@ -77,7 +77,7 @@
 
   function normalizeFeatureState(input, defaults) {
     if (!isRecord(defaults) || !isRecord(defaults.settings)) throw new Error('Internal Study Hub defaults are invalid.');
-    if (input === undefined || input === null) return copy(defaults);
+    if (input === undefined) return copy(defaults);
     if (!isRecord(input)) throw new Error('The backup Study Hub section must be an object.');
     const rawSettings = input.settings === undefined || input.settings === null ? {} : input.settings;
     if (!isRecord(rawSettings)) throw new Error('Backup Study Hub settings must be an object.');
