@@ -86,16 +86,16 @@ create policy "Users can insert own Nexus backup" on public.nexus_user_data for 
 create policy "Users can update own Nexus backup" on public.nexus_user_data for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
 ```
 
-If a cloud backup already exists at sign-in, Nexus asks you to type RESTORE or UPLOAD; cancel leaves both copies untouched. A newer remote backup is protected from silent overwrite. Restore cloud backup replaces this device’s local data after confirmation. Keep JSON backups as an independent recovery option.
+If local and cloud data differ at sign-in, Nexus offers **Merge offline data**, **Use cloud data on this device**, or **Replace cloud data with offline data**. Cancel leaves local data untouched and pauses sync. Merge combines tracker records and preserves non-conflicting Study Hub records. Cloud writes compare the last observed `updated_at` value before updating; if another device changed the backup, Nexus pauses automatic writes. Reload to compare and merge the latest data before syncing again. Keep JSON backups as an independent recovery option.
 
 
 ## One-time authentication setup for the deployed site
 
-The database and client connection are configured. To allow authentication redirects for the GitHub Pages deployment:
+The database and client connection are configured. To allow authentication redirects for the deployed Vercel site:
 
 1. Open the [Nexus Supabase Auth URL Configuration](https://supabase.com/dashboard/project/txugbdavblpettcnhcxl/auth/url-configuration).
-2. Set **Site URL** to `https://NexusOrg01.github.io/Spaced-Repetition-Tracker/`.
-3. Add that same URL to **Redirect URLs** and save.
+2. Set **Site URL** to `https://spaced-repetition-tracker-delta.vercel.app/`.
+3. Add that same URL to **Redirect URLs** and save. If you also actively use the GitHub Pages deployment, keep its URL as a separate allowed redirect rather than replacing the Vercel URL.
 4. Email magic-link sign-in can then be used. For Google sign-in, open [Auth Providers](https://supabase.com/dashboard/project/txugbdavblpettcnhcxl/auth/providers), enable Google, and enter the OAuth Client ID and Client Secret from a Google Cloud OAuth web application. Add the Supabase callback URL shown on that provider page to the Google OAuth client's authorized redirect URIs.
 
 The Supabase project-management connection available here does not expose Auth URL/provider settings, and Google OAuth requires credentials from your Google account. Those settings must be completed in the dashboard before sign-in can be fully verified. The app will continue to work offline and keep local data while cloud sign-in is not configured.
@@ -122,4 +122,4 @@ The old community request API has been removed from the application branch. Exis
 
 Do not run `supabase/syllabus-community.sql` or `supabase/harden-syllabus-community-privileges.sql`; both are now marked deprecated and would not be part of the supported setup. The remaining cloud-sync setup uses `public.nexus_user_data` and is separate from the retired wishlist.
 
-Any historical GitHub issues created by the previous wishlist are not automatically deleted. They can be retained as a record or manually closed later. After the replacement is confirmed live, remove community-only Vercel environment variables such as `NEXUS_ADMIN_USER_ID`, `SUPABASE_SERVICE_ROLE_KEY`, community-only `GITHUB_TOKEN` / `GITHUB_REPOSITORY` overrides, and `Nexus_KV_REST_API_URL` / `Nexus_KV_REST_API_TOKEN` only after confirming that no other deployed function uses them. Never remove credentials used by any unrelated service.
+Any historical GitHub issues created by the previous wishlist are not automatically deleted. They can be retained as a record or manually closed later. The current application source no longer requires `NEXUS_ADMIN_USER_ID`, `SUPABASE_SERVICE_ROLE_KEY`, community-only `GITHUB_TOKEN` / `GITHUB_REPOSITORY` overrides, or `Nexus_KV_REST_API_URL` / `Nexus_KV_REST_API_TOKEN`. Before removing those variables from Vercel, check whether any unrelated deployed function still uses them. Never expose their values in frontend code or commit them to the repository, and never remove credentials used by an unrelated service.
