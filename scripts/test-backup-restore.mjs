@@ -39,6 +39,7 @@ assert.deepEqual(normalized.selectedTopicIds, ['topicA', '7']);
 assert.throws(() => normalizeFeatureState({ journal: {} }, defaults), /must be an array/);
 assert.throws(() => normalizeFeatureState({ taskChecks: { today: true } }, defaults), /task checklist/);
 assert.throws(() => normalizeFeatureState({ settings: [] }, defaults), /settings must be an object/);
+assert.throws(() => normalizeFeatureState(null, defaults), /Study Hub section must be an object/);
 
 const merged = mergeFeatureState(
   { ...defaults, settings: { ...defaults.settings, reminders: true }, journal: [{ id: 'same', text: 'local' }] },
