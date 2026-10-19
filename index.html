@@ -2460,7 +2460,7 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
       let nextState, nextFeatures;
       if(mode==='REPLACE'){
         nextState=imported;
-        nextFeatures=window.NexusBackupRestoreUtils.resolveReplaceFeatureState(hasFeatureState,fsState,importedFeatures,defaults);
+        nextFeatures=window.NexusBackupRestoreUtils.resolveReplaceFeatureState?window.NexusBackupRestoreUtils.resolveReplaceFeatureState(hasFeatureState,fsState,importedFeatures,defaults):window.NexusBackupRestoreUtils.normalizeFeatureState(hasFeatureState?importedFeatures:fsState,defaults);
       }else{
         const combined={schema:4,streams:[...state.streams],subjects:[...state.subjects],topics:[...state.topics],history:[...state.history],exams:[...state.exams],settings:state.settings};
         const pushUnique=(target,source)=>{const ids=new Set(target.map(x=>x.id));source.forEach(x=>{if(!ids.has(x.id)){target.push(x);ids.add(x.id);}});};
