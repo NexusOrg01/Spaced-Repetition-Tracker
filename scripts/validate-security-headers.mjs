@@ -14,7 +14,7 @@ const csp = headers.get('content-security-policy');
 assert.ok(csp, 'Content-Security-Policy response header must be configured');
 
 const directives = new Map(csp.split(';').map(part => {
-  const values = part.trim().split(/\\s+/);
+  const values = part.trim().split(/\s+/);
   return [values.shift(), values];
 }));
 const scriptSources = new Set(directives.get('script-src') || []);
@@ -24,8 +24,8 @@ assert.ok(!scriptSources.has("'unsafe-inline'"), 'inline scripts must not use un
 assert.ok(!scriptSources.has("'unsafe-eval'"), 'script-src must not permit eval');
 assert.ok((directives.get('script-src-attr') || []).includes("'none'"), 'HTML inline event attributes must be blocked');
 
-const inlineScripts = [...html.matchAll(/<script\\b([^>]*)>([\\s\\S]*?)<\\/script>/gi)]
-  .filter(match => !/\\bsrc\\s*=/.test(match[1]));
+const inlineScripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)]
+  .filter(match => !/\bsrc\s*=/.test(match[1]));
 assert.equal(inlineScripts.length, 7, 'review the expected number of inline scripts when the page changes');
 for (const [index, match] of inlineScripts.entries()) {
   const hash = "'sha256-" + createHash('sha256').update(match[2], 'utf8').digest('base64') + "'";
