@@ -6,6 +6,7 @@ const {
   sanitizeFocusState,
   normalizeFeatureState,
   mergeFeatureState,
+  resolveReplaceFeatureState,
   commitLocalStorageAtomically,
   writeCloudSnapshot,
   csvCell,
@@ -86,6 +87,24 @@ assert.throws(() => normalizeFeatureState({ selectedTopicIds: null }, defaults),
 assert.throws(() => normalizeFeatureState({ taskChecks: { today: true } }, defaults), /task checklist/);
 assert.throws(() => normalizeFeatureState({ settings: [] }, defaults), /settings must be an object/);
 assert.throws(() => normalizeFeatureState(null, defaults), /Study Hub section must be an object/);
+
+const localHubForLegacyRestore = {
+  ...defaults,
+  settings: { ...defaults.settings, reminders: true },
+  journal: [{ id: 'local-only', text: 'keep this record' }]
+};
+const legacyReplaceFeatures = resolveReplaceFeatureState(
+  false, localHubForLegacyRestore, normalizeFeatureState(undefined, defaults), defaults
+);
+assert.equal(legacyReplaceFeatures.settings.reminders, true,
+  'replacing from a legacy backup without Study Hub data must preserve current Study Hub settings');
+assert.deepEqual(legacyReplaceFeatures.journal.map(row => row.id), ['local-only'],
+  'replacing from a legacy backup must not silently erase Study Hub records that were not in that backup');
+const fullReplaceFeatures = resolveReplaceFeatureState(
+  true, localHubForLegacyRestore, { ...defaults, journal: [{ id: 'backup-only', text: 'from backup' }] }, defaults
+);
+assert.deepEqual(fullReplaceFeatures.journal.map(row => row.id), ['backup-only'],
+  'a full backup that includes Study Hub state must still replace Study Hub records exactly');
 
 const merged = mergeFeatureState(
   { ...defaults, settings: { ...defaults.settings, reminders: true }, journal: [{ id: 'same', text: 'local' }] },
