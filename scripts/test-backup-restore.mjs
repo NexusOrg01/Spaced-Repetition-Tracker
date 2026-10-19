@@ -4,7 +4,8 @@ const require = createRequire(import.meta.url);
 const {
   normalizeFeatureState,
   mergeFeatureState,
-  commitLocalStorageAtomically
+  commitLocalStorageAtomically,
+  parseCsv
 } = require('../backup-restore-utils.js');
 
 const defaults = {
@@ -79,5 +80,17 @@ assert.equal(commitLocalStorageAtomically(successStorage, [
 assert.equal(successStorage.getItem('state'), 'new-state');
 assert.equal(successStorage.getItem('feature'), 'new-feature');
 assert.equal(successStorage.getItem('owner'), 'new-owner');
+
+const parsedCsv = parseCsv('\\uFEFFStream,Subject,Topic,Notes\\r\\nCommerce,Economics,"Demand, supply","Quoted ""idea""\\r\\ncontinued"\\r\\n');
+assert.deepEqual(parsedCsv, [
+  ['Stream', 'Subject', 'Topic', 'Notes'],
+  ['Commerce', 'Economics', 'Demand, supply', 'Quoted "idea"\\r\\ncontinued']
+], 'CSV parser should handle BOMs, commas, escaped quotes, multiline cells, and CRLF');
+assert.throws(() => parseCsv('Topic,Notes\\n"Unclosed,field'), /was not closed/);
+assert.throws(() => parseCsv('Topic\\nDemand "curve'), /quote inside an unquoted field/);
+assert.throws(() => parseCsv('Topic\\n"closed"x'), /unexpected character after a quoted field/);
+assert.throws(() => parseCsv('Topic\\n' + 'x'.repeat(10001)), /field longer than 10,000/);
+assert.throws(() => parseCsv(Array(66).fill('x').join(',')), /more than 64 columns/);
+assert.throws(() => parseCsv('Topic\\n' + 'row\\n'.repeat(10001)), /more than 10,000 data rows/);
 
 console.log('Backup/restore safety tests passed.');
