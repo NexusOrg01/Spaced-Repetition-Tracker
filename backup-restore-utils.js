@@ -192,6 +192,10 @@
     return result;
   }
 
+  function resolveReplaceFeatureState(hasFeatureState, currentInput, importedInput, defaults) {
+    return normalizeFeatureState(hasFeatureState === true ? importedInput : currentInput, defaults);
+  }
+
   function commitLocalStorageAtomically(storage, entries) {
     if (!storage || !Array.isArray(entries) || entries.length === 0) throw new Error('Invalid local restore transaction.');
     const seen = new Set();
@@ -324,5 +328,5 @@
     return rows;
   }
 
-  return { validateBackupState, sanitizeFocusState, normalizeFeatureState, mergeFeatureState, commitLocalStorageAtomically, writeCloudSnapshot, csvCell, parseCsv };
+  return { validateBackupState, sanitizeFocusState, normalizeFeatureState, mergeFeatureState, resolveReplaceFeatureState, commitLocalStorageAtomically, writeCloudSnapshot, csvCell, parseCsv };
 });
