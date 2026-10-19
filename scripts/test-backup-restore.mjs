@@ -31,6 +31,7 @@ assert.equal(normalized.settings.dailyMinutes, 1440, 'numeric settings should be
 assert.equal(normalized.settings.reminders, true);
 assert.equal(normalized.settings.scheduler, 'classic', 'unknown scheduler values should fall back safely');
 assert.equal(normalized.settings.reminderTime, '08:00', 'invalid reminder times should fall back safely');
+assert.equal(normalizeFeatureState({ settings: { reminderTime: '09:30' } }, defaults).settings.reminderTime, '09:30', 'valid reminder times should be preserved');
 assert.equal(normalized.journal[0].id, 'j1');
 assert.equal(normalized.studyLogs[0].id, 'studyLogs-restored-0', 'legacy feature records should receive stable IDs');
 assert.deepEqual(normalized.taskChecks['2026-10-19'], ['taskA', '7']);
