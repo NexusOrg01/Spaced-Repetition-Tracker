@@ -299,6 +299,10 @@ if (safeDateSourceMatch) {
   }
 }
 
+
+assert(html.includes("function isUnsafeCloudOrigin()") && html.includes("host!=='spaced-repetition-tracker-delta.vercel.app'") && html.includes("host!=='kkmalithmalshan2000-png.github.io'"), 'Live Supabase cloud sync must be blocked on other origins by default.');
+assert(html.includes("if(isUnsafeCloudOrigin())throw new Error('Cloud sync is disabled on this preview/local copy to protect real cloud data.')") && html.includes('google.disabled=logged||previewBlocked') && html.includes('email.disabled=logged||previewBlocked'), 'Preview cloud isolation must guard client creation and disable sign-in controls.');
+
 if (errors.length) {
   console.error('Curriculum validation failed:');
   for (const error of errors) console.error(' - '+error);
@@ -306,6 +310,3 @@ if (errors.length) {
 } else {
   console.log('Curriculum validation passed: '+catalog.packs.length+' pack(s), '+totalTopics+' topic(s), '+checkedScripts+' inline JavaScript block(s) syntax-checked.');
 }
-
-assert(html.includes("function isUnsafeCloudOrigin()") && html.includes("host!=='spaced-repetition-tracker-delta.vercel.app'") && html.includes("host!=='kkmalithmalshan2000-png.github.io'"), 'Live Supabase cloud sync must be blocked on other origins by default.');
-assert(html.includes("if(isUnsafeCloudOrigin())throw new Error('Cloud sync is disabled on this preview/local copy to protect real cloud data.')") && html.includes('google.disabled=logged||previewBlocked') && html.includes('email.disabled=logged||previewBlocked'), 'Preview cloud isolation must guard client creation and disable sign-in controls.');
