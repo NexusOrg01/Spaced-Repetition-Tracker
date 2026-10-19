@@ -22,6 +22,7 @@ const appStateAt = index.indexOf("const STORAGE_KEY = 'recall.study.tracker.v1';
 assert.ok(helperAt >= 0 && appStateAt > helperAt, 'load safety helpers before the main app script');
 assert.ok(index.includes('window.NexusStorageKey = STORAGE_KEY;'), 'expose the primary storage key for shared transactions');
 assert.ok(index.includes('window.NexusFeatureStorageKey=FEATURE_KEY;'), 'expose the Study Hub storage key for shared transactions');
+assert.ok(index.includes('fsrs:window.NexusBackupRestoreUtils.sanitizeFsrsCard(t.fsrs)'), 'topic normalization must preserve validated FSRS memory state from full backups');
 assert.ok(index.includes('window.NexusNormalizeFeatureState=value=>'), 'cloud data must use the shared Study Hub normalizer');
 assert.ok(index.includes('window.NexusMergeFeatureState=(current,imported,rawImported)=>'), 'cloud merges must use the shared Study Hub merge helper');
 

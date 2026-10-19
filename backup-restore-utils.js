@@ -75,6 +75,22 @@
     return Number.isFinite(stamp) ? (typeof value === 'number' ? stamp : new Date(stamp).toISOString()) : fallback;
   }
 
+  function sanitizeFsrsCard(card) {
+    if (!isRecord(card)) return undefined;
+    const stability = Number(card.stability), difficulty = Number(card.difficulty);
+    if (!(stability > 0) || !Number.isFinite(stability) || !Number.isFinite(difficulty)) return undefined;
+    const validDateString = value => typeof value === 'string' && value.length <= 100 && Number.isFinite(Date.parse(value));
+    return {
+      stability: Math.min(36500, Math.max(0.1, stability)),
+      difficulty: Math.min(10, Math.max(1, difficulty)),
+      reps: Math.min(1000000, Math.max(0, Number(card.reps) || 0)),
+      lapses: Math.min(1000000, Math.max(0, Number(card.lapses) || 0)),
+      lastReview: validDateString(card.lastReview) ? card.lastReview : null,
+      due: validDateString(card.due) ? card.due : null,
+      intervalDays: Math.min(36500, Math.max(0, Number(card.intervalDays) || 0))
+    };
+  }
+
   function validateBackupState(input) {
     if (!isRecord(input)) throw new Error('Invalid backup state.');
     const modern = Array.isArray(input.streams) && Array.isArray(input.subjects) && Array.isArray(input.topics);
@@ -328,5 +344,5 @@
     return rows;
   }
 
-  return { validateBackupState, sanitizeFocusState, normalizeFeatureState, mergeFeatureState, resolveReplaceFeatureState, commitLocalStorageAtomically, writeCloudSnapshot, csvCell, parseCsv };
+  return { validateBackupState, sanitizeFocusState, sanitizeFsrsCard, normalizeFeatureState, mergeFeatureState, resolveReplaceFeatureState, commitLocalStorageAtomically, writeCloudSnapshot, csvCell, parseCsv };
 });
