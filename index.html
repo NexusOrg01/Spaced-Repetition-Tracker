@@ -2364,10 +2364,78 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
   function csvCellHub(v){return `"${String(v??'').replace(/"/g,'""')}"`;}
   function exportHubCsv(which){let rows=[],filename='nexus-hub-export.csv';if(which==='papers'){filename=`nexus-papers-${today()}.csv`;rows=[['Name','Subject','Kind','Date','Score','Max score','Duration minutes','Error count','Weak areas','Notes'],...fsState.papers.map(p=>[p.name,state.subjects.find(s=>s.id===p.subjectId)?.name||'',p.kind,p.date,p.score,p.maxScore,p.duration,p.errorCount,p.weakAreas,p.notes])];}else if(which==='journal'){filename=`nexus-journal-${today()}.csv`;rows=[['Date','Type','Subject','Topic','Severity','Issue','Correction','Resolved'],...fsState.journal.map(j=>[j.date,j.category,state.subjects.find(s=>s.id===j.subjectId)?.name||'',getTopic(j.topicId)?.name||'',j.severity,j.issue,j.fix,j.solved?'yes':'no'])];}else if(which==='selected'){filename=`nexus-selected-topics-${today()}.csv`;const ts=state.topics.filter(t=>fsState.selectedTopicIds.includes(t.id));rows=[['Stream','Subject','Topic','Notes','Last reviewed','Last rating','Next due','Review count','Status'],...ts.map(t=>{const d=subjectDisplay(t);return[d.stream,d.subject,t.name,t.notes,t.lastReviewed,t.lastRating,t.dueDate,t.reviewCount,status(t)];})];}else{filename=`nexus-study-log-${today()}.csv`;rows=[['Date','Minutes','Type','Note'],...fsState.studyLogs.map(x=>[x.date,x.minutes,x.type,x.note||''])];}downloadBlob(filename,'\uFEFF'+rows.map(r=>r.map(csvCellHub).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('Study Hub CSV exported.');}
   function exportTemplate(){const rows=[['Stream','Subject','Topic','Notes','Last reviewed','Last rating','Next due','Interval days','Review count'],['Commerce','Economics','Demand and supply','','','','','','']];downloadBlob('nexus-topic-import-template.csv','\uFEFF'+rows.map(r=>r.map(csvCellHub).join(',')).join('\r\n'),'text/csv;charset=utf-8');}
-  function parseCsvHub(text){const out=[];let row=[],field='',quoted=false;const s=String(text||'').replace(/^\uFEFF/,'');for(let i=0;i<s.length;i++){const c=s[i];if(quoted){if(c==='"'&&s[i+1]==='"'){field+='"';i++;}else if(c==='"')quoted=false;else field+=c;}else if(c==='"')quoted=true;else if(c===','){row.push(field);field='';}else if(c==='\n'){row.push(field);if(row.some(x=>String(x).trim()))out.push(row);row=[];field='';}else if(c!=='\r')field+=c;}row.push(field);if(row.some(x=>String(x).trim()))out.push(row);return out;}
-  async function importTopicCsv(file){const txt=await file.text(),rows=parseCsvHub(txt);if(rows.length<2)throw new Error('CSV needs a header and at least one topic row.');const heads=rows[0].map(x=>String(x).trim().toLocaleLowerCase());const idx=(...names)=>heads.findIndex(h=>names.includes(h));const iStream=idx('stream','stream name','course'),iSub=idx('subject','subject name'),iName=idx('topic','lesson','topic name','lesson name');if(iName<0)throw new Error('CSV requires a Topic or Lesson column.');let added=0,dupes=0,invalid=0;const streamMap=new Map(state.streams.map(s=>[s.name.toLocaleLowerCase(),s]));const subjectMap=new Map(state.subjects.map(s=>[`${s.streamId}|${s.name.toLocaleLowerCase()}`,s]));const known=new Set(state.topics.map(t=>`${t.subjectId}|${t.name.trim().toLocaleLowerCase()}`));
-    for(const row of rows.slice(1)){const get=i=>i<0?'':String(row[i]??'').trim();const name=get(iName);if(!name){invalid++;continue;}const streamName=get(iStream)||'Imported';const subName=get(iSub)||'Imported subject';let stream=streamMap.get(streamName.toLocaleLowerCase());if(!stream){stream={id:fid(),name:streamName.slice(0,100)};state.streams.push(stream);streamMap.set(streamName.toLocaleLowerCase(),stream);}const sk=`${stream.id}|${subName.toLocaleLowerCase()}`;let sub=subjectMap.get(sk);if(!sub){sub={id:fid(),name:subName.slice(0,100),streamId:stream.id,order:state.subjects.length};state.subjects.push(sub);subjectMap.set(sk,sub);}const key=`${sub.id}|${name.toLocaleLowerCase()}`;if(known.has(key)){dupes++;continue;}const read=i=>get(i);const parsedRating=Number(read(idx('last rating','lastrating')));const rt={id:fid(),subjectId:sub.id,name:name.slice(0,240),notes:read(idx('notes','note')).slice(0,1000),custom:true,createdAt:today(),lastReviewed:safeDate(read(idx('last reviewed','lastreviewed')))?read(idx('last reviewed','lastreviewed')):'',lastRating:parsedRating>=1&&parsedRating<=5?parsedRating:null,dueDate:safeDate(read(idx('next due','due date','next review date')))?read(idx('next due','due date','next review date')):'',intervalDays:Math.max(0,Math.min(365,Number(read(idx('interval days','intervaldays')))||0)),reviewCount:Math.max(0,Number(read(idx('review count','reviewcount')))||0),streak:0,lapses:0,archived:false};state.topics.push(rt);known.add(key);added++;}
-    save();renderAll();saveFs();notify(`CSV import complete: ${added} added, ${dupes} duplicates skipped, ${invalid} invalid rows skipped.`);}
+  function parseCsvHub(text){
+    if(!window.NexusBackupRestoreUtils||typeof window.NexusBackupRestoreUtils.parseCsv!=='function')throw new Error('CSV safety support is unavailable. No data was changed.');
+    return window.NexusBackupRestoreUtils.parseCsv(text);
+  }
+  async function importTopicCsv(file){
+    if(!file)return;
+    const maxBytes=5*1024*1024;
+    if(Number.isFinite(file.size)&&file.size>maxBytes)throw new Error('CSV files must be 5 MiB or smaller.');
+    const txt=await file.text();
+    if(txt.length>maxBytes)throw new Error('CSV files must be 5 MiB or smaller.');
+    const rows=parseCsvHub(txt);
+    if(rows.length<2)throw new Error('CSV needs a header and at least one topic row.');
+    const heads=rows[0].map(x=>String(x).trim().toLocaleLowerCase());
+    const populatedHeads=heads.filter(Boolean);
+    if(new Set(populatedHeads).size!==populatedHeads.length)throw new Error('CSV contains duplicate column names. Rename duplicate headers and try again.');
+    const idx=(...names)=>heads.findIndex(h=>names.includes(h));
+    const iStream=idx('stream','stream name','course'),iSub=idx('subject','subject name'),iName=idx('topic','lesson','topic name','lesson name');
+    if(iName<0)throw new Error('CSV requires a Topic or Lesson column.');
+    if(!window.NexusBackupRestoreUtils||typeof window.NexusBackupRestoreUtils.commitLocalStorageAtomically!=='function'||!window.NexusStorageKey)throw new Error('Safe local storage support is unavailable. No data was changed.');
+    const nextState=clone(state);
+    let added=0,dupes=0,invalid=0;
+    const streamMap=new Map(nextState.streams.map(x=>[x.name.toLocaleLowerCase(),x]));
+    const subjectMap=new Map(nextState.subjects.map(x=>[`${x.streamId}|${x.name.toLocaleLowerCase()}`,x]));
+    const known=new Set(nextState.topics.map(x=>`${x.subjectId}|${x.name.trim().toLocaleLowerCase()}`));
+    const read=(row,i)=>i<0?'':String(row[i]??'').trim();
+    for(const row of rows.slice(1)){
+      if(row.length>heads.length){invalid++;continue;}
+      const name=read(row,iName);
+      if(!name||name.length>240){invalid++;continue;}
+      const streamName=read(row,iStream)||'Imported';
+      const subName=read(row,iSub)||'Imported subject';
+      if(streamName.length>100||subName.length>100){invalid++;continue;}
+      let stream=streamMap.get(streamName.toLocaleLowerCase());
+      if(!stream){stream={id:fid(),name:streamName};nextState.streams.push(stream);streamMap.set(streamName.toLocaleLowerCase(),stream);}
+      const subjectKey=`${stream.id}|${subName.toLocaleLowerCase()}`;
+      let subject=subjectMap.get(subjectKey);
+      if(!subject){subject={id:fid(),name:subName,streamId:stream.id,order:nextState.subjects.length};nextState.subjects.push(subject);subjectMap.set(subjectKey,subject);}
+      const topicKey=`${subject.id}|${name.toLocaleLowerCase()}`;
+      if(known.has(topicKey)){dupes++;continue;}
+      const lastRatingRaw=Number(read(row,idx('last rating','lastrating')));
+      const lastRating=Number.isInteger(lastRatingRaw)&&lastRatingRaw>=1&&lastRatingRaw<=5?lastRatingRaw:null;
+      const intervalRaw=Number(read(row,idx('interval days','intervaldays')));
+      const reviewCountRaw=Number(read(row,idx('review count','reviewcount')));
+      const intervalDays=Number.isFinite(intervalRaw)?Math.max(0,Math.min(365,Math.trunc(intervalRaw))):0;
+      const reviewCount=Number.isFinite(reviewCountRaw)?Math.max(0,Math.min(100000,Math.trunc(reviewCountRaw))):0;
+      const lastReviewed=read(row,idx('last reviewed','lastreviewed'));
+      const dueDate=read(row,idx('next due','due date','next review date'));
+      nextState.topics.push({
+        id:fid(),subjectId:subject.id,name,notes:read(row,idx('notes','note')).slice(0,1000),
+        custom:true,createdAt:today(),lastReviewed:safeDate(lastReviewed)?lastReviewed:'',
+        lastRating,dueDate:safeDate(dueDate)?dueDate:'',intervalDays,reviewCount,
+        streak:0,lapses:0,archived:false
+      });
+      known.add(topicKey);
+      added++;
+    }
+    if(!added){notify(`CSV import complete: 0 added, ${dupes} duplicates skipped, ${invalid} invalid rows skipped.`);return;}
+    window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,[
+      {key:window.NexusStorageKey,value:JSON.stringify(nextState)}
+    ]);
+    state=nextState;
+    const saveStatus=$('saveStatus');
+    if(saveStatus){saveStatus.textContent='Saved on this device';saveStatus.style.color='';}
+    if(window.NexusCloudSync)window.NexusCloudSync.schedule();
+    try{
+      renderAll();
+      notify(`CSV import complete: ${added} added, ${dupes} duplicates skipped, ${invalid} invalid rows skipped.`);
+    }catch(e){
+      console.error('CSV import saved but rendering failed',e);
+      alert('CSV data was saved, but the screen did not refresh cleanly. Reload Nexus to view the imported topics.');
+    }
+  }
   function backupPayload(){return {app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state,featureState:fsState};}
   function fullBackup(){fsState.lastBackupAt=today();saveFs();downloadBlob(`nexus-full-backup-${today()}.json`,JSON.stringify(backupPayload(),null,2),'application/json;charset=utf-8');notify('Full backup downloaded. Keep an extra copy outside the browser.');renderHub();}
   async function restoreOrMerge(file){
