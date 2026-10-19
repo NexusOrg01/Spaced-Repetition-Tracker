@@ -4,6 +4,7 @@ const require = createRequire(import.meta.url);
 const {
   validateBackupState,
   sanitizeFocusState,
+  sanitizeFsrsCard,
   normalizeFeatureState,
   mergeFeatureState,
   resolveReplaceFeatureState,
@@ -49,6 +50,22 @@ assert.throws(() => validateBackupState({ ...validBackup, topics: [{ name: 'Dema
 assert.throws(() => validateBackupState({ ...validBackup, settings: [] }), /settings.*must be an object/);
 assert.throws(() => validateBackupState({ ...validBackup, history: 'not an array' }), /must be an array/);
 assert.throws(() => validateBackupState({ ...validBackup, exams: [null] }), /malformed record/);
+
+const fsrsCard = {
+  stability: 42.5, difficulty: 6.2, reps: 8, lapses: 1,
+  lastReview: '2026-10-18T00:00:00.000Z', due: '2026-11-01', intervalDays: 14
+};
+assert.deepEqual(sanitizeFsrsCard(fsrsCard), fsrsCard,
+  'valid FSRS memory state must survive backup normalization exactly');
+assert.equal(sanitizeFsrsCard({ stability: 0, difficulty: 5 }), undefined,
+  'invalid FSRS memory cards must be discarded safely');
+assert.deepEqual(sanitizeFsrsCard({
+  stability: 999999, difficulty: 100, reps: -2, lapses: 'bad',
+  lastReview: 'not-a-date', due: null, intervalDays: 999999
+}), {
+  stability: 36500, difficulty: 10, reps: 0, lapses: 0,
+  lastReview: null, due: null, intervalDays: 36500
+}, 'FSRS card values must be bounded and malformed dates sanitized');
 
 const defaults = {
   version: 1,
