@@ -75,7 +75,7 @@ assert.ok(html.includes('if(focusStart&&!focusTimer)focusTimer=setInterval(refre
 assert.ok(html.includes('focusStart=Date.now();focusPausedAt=null;fsState.focusStartedAt=new Date(focusStart).toISOString();fsState.focusPausedAt=null;saveFs();'), 'starting a new focus session must clear stale pause state before persisting');
 assert.ok(serviceWorker.includes("'./fsrs-bundle.js'") && serviceWorker.includes("'./backup-restore-utils.js'"),
   'offline app shell must cache the scheduler and backup safety helpers');
-assert.ok(serviceWorker.includes("nexus-rating-analytics-v11"), 'the service-worker cache must be versioned when the app shell changes');
+assert.ok(serviceWorker.includes("nexus-rating-analytics-v12"), 'the service-worker cache must be versioned when the app shell changes');
 assert.equal(manifest.theme_color, '#6C8AFF', 'installed app chrome should use the Nexus brand color');
 assert.equal(manifest.display, 'standalone', 'the PWA must remain installable in standalone mode');
 assert.ok(serviceWorker.includes('if(url.search||!response||response.status!==200||response.type!==\'basic\')return Promise.resolve(response)'), 'OAuth callback and other query-bearing URLs must not be cached');
