@@ -29,7 +29,7 @@ const inlineScripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g
 assert.equal(inlineScripts.length, 7, 'review the expected number of inline scripts when the page changes');
 for (const [index, match] of inlineScripts.entries()) {
   const hash = "'sha256-" + createHash('sha256').update(match[2], 'utf8').digest('base64') + "'";
-  assert.ok(scriptSources.has(hash), 'CSP must include the exact hash for inline script #' + index);
+  assert.ok(scriptSources.has(hash), 'CSP must include the exact hash for inline script #' + index + ': ' + hash);
 }
 
 const expectedDirectives = {
