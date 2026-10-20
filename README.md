@@ -1,16 +1,22 @@
-# Nexus: Spaced Repetition Tracker (Netlify bundle)
+# Nexus: Spaced Repetition Tracker
 
-A mobile-friendly, offline-first study tracker packaged as an installable Progressive Web App (PWA). The bundle is static and does not need a build command. Optional cloud sync is preconfigured to use the Nexus Supabase project.
+Nexus is a mobile-friendly, offline-first study tracker packaged as an installable Progressive Web App (PWA). The application is a static web app and does not require a build command. Optional cloud synchronization uses the Nexus Supabase project.
 
-## Deploy free with Netlify
+## Current deployment
 
-1. Download and extract `nexus-netlify-bundle.zip`.
-2. In Netlify, choose **Add new site → Deploy manually** (wording may vary).
-3. Upload the extracted `nexus-netlify-bundle` folder, or drag its contents into the deploy drop zone. `index.html`, `manifest.webmanifest`, `sw.js`, icons, and `netlify.toml` must be at the published root.
-4. Open the resulting HTTPS URL in Chrome on Android.
-5. In Chrome's menu, choose **Install app** or **Add to Home screen**.
+The supported production deployment is hosted on Vercel:
 
-You can also deploy from GitHub by pushing these files to a repository and connecting that repository to Netlify with the publish directory set to `.` and no build command.
+- **Production app:** https://spaced-repetition-tracker-delta.vercel.app/
+- **Repository:** https://github.com/NexusOrg01/Spaced-Repetition-Tracker
+- **Production branch:** `main`
+
+The production deployment is connected to this GitHub repository. Changes merged into `main` can trigger a new production deployment, so review and test changes before merging. Do not treat a successful build as proof that every live interaction or database policy has been verified.
+
+To install Nexus on Android, open the production HTTPS URL in Chrome, open the browser menu, and choose **Install app** or **Add to Home screen**. On supported desktop browsers, use the browser's install option.
+
+### Legacy/manual Netlify deployment
+
+The repository still contains legacy Netlify configuration and may be deployable as a static bundle, but Netlify is not the current production host. If you intentionally maintain a separate Netlify site, deploy the full application bundle with `index.html`, `manifest.webmanifest`, `sw.js`, icons, and any required static assets at the published root. Keep its origin and cloud-auth redirect configuration separate from the Vercel production site.
 
 ## Included features
 
@@ -67,7 +73,7 @@ Deploy the entire bundle, not only `index.html`. Keep the same Netlify site/doma
 
 ## Cloud sync setup
 
-Cloud sync uses the live `nexus-spaced-repetition` project in the Mumbai region (`ap-south-1`). Its API URL is `https://txugbdavblpettcnhcxl.supabase.co`; the app already contains its public publishable key. The `public.nexus_user_data` table and owner-only RLS policies have been created in that project. The SQL below documents the schema for reference or a separate environment.
+Cloud sync uses the live `nexus-spaced-repetition` project in the Mumbai region (`ap-south-1`). Its API URL is `https://txugbdavblpettcnhcxl.supabase.co`; the app already contains its public publishable key. The `public.nexus_user_data` table and intended owner-only RLS policies are documented below. Their current live state must be verified in Supabase; do not assume that the SQL shown here proves the deployed database is configured correctly. The SQL below documents the schema for reference or a separate environment.
 
 Cloud sync uses one row per authenticated user and relies on Row Level Security (RLS).
 
@@ -91,7 +97,7 @@ If local and cloud data differ at sign-in, Nexus offers **Merge offline data**, 
 
 ## One-time authentication setup for the deployed site
 
-The database and client connection are configured. To allow authentication redirects for the deployed Vercel site:
+The client connection is configured in the application. The README records the intended database schema and owner-only RLS policy definitions, but this documentation alone does not verify the live Supabase project's current policies. Confirm the live table policies in the Supabase dashboard before relying on cloud sync for recovery. To allow authentication redirects for the deployed Vercel site:
 
 1. Open the [Nexus Supabase Auth URL Configuration](https://supabase.com/dashboard/project/txugbdavblpettcnhcxl/auth/url-configuration).
 2. Set **Site URL** to `https://spaced-repetition-tracker-delta.vercel.app/`.
@@ -123,3 +129,15 @@ The old community request API has been removed from the application branch. Exis
 Do not run `supabase/syllabus-community.sql` or `supabase/harden-syllabus-community-privileges.sql`; both are now marked deprecated and would not be part of the supported setup. The remaining cloud-sync setup uses `public.nexus_user_data` and is separate from the retired wishlist.
 
 Any historical GitHub issues created by the previous wishlist are not automatically deleted. They can be retained as a record or manually closed later. The current application source no longer requires `NEXUS_ADMIN_USER_ID`, `SUPABASE_SERVICE_ROLE_KEY`, community-only `GITHUB_TOKEN` / `GITHUB_REPOSITORY` overrides, or `Nexus_KV_REST_API_URL` / `Nexus_KV_REST_API_TOKEN`. Before removing those variables from Vercel, check whether any unrelated deployed function still uses them. Never expose their values in frontend code or commit them to the repository, and never remove credentials used by an unrelated service.
+
+
+## Maintenance and verification notes
+
+The following describes repository state and the limits of what source review can prove; it is not a guarantee about every live external service.
+
+- Full JSON backup schema 4 includes tracker and Study Hub state. Restore validation, rollback protection, and FSRS memory-preservation regression tests are part of the current source and validation workflow. Keep an independent backup outside the browser.
+- The preview cloud guard is present in the application source. Preview deployments should not use the live Supabase project; verify the visible cloud status when testing a preview.
+- The current application uses a Google Forms responder link for curriculum requests. The former in-app wishlist API is absent from the current source.
+- The retirement migration is `supabase/migrations/20261018_retire_community_wishlist.sql`. Run it only after verifying the Google-Forms-based app is live in Production and the old API is absent. Do not run the deprecated wishlist setup/privilege SQL files.
+- A successful CI run or Vercel deployment does not independently prove live Supabase RLS permissions, authentication-provider settings, response headers, or cross-device restore behavior. Verify those separately when needed.
+- The repository currently has open pull requests that must be reviewed against current `main`; do not merge stale or superseded PRs without rechecking their changes.
