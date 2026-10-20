@@ -209,6 +209,11 @@ async function upload(){
      await assertUploadOwner();
      if(latest&&latest.payload&&stableJson(latest.payload)===stableJson(attemptedPayload)){
       lastRemoteStamp=latest.updated_at||null;
+      // A matching read-back proves this exact snapshot is the new cloud baseline,
+      // even when the conditional write returned an ambiguous conflict response.
+      // Advance the merge base before acknowledging the queue so later offline
+      // edits cannot compare against an obsolete baseline and resurrect deletions.
+      if(queue)queue.rememberBase(localStorage,uploadUserId,latest.payload,lastRemoteStamp);
       if(queue&&attemptedOperationId)queue.acknowledge(localStorage,uploadUserId,attemptedOperationId,attemptedBase,lastRemoteStamp);
       else if(queue){queue.rememberStamp(localStorage,uploadUserId,lastRemoteStamp);const later=queue.getPending(localStorage,uploadUserId);if(later&&later.baseServerVersion===(attemptedPriorStamp||null))queue.rebase(localStorage,uploadUserId,snapshot(),lastRemoteStamp,'local-change-during-upload');}
       status('Synced');say('Verified: the cloud already contains this exact snapshot, so the interrupted write was safely acknowledged.');uploaded=true;alreadyCommitted=true;
