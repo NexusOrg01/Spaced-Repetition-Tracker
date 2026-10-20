@@ -63,7 +63,7 @@ const cloudCommit = cloud.indexOf('commitLocalStorageAtomically(localStorage,ent
 const cloudAssignment = cloud.indexOf('state=nextState;');
 assert.ok(cloudCommit >= 0 && cloudAssignment > cloudCommit, 'persist cloud workspace before replacing in-memory state');
 assert.ok(cloud.includes('entries.push({key:OWNER_KEY,value:String(ownerId)})'), 'account owner marker shares the workspace transaction');
-assert.ok(cloud.includes('function applyRemote(payload,ownerId)'), 'cloud hydration accepts an account owner to commit atomically');
+assert.ok(cloud.includes('function applyRemote(payload,ownerId,serverVersion)'), 'cloud hydration accepts an account owner and the matching cloud revision to commit atomically');
 assert.ok(cloud.includes('window.NexusMergeFeatureState(localFeatures,remoteFeatures,{})'), 'local/cloud merges must preserve non-conflicting Study Hub records while local values win conflicts');
 assert.ok(cloud.includes('window.NexusSetFeatureState(nextFeatures,{persist:false,render:false})'), 'hydration does not perform a second, independent feature-state write');
 assert.ok(cloud.includes('function resetToEmpty(ownerId){') && cloud.includes('applyWorkspaceSnapshot(emptyState(),{},ownerId)'), 'new-account reset commits the owner marker with the empty workspace');
