@@ -26,13 +26,20 @@
     const message=doc.getElementById('workspaceIsolationMessage');
     const retry=doc.getElementById('workspaceIsolationRetry');
     const signOut=doc.getElementById('workspaceIsolationSignOut');
+    const details=doc.getElementById('workspaceIsolationDetails');
+    const help=doc.getElementById('cloudHelpText');
     const app=doc.querySelector('.app');
     if(!account||!overlay||!heading||!message||!retry||!signOut)return false;
     function refresh(){
       const activeId=accountIdFromTitle(account.title);
       let ownerId='';
       try{ownerId=root.localStorage.getItem(OWNER_KEY)||'';}catch(_){}
-      const decision=resolveWorkspaceLock(activeId,ownerId,status?status.textContent:'');
+      const statusText=status?status.textContent:'';
+      const decision=resolveWorkspaceLock(activeId,ownerId,statusText);
+      if(details){
+        const helpText=help?String(help.textContent||'').trim():'';
+        details.textContent=decision.locked&&ERROR_STATUS.test(statusText)?('Status: '+statusText+(helpText?' — '+helpText:'')):'';
+      }
       overlay.hidden=!decision.locked;
       overlay.setAttribute('aria-hidden',String(!decision.locked));
       overlay.dataset.state=decision.phase;
