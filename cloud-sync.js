@@ -61,14 +61,14 @@ async function upload(){
  if(syncing){pendingSync=true;return false;}
  const uploadUserId=session.user.id;
  if(localStorage.getItem(OWNER_KEY)!==uploadUserId){ready=false;status('Account queue paused');say('The active account does not own this local workspace. No cloud write was attempted; reconnect to the correct account.');return false;}
- syncing=true;status('Syncing…');let uploaded=false,attemptedPayload=null,attemptedOperationId=null,attemptedBase=null;
+ syncing=true;status('Syncing…');let uploaded=false,attemptedPayload=null,attemptedOperationId=null,attemptedBase=null,attemptedPriorStamp=null;
  const queue=window.NexusOfflineSyncQueue;
  try{
   const {data:authData,error:authError}=await client.auth.getUser();
   if(authError)throw new Error('Supabase could not verify the active login before cloud write: '+authError.message);
   if(!authData.user||authData.user.id!==uploadUserId||!session||session.user.id!==uploadUserId)throw new Error('The active Google/account session changed or could not be verified. Cloud write paused to protect the other account. Sign in again and retry.');
   const pending=queue?queue.getPending(localStorage,uploadUserId):null;
-  const priorStamp=lastRemoteStamp;
+  const priorStamp=lastRemoteStamp;attemptedPriorStamp=priorStamp;
   const payload=pending?pending.payload:snapshot();attemptedPayload=payload;attemptedOperationId=pending?pending.operationId:null;attemptedBase=pending?pending.baseServerVersion:(priorStamp||null);
   if(pending){
    const before=await fetchRemote(uploadUserId);
@@ -113,7 +113,7 @@ async function upload(){
      if(latest&&latest.payload&&stableJson(latest.payload)===stableJson(attemptedPayload)){
       lastRemoteStamp=latest.updated_at||null;
       if(queue&&attemptedOperationId)queue.acknowledge(localStorage,uploadUserId,attemptedOperationId,attemptedBase,lastRemoteStamp);
-      else if(queue){queue.rememberStamp(localStorage,uploadUserId,lastRemoteStamp);const later=queue.getPending(localStorage,uploadUserId);if(later&&later.baseServerVersion===(priorStamp||null))queue.rebase(localStorage,uploadUserId,snapshot(),lastRemoteStamp,'local-change-during-upload');}
+      else if(queue){queue.rememberStamp(localStorage,uploadUserId,lastRemoteStamp);const later=queue.getPending(localStorage,uploadUserId);if(later&&later.baseServerVersion===(attemptedPriorStamp||null))queue.rebase(localStorage,uploadUserId,snapshot(),lastRemoteStamp,'local-change-during-upload');}
       status('Synced');say('Verified: the cloud already contains this exact snapshot, so the interrupted write was safely acknowledged.');uploaded=true;alreadyCommitted=true;
      }
     }
