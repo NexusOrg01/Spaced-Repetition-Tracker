@@ -61,7 +61,7 @@ async function upload(){
  if(syncing){pendingSync=true;return false;}
  const uploadUserId=session.user.id;
  if(localStorage.getItem(OWNER_KEY)!==uploadUserId){ready=false;status('Account queue paused');say('The active account does not own this local workspace. No cloud write was attempted; reconnect to the correct account.');return false;}
- syncing=true;status('Syncing…');let uploaded=false;
+ syncing=true;status('Syncing…');let uploaded=false,attemptedPayload=null,attemptedOperationId=null,attemptedBase=null;
  const queue=window.NexusOfflineSyncQueue;
  try{
   const {data:authData,error:authError}=await client.auth.getUser();
@@ -69,7 +69,7 @@ async function upload(){
   if(!authData.user||authData.user.id!==uploadUserId||!session||session.user.id!==uploadUserId)throw new Error('The active Google/account session changed or could not be verified. Cloud write paused to protect the other account. Sign in again and retry.');
   const pending=queue?queue.getPending(localStorage,uploadUserId):null;
   const priorStamp=lastRemoteStamp;
-  const payload=pending?pending.payload:snapshot();
+  const payload=pending?pending.payload:snapshot();attemptedPayload=payload;attemptedOperationId=pending?pending.operationId:null;attemptedBase=pending?pending.baseServerVersion:(priorStamp||null);
   if(pending){
    const before=await fetchRemote(uploadUserId);
    await assertActiveUser(uploadUserId);
@@ -103,13 +103,29 @@ async function upload(){
   }
   status('Synced');uploaded=true;
  }catch(e){
-  if(e&&e.code==='NEXUS_CLOUD_CONFLICT'){ready=false;status('Cloud conflict');say('Another device changed the cloud backup after this device queued its snapshot. Local data and the pending snapshot are preserved; automatic cloud writes are paused. Review the data and choose merge or replace to resolve this conflict.');}
+  if(e&&e.code==='NEXUS_CLOUD_CONFLICT'){
+   let alreadyCommitted=false;
+   try{
+    if(attemptedPayload){
+     await assertActiveUser(uploadUserId);
+     const latest=await fetchRemote(uploadUserId);
+     await assertActiveUser(uploadUserId);
+     if(latest&&latest.payload&&stableJson(latest.payload)===stableJson(attemptedPayload)){
+      lastRemoteStamp=latest.updated_at||null;
+      if(queue&&attemptedOperationId)queue.acknowledge(localStorage,uploadUserId,attemptedOperationId,attemptedBase,lastRemoteStamp);
+      else if(queue){queue.rememberStamp(localStorage,uploadUserId,lastRemoteStamp);const later=queue.getPending(localStorage,uploadUserId);if(later&&later.baseServerVersion===(priorStamp||null))queue.rebase(localStorage,uploadUserId,snapshot(),lastRemoteStamp,'local-change-during-upload');}
+      status('Synced');say('Verified: the cloud already contains this exact snapshot, so the interrupted write was safely acknowledged.');uploaded=true;alreadyCommitted=true;
+     }
+    }
+   }catch(recoveryError){console.warn('Nexus ambiguous cloud-write recovery could not verify the snapshot',recoveryError);}
+   if(!alreadyCommitted){ready=false;status('Cloud conflict');say('Another device changed the cloud backup after this device queued its snapshot. Local data and the pending snapshot are preserved; automatic cloud writes are paused. Review the data and choose merge or replace to resolve this conflict.');}
+  }
   else{ready=false;status('Sync error');say('Cloud upload failed or could not be verified. Local data and the pending snapshot are preserved. Nexus will retry automatically when the connection is available.');scheduleRetry();}
   console.error('Nexus cloud sync failed',e);
  }finally{syncing=false;if(pendingSync){pendingSync=false;if(ready)schedule();else scheduleRetry();}}
  return uploaded;
 }
-function schedule(){if(!client||!session||!ready)return;clearTimeout(timer);timer=setTimeout(()=>{if(syncing){pendingSync=true;return;}upload();},650);}
+function schedule(){if(!client||!session||!ready||(typeof navigator!=='undefined'&&!navigator.onLine))return;clearTimeout(timer);timer=setTimeout(()=>{if(syncing){pendingSync=true;return;}upload();},650);}
 async function ensureClient(){if(isUnsafeCloudOrigin())throw new Error('Cloud sync is disabled on this preview/local copy to protect real cloud data.');if(client)return client;const c=config();if(!window.supabase||!window.supabase.createClient)await loadSupabaseLibrary();if(!client){client=window.supabase.createClient(c.url,c.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});client.auth.onAuthStateChange((event,newSession)=>{session=newSession||null;if(event==='TOKEN_REFRESHED'||event==='USER_UPDATED'){session=newSession;setControls();return;}if(event==='SIGNED_OUT'){session=null;ready=false;clearTimeout(timer);clearRetry();if(initializing&&initializingUserId){queuedSession=null;hasQueuedSession=true;}status('Not signed in · offline ready');say('You can continue using your local data offline. Signing out does not erase it.');setControls();return;}if(event==='SIGNED_IN'||event==='INITIAL_SESSION'){const uid=newSession&&newSession.user?newSession.user.id:null;if(uid!==lastUserId||!ready)setTimeout(()=>initializeSession(newSession),0);else{session=newSession;setControls();}}});}return client;}
 let connectPromise=null;function connect(){if(isUnsafeCloudOrigin()){previewCloudBlockedMessage();setControls();return Promise.resolve();}if(connectPromise)return connectPromise;connectPromise=(async()=>{try{await ensureClient();const {data:{session:s},error}=await client.auth.getSession();if(error)throw error;await initializeSession(s);}catch(e){status('Connection error');say('Connection error: '+((e&&e.message)||'unknown error')+'. You can still use Nexus offline; reconnect to sign in and sync.');console.error('Nexus connection failed',e);scheduleRetry();}finally{connectPromise=null;}})();return connectPromise;}
 async function googleSignIn(){try{if(isUnsafeCloudOrigin()){previewCloudBlockedMessage();setControls();return;}if(session){say('You are already signed in. Sign out before connecting a different account.');return;}if(!confirm("IMPORTANT: If you sign in with a different account from the one you used last time, your unsynced offline data on this device will be deleted. To preserve it, sign in with your previous account so you can merge it with that account’s cloud data. If you continue with a different account, your unsynced offline data will be discarded. The previous account’s cloud data will remain unchanged. Continue?")){status('Sign-in cancelled');return;}status('Opening Google sign-in…');await ensureClient();const {data,error}=await client.auth.signInWithOAuth({provider:'google',options:{redirectTo:location.origin+location.pathname,queryParams:{prompt:'select_account'}}});if(error)throw error;if(data&&data.url)location.assign(data.url);}catch(e){status('Google sign-in failed');say((e&&e.message)||'Could not start Google sign-in. Check your connection and try again.');console.error('Nexus Google sign-in failed',e);}}
