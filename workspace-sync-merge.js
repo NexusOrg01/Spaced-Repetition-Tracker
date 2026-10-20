@@ -60,11 +60,47 @@
     });
     return map;
   }
+  const SCHEDULE_FIELDS=new Set(['fsrs','dueDate','nextReviewDate','nextReviewAt','lastReviewed','lastReviewedAt','intervalDays','interval','reviewCount','reps','lapses','stability','difficulty']);
+  function scheduleProjection(record){
+    const out={};
+    if(isObject(record))for(const key of SCHEDULE_FIELDS)if(Object.prototype.hasOwnProperty.call(record,key))out[key]=record[key];
+    return out;
+  }
+  function omitSchedule(record){
+    const out={...(isObject(record)?record:{})};
+    for(const key of SCHEDULE_FIELDS)delete out[key];
+    return out;
+  }
+  function mergeTopicRecord(base,local,remote,path,conflicts){
+    // Topic scheduling/FSRS fields form one logical unit. If both devices
+    // reviewed the same topic offline, do not splice parts of two scheduler
+    // outputs into an internally inconsistent card; keep local schedule and
+    // preserve the complete remote alternative in the conflict archive.
+    if(!isObject(local)||!isObject(remote)||local===ABSENT||remote===ABSENT)return mergeValue(base,local,remote,path,conflicts);
+    const baseSchedule=base===ABSENT?ABSENT:scheduleProjection(base);
+    const localSchedule=scheduleProjection(local),remoteSchedule=scheduleProjection(remote);
+    const localChanged=!same(baseSchedule===ABSENT?{}:baseSchedule,localSchedule);
+    const remoteChanged=!same(baseSchedule===ABSENT?{}:baseSchedule,remoteSchedule);
+    if(!localChanged||!remoteChanged||same(localSchedule,remoteSchedule))return mergeValue(base,local,remote,path,conflicts);
+    recordConflict(conflicts,path+'.__reviewSchedule',baseSchedule,localSchedule,remoteSchedule,'local');
+    const merged=mergeValue(base===ABSENT?ABSENT:omitSchedule(base),omitSchedule(local),omitSchedule(remote),path,conflicts);
+    if(merged===ABSENT)return ABSENT;
+    return {...merged,...localSchedule};
+  }
+  function mergeSetMap(baseMap,localMap,remoteMap){
+    const b=isObject(baseMap)?baseMap:{},l=isObject(localMap)?localMap:{},r=isObject(remoteMap)?remoteMap:{};
+    const keys=new Set([...Object.keys(b),...Object.keys(l),...Object.keys(r)]),out={};
+    for(const key of keys){
+      const value=mergeSet(rows(b[key]),rows(l[key]),rows(r[key]));
+      if(value.length)out[key]=value;
+    }
+    return out;
+  }
   function mergeRecords(baseRows,localRows,remoteRows,path,conflicts){
     const b=rowMap(baseRows),l=rowMap(localRows),r=rowMap(remoteRows),ids=new Set([...b.keys(),...l.keys(),...r.keys()]),out=[];
     for(const id of ids){
       const bv=b.has(id)?b.get(id):ABSENT,lv=l.has(id)?l.get(id):ABSENT,rv=r.has(id)?r.get(id):ABSENT;
-      const value=mergeValue(bv,lv,rv,path+'['+id+']',conflicts);
+      const value=path==='state.topics'?mergeTopicRecord(bv,lv,rv,path+'['+id+']',conflicts):mergeValue(bv,lv,rv,path+'['+id+']',conflicts);
       if(value!==ABSENT)out.push(value);
     }
     return out;
@@ -86,6 +122,7 @@
       let value;
       if(recordFields.includes(key))value=mergeRecords(b[key],l[key],r[key],path+'.'+key,conflicts);
       else if(key==='selectedTopicIds')value=mergeSet(b[key],l[key],r[key]);
+      else if(path==='featureState'&&key==='taskChecks')value=mergeSetMap(b[key],l[key],r[key]);
       else{
         const bv=Object.prototype.hasOwnProperty.call(b,key)?b[key]:ABSENT;
         const lv=Object.prototype.hasOwnProperty.call(l,key)?l[key]:ABSENT;
