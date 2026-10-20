@@ -210,4 +210,33 @@ assert.ok(converged.includes('online-race-topic'),'the cloud device addition mus
 assert.equal(queue.hasPending(storage,accountA.id),false,'the automatically merged snapshot must be acknowledged only after verification');
 assert.ok(!getElement('cloudHelpText').textContent.toLowerCase().includes('choose one of the available data options'),'ordinary same-account revision conflicts must not request a three-way workspace choice');
 assert.equal(queue.getBase(storage,accountA.id).state.topics.length,rows.get(accountA.id).payload.state.topics.length,'the acknowledged merged snapshot becomes the next three-way merge base');
+
+const confirmedBase=queue.getBase(storage,accountA.id);
+const staleLocalState=JSON.parse(JSON.stringify(confirmedBase.state));
+context.state=staleLocalState;
+storage.setItem(STATE_KEY,JSON.stringify(staleLocalState));
+storage.setItem(FEATURE_KEY,JSON.stringify(confirmedBase.featureState));
+const cloudBeforeStale=rows.get(accountA.id);
+const cloudAfterStale=JSON.parse(JSON.stringify(cloudBeforeStale.payload));
+cloudAfterStale.state.topics.push({id:'cloud-only-after-device-left',name:'Added online while device was away',subjectId:'subject-general',dueDate:'2026-10-22'});
+rows.set(accountA.id,{...cloudBeforeStale,payload:cloudAfterStale,updated_at:new Date(Date.parse(cloudBeforeStale.updated_at)+60000).toISOString()});
+await window.NexusCloudSync.reconnect();
+assert.ok(rows.get(accountA.id).payload.state.topics.some(topic=>topic.id==='cloud-only-after-device-left'),'a device with no pending queue but an unchanged stale base must load the newer cloud workspace automatically');
+assert.ok(!getElement('cloudHelpText').textContent.toLowerCase().includes('choose one of the available data options'),'a plain same-account cloud refresh must not show the workspace-choice dialog');
+
+const baseForUnqueuedEdits=queue.getBase(storage,accountA.id);
+const unqueuedLocalState=JSON.parse(JSON.stringify(baseForUnqueuedEdits.state));
+unqueuedLocalState.topics.push({id:'recovered-untracked-local',name:'Local edit requiring recovery',subjectId:'subject-general',dueDate:'2026-10-23'});
+context.state=unqueuedLocalState;
+storage.setItem(STATE_KEY,JSON.stringify(unqueuedLocalState));
+storage.setItem(FEATURE_KEY,JSON.stringify(baseForUnqueuedEdits.featureState));
+const cloudBeforeUnqueued=rows.get(accountA.id);
+const cloudWithIndependentEdit=JSON.parse(JSON.stringify(cloudBeforeUnqueued.payload));
+cloudWithIndependentEdit.state.topics.push({id:'cloud-untracked-concurrent',name:'Cloud edit while local state was dirty',subjectId:'subject-general',dueDate:'2026-10-24'});
+rows.set(accountA.id,{...cloudBeforeUnqueued,payload:cloudWithIndependentEdit,updated_at:new Date(Date.parse(cloudBeforeUnqueued.updated_at)+60000).toISOString()});
+await window.NexusCloudSync.reconnect();
+const mergedUnqueued=rows.get(accountA.id).payload.state.topics.map(topic=>topic.id);
+assert.ok(mergedUnqueued.includes('recovered-untracked-local')&&mergedUnqueued.includes('cloud-untracked-concurrent'),'untracked same-account local edits must merge with newer cloud work instead of prompting or overwriting');
+assert.equal(queue.hasPending(storage,accountA.id),false,'recovered untracked edits clear only after verified upload');
+assert.ok(!getElement('cloudHelpText').textContent.toLowerCase().includes('choose one of the available data options'),'dirty same-account local state must not fall through to a three-way workspace choice');
 console.log('Cloud sync runtime tests passed: offline recovery, verified acknowledgement, and account isolation.');
