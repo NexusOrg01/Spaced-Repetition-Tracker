@@ -50,4 +50,24 @@ const snap=(state,featureState={})=>({app:'Nexus',schema:4,exportedAt:'2026-10-2
  const result=merge.merge(base,local,remote);
  assert.deepEqual(result.payload.featureState.selectedTopicIds,['t2'],'independent additions and removals in a set merge correctly');
 }
+
+{
+ const base=snap({topics:[{id:'t1',name:'Topic',subjectId:'sub',notes:'base',dueDate:'2026-11-01',intervalDays:5,reviewCount:2,fsrs:{stability:4,difficulty:5,reps:2}}]});
+ const local=snap({topics:[{id:'t1',name:'Topic',subjectId:'sub',notes:'base',dueDate:'2026-11-08',intervalDays:7,reviewCount:3,fsrs:{stability:6,difficulty:5,reps:3}}]});
+ const remote=snap({topics:[{id:'t1',name:'Topic',subjectId:'sub',notes:'cloud notes',dueDate:'2026-11-12',intervalDays:11,reviewCount:3,fsrs:{stability:9,difficulty:6,reps:3}}]});
+ const result=merge.merge(base,local,remote),topic=result.payload.state.topics[0];
+ assert.equal(topic.notes,'cloud notes','independent topic notes edit remains mergeable');
+ assert.equal(topic.dueDate,'2026-11-08','simultaneous review schedules must not be spliced field by field');
+ assert.equal(topic.fsrs.stability,6,'the local FSRS card remains internally coherent');
+ assert.equal(topic.intervalDays,7);
+ assert.ok(result.conflicts.some(c=>c.path==='state.topics[t1].__reviewSchedule'&&c.remote.dueDate==='2026-11-12'&&c.remote.fsrs.stability===9),'the complete alternative schedule must be recoverable');
+}
+{
+ const base=snap({}, {taskChecks:{'topic-a':['checked-1']}});
+ const local=snap({}, {taskChecks:{'topic-a':['checked-1','checked-local']}});
+ const remote=snap({}, {taskChecks:{'topic-a':['checked-1','checked-cloud']}});
+ const result=merge.merge(base,local,remote);
+ assert.deepEqual(result.payload.featureState.taskChecks['topic-a'].sort(),['checked-1','checked-cloud','checked-local'],'independent checklist changes should merge as a set');
+ assert.equal(result.conflicts.length,0);
+}
 console.log('Automatic three-way workspace merge tests passed.');
