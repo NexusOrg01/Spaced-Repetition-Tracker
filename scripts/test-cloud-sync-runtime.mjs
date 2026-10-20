@@ -93,7 +93,7 @@ function makeQuery(table) {
     },
     async then(resolve, reject) { return Promise.resolve().then(async () => {
       if (!networkAvailable) throw new Error('simulated offline network');
-      if (table !== 'nexus_user_data' || !activeSession || userId !== activeSession.user.id) return { data: [], error: null };
+      if (table !== 'nexus_user_data' || !activeSession) return { data: [], error: null };
       if (operation === 'insert') {
         const owner = values.user_id;
         if (owner !== activeSession.user.id) return { data: null, error: { code: '42501', message: 'owner mismatch' } };
@@ -101,6 +101,7 @@ function makeQuery(table) {
         rows.set(owner, { user_id: owner, payload: values.payload, updated_at: values.updated_at });
         return { data: [{ updated_at: values.updated_at }], error: null };
       }
+      if (userId !== activeSession.user.id) return { data: [], error: null };
       if (operation === 'update') {
         const row = rows.get(userId);
         if (!row || row.updated_at !== expectedStamp || values.user_id === undefined && userId !== activeSession.user.id) return { data: [], error: null };
