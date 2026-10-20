@@ -136,7 +136,7 @@ async function settle(event) {
 {
   const h = createHarness(async () => { throw new Error('offline'); });
   const cache = await h.caches.open(CACHE_NAME);
-  for (const asset of ['./backup-restore-utils.js', './offline-sync-queue.js']) {
+  for (const asset of ['./backup-restore-utils.js', './offline-sync-queue.js', './nexus-build-config.js']) {
     const request = new h.RequestStub(asset);
     await cache.put(request, response(200, 'basic', 'offline-cache'));
     const event = eventFor(request);
