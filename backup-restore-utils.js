@@ -136,10 +136,12 @@
       return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
     };
     const started = isRecord(input) ? cleanTimestamp(input.focusStartedAt) : null;
+    const actualStarted = isRecord(input) ? cleanTimestamp(input.focusActualStartedAt) : null;
     let paused = isRecord(input) ? cleanTimestamp(input.focusPausedAt) : null;
     if (!started || !paused || Date.parse(paused) < Date.parse(started)) paused = null;
     return {
       focusStartedAt: started,
+      focusActualStartedAt: actualStarted || started,
       focusPausedAt: paused,
       focusTopicId: isRecord(input) && typeof input.focusTopicId === 'string' ? input.focusTopicId.slice(0, 300) : '',
       focusSubjectId: isRecord(input) && typeof input.focusSubjectId === 'string' ? input.focusSubjectId.slice(0, 300) : ''
@@ -176,6 +178,7 @@
       lastBackupAt: typeof input.lastBackupAt === 'string' && input.lastBackupAt.length <= 100 ? input.lastBackupAt : defaults.lastBackupAt,
       lastReminderAt: typeof input.lastReminderAt === 'string' && input.lastReminderAt.length <= 100 ? input.lastReminderAt : defaults.lastReminderAt,
       focusStartedAt: cleanTimestamp(input.focusStartedAt, defaults.focusStartedAt ?? null),
+      focusActualStartedAt: cleanTimestamp(input.focusActualStartedAt, defaults.focusActualStartedAt ?? input.focusStartedAt ?? null),
       focusPausedAt: cleanTimestamp(input.focusPausedAt, defaults.focusPausedAt ?? null),
       focusTopicId: typeof input.focusTopicId === 'string' ? input.focusTopicId.slice(0, 200) : '',
       focusSubjectId: typeof input.focusSubjectId === 'string' ? input.focusSubjectId.slice(0, 200) : ''
