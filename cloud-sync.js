@@ -119,12 +119,11 @@ async function reconcileConcurrentSnapshot(userId,initialRemote){
    totalConflicts+=result.conflicts.length;
    updateConflictRecoveryButton();
   }
-  queue.rememberBase(localStorage,userId,remote.payload,remoteStamp);
   const nextState=normalizeState(result.payload.state);
   const nextFeatures=window.NexusNormalizeFeatureState(result.payload.featureState||{});
   ready=false;
   applyWorkspaceSnapshot(nextState,nextFeatures,userId);
-  queue.rebase(localStorage,userId,snapshot(),remoteStamp,'automatic-three-way-merge');
+  queue.rebaseWithBase(localStorage,userId,snapshot(),remoteStamp,'automatic-three-way-merge',{state:remote.payload.state,featureState:remote.payload.featureState||{}});
   lastRemoteStamp=remoteStamp;ready=true;
   const uploaded=await upload();
   if(uploaded)return {ok:true,conflicts:totalConflicts};
