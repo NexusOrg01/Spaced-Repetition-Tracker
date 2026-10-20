@@ -24,7 +24,7 @@ assert.ok(index.includes('window.NexusStorageKey = STORAGE_KEY;'), 'expose the p
 assert.ok(index.includes('window.NexusFeatureStorageKey=FEATURE_KEY;'), 'expose the Study Hub storage key for shared transactions');
 assert.ok(index.includes('fsrs:window.NexusBackupRestoreUtils.sanitizeFsrsCard(t.fsrs)'), 'topic normalization must preserve validated FSRS memory state from full backups');
 assert.ok(index.includes('window.NexusNormalizeFeatureState=value=>'), 'cloud data must use the shared Study Hub normalizer');
-assert.ok(index.includes('window.NexusMergeFeatureState=(current,imported,rawImported)=>'), 'cloud merges must use the shared Study Hub merge helper');
+assert.ok(index.includes('window.NexusMergeFeatureState=(current,imported,rawImported)=>'), 'cloud data must use the shared Study Hub merge helper');
 
 const restore = section(index, 'async function restoreOrMerge(file){', 'function formatElapsed(ms)', 'JSON restore');
 const restoreCommit = restore.indexOf('commitLocalStorageAtomically(localStorage,');
@@ -52,8 +52,10 @@ assert.ok(!index.includes(".upsert({user_id:uploadUserId,payload,updated_at:stam
 assert.ok(index.includes("conflict.code='NEXUS_CLOUD_CONFLICT'"), 'verification mismatches must be treated as cloud conflicts');
 assert.ok(index.includes("else{ready=false;status('Sync error')"), 'failed cloud writes must pause automatic retries until reinitialization');
 
-assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v14';"), 'cache prefix must isolate Nexus-owned caches and version must be bumped after app-shell changes');
+assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v15';"), 'cache version must advance after fixing the stale core-script cache');
 assert.ok(serviceWorker.includes("'./backup-restore-utils.js'"), 'offline app shell must cache the helper');
+const networkFirstSources = serviceWorker.split('const networkFirst=')[1]?.split(';')[0] || '';
+assert.ok(networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')"), 'critical helper and FSRS scripts must revalidate online and fall back to cache offline');
 assert.ok(workflow.includes('node scripts/test-data-safety-wiring.mjs'), 'CI must run these integration-wiring checks');
 
 console.log('Data-safety integration wiring checks passed.');
