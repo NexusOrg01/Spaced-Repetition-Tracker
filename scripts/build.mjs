@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { cp, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readdir, rm, writeFile, readFile } from 'node:fs/promises';
+import vm from 'node:vm';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,7 +41,32 @@ export function renderConfigScript(config) {
     ";if(!config)return;try{localStorage.setItem('nexus.cloud.config.v1',JSON.stringify(config));}catch(_){}})();\n";
 }
 
-async function copySiteFiles() {
+
+async function verifySafeAuthStorage() {
+  const source = await readFile(join(root, 'cloud-sync.js'), 'utf8');
+  const start = source.indexOf('function createSafeAuthStorage(storage){');
+  const end = source.indexOf('async function ensureClient(){', start);
+  assert.ok(start >= 0 && end > start, 'cloud sync must define the safe Supabase auth storage adapter');
+  const sandbox = {};
+  vm.runInNewContext(source.slice(start, end) + '\\nglobalThis.factory = createSafeAuthStorage;', sandbox);
+  const values = new Map([
+    ['sb-testproject-auth-token', 'undefined'],
+    ['nexus.tracker.v3', 'undefined']
+  ]);
+  const storage = {
+    getItem(key) { return values.has(key) ? values.get(key) : null; },
+    setItem(key, value) { values.set(key, value); },
+    removeItem(key) { values.delete(key); }
+  };
+  const safe = sandbox.factory(storage);
+  assert.equal(safe.getItem('sb-testproject-auth-token'), null, 'malformed Supabase session token should be discarded');
+  assert.equal(values.has('sb-testproject-auth-token'), false, 'malformed Supabase session token should be removed');
+  assert.equal(safe.getItem('nexus.tracker.v3'), 'undefined', 'workspace storage must not be touched by auth recovery');
+  const valid = JSON.stringify({ access_token: 'synthetic-token', user: { id: 'synthetic-user' } });
+  safe.setItem('sb-testproject-auth-token', valid);
+  assert.equal(safe.getItem('sb-testproject-auth-token'), valid, 'valid Supabase session JSON should be preserved');
+}
+\nasync function copySiteFiles() {
   await rm(output, { recursive: true, force: true });
   await mkdir(output, { recursive: true });
   const excluded = new Set(['.git', '.github', 'node_modules', 'dist', 'scripts', 'supabase', '.gitignore', 'package.json', 'vercel.json', 'netlify.toml']);
