@@ -7,11 +7,11 @@ import vm from 'node:vm';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const source = readFileSync(resolve(root, 'sw.js'), 'utf8');
 const ORIGIN = 'https://nexus.test/';
-const CACHE_NAME = 'nexus-rating-analytics-v14';
+const CACHE_NAME = 'nexus-rating-analytics-v15';
 const CACHE_PREFIX = 'nexus-rating-analytics-';
 
-function response(status = 200, type = 'basic') {
-  return { status, type, clone() { return response(status, type); } };
+function response(status = 200, type = 'basic', label = '') {
+  return { status, type, label, clone() { return response(status, type, label); } };
 }
 
 function createHarness(networkHandler = async () => response()) {
@@ -117,17 +117,32 @@ async function settle(event) {
 }
 
 {
-  const h = createHarness(async () => response());
+  const h = createHarness(async () => response(200, 'basic', 'fresh-network'));
   const cache = await h.caches.open(CACHE_NAME);
-  const request = new h.RequestStub('./fsrs-bundle.js');
-  await cache.put(request, response());
-  h.resetNetworkCalls();
-  const event = eventFor(new h.RequestStub('./fsrs-bundle.js'));
+  for (const asset of ['./fsrs-bundle.js', './backup-restore-utils.js']) {
+    const request = new h.RequestStub(asset);
+    await cache.put(request, response(200, 'basic', 'stale-cache'));
+    h.resetNetworkCalls();
+    const event = eventFor(new h.RequestStub(asset));
+    h.listeners.fetch(event);
+    const fresh = await event.response;
+    await Promise.all(event.waits);
+    assert.equal(fresh.label, 'fresh-network', asset + ' must not serve a stale cache hit while online');
+    assert.equal(h.networkCalls, 1, asset + ' should revalidate through exactly one network request');
+    assert.equal((await cache.match(request))?.label, 'fresh-network', asset + ' should refresh the cached fallback after a successful network response');
+  }
+}
+
+{
+  const h = createHarness(async () => { throw new Error('offline'); });
+  const cache = await h.caches.open(CACHE_NAME);
+  const request = new h.RequestStub('./backup-restore-utils.js');
+  await cache.put(request, response(200, 'basic', 'offline-cache'));
+  const event = eventFor(request);
   h.listeners.fetch(event);
-  const cached = await event.response;
+  const fallback = await event.response;
   await Promise.all(event.waits);
-  assert.equal(cached.status, 200);
-  assert.equal(h.networkCalls, 0, 'a cache hit must not initiate a background network request');
+  assert.equal(fallback.label, 'offline-cache', 'the cached helper must remain available when the network is offline');
 }
 
 {
@@ -182,6 +197,6 @@ async function settle(event) {
 
 assert.ok(source.includes('keys.filter(k=>k.startsWith(CACHE_PREFIX)&&k!==CACHE_NAME)'),
   'the activation handler must scope cache cleanup to Nexus-owned cache names');
-assert.ok(source.includes('const CACHE_NAME=CACHE_PREFIX+\'v14\';') || source.includes("const CACHE_NAME=CACHE_PREFIX+'v14';"),
+assert.ok(source.includes('const CACHE_NAME=CACHE_PREFIX+\'v15\';') || source.includes("const CACHE_NAME=CACHE_PREFIX+'v15';"),
   'the app-shell cache version must advance after service-worker behavior changes');
 console.log('Service-worker reliability tests passed.');
