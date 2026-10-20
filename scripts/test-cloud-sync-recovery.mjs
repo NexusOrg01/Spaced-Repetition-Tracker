@@ -40,6 +40,10 @@ assert.ok(cloud.includes("addEventListener('pageshow',resumeAfterConnectivity)")
 assert.ok(cloud.includes('scheduleRetry()') && cloud.includes('retryTimer=null') &&
   cloud.includes('retryAttempt=Math.min(retryAttempt+1,8)'),
   'transient failures must use a single bounded-backoff retry timer');
+assert.ok(cloud.includes('function enqueueInitialSnapshot(ownerId)') && (cloud.match(/enqueueInitialSnapshot\(newUserId\)/g)||[]).length>=3,
+  'every first/clean cloud workspace must create a durable queued snapshot before insert');
+assert.ok(cloud.includes('The cloud backup was not rewritten.'),
+  'choosing to use an existing cloud workspace should hydrate it without rewriting the remote snapshot');
 assert.ok(cloud.includes('canAutoResumePending(pendingForUser,remote&&remote.updated_at||null)') &&
   cloud.includes('const autoUploaded=await upload()') &&
   cloud.includes('pendingAutomaticallySynced'),
