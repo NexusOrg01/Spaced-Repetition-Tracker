@@ -26,7 +26,7 @@ assert.ok((directives.get('script-src-attr') || []).includes("'none'"), 'HTML in
 
 const inlineScripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)]
   .filter(match => !/\bsrc\s*=/.test(match[1]));
-assert.equal(inlineScripts.length, 7, 'review the expected number of inline scripts when the page changes');
+assert.equal(inlineScripts.length, 6, 'the cloud sync runtime is externalized so retry behavior can be tested without weakening CSP');
 for (const [index, match] of inlineScripts.entries()) {
   const hash = "'sha256-" + createHash('sha256').update(match[2], 'utf8').digest('base64') + "'";
   assert.ok(scriptSources.has(hash), 'CSP must include the exact hash for inline script #' + index + ': ' + hash);
@@ -44,8 +44,8 @@ for (const [name, value] of Object.entries(expectedDirectives)) {
   assert.ok((directives.get(name) || []).includes(value), 'CSP directive ' + name + ' must include ' + value);
 }
 assert.ok((directives.get('style-src') || []).includes("'unsafe-inline'"), 'inline CSS remains necessary until it is refactored');
-assert.ok((directives.get('connect-src') || []).includes('https://txugbdavblpettcnhcxl.supabase.co'), 'Supabase HTTPS requests must remain allowed');
-assert.ok((directives.get('connect-src') || []).includes('wss://txugbdavblpettcnhcxl.supabase.co'), 'Supabase realtime websockets must remain allowed');
+assert.ok((directives.get('connect-src') || []).includes('https://*.supabase.co'), 'isolated Supabase staging HTTPS requests must be allowed');
+assert.ok((directives.get('connect-src') || []).includes('wss://*.supabase.co'), 'isolated Supabase staging realtime websockets must be allowed');
 for (const [name, value] of [
   ['x-content-type-options', 'nosniff'],
   ['referrer-policy', 'strict-origin-when-cross-origin'],

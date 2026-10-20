@@ -3,8 +3,10 @@ import vm from 'node:vm';
 
 const cataloguePath = new URL('../curricula/catalog.json', import.meta.url);
 const htmlPath = new URL('../index.html', import.meta.url);
+const cloudSyncPath = new URL('../cloud-sync.js', import.meta.url);
 const catalog = JSON.parse(fs.readFileSync(cataloguePath, 'utf8'));
 const html = fs.readFileSync(htmlPath, 'utf8');
+const cloudSync = fs.readFileSync(cloudSyncPath, 'utf8');
 const errors = [];
 const assert = (condition, message) => { if (!condition) errors.push(message); };
 
@@ -300,8 +302,8 @@ if (safeDateSourceMatch) {
 }
 
 
-assert(html.includes("function isUnsafeCloudOrigin()") && html.includes("new URL(url).hostname.toLowerCase()") && html.includes("host!=='spaced-repetition-tracker-delta.vercel.app'") && html.includes("host!=='kkmalithmalshan2000-png.github.io'"), 'Live Supabase cloud sync must be blocked on other origins by default, including URL hostname casing variations.');
-assert(html.includes("if(isUnsafeCloudOrigin())throw new Error('Cloud sync is disabled on this preview/local copy to protect real cloud data.')") && html.includes('google.disabled=logged||previewBlocked') && html.includes('email.disabled=logged||previewBlocked'), 'Preview cloud isolation must guard client creation and disable sign-in controls.');
+assert(cloudSync.includes("function isUnsafeCloudOrigin()") && cloudSync.includes("new URL(url).hostname.toLowerCase()") && cloudSync.includes("host!=='spaced-repetition-tracker-delta.vercel.app'") && cloudSync.includes("host!=='kkmalithmalshan2000-png.github.io'"), 'Live Supabase cloud sync must be blocked on other origins by default, including URL hostname casing variations.');
+assert(cloudSync.includes("if(isUnsafeCloudOrigin())throw new Error('Cloud sync is disabled on this preview/local copy to protect real cloud data.')") && cloudSync.includes('google.disabled=logged||previewBlocked') && cloudSync.includes('email.disabled=logged||previewBlocked'), 'Preview cloud isolation must guard client creation and disable sign-in controls.');
 
 if (errors.length) {
   console.error('Curriculum validation failed:');
