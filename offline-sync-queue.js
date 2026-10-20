@@ -1,0 +1,1 @@
+(function(root){'use strict';root.NexusOfflineSyncQueue={schemaVersion:1};})(typeof window!=='undefined'?window:globalThis);
