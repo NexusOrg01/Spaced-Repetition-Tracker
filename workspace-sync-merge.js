@@ -6,7 +6,7 @@
   'use strict';
   const ABSENT=Symbol('absent');
   const isObject=x=>!!x&&typeof x==='object'&&!Array.isArray(x);
-  const copy=x=>x===ABSENT?ABSENT:JSON.parse(JSON.stringify(x));
+  const copy=x=>x===ABSENT||x===undefined?x:JSON.parse(JSON.stringify(x));
   function stable(value){
     if(value===ABSENT)return '[[NEXUS_ABSENT]]';
     if(Array.isArray(value))return '['+value.map(stable).join(',')+']';
