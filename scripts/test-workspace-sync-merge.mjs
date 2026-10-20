@@ -91,4 +91,13 @@ const snap=(state,featureState={})=>({app:'Nexus',schema:4,exportedAt:'2026-10-2
  assert.throws(()=>merge.merge(snap({topics:[]}),missingId,snap({topics:[]})),/without a stable ID/,
   'merge must fail closed when it cannot reliably match a record across devices');
 }
+{
+ const base=snap({topics:[{id:'t-undefined-fsrs',name:'Shared topic',subjectId:'sub',notes:'base note',dueDate:'2026-11-01',fsrs:undefined}]});
+ const local=snap({topics:[{id:'t-undefined-fsrs',name:'Offline topic rename',subjectId:'sub',notes:'base note',dueDate:'2026-11-01',fsrs:undefined}]});
+ const remote=snap({topics:[{id:'t-undefined-fsrs',name:'Shared topic',subjectId:'sub',notes:'Cloud notes edit',dueDate:'2026-11-01',fsrs:undefined}]});
+ const result=merge.merge(base,local,remote),topic=result.payload.state.topics[0];
+ assert.equal(topic.name,'Offline topic rename','a local topic-name edit must survive an independent cloud edit when the normalized optional FSRS field is undefined');
+ assert.equal(topic.notes,'Cloud notes edit','an independent cloud notes edit must survive a local name edit');
+ assert.equal(result.conflicts.length,0,'independent fields on the same topic are not conflicts');
+}
 console.log('Automatic three-way workspace merge tests passed.');
