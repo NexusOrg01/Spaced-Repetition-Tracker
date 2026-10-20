@@ -49,10 +49,10 @@
         signOut.hidden=false;
         if(decision.phase==='error'){
           heading.textContent='Account workspace is locked';
-          message.textContent='Nexus could not verify this account’s workspace. Your previous workspace is still stored locally, but it is hidden to prevent another account’s study history from being shown. Retry the account load, or sign out to continue offline with the previous account’s data.';
+          message.textContent='Nexus could not verify this account’s workspace. Your previous workspace remains stored on this device and is hidden to protect account privacy. No cross-account merge has occurred. Retry loading this account, or sign out to return to offline mode.';
         }else{
           heading.textContent='Loading this account’s workspace…';
-          message.textContent='Nexus is checking the signed-in account before showing study data. Your previous workspace is temporarily hidden and will not be merged automatically.';
+          message.textContent='Nexus is securely checking your account and loading the correct study workspace. Each account has its own data; workspaces are not automatically shared or merged.';
         }
       }else{
         retry.hidden=true;
