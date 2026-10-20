@@ -37,7 +37,7 @@ The repository still contains legacy Netlify configuration and may be deployable
 ## Data, sync, and notification limits
 
 - Data is stored locally in the browser profile on each device. Export full JSON backups regularly and store a copy somewhere safe.
-- Cloud sync is preconfigured to use the Nexus Supabase project and its public publishable key. Email magic-link sign-in and Google sign-in require the deployed GitHub Pages URL to be allowed in Supabase Auth. Never put a service_role/secret key in the app.
+- Cloud sync is preconfigured to use the Nexus Supabase project and its public publishable key. Email magic-link sign-in and Google sign-in require the deployed Vercel production URL to be allowed in Supabase Auth. Never put a service_role/secret key in the app.
 - In Supabase → Authentication → URL Configuration, add your deployed app URL to the allowed redirect URLs. In Authentication → Providers, enable Google and configure its OAuth client. Email sign-in uses a magic link.
 - Browser notifications can be checked while the app is open and permission is granted. Reliable scheduled push notifications while the browser is fully closed require push infrastructure and a server.
 - The app includes the FSRS-6 scheduler in fsrs-bundle.js; this update leaves the scheduler bundle and its integration unchanged.
@@ -68,7 +68,7 @@ The catalogue JSON is included in the PWA cache. When online, the service worker
 
 ## Updating an existing deployment
 
-Deploy the entire bundle, not only `index.html`. Keep the same Netlify site/domain when possible so the browser origin and its locally stored data remain the same. Before changing domains or replacing devices, download a full JSON backup and restore it on the new site/device.
+Deploy the entire bundle, not only `index.html`. For the supported deployment, use the existing Vercel project and production domain so the browser origin and its locally stored data remain the same. Before changing domains or replacing devices, download a full JSON backup and restore it on the new site/device. Moving to a different origin does not automatically move browser-local data.
 
 
 ## Cloud sync setup
