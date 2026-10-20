@@ -52,15 +52,17 @@ const snap=(state,featureState={})=>({app:'Nexus',schema:4,exportedAt:'2026-10-2
 }
 
 {
- const base=snap({topics:[{id:'t1',name:'Topic',subjectId:'sub',notes:'base',dueDate:'2026-11-01',intervalDays:5,reviewCount:2,fsrs:{stability:4,difficulty:5,reps:2}}]});
- const local=snap({topics:[{id:'t1',name:'Topic',subjectId:'sub',notes:'base',dueDate:'2026-11-08',intervalDays:7,reviewCount:3,fsrs:{stability:6,difficulty:5,reps:3}}]});
- const remote=snap({topics:[{id:'t1',name:'Topic',subjectId:'sub',notes:'cloud notes',dueDate:'2026-11-12',intervalDays:11,reviewCount:3,fsrs:{stability:9,difficulty:6,reps:3}}]});
+ const base=snap({topics:[{id:'t1',name:'Topic',subjectId:'sub',notes:'base',dueDate:'2026-11-01',lastRating:3,intervalDays:5,reviewCount:2,streak:2,fsrs:{stability:4,difficulty:5,reps:2}}]});
+ const local=snap({topics:[{id:'t1',name:'Topic',subjectId:'sub',notes:'base',dueDate:'2026-11-08',lastRating:4,intervalDays:7,reviewCount:3,streak:3,fsrs:{stability:6,difficulty:5,reps:3}}]});
+ const remote=snap({topics:[{id:'t1',name:'Topic',subjectId:'sub',notes:'cloud notes',dueDate:'2026-11-12',lastRating:2,intervalDays:11,reviewCount:3,streak:1,fsrs:{stability:9,difficulty:6,reps:3}}]});
  const result=merge.merge(base,local,remote),topic=result.payload.state.topics[0];
  assert.equal(topic.notes,'cloud notes','independent topic notes edit remains mergeable');
  assert.equal(topic.dueDate,'2026-11-08','simultaneous review schedules must not be spliced field by field');
  assert.equal(topic.fsrs.stability,6,'the local FSRS card remains internally coherent');
  assert.equal(topic.intervalDays,7);
- assert.ok(result.conflicts.some(c=>c.path==='state.topics[t1].__reviewSchedule'&&c.remote.dueDate==='2026-11-12'&&c.remote.fsrs.stability===9),'the complete alternative schedule must be recoverable');
+ assert.equal(topic.lastRating,4,'the local review rating must remain paired with the selected local schedule');
+ assert.equal(topic.streak,3,'the local review streak must remain paired with the selected local schedule');
+ assert.ok(result.conflicts.some(c=>c.path==='state.topics[t1].__reviewSchedule'&&c.remote.dueDate==='2026-11-12'&&c.remote.fsrs.stability===9&&c.remote.lastRating===2&&c.remote.streak===1),'the complete alternative schedule including rating and streak must be recoverable');
 }
 {
  const base=snap({}, {taskChecks:{'topic-a':['checked-1']}});
