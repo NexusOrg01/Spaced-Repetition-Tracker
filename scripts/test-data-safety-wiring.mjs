@@ -33,6 +33,11 @@ assert.ok(cloudSync.includes('reconcileConcurrentSnapshot(newUserId,remote)'), '
 assert.ok(cloudSync.includes('queue.getBase(localStorage,userId)'), 'automatic conflict resolution must compare the last synced base, local edits, and cloud edits');
 assert.ok(cloudSync.includes('queue.archiveConflicts(localStorage,userId,result.conflicts'), 'overlapping field edits must be archived before merged snapshots can overwrite cloud data');
 assert.ok(cloudSync.includes('sameWorkspace(remoteData,pendingForUser.payload)'), 'routine conflict detection must compare workspace contents, not exported-at metadata');
+assert.ok(cloudSync.includes('function downloadConflictRecovery()'), 'users must be able to download archived same-account conflict alternatives');
+assert.ok(cloudSync.includes('queue.getConflictHistory(localStorage,owner)'), 'the conflict-recovery export must retrieve history for the selected account only');
+assert.ok(cloudSync.includes('Download sync conflict recovery'), 'the user-facing recovery download control must be labelled clearly');
+assert.ok(cloudSync.includes('queue.archiveConflicts(localStorage,userId,result.conflicts'), 'conflicting field values must be recorded before cloud overwrite is attempted');
+
 
 assert.ok(index.includes('window.NexusFeatureStorageKey=FEATURE_KEY;'), 'expose the Study Hub storage key for shared transactions');
 assert.ok(index.includes('window.NexusOfflineSyncQueue.commitWorkspace(localStorage'), 'tracker and Study Hub writes must atomically persist their account-bound pending snapshot');
