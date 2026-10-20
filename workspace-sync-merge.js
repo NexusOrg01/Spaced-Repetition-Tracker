@@ -60,7 +60,7 @@
     });
     return map;
   }
-  const SCHEDULE_FIELDS=new Set(['fsrs','dueDate','nextReviewDate','nextReviewAt','lastReviewed','lastReviewedAt','intervalDays','interval','reviewCount','reps','lapses','stability','difficulty']);
+  const SCHEDULE_FIELDS=new Set(['fsrs','dueDate','nextReviewDate','nextReviewAt','lastReviewed','lastReviewedAt','lastRating','intervalDays','interval','reviewCount','streak','reps','lapses','stability','difficulty']);
   function scheduleProjection(record){
     const out={};
     if(isObject(record))for(const key of SCHEDULE_FIELDS)if(Object.prototype.hasOwnProperty.call(record,key))out[key]=record[key];
