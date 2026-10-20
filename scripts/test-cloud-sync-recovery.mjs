@@ -48,6 +48,9 @@ assert.ok(cloud.includes('canAutoResumePending(pendingForUser,remote&&remote.upd
   cloud.includes('const autoUploaded=await upload()') &&
   cloud.includes('pendingAutomaticallySynced'),
   'unchanged remote revisions should automatically upload the durable pending snapshot');
+assert.ok(cloud.includes('if(pendingForUser&&window.NexusCloudSyncRecovery&&window.NexusCloudSyncRecovery.canAutoResumePending(') &&
+  !cloud.includes('if(localHasWork&&pendingForUser&&window.NexusCloudSyncRecovery'),
+  'a durable pending snapshot must be drained even when state comparison alone misses metadata-only differences');
 assert.ok(cloud.includes("status('Cloud conflict')") && cloud.includes('queue.acknowledge(localStorage,uploadUserId,pending.operationId'),
   'conflicts pause and only verified uploads acknowledge the queued operation');
 assert.ok(cloud.includes('const latest=await fetchRemote(uploadUserId)') &&
