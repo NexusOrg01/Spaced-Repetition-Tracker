@@ -270,4 +270,20 @@ assert.equal(queue.hasPending(storage,accountA.id),false,'verified ambiguous wri
 const recoveredBase=queue.getBase(storage,accountA.id);
 assert.equal(recoveredBase.serverVersion,rows.get(accountA.id).updated_at,'ambiguous-write recovery must advance the merge base revision');
 assert.ok(recoveredBase.state.topics.some(topic=>topic.id==='ambiguous-write-topic'),'ambiguous-write recovery must save the verified remote workspace as the next merge base');
-console.log('Cloud sync runtime tests passed: offline recovery, account isolation, automatic reconciliation, and ambiguous-write baseline recovery.');
+
+// A metadata-only envelope/revision change must not strand a pending snapshot
+// when its actual tracker and Study Hub workspace already matches the cloud.
+const beforeMetadataOnly=rows.get(accountA.id);
+const metadataOnlyPending={...beforeMetadataOnly.payload,exportedAt:'2026-10-20T00:00:00.000Z'};
+queue.rememberStamp(storage,accountA.id,beforeMetadataOnly.updated_at);
+queue.commitWorkspace(storage,[
+  {key:STATE_KEY,value:JSON.stringify(beforeMetadataOnly.payload.state)},
+  {key:FEATURE_KEY,value:JSON.stringify(beforeMetadataOnly.payload.featureState||{})}
+],metadataOnlyPending);
+const metadataOnlyRemote={...beforeMetadataOnly,payload:{...beforeMetadataOnly.payload,exportedAt:'2026-10-20T14:00:00.000Z'},updated_at:new Date(Date.parse(beforeMetadataOnly.updated_at)+60000).toISOString()};
+rows.set(accountA.id,metadataOnlyRemote);
+await window.NexusCloudSync.reconnect();
+assert.equal(queue.hasPending(storage,accountA.id),false,'metadata-only revision changes must acknowledge a semantically matching workspace instead of stranding the queue');
+assert.equal(queue.getBase(storage,accountA.id).serverVersion,metadataOnlyRemote.updated_at,'the merge base must advance to the metadata-only newer cloud revision');
+assert.ok(!getElement('cloudHelpText').textContent.toLowerCase().includes('choose one of the available data options'),'metadata-only sync reconciliation must not trigger a workspace choice');
+console.log('Cloud sync runtime tests passed: offline recovery, account isolation, automatic reconciliation, ambiguous-write recovery, and metadata-only revision handling.');
