@@ -68,4 +68,10 @@ assert.ok(cloud.includes('sameWorkspace(remote.payload,pending.payload)') &&
 assert.ok(cloud.includes("localStorage.getItem(OWNER_KEY)!==uploadUserId") &&
   cloud.includes("authData.user.id!==uploadUserId"),
   'writes require both persisted workspace ownership and a verified active account');
+assert.ok(cloud.includes('retryReconcileAfterConflict=true') &&
+  cloud.includes('const activeConnect=connectPromise') &&
+  cloud.includes('else connect();'),
+  'a same-account conflict discovered during an already-open background upload must trigger automatic reconnect/reconciliation without a manual refresh');
+assert.ok(cloud.includes('reopening the latest revision to merge both workspaces automatically'),
+  'routine live revision races must inform users that automatic merge is in progress rather than asking them to choose a workspace');
 console.log('Automatic cloud-sync recovery policy tests passed.');
