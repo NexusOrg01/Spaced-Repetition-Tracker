@@ -23,12 +23,13 @@ assert.deepEqual(sanitizeFocusState({
   focusSubjectId: 'subject-1'
 }), {
   focusStartedAt: focusStart,
+  focusActualStartedAt: focusStart,
   focusPausedAt: focusPause,
   focusTopicId: 'topic-1',
   focusSubjectId: 'subject-1'
 });
 assert.deepEqual(sanitizeFocusState({ focusStartedAt: 'not-a-date', focusPausedAt: focusPause }), {
-  focusStartedAt: null, focusPausedAt: null, focusTopicId: '', focusSubjectId: ''
+  focusStartedAt: null, focusActualStartedAt: null, focusPausedAt: null, focusTopicId: '', focusSubjectId: ''
 }, 'invalid local timer timestamps must not poison app startup');
 assert.equal(sanitizeFocusState({ focusStartedAt: focusStart, focusPausedAt: '2026-10-19T09:59:00.000Z' }).focusPausedAt,
   null, 'a pause timestamp earlier than the session start must be cleared');
@@ -76,7 +77,7 @@ const defaults = {
   },
   syllabusTargets: {}, taskChecks: {}, journal: [], papers: [], goals: [], studyLogs: [],
   selectedTopicIds: [], lastBackupAt: '', lastReminderAt: '', focusStartedAt: null,
-  focusPausedAt: null, focusTopicId: '', focusSubjectId: ''
+  focusActualStartedAt: null, focusPausedAt: null, focusTopicId: '', focusSubjectId: ''
 };
 
 const normalized = normalizeFeatureState({
