@@ -42,7 +42,7 @@ const stateKey='recall.study.tracker.v1';
  queue.archive(s,'account-A','manual-restore');assert.equal(queue.getPending(s,'account-A'),null);
  const saved=JSON.parse(s.getItem(queue.KEY));assert.equal(saved.archived.length,1);assert.equal(saved.archived[0].operationId,old.operationId);assert.equal(saved.archived[0].payload.state.topics[0].id,'old');
  queue.commitWorkspace(s,[{key:stateKey,value:'restored'}],payload('restored'),{archivePending:true,reason:'manual-replace'});
- const after=JSON.parse(s.getItem(queue.KEY));assert.equal(after.archived.length,2);assert.equal(queue.getPending(s,'account-A').payload.state.topics[0].id,'restored');
+ const after=JSON.parse(s.getItem(queue.KEY));assert.equal(after.archived.length,1,'a snapshot already archived by an earlier restore choice must not be duplicated');assert.equal(after.archived[0].archiveReason,'manual-restore','the original recovery reason must remain intact');assert.equal(queue.getPending(s,'account-A').payload.state.topics[0].id,'restored');
 }
 {
  const s=new MemoryStorage({[queue.OWNER]:'account-A'});s.setItem(queue.KEY,'{not-json');
