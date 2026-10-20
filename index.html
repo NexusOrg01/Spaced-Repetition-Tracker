@@ -760,7 +760,10 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
 .ra-table-rating[data-rating="1"]{color:#ef4444}.ra-table-rating[data-rating="2"]{color:#f97316}.ra-table-rating[data-rating="3"]{color:#b78a00}.ra-table-rating[data-rating="4"]{color:#84cc16}.ra-table-rating[data-rating="5"]{color:#059669}
 </style>
 <style id="nexus-study-log-history">
-#hubStudyLogHistory{max-height:300px;overflow-y:auto;overscroll-behavior:contain;border:1px solid var(--border);background:var(--surface2);border-radius:12px;padding:6px;scrollbar-gutter:stable}
+/* Global native scroll chaining: inner lists yield to their parent at either vertical edge.
+   Keep the document-level modals, standalone screens, and floating menu isolated. */
+body :not(dialog):not(.standalone-screen):not(.menu-pop){overscroll-behavior-y:auto;-webkit-overflow-scrolling:touch}
+#hubStudyLogHistory{max-height:300px;overflow-y:auto;overscroll-behavior-y:auto;touch-action:pan-y;-webkit-overflow-scrolling:touch;border:1px solid var(--border);background:var(--surface2);border-radius:12px;padding:6px;scrollbar-gutter:stable}
 #hubStudyLogHistory[hidden]{display:none}
 .nexus-study-log-history-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:9px;font-size:12px}
 .nexus-study-log-total{display:block;font-size:11px;color:var(--muted);margin-top:2px}
