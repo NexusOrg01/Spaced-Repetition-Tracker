@@ -1,0 +1,11 @@
+{
+  "name": "nexus-spaced-repetition-tracker",
+  "private": true,
+  "version": "1.0.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs"
+  }
+}

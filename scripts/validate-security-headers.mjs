@@ -44,8 +44,8 @@ for (const [name, value] of Object.entries(expectedDirectives)) {
   assert.ok((directives.get(name) || []).includes(value), 'CSP directive ' + name + ' must include ' + value);
 }
 assert.ok((directives.get('style-src') || []).includes("'unsafe-inline'"), 'inline CSS remains necessary until it is refactored');
-assert.ok((directives.get('connect-src') || []).includes('https://txugbdavblpettcnhcxl.supabase.co'), 'Supabase HTTPS requests must remain allowed');
-assert.ok((directives.get('connect-src') || []).includes('wss://txugbdavblpettcnhcxl.supabase.co'), 'Supabase realtime websockets must remain allowed');
+assert.ok((directives.get('connect-src') || []).includes('https://*.supabase.co'), 'isolated Supabase staging HTTPS requests must be allowed');
+assert.ok((directives.get('connect-src') || []).includes('wss://*.supabase.co'), 'isolated Supabase staging realtime websockets must be allowed');
 for (const [name, value] of [
   ['x-content-type-options', 'nosniff'],
   ['referrer-policy', 'strict-origin-when-cross-origin'],

@@ -43,9 +43,11 @@
         },
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; manifest-src 'self'; worker-src 'self' blob:; script-src 'self' https://cdn.jsdelivr.net 'sha256-tLU5RBMHCDhVW/t+CL2XiCiC1j2P1M2vs2Jbo304tH8=' 'sha256-bn3NxzeupTluFhkBVp6GC8s6QWNXzyRC/725tSItg80=' 'sha256-3CvctVrJVTxbm/srz04yuE3KU6kkLsYl7AqcUE6AomU=' 'sha256-DuqO8linuPINoBnftNpqiZ2hZSkuABltZiagx4Abdn8=' 'sha256-MvkY35Uur16vATB9ktLSXK3SErd65mi9FRSaZc3yjb8=' 'sha256-wyhxjjbo0OJs0Lhs/HzE+vBVdVq9IaKR5ZVA/K6t7JI=' 'sha256-Fgon/ZGkKi+anOkSca5Hp/muM839zg2aSNCrGAAt9NQ='; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' https://txugbdavblpettcnhcxl.supabase.co wss://txugbdavblpettcnhcxl.supabase.co"
+          "value": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; manifest-src 'self'; worker-src 'self' blob:; script-src 'self' https://cdn.jsdelivr.net 'sha256-tLU5RBMHCDhVW/t+CL2XiCiC1j2P1M2vs2Jbo304tH8=' 'sha256-bn3NxzeupTluFhkBVp6GC8s6QWNXzyRC/725tSItg80=' 'sha256-3CvctVrJVTxbm/srz04yuE3KU6kkLsYl7AqcUE6AomU=' 'sha256-DuqO8linuPINoBnftNpqiZ2hZSkuABltZiagx4Abdn8=' 'sha256-MvkY35Uur16vATB9ktLSXK3SErd65mi9FRSaZc3yjb8=' 'sha256-wyhxjjbo0OJs0Lhs/HzE+vBVdVq9IaKR5ZVA/K6t7JI=' 'sha256-Fgon/ZGkKi+anOkSca5Hp/muM839zg2aSNCrGAAt9NQ='; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' https://*.supabase.co wss://*.supabase.co"
         }
       ]
     }
-  ]
+  ],
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist"
 }
