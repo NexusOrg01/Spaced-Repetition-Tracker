@@ -72,4 +72,18 @@ const snap=(state,featureState={})=>({app:'Nexus',schema:4,exportedAt:'2026-10-2
  assert.deepEqual(result.payload.featureState.taskChecks['topic-a'].sort(),['checked-1','checked-cloud','checked-local'],'independent checklist changes should merge as a set');
  assert.equal(result.conflicts.length,0);
 }
+{
+ const duplicateLocal=snap({topics:[{id:'dup',name:'First copy',subjectId:'sub'},{id:'dup',name:'Second copy',subjectId:'sub'}]});
+ assert.throws(()=>merge.merge(snap({topics:[]}),duplicateLocal,snap({topics:[]})),/duplicate stable record ID/,
+  'duplicate IDs must fail closed instead of silently dropping one record during map-based merging');
+}
+{
+ const base=snap({settings:{theme:'system'}});
+ const local=snap({settings:JSON.parse('{"theme":"light","__proto__":{"polluted":true}}')});
+ const remote=snap({settings:JSON.parse('{"theme":"dark","__proto__":{"polluted":true}}')});
+ const result=merge.merge(base,local,remote),settings=result.payload.state.settings;
+ assert.equal(Object.hasOwn(settings,'__proto__'),true,'special JSON keys must remain ordinary own data rather than changing the output prototype');
+ assert.equal(Object.getPrototypeOf(settings),Object.prototype,'merging special keys must not mutate the merged object prototype');
+ assert.equal({}.polluted,undefined,'workspace merge must not pollute Object.prototype');
+}
 console.log('Automatic three-way workspace merge tests passed.');
