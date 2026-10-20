@@ -53,6 +53,7 @@ let activeSession = { user: accountA };
 let networkAvailable = false;
 let simulateAmbiguousCommittedWrite = false;
 let simulatedRacingCloudRow = null;
+let turnOfflineDuringRacingCommit = false;
 const rows = new Map();
 const listeners = {};
 const elements = new Map();
@@ -114,6 +115,7 @@ function makeQuery(table) {
           // Device A's compare-and-swap update reaches the database.
           rows.set(userId, simulatedRacingCloudRow);
           simulatedRacingCloudRow = null;
+          if(turnOfflineDuringRacingCommit){turnOfflineDuringRacingCommit=false;networkAvailable=false;}
           return { data: [], error: null };
         }
         if (row.updated_at !== expectedStamp) return { data: [], error: null };
@@ -328,4 +330,38 @@ assert.ok(liveRaceConverged.includes('background-device-cloud'),'Device B cloud 
 assert.equal(queue.hasPending(storage,accountA.id),false,'the online-race queue must clear only after merged cloud read-back verification');
 assert.equal(getElement('cloudStatus').textContent,'Synced','online CAS conflict must auto-reconcile and return to synced state without refresh');
 assert.ok(!getElement('cloudHelpText').textContent.toLowerCase().includes('choose one of the available data options'),'routine live same-account races must not present the three-choice dialog');
-console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, and live revision-race convergence.');
+// A CAS conflict whose follow-up read is interrupted by a network drop must
+// recover automatically after connectivity returns, without leaving "Cloud conflict" terminal.
+const beforeOfflineRace=rows.get(accountA.id);
+const localOfflineRaceState=JSON.parse(JSON.stringify(beforeOfflineRace.payload.state));
+localOfflineRaceState.topics.push({id:'network-drop-device-local',name:'Local edit during network drop',subjectId:'subject-general',dueDate:'2026-10-28'});
+const localOfflineRaceFeatures=JSON.parse(JSON.stringify(beforeOfflineRace.payload.featureState||{}));
+const localOfflineRacePayload={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:localOfflineRaceState,featureState:localOfflineRaceFeatures};
+context.state=localOfflineRaceState;
+storage.setItem(STATE_KEY,JSON.stringify(localOfflineRaceState));
+storage.setItem(FEATURE_KEY,JSON.stringify(localOfflineRaceFeatures));
+queue.rememberStamp(storage,accountA.id,beforeOfflineRace.updated_at);
+queue.commitWorkspace(storage,[
+  {key:STATE_KEY,value:JSON.stringify(localOfflineRaceState)},
+  {key:FEATURE_KEY,value:JSON.stringify(localOfflineRaceFeatures)}
+],localOfflineRacePayload);
+const cloudOfflineRacePayload=JSON.parse(JSON.stringify(beforeOfflineRace.payload));
+cloudOfflineRacePayload.state.topics.push({id:'network-drop-device-cloud',name:'Cloud edit during network drop',subjectId:'subject-general',dueDate:'2026-10-29'});
+simulatedRacingCloudRow={...beforeOfflineRace,payload:cloudOfflineRacePayload,updated_at:new Date(Date.parse(beforeOfflineRace.updated_at)+60000).toISOString()};
+turnOfflineDuringRacingCommit=true;
+assert.equal(await window.NexusCloudSync.upload(),false,'the competing update and dropped read-back must leave the pending snapshot queued');
+await new Promise(resolve=>setTimeout(resolve,30));
+networkAvailable=true;
+listeners['window:online']();
+for(let i=0;i<300;i++){
+  const current=rows.get(accountA.id);
+  if(!queue.hasPending(storage,accountA.id)&&current?.payload?.state?.topics?.some(topic=>topic.id==='network-drop-device-local')&&current?.payload?.state?.topics?.some(topic=>topic.id==='network-drop-device-cloud'))break;
+  await new Promise(resolve=>setTimeout(resolve,10));
+}
+const recoveredAfterNetworkDrop=rows.get(accountA.id).payload.state.topics.map(topic=>topic.id);
+assert.ok(recoveredAfterNetworkDrop.includes('network-drop-device-local'),'local work must survive a CAS conflict followed by a temporary network drop');
+assert.ok(recoveredAfterNetworkDrop.includes('network-drop-device-cloud'),'cloud work must survive a CAS conflict followed by a temporary network drop');
+assert.equal(queue.hasPending(storage,accountA.id),false,'automatic recovery after connectivity returns must clear only a verified merge');
+assert.equal(getElement('cloudStatus').textContent,'Synced','reconnection must leave the account synced without a manual reload');
+assert.ok(!getElement('cloudHelpText').textContent.toLowerCase().includes('choose one of the available data options'),'the recovered same-account race must not show the three-option dialog');
+console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, and network-drop recovery.');

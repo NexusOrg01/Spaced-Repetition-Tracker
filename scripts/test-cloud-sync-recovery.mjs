@@ -76,6 +76,10 @@ assert.ok(cloud.includes('const normalizedBase=savedBase?normalizeWorkspacePaylo
   cloud.includes('const normalizedLocal=normalizeWorkspacePayload(pending.payload)') &&
   cloud.includes('const normalizedRemote=normalizeWorkspacePayload(remote.payload)'),
   'three-way comparisons must use the same normalized schema on both sides and the saved base');
+assert.ok(cloud.includes('function assertStableRecordIds(payload)') && cloud.includes('assertStableRecordIds(payload);'),
+  'records must be checked for stable IDs before normalization can generate replacements and accidentally duplicate them');
+assert.ok(cloud.includes('if(localStorage.getItem(OWNER_KEY)===uploadUserId&&session&&session.user.id===uploadUserId)retryReconcileAfterConflict=true;'),
+  'a failed read-back after a conflict must retry safely when network access returns instead of leaving a terminal conflict state');
 assert.ok(cloud.includes("localStorage.getItem(OWNER_KEY)!==uploadUserId") &&
   cloud.includes("authData.user.id!==uploadUserId"),
   'writes require both persisted workspace ownership and a verified active account');
