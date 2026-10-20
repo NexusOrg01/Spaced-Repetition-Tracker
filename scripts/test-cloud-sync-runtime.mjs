@@ -51,6 +51,7 @@ const storage = new MemoryStorage({
 const localState = stateFor('offline-A');
 let activeSession = { user: accountA };
 let networkAvailable = false;
+let simulateAmbiguousCommittedWrite = false;
 const rows = new Map();
 const listeners = {};
 const elements = new Map();
@@ -107,6 +108,13 @@ function makeQuery(table) {
       if (operation === 'update') {
         const row = rows.get(userId);
         if (!row || row.updated_at !== expectedStamp || values.user_id === undefined && userId !== activeSession.user.id) return { data: [], error: null };
+        if (simulateAmbiguousCommittedWrite) {
+          simulateAmbiguousCommittedWrite = false;
+          rows.set(userId, { ...row, payload: values.payload, updated_at: values.updated_at });
+          // Simulate the server accepting the conditional write while the client
+          // receives an ambiguous zero-row response and must verify by read-back.
+          return { data: [], error: null };
+        }
         rows.set(userId, { ...row, payload: values.payload, updated_at: values.updated_at });
         return { data: [{ updated_at: values.updated_at }], error: null };
       }
@@ -239,4 +247,27 @@ const mergedUnqueued=rows.get(accountA.id).payload.state.topics.map(topic=>topic
 assert.ok(mergedUnqueued.includes('recovered-untracked-local')&&mergedUnqueued.includes('cloud-untracked-concurrent'),'untracked same-account local edits must merge with newer cloud work instead of prompting or overwriting');
 assert.equal(queue.hasPending(storage,accountA.id),false,'recovered untracked edits clear only after verified upload');
 assert.ok(!getElement('cloudHelpText').textContent.toLowerCase().includes('choose one of the available data options'),'dirty same-account local state must not fall through to a three-way workspace choice');
-console.log('Cloud sync runtime tests passed: offline recovery, verified acknowledgement, and account isolation.');
+
+// A conditional update can reach Supabase while its response does not confirm
+// the write. If read-back proves the exact attempted snapshot is remote, both
+// the queue and the saved merge base must advance to that verified revision.
+const beforeAmbiguousWrite=rows.get(accountA.id);
+const ambiguousState=JSON.parse(JSON.stringify(beforeAmbiguousWrite.payload.state));
+ambiguousState.topics.push({id:'ambiguous-write-topic',name:'Committed despite ambiguous response',subjectId:'subject-general',dueDate:'2026-10-25'});
+const ambiguousFeatures=JSON.parse(JSON.stringify(beforeAmbiguousWrite.payload.featureState||{}));
+context.state=ambiguousState;
+storage.setItem(STATE_KEY,JSON.stringify(ambiguousState));
+storage.setItem(FEATURE_KEY,JSON.stringify(ambiguousFeatures));
+queue.rememberStamp(storage,accountA.id,beforeAmbiguousWrite.updated_at);
+const attemptedSnapshot={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:ambiguousState,featureState:ambiguousFeatures};
+queue.commitWorkspace(storage,[
+  {key:STATE_KEY,value:JSON.stringify(ambiguousState)},
+  {key:FEATURE_KEY,value:JSON.stringify(ambiguousFeatures)}
+],attemptedSnapshot);
+simulateAmbiguousCommittedWrite=true;
+assert.equal(await window.NexusCloudSync.upload(),true,'exact remote read-back should safely recover an ambiguous conditional write');
+assert.equal(queue.hasPending(storage,accountA.id),false,'verified ambiguous write should acknowledge its queued snapshot');
+const recoveredBase=queue.getBase(storage,accountA.id);
+assert.equal(recoveredBase.serverVersion,rows.get(accountA.id).updated_at,'ambiguous-write recovery must advance the merge base revision');
+assert.ok(recoveredBase.state.topics.some(topic=>topic.id==='ambiguous-write-topic'),'ambiguous-write recovery must save the verified remote workspace as the next merge base');
+console.log('Cloud sync runtime tests passed: offline recovery, account isolation, automatic reconciliation, and ambiguous-write baseline recovery.');
