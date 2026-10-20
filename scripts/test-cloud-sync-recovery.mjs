@@ -46,6 +46,10 @@ assert.ok(cloud.includes('canAutoResumePending(pendingForUser,remote&&remote.upd
   'unchanged remote revisions should automatically upload the durable pending snapshot');
 assert.ok(cloud.includes("status('Cloud conflict')") && cloud.includes('queue.acknowledge(localStorage,uploadUserId,pending.operationId'),
   'conflicts pause and only verified uploads acknowledge the queued operation');
+assert.ok(cloud.includes('const latest=await fetchRemote(uploadUserId)') &&
+  cloud.includes('stableJson(latest.payload)===stableJson(attemptedPayload)') &&
+  cloud.includes('interrupted write was safely acknowledged'),
+  'an ambiguous write must be recovered only when read-back proves the exact attempted snapshot is already remote');
 assert.ok(cloud.includes("localStorage.getItem(OWNER_KEY)!==uploadUserId") &&
   cloud.includes("authData.user.id!==uploadUserId"),
   'writes require both persisted workspace ownership and a verified active account');
