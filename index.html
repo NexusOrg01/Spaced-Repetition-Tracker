@@ -2086,20 +2086,7 @@ body :not(dialog):not(.standalone-screen):not(.menu-pop){overscroll-behavior-y:a
       '<h2 id="report-study-sessions">9. Logged focus sessions <span class="muted">('+studyLogs.length+' records)</span></h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Subject</th><th>Topic</th><th class="num">Duration</th><th>Session type</th><th>Note</th></tr></thead><tbody>'+studyRows+'</tbody></table></div>'+
       '<h2 id="report-paper-records">10. Paper / practice results <span class="muted">('+paperList.length+' records)</span></h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Paper / practice</th><th>Subject</th><th class="num">Score</th><th class="num">Percent</th><th>Notes / weak areas</th></tr></thead><tbody>'+paperRows+'</tbody></table></div>'+
       '<h2 id="report-journal">11. Mistakes and lesson journal <span class="muted">('+journals.length+' records)</span></h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Category</th><th>Subject</th><th>Topic</th><th>Issue</th><th>Correction / fix</th><th>Status</th></tr></thead><tbody>'+journalRows+'</tbody></table></div>'+
-      '<div class="footer"><span>Nexus · Spaced Repetition Tracker</span><span>Private report generated locally in your browser</span></div>
-<div id="workspaceIsolationLock" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="workspaceIsolationTitle" aria-describedby="workspaceIsolationMessage" data-state="offline">
-  <div class="workspace-isolation-card">
-    <h2 id="workspaceIsolationTitle">Loading this account’s workspace…</h2>
-    <p id="workspaceIsolationMessage">Nexus is checking the signed-in account before showing study data. Your previous workspace is temporarily hidden and will not be merged automatically.</p>
-    <div class="workspace-isolation-actions">
-      <button id="workspaceIsolationRetry" class="btn btn-primary" type="button" hidden>Retry account loading</button>
-      <button id="workspaceIsolationSignOut" class="btn" type="button" hidden>Sign out and continue offline</button>
-    </div>
-  </div>
-</div>
-<script src="./workspace-isolation-guard.js"></script>
-
-</body></html>';
+      '<div class="footer"><span>Nexus · Spaced Repetition Tracker</span><span>Private report generated locally in your browser</span></div></body></html>';
     const reportWindow=window.open('','_blank');
     if(!reportWindow){notify('Allow pop-ups for Nexus to open the print-ready report, then choose Save as PDF.');return;}
     try{reportWindow.document.open();reportWindow.document.write(report);reportWindow.document.close();setTimeout(function(){try{reportWindow.focus();reportWindow.print();}catch(e){notify('The report opened, but printing was blocked. Use the browser menu to Print / Save as PDF.');}},450);}catch(e){try{reportWindow.close();}catch(_){}notify('Could not open the PDF report. Try allowing pop-ups and retry.');}
@@ -3119,5 +3106,18 @@ dialog .dialog-inner,dialog>div{max-height:none}
     }
   }
 </style>
+
+<div id="workspaceIsolationLock" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="workspaceIsolationTitle" aria-describedby="workspaceIsolationMessage" data-state="offline">
+  <div class="workspace-isolation-card">
+    <h2 id="workspaceIsolationTitle">Loading this account’s workspace…</h2>
+    <p id="workspaceIsolationMessage">Nexus is checking the signed-in account before showing study data. Your previous workspace is temporarily hidden and will not be merged automatically.</p>
+    <div class="workspace-isolation-actions">
+      <button id="workspaceIsolationRetry" class="btn btn-primary" type="button" hidden>Retry account loading</button>
+      <button id="workspaceIsolationSignOut" class="btn" type="button" hidden>Sign out and continue offline</button>
+    </div>
+  </div>
+</div>
+<script src="./workspace-isolation-guard.js"></script>
+
 </body>
 </html>
