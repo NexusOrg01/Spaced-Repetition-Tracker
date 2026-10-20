@@ -71,6 +71,9 @@ assert.ok(bundle.includes('if (/^\\d{4}-\\d{2}-\\d{2}$/.test(customDue)) pending
 assert.ok(bundle.includes('function ensureMigrated()') && bundle.includes('N.migrateTopic(t, hs)'),
   'existing review history must be available for FSRS state migration');
 assert.ok(html.includes('focus=window.NexusBackupRestoreUtils.sanitizeFocusState(x)'), 'saved focus timestamps must be sanitized before initializing the timer');
+assert.ok(html.includes('durationSeconds:elapsedSeconds') && html.includes('mins=Math.floor(elapsedSeconds/60)'), 'focus history must store exact elapsed seconds and must never round a short session up to one minute');
+assert.ok(html.includes('function studyLogMinutes(entry)') && html.includes('function formatStudyDuration(seconds)'), 'study-time totals and histories must account for saved seconds and format durations precisely');
+assert.ok(html.includes("rows=[['Date','Whole Minutes','Total Seconds','Type','Note']") && html.includes("'Duration: '+formatStudyDuration(studyLogMinutes(l)*60)"), 'study logs and analytics history must expose precise durations');
 assert.ok(html.includes('if(focusStart&&!focusTimer)focusTimer=setInterval(refreshLiveFocusUi,1000);'), 'an active focus timer must restart its refresh interval after a normal page reload');
 assert.ok(html.includes("const restoreFocusUi=()=>{if(focusStart)openFocusMode();else refreshLiveFocusUi();};") && html.includes("document.addEventListener('DOMContentLoaded',restoreFocusUi,{once:true})"), 'an active focus session must reopen the focus clock after the dialog is present in the DOM');
 assert.ok(html.includes('focusStart=Date.now();focusPausedAt=null;fsState.focusStartedAt=new Date(focusStart).toISOString();fsState.focusPausedAt=null;saveFs();'), 'starting a new focus session must clear stale pause state before persisting');
