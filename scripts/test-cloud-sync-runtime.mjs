@@ -10,6 +10,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const backup = require('../backup-restore-utils.js');
 const queue = require('../offline-sync-queue.js');
 const recovery = require('../cloud-sync-recovery.js');
+const workspaceMerge = require('../workspace-sync-merge.js');
 const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
 const OWNER = queue.OWNER;
 const STATE_KEY = 'recall.study.tracker.v1';
@@ -69,6 +70,7 @@ const window = {
   NexusBackupRestoreUtils: backup,
   NexusOfflineSyncQueue: queue,
   NexusCloudSyncRecovery: recovery,
+  NexusWorkspaceSyncMerge: workspaceMerge,
   NexusStorageKey: STATE_KEY,
   NexusFeatureStorageKey: FEATURE_KEY,
   NexusGetFeatureState: () => JSON.parse(storage.getItem(FEATURE_KEY) || '{}'),
@@ -180,4 +182,32 @@ assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'second-offline-A
 assert.equal(rows.get(accountB.id).payload.state.topics.length, 0, 'account B data must remain isolated after account A recovery');
 assert.equal(queue.hasPending(storage, accountA.id), false, 'account A pending work must be acknowledged after verification');
 
+
+const stableBase=rows.get(accountA.id);
+const raceBaseRevision=stableBase.updated_at;
+const offlineRaceState=stateFor('second-offline-A');
+offlineRaceState.topics.push({id:'offline-race-topic',name:'Created offline on A',subjectId:'subject-general',dueDate:'2026-10-20'});
+const offlineRacePayload=payloadFor('second-offline-A');
+offlineRacePayload.state=offlineRaceState;
+context.state=offlineRaceState;
+storage.setItem(STATE_KEY,JSON.stringify(offlineRaceState));
+storage.setItem(FEATURE_KEY,JSON.stringify(offlineRacePayload.featureState));
+queue.rememberStamp(storage,accountA.id,raceBaseRevision);
+queue.commitWorkspace(storage,[
+  {key:STATE_KEY,value:JSON.stringify(offlineRaceState)},
+  {key:FEATURE_KEY,value:JSON.stringify(offlineRacePayload.featureState)}
+],offlineRacePayload);
+const cloudRacePayload=JSON.parse(JSON.stringify(stableBase.payload));
+cloudRacePayload.state.topics.push({id:'online-race-topic',name:'Created online on B',subjectId:'subject-general',dueDate:'2026-10-21'});
+cloudRacePayload.exportedAt=new Date().toISOString();
+const cloudRaceRevision=new Date(Date.parse(raceBaseRevision)+60000).toISOString();
+rows.set(accountA.id,{...stableBase,payload:cloudRacePayload,updated_at:cloudRaceRevision});
+await window.NexusCloudSync.reconnect();
+assert.equal(getElement('cloudStatus').textContent,'Synced','a same-account stale revision must auto-merge and verify instead of invoking the workspace-choice dialog');
+const converged=rows.get(accountA.id).payload.state.topics.map(topic=>topic.id);
+assert.ok(converged.includes('offline-race-topic'),'the offline device addition must survive auto-merge');
+assert.ok(converged.includes('online-race-topic'),'the cloud device addition must survive auto-merge');
+assert.equal(queue.hasPending(storage,accountA.id),false,'the automatically merged snapshot must be acknowledged only after verification');
+assert.ok(!getElement('cloudHelpText').textContent.toLowerCase().includes('choose one of the available data options'),'ordinary same-account revision conflicts must not request a three-way workspace choice');
+assert.equal(queue.getBase(storage,accountA.id).state.topics.length,rows.get(accountA.id).payload.state.topics.length,'the acknowledged merged snapshot becomes the next three-way merge base');
 console.log('Cloud sync runtime tests passed: offline recovery, verified acknowledgement, and account isolation.');
