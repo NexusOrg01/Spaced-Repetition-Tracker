@@ -52,6 +52,7 @@ const localState = stateFor('offline-A');
 let activeSession = { user: accountA };
 let networkAvailable = false;
 let simulateAmbiguousCommittedWrite = false;
+let simulatedRacingCloudRow = null;
 const rows = new Map();
 const listeners = {};
 const elements = new Map();
@@ -107,7 +108,15 @@ function makeQuery(table) {
       if (userId !== activeSession.user.id) return { data: [], error: null };
       if (operation === 'update') {
         const row = rows.get(userId);
-        if (!row || row.updated_at !== expectedStamp || values.user_id === undefined && userId !== activeSession.user.id) return { data: [], error: null };
+        if (!row || values.user_id === undefined && userId !== activeSession.user.id) return { data: [], error: null };
+        if (simulatedRacingCloudRow) {
+          // Device B commits after Device A's initial revision read but before
+          // Device A's compare-and-swap update reaches the database.
+          rows.set(userId, simulatedRacingCloudRow);
+          simulatedRacingCloudRow = null;
+          return { data: [], error: null };
+        }
+        if (row.updated_at !== expectedStamp) return { data: [], error: null };
         if (simulateAmbiguousCommittedWrite) {
           simulateAmbiguousCommittedWrite = false;
           rows.set(userId, { ...row, payload: values.payload, updated_at: values.updated_at });
@@ -286,4 +295,37 @@ await window.NexusCloudSync.reconnect();
 assert.equal(queue.hasPending(storage,accountA.id),false,'metadata-only revision changes must acknowledge a semantically matching workspace instead of stranding the queue');
 assert.equal(queue.getBase(storage,accountA.id).serverVersion,metadataOnlyRemote.updated_at,'the merge base must advance to the metadata-only newer cloud revision');
 assert.ok(!getElement('cloudHelpText').textContent.toLowerCase().includes('choose one of the available data options'),'metadata-only sync reconciliation must not trigger a workspace choice');
-console.log('Cloud sync runtime tests passed: offline recovery, account isolation, automatic reconciliation, ambiguous-write recovery, and metadata-only revision handling.');
+
+// Reproduce a real two-device CAS race during background sync: A reads the
+// current revision, B commits before A's conditional update, and A receives a
+// zero-row conflict. Nexus must reconnect and merge without a page refresh.
+const beforeLiveRace=rows.get(accountA.id);
+const raceBase=JSON.parse(JSON.stringify(beforeLiveRace.payload));
+const localRaceState=JSON.parse(JSON.stringify(raceBase.state));
+localRaceState.topics.push({id:'background-device-local',name:'Local background sync edit',subjectId:'subject-general',dueDate:'2026-10-26'});
+const localRaceFeatures=JSON.parse(JSON.stringify(raceBase.featureState||{}));
+const localRacePayload={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:localRaceState,featureState:localRaceFeatures};
+context.state=localRaceState;
+storage.setItem(STATE_KEY,JSON.stringify(localRaceState));
+storage.setItem(FEATURE_KEY,JSON.stringify(localRaceFeatures));
+queue.rememberStamp(storage,accountA.id,beforeLiveRace.updated_at);
+queue.commitWorkspace(storage,[
+  {key:STATE_KEY,value:JSON.stringify(localRaceState)},
+  {key:FEATURE_KEY,value:JSON.stringify(localRaceFeatures)}
+],localRacePayload);
+const cloudRaceDuringCas=JSON.parse(JSON.stringify(beforeLiveRace.payload));
+cloudRaceDuringCas.state.topics.push({id:'background-device-cloud',name:'Cloud background sync edit',subjectId:'subject-general',dueDate:'2026-10-27'});
+simulatedRacingCloudRow={...beforeLiveRace,payload:cloudRaceDuringCas,updated_at:new Date(Date.parse(beforeLiveRace.updated_at)+60000).toISOString()};
+assert.equal(await window.NexusCloudSync.upload(),false,'the first compare-and-swap attempt should report unresolved until automatic reconciliation verifies it');
+for(let i=0;i<150;i++){
+  const synced=rows.get(accountA.id);
+  if(!queue.hasPending(storage,accountA.id)&&synced?.payload?.state?.topics?.some(topic=>topic.id==='background-device-local')&&synced?.payload?.state?.topics?.some(topic=>topic.id==='background-device-cloud'))break;
+  await new Promise(resolve=>setTimeout(resolve,10));
+}
+const liveRaceConverged=rows.get(accountA.id).payload.state.topics.map(topic=>topic.id);
+assert.ok(liveRaceConverged.includes('background-device-local'),'Device A local work must survive an online CAS race');
+assert.ok(liveRaceConverged.includes('background-device-cloud'),'Device B cloud work must survive an online CAS race');
+assert.equal(queue.hasPending(storage,accountA.id),false,'the online-race queue must clear only after merged cloud read-back verification');
+assert.equal(getElement('cloudStatus').textContent,'Synced','online CAS conflict must auto-reconcile and return to synced state without refresh');
+assert.ok(!getElement('cloudHelpText').textContent.toLowerCase().includes('choose one of the available data options'),'routine live same-account races must not present the three-choice dialog');
+console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, and live revision-race convergence.');
