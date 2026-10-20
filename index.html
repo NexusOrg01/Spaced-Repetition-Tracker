@@ -2104,6 +2104,8 @@ body.analytics-mode .app,body.danger-mode .app{display:none!important}
     target.innerHTML=intelligence+'<div class="home-heatmap-head"><div><strong>Review activity heatmap</strong><small>Each square represents a day; darker squares indicate more saved reviews.</small></div><div class="ra-field"><label for="homeHeatmapPeriod">Heatmap period</label><select class="hub-input" id="homeHeatmapPeriod">'+selectOptions([['7','7 days'],['30','30 days'],['84','12 weeks'],['180','6 months'],['365','12 months']],String(heatDays))+'</select></div></div><div class="hub-heatmap analytics-heatmap home-activity-heatmap">'+heat+'</div>';
   }
   function renderActivityAnalytics(selection){
+     const studyLogMinutes=record=>{const seconds=record&&record.durationSeconds;if(seconds!==undefined&&seconds!==null&&Number.isFinite(Number(seconds)))return Math.max(0,Number(seconds))/60;return Math.max(0,Number(record&&record.minutes)||0);};
+     const formatStudyDuration=seconds=>{const total=Math.max(0,Math.round(Number(seconds)||0)),minutes=Math.floor(total/60),remainder=total%60;return minutes?`${minutes} min${remainder?' '+remainder+' sec':''}`:`${remainder} sec`;};
     // This renderer owns every date, aggregation, and SVG helper it needs.
     // It must not depend on private helpers from the main application's separate IIFE.
     const escapeActivityHtml=value=>String(value??'').replace(/[&<>]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[ch])).replaceAll('"','&quot;').replaceAll(String.fromCharCode(39),'&#39;');
