@@ -61,6 +61,7 @@ async function upload(){
  if(!client||!session||!ready)return false;
  if(syncing){pendingSync=true;return false;}
  const uploadUserId=session.user.id;
+ async function assertUploadOwner(){await assertActiveUser(uploadUserId);if(localStorage.getItem(OWNER_KEY)!==uploadUserId)throw new Error('The local workspace owner changed during sync. The pending snapshot was not applied to another account.');}
  if(localStorage.getItem(OWNER_KEY)!==uploadUserId){ready=false;status('Account queue paused');say('The active account does not own this local workspace. No cloud write was attempted; reconnect to the correct account.');return false;}
  syncing=true;status('Syncing…');let uploaded=false,attemptedPayload=null,attemptedOperationId=null,attemptedBase=null,attemptedPriorStamp=null;
  const queue=window.NexusOfflineSyncQueue;
@@ -73,7 +74,7 @@ async function upload(){
   const payload=pending?pending.payload:snapshot();attemptedPayload=payload;attemptedOperationId=pending?pending.operationId:null;attemptedBase=pending?pending.baseServerVersion:(priorStamp||null);
   if(pending){
    const before=await fetchRemote(uploadUserId);
-   await assertActiveUser(uploadUserId);
+   await assertUploadOwner();
    if(before&&before.payload&&stableJson(before.payload)===stableJson(payload)){
     lastRemoteStamp=before.updated_at||null;
     queue.acknowledge(localStorage,uploadUserId,pending.operationId,pending.baseServerVersion,lastRemoteStamp);
@@ -82,10 +83,10 @@ async function upload(){
    const actualStamp=before&&before.updated_at?before.updated_at:null;
    if(actualStamp!==(pending.baseServerVersion||null)){const conflict=new Error('The cloud revision changed since this offline snapshot was queued.');conflict.code='NEXUS_CLOUD_CONFLICT';throw conflict;}
    const stamp=new Date().toISOString();
-   await assertActiveUser(uploadUserId);
+   await assertUploadOwner();
    await window.NexusBackupRestoreUtils.writeCloudSnapshot(client,uploadUserId,payload,pending.baseServerVersion,stamp);
    const verify=await fetchRemote(uploadUserId);
-   await assertActiveUser(uploadUserId);
+   await assertUploadOwner();
    if(!verify||!verify.payload||stableJson(verify.payload)!==stableJson(payload)){const conflict=new Error('The remote cloud snapshot changed during write verification.');conflict.code='NEXUS_CLOUD_CONFLICT';throw conflict;}
    lastRemoteStamp=verify.updated_at||stamp;
    queue.acknowledge(localStorage,uploadUserId,pending.operationId,pending.baseServerVersion,lastRemoteStamp);
@@ -93,7 +94,7 @@ async function upload(){
    const stamp=new Date().toISOString();
    await window.NexusBackupRestoreUtils.writeCloudSnapshot(client,uploadUserId,payload,priorStamp,stamp);
    const verify=await fetchRemote(uploadUserId);
-   await assertActiveUser(uploadUserId);
+   await assertUploadOwner();
    if(!verify||!verify.payload||stableJson(verify.payload)!==stableJson(payload)){const conflict=new Error('The remote cloud snapshot changed during write verification.');conflict.code='NEXUS_CLOUD_CONFLICT';throw conflict;}
    lastRemoteStamp=verify.updated_at||stamp;
    if(queue){
@@ -108,9 +109,9 @@ async function upload(){
    let alreadyCommitted=false;
    try{
     if(attemptedPayload){
-     await assertActiveUser(uploadUserId);
+     await assertUploadOwner();
      const latest=await fetchRemote(uploadUserId);
-     await assertActiveUser(uploadUserId);
+     await assertUploadOwner();
      if(latest&&latest.payload&&stableJson(latest.payload)===stableJson(attemptedPayload)){
       lastRemoteStamp=latest.updated_at||null;
       if(queue&&attemptedOperationId)queue.acknowledge(localStorage,uploadUserId,attemptedOperationId,attemptedBase,lastRemoteStamp);
