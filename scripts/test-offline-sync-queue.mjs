@@ -61,8 +61,9 @@ const stateKey='recall.study.tracker.v1';
 
 {
  const s=new MemoryStorage({[queue.OWNER]:'account-A'});
- queue.rememberBase(s,'account-A',payload('baseline'));
+ queue.rememberBase(s,'account-A',payload('baseline'),'revision-base-1');
  assert.equal(queue.getBase(s,'account-A').state.topics[0].id,'baseline','each account needs its last confirmed workspace base');
+ assert.equal(queue.getBase(s,'account-A').serverVersion,'revision-base-1','a base must retain the cloud revision it represents');
  assert.equal(queue.getBase(s,'account-B'),null,'merge bases must never cross account boundaries');
  queue.rememberBase(s,'account-B',payload('other'));
  assert.equal(queue.getBase(s,'account-A').state.topics[0].id,'baseline');
