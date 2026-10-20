@@ -1,0 +1,11 @@
+## Account-bound sync foundation (staged)
+
+This PR adds an IndexedDB queue primitive but deliberately does not enable automatic sync or change the snapshot uploader. Nexus currently stores the main workspace and Study Hub in separate localStorage keys and uploads whole-workspace snapshots. No verified server operation endpoint with idempotency keys or record-level revision contracts was found. Preview sign-in is blocked when the configured project is the live Supabase project. Wiring a queue to that uploader before account-scoped workspace isolation exists could upload Account A's data while Account B is active.
+
+Each queued operation requires operationId, explicit ownerUserId, namespace, entityId, operationType, schemaVersion, localSequence, baseVersion, JSON payload, status and retry metadata. Guest work uses only guest:local. Reads require explicit owner. Acknowledgement requires an explicit server-confirmed marker, but that client guard is not proof of server idempotency. A future uploader must check auth identity and receive confirmed success from a server endpoint that deduplicates operation IDs.
+
+Not implemented: app integration, atomic local-workspace/queue commits, auth refresh, single-flight leases, automatic retry triggers, server-side ownership/idempotency, conflict reconciliation, backup/restore and FSRS/Study Hub integration. Do not call this a complete sync engine.
+
+Next stages: (1) account-scoped workspace migration with rollback; (2) isolated Supabase test schema/RLS and server-enforced owner + operation idempotency; (3) guest/account isolation; (4) atomic local mutation + queue commit; (5) serialized retries and conflict policy; (6) backup/restore queue policy including FSRS/Study Hub; (7) synthetic-account E2E and stale service-worker tests.
+
+Keep the live-project preview guard. No isolated Supabase test project or connected Supabase admin tool was available. No production settings/data/schema/RLS were changed. Changes are additive; remove account-bound-sync.js, scripts/test-account-bound-sync.mjs, and this document to roll back.
