@@ -58,4 +58,20 @@ const stateKey='recall.study.tracker.v1';
  const s=new MemoryStorage();const result=queue.commitWorkspace(s,[{key:stateKey,value:'guest-state'}],payload('guest'));
  assert.equal(result.queued,false);assert.equal(s.getItem(queue.KEY),null);assert.equal(s.getItem(stateKey),'guest-state');
 }
+
+{
+ const s=new MemoryStorage({[queue.OWNER]:'account-A'});
+ queue.rememberBase(s,'account-A',payload('baseline'));
+ assert.equal(queue.getBase(s,'account-A').state.topics[0].id,'baseline','each account needs its last confirmed workspace base');
+ assert.equal(queue.getBase(s,'account-B'),null,'merge bases must never cross account boundaries');
+ queue.rememberBase(s,'account-B',payload('other'));
+ assert.equal(queue.getBase(s,'account-A').state.topics[0].id,'baseline');
+ const conflicts=[{path:'state.topics[t1].notes',base:'base',local:'offline',remote:'cloud',resolution:'local'}];
+ assert.equal(queue.archiveConflicts(s,'account-A',conflicts,{baseServerVersion:'rev-1',remoteServerVersion:'rev-2'}),1);
+ const history=queue.getConflictHistory(s,'account-A');
+ assert.equal(history.length,1);
+ assert.equal(history[0].remoteServerVersion,'rev-2');
+ assert.equal(history[0].conflicts[0].remote,'cloud','losing field values must remain recoverable before merged upload');
+ assert.deepEqual(queue.getConflictHistory(s,'account-B'),[]);
+}
 console.log('Account-bound offline sync queue tests passed.');
