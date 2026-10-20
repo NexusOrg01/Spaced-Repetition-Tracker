@@ -86,7 +86,7 @@ assert.ok(html.includes("const restoreFocusUi=()=>{if(focusStart)openFocusMode()
 assert.ok(html.includes('focusStart=Date.now();focusPausedAt=null;fsState.focusStartedAt=new Date(focusStart).toISOString();fsState.focusActualStartedAt=new Date(focusStart).toISOString();fsState.focusPausedAt=null;saveFs();'), 'starting a new focus session must clear stale pause state and initialize the original wall-clock start before persisting');
 assert.ok(serviceWorker.includes("'./fsrs-bundle.js'") && serviceWorker.includes("'./backup-restore-utils.js'"),
   'offline app shell must cache the scheduler and backup safety helpers');
-assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v15';"), 'the service-worker cache must be versioned and scoped to Nexus-owned caches');
+assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v16';"), 'the service-worker cache must be versioned and scoped to Nexus-owned caches');
 const networkFirstSources = serviceWorker.split('const networkFirst=')[1]?.split(';')[0] || '';
 assert.ok(networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')"), 'online loads must refresh the coupled FSRS and backup helpers while preserving offline cache fallback');
 assert.equal(manifest.theme_color, '#6C8AFF', 'installed app chrome should use the Nexus brand color');
