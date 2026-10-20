@@ -48,7 +48,7 @@ async function verifySafeAuthStorage() {
   const end = source.indexOf('async function ensureClient(){', start);
   assert.ok(start >= 0 && end > start, 'cloud sync must define the safe Supabase auth storage adapter');
   const sandbox = {};
-  vm.runInNewContext(source.slice(start, end) + '\\nglobalThis.factory = createSafeAuthStorage;', sandbox);
+  vm.runInNewContext(source.slice(start, end) + '\nglobalThis.factory = createSafeAuthStorage;', sandbox);
   const values = new Map([
     ['sb-testproject-auth-token', 'undefined'],
     ['nexus.tracker.v3', 'undefined']
@@ -66,7 +66,9 @@ async function verifySafeAuthStorage() {
   safe.setItem('sb-testproject-auth-token', valid);
   assert.equal(safe.getItem('sb-testproject-auth-token'), valid, 'valid Supabase session JSON should be preserved');
 }
-\nasync function copySiteFiles() {
+
+async function copySiteFiles() {
+  await verifySafeAuthStorage();
   await rm(output, { recursive: true, force: true });
   await mkdir(output, { recursive: true });
   const excluded = new Set(['.git', '.github', 'node_modules', 'dist', 'scripts', 'supabase', '.gitignore', 'package.json', 'vercel.json', 'netlify.toml']);
