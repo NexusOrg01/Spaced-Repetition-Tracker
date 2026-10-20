@@ -21,7 +21,7 @@ function updateConflictRecoveryButton(){
   const count=history.reduce((total,item)=>total+(Array.isArray(item.conflicts)?item.conflicts.length:0),0);
   button.hidden=count===0;
   button.textContent=count?'Download sync conflict recovery ('+count+')':'Download sync conflict recovery';
-  button.title='Download the saved alternative values from overlapping offline/cloud edits. The file is local to this account and is not uploaded.';
+  button.title='Download saved alternatives from overlapping offline/cloud edits. This archive is stored only in this browser/device for the signed-in account; it is not uploaded or synced to other devices. Download it before clearing this browser’s site data.';
  }catch(error){button.hidden=true;console.warn('Nexus conflict recovery archive could not be read.',error);}
 }
 function downloadConflictRecovery(){
@@ -30,7 +30,7 @@ function downloadConflictRecovery(){
  try{
   const history=queue.getConflictHistory(localStorage,owner);
   if(!history.length){updateConflictRecoveryButton();return;}
-  const data={app:'Nexus Spaced Repetition Tracker',type:'sync-conflict-recovery',schema:1,exportedAt:new Date().toISOString(),note:'This file records alternatives from same-account offline/cloud conflicts. The current workspace kept the deterministic merge result; the archived values are provided for manual inspection and recovery.',conflictRecovery:history};
+  const data={app:'Nexus Spaced Repetition Tracker',type:'sync-conflict-recovery',schema:1,exportedAt:new Date().toISOString(),note:'This file records alternatives from same-account offline/cloud conflicts. The current workspace kept the deterministic merge result; the archived values are provided for manual inspection and recovery. This archive is stored only in the browser/device that detected the conflict and is not uploaded or synced to other devices.',conflictRecovery:history};
   const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
   const url=URL.createObjectURL(blob),link=document.createElement('a');
   link.href=url;link.download='nexus-sync-conflict-recovery-'+new Date().toISOString().replace(/[:.]/g,'-')+'.json';
