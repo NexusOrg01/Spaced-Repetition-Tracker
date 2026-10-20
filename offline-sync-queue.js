@@ -1,6 +1,6 @@
 (function(root,factory){const api=factory();if(typeof module==='object'&&module.exports)module.exports=api;if(root)root.NexusOfflineSyncQueue=api;})(typeof window!=='undefined'?window:globalThis,function(){
 'use strict';
-const KEY='nexus.cloud.offline-outbox.v1',OWNER='nexus.cloud.last-user-id',STAMP='nexus.cloud.remote-stamps.v1',QUARANTINE='nexus.cloud.offline-outbox.corrupt.v1',SCHEMA=1;
+const KEY='nexus.cloud.offline-outbox.v1',OWNER='nexus.cloud.last-user-id',STAMP='nexus.cloud.remote-stamps.v1',BASE='nexus.cloud.sync-base.v1',CONFLICTS='nexus.cloud.conflict-recovery.v1',QUARANTINE='nexus.cloud.offline-outbox.corrupt.v1',SCHEMA=1;
 const obj=x=>!!x&&typeof x==='object'&&!Array.isArray(x),copy=x=>JSON.parse(JSON.stringify(x)),now=()=>new Date().toISOString();
 const fresh=()=>({schemaVersion:SCHEMA,sequence:0,pending:{},archived:[]});
 function fail(m){const e=new Error(m);e.code='NEXUS_OFFLINE_QUEUE_UNAVAILABLE';return e;}function operationId(){const c=typeof globalThis!=='undefined'?globalThis.crypto:null;if(c&&typeof c.randomUUID==='function')return 'nexus-op-'+c.randomUUID();if(c&&typeof c.getRandomValues==='function'){const b=new Uint8Array(16);c.getRandomValues(b);b[6]=(b[6]&15)|64;b[8]=(b[8]&63)|128;const h=Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');return 'nexus-op-'+h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);}throw fail('Secure operation ID generation is unavailable; no workspace changes were written.');}
@@ -15,7 +15,42 @@ function archive(s,owner,reason){if(!owner)return false;const q=read(s),key=Stri
 function acknowledge(s,owner,operationId,base,stamp){if(!owner||!operationId)throw new Error('Verified account owner and operation ID required.');const q=read(s),key=String(owner),x=q.pending[key],sm=stamps(s);sm[key]=typeof stamp==='string'&&stamp?stamp:null;let acknowledged=false,rebased=false;if(x&&x.status==='pending'&&x.operationId===operationId){delete q.pending[key];acknowledged=true;}else if(x&&x.status==='pending'&&x.baseServerVersion===(base||null)){q.pending[key]={...x,baseServerVersion:sm[key],updatedAt:now()};rebased=true;}write(s,[{key:KEY,value:JSON.stringify(q)},{key:STAMP,value:JSON.stringify(sm)}]);return {acknowledged,rebased};}
 function rememberStamp(s,owner,stamp){if(!owner)return;const sm=stamps(s);sm[String(owner)]=typeof stamp==='string'&&stamp?stamp:null;write(s,[{key:STAMP,value:JSON.stringify(sm)}]);}
 function getStamp(s,owner){if(!owner)return null;const sm=stamps(s);return sm[String(owner)]||null;}
+function readOwnerMap(s,key,label){
+ const raw=s.getItem(key);if(raw===null)return {};
+ let value;try{value=JSON.parse(raw);}catch(_){throw fail(label+' is unreadable; automatic sync resolution is paused.');}
+ if(!obj(value))throw fail(label+' has an invalid format; automatic sync resolution is paused.');
+ return value;
+}
+function getBase(s,owner){
+ if(!owner)return null;
+ const map=readOwnerMap(s,BASE,'The last-synced workspace base'),value=map[String(owner)];
+ if(value===undefined)return null;
+ if(!obj(value)||!obj(value.state)||!obj(value.featureState))throw fail('The last-synced workspace base is invalid; automatic conflict resolution is paused to protect your data.');
+ return copy(value);
+}
+function rememberBase(s,owner,payload){
+ if(!owner||!obj(payload)||!obj(payload.state)||!obj(payload.featureState))throw fail('A verified workspace snapshot is required to remember the sync base.');
+ const map=readOwnerMap(s,BASE,'The last-synced workspace base');
+ map[String(owner)]={state:copy(payload.state),featureState:copy(payload.featureState)};
+ write(s,[{key:BASE,value:JSON.stringify(map)}]);
+ return true;
+}
+function archiveConflicts(s,owner,conflicts,metadata={}){
+ if(!owner||!Array.isArray(conflicts)||!conflicts.length)return 0;
+ const map=readOwnerMap(s,CONFLICTS,'The sync conflict recovery archive');
+ const key=String(owner),rows=Array.isArray(map[key])?map[key]:[];
+ const entry={ownerUserId:key,createdAt:now(),baseServerVersion:metadata.baseServerVersion||null,remoteServerVersion:metadata.remoteServerVersion||null,conflicts:copy(conflicts)};
+ rows.push(entry);
+ map[key]=rows.slice(-10);
+ write(s,[{key:CONFLICTS,value:JSON.stringify(map)}]);
+ return conflicts.length;
+}
+function getConflictHistory(s,owner){
+ if(!owner)return [];
+ const map=readOwnerMap(s,CONFLICTS,'The sync conflict recovery archive');
+ return Array.isArray(map[String(owner)])?copy(map[String(owner)]):[];
+}
 function summary(s,owner){const q=read(s),x=owner?q.pending[String(owner)]:null;return {schemaVersion:SCHEMA,pendingForOwner:!!(x&&x.status==='pending'),localSequence:x&&x.status==='pending'?x.localSequence:null,archivedForOwner:q.archived.filter(a=>a&&a.ownerUserId===String(owner)).length};}
 function allPending(s){const q=read(s);return Object.keys(q.pending).map(k=>q.pending[k]).filter(x=>x&&x.status==='pending').map(copy);}
-return {KEY,OWNER,STAMP,SCHEMA,commitWorkspace,getPending,hasPending:(s,o)=>!!getPending(s,o),getAllPending:allPending,rebase,archive,acknowledge,rememberStamp,getStamp,summary};
+return {KEY,OWNER,STAMP,BASE,CONFLICTS,SCHEMA,commitWorkspace,getPending,hasPending:(s,o)=>!!getPending(s,o),getAllPending:allPending,rebase,archive,acknowledge,rememberStamp,getStamp,getBase,rememberBase,archiveConflicts,getConflictHistory,summary};
 });
