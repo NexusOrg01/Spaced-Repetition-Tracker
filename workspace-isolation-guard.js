@@ -37,16 +37,16 @@
       overlay.setAttribute('aria-hidden',String(!decision.locked));
       overlay.dataset.state=decision.phase;
       if(app)app.inert=decision.locked;
-      if(decision.phase==='error'){
-        heading.textContent='Account workspace is locked';
-        message.textContent='Nexus could not verify this account’s workspace. Your previous workspace is still stored locally, but it is hidden to prevent another account’s study history from being shown. Retry the account load, or sign out to continue offline with the previous account’s data.';
+      if(decision.locked){
         retry.hidden=false;
         signOut.hidden=false;
-      }else if(decision.locked){
-        heading.textContent='Loading this account’s workspace…';
-        message.textContent='Nexus is checking the signed-in account before showing study data. Your previous workspace is temporarily hidden and will not be merged automatically.';
-        retry.hidden=true;
-        signOut.hidden=true;
+        if(decision.phase==='error'){
+          heading.textContent='Account workspace is locked';
+          message.textContent='Nexus could not verify this account’s workspace. Your previous workspace is still stored locally, but it is hidden to prevent another account’s study history from being shown. Retry the account load, or sign out to continue offline with the previous account’s data.';
+        }else{
+          heading.textContent='Loading this account’s workspace…';
+          message.textContent='Nexus is checking the signed-in account before showing study data. Your previous workspace is temporarily hidden and will not be merged automatically.';
+        }
       }else{
         retry.hidden=true;
         signOut.hidden=true;

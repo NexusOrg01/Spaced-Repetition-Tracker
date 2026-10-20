@@ -88,5 +88,6 @@ const guardAt = index.indexOf(guardTag);
 const isolationOverlayAt = index.indexOf('id="workspaceIsolationLock"');
 assert.ok(isolationOverlayAt >= 0 && guardAt > isolationOverlayAt && guardAt > index.indexOf('window.NexusCloudSync={schedule,upload};'), 'install the workspace isolation guard after cloud-sync UI exists');
 assert.ok(index.includes('aria-modal="true"') && index.includes('workspaceIsolationSignOut') && index.includes('workspaceIsolationRetry'), 'the account-mismatch lock must be modal and provide retry/sign-out recovery');
+assert.ok(guard.includes('retry.hidden=false;') && guard.includes('signOut.hidden=false;'), 'retry and sign-out must remain available even if account loading stalls');
 
 console.log('Data-safety integration wiring checks passed.');
