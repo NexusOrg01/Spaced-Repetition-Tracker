@@ -25,6 +25,15 @@ const queueAt = index.indexOf(queueTag);
 const appStateAt = index.indexOf("const STORAGE_KEY = 'recall.study.tracker.v1';");
 assert.ok(helperAt >= 0 && queueAt > helperAt && appStateAt > queueAt, 'load backup and queue safety helpers before the main app script');
 assert.ok(index.includes('window.NexusStorageKey = STORAGE_KEY;'), 'expose the primary storage key for shared transactions');
+const mergeTag = '<script src="./workspace-sync-merge.js"></script>';
+const mergeAt = index.indexOf(mergeTag);
+const cloudScriptAt = index.indexOf('<script src="./cloud-sync.js"></script>');
+assert.ok(mergeAt >= 0 && cloudScriptAt > mergeAt, 'three-way merge engine must load before cloud sync runtime');
+assert.ok(cloudSync.includes('reconcileConcurrentSnapshot(newUserId,remote)'), 'same-account pending snapshots on stale cloud revisions must attempt automatic merge before the workspace-choice fallback');
+assert.ok(cloudSync.includes('queue.getBase(localStorage,userId)'), 'automatic conflict resolution must compare the last synced base, local edits, and cloud edits');
+assert.ok(cloudSync.includes('queue.archiveConflicts(localStorage,userId,result.conflicts'), 'overlapping field edits must be archived before merged snapshots can overwrite cloud data');
+assert.ok(cloudSync.includes('sameWorkspace(remoteData,pendingForUser.payload)'), 'routine conflict detection must compare workspace contents, not exported-at metadata');
+
 assert.ok(index.includes('window.NexusFeatureStorageKey=FEATURE_KEY;'), 'expose the Study Hub storage key for shared transactions');
 assert.ok(index.includes('window.NexusOfflineSyncQueue.commitWorkspace(localStorage'), 'tracker and Study Hub writes must atomically persist their account-bound pending snapshot');
 assert.ok(cloudSync.includes("window.NexusOfflineSyncQueue.rebase(localStorage,newUserId,snapshot(),lastRemoteStamp,'user-merge')"), 'an explicit merge must rebase the pending snapshot on the observed cloud revision');
