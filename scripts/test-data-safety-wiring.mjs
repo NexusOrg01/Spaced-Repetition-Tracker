@@ -18,22 +18,27 @@ function section(source, startMarker, endMarker, label) {
 
 const helperTag = '<script src="./backup-restore-utils.js"></script>';
 const helperAt = index.indexOf(helperTag);
+const queueTag = '<script src="./offline-sync-queue.js"></script>';
+const queueAt = index.indexOf(queueTag);
 const appStateAt = index.indexOf("const STORAGE_KEY = 'recall.study.tracker.v1';");
-assert.ok(helperAt >= 0 && appStateAt > helperAt, 'load safety helpers before the main app script');
+assert.ok(helperAt >= 0 && queueAt > helperAt && appStateAt > queueAt, 'load backup and queue safety helpers before the main app script');
 assert.ok(index.includes('window.NexusStorageKey = STORAGE_KEY;'), 'expose the primary storage key for shared transactions');
 assert.ok(index.includes('window.NexusFeatureStorageKey=FEATURE_KEY;'), 'expose the Study Hub storage key for shared transactions');
+assert.ok(index.includes('window.NexusOfflineSyncQueue.commitWorkspace(localStorage'), 'tracker and Study Hub writes must atomically persist their account-bound pending snapshot');
+assert.ok(index.includes("window.NexusOfflineSyncQueue.rebase(localStorage,newUserId,snapshot(),lastRemoteStamp,'user-merge')"), 'an explicit merge must rebase the pending snapshot on the observed cloud revision');
 assert.ok(index.includes('fsrs:window.NexusBackupRestoreUtils.sanitizeFsrsCard(t.fsrs)'), 'topic normalization must preserve validated FSRS memory state from full backups');
 assert.ok(index.includes('window.NexusNormalizeFeatureState=value=>'), 'cloud data must use the shared Study Hub normalizer');
 assert.ok(index.includes('window.NexusMergeFeatureState=(current,imported,rawImported)=>'), 'cloud data must use the shared Study Hub merge helper');
 
 const restore = section(index, 'async function restoreOrMerge(file){', 'function formatElapsed(ms)', 'JSON restore');
-const restoreCommit = restore.indexOf('commitLocalStorageAtomically(localStorage,');
+const restoreCommit = restore.indexOf('NexusOfflineSyncQueue.commitWorkspace(localStorage,');
 const restoreAssignment = restore.indexOf('state=nextState;');
 assert.ok(restore.includes('window.NexusBackupRestoreUtils.validateBackupState(raw)'), 'validate backup records before normalization can silently discard malformed entries');
 assert.ok(index.includes('const csvCell=v=>window.NexusBackupRestoreUtils.csvCell(v);') && index.includes('function csvCellHub(v){return window.NexusBackupRestoreUtils.csvCell(v);}') && index.includes('row.map(value=>window.NexusBackupRestoreUtils.csvCell(value))'), 'all tracker, Study Hub, and analytics CSV exports must share formula-safe cell encoding');
 assert.ok(restoreCommit >= 0 && restoreAssignment > restoreCommit, 'persist both backup sections before replacing in-memory app state');
 assert.ok(restore.includes('window.NexusCloudSync.schedule()'), 'schedule cloud sync only after a successful restore commit');
-assert.ok(index.includes("function backupPayload(){return {app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state,featureState:fsState};}"), 'full backups must include schema 4 and Study Hub state');
+assert.ok(index.includes("schema:4,exportedAt:new Date().toISOString(),state,featureState:fsState,syncMetadata:syncStatus"), 'full backups must include schema 4, Study Hub state, and account-bound queue metadata without importing the queue itself');
+assert.ok(restore.includes("archivePending:mode==='REPLACE'"), 'replace restore must archive the prior pending snapshot after explicit confirmation');
 
 const cloud = section(index, 'function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){', 'async function initializeSession(s)', 'cloud workspace hydration');
 const cloudCommit = cloud.indexOf('commitLocalStorageAtomically(localStorage,entries)');
@@ -46,9 +51,14 @@ assert.ok(cloud.includes('window.NexusSetFeatureState(nextFeatures,{persist:fals
 assert.ok(cloud.includes('function resetToEmpty(ownerId){') && cloud.includes('applyWorkspaceSnapshot(emptyState(),{},ownerId)'), 'new-account reset commits the owner marker with the empty workspace');
 assert.ok(index.includes('resetToEmpty(newUserId)'), 'account switching must pass the new owner into every clean-workspace reset');
 assert.ok(index.includes('applyRemote(remote.payload,newUserId)'), 'account switch passes the active user into atomic hydration');
-assert.ok(index.includes('window.NexusBackupRestoreUtils.writeCloudSnapshot(client,uploadUserId,payload,lastRemoteStamp,stamp)'), 'cloud writes must compare against the last observed version');
+const upload = section(index, 'async function upload(){', 'function schedule(){', 'account-bound upload');
+assert.ok(upload.includes('queue.getPending(localStorage,uploadUserId)'), 'cloud upload must drain only the pending snapshot for the active account');
+assert.ok(upload.includes('localStorage.getItem(OWNER_KEY)!==uploadUserId'), 'cloud writes must stop if the persisted workspace owner differs from the active account');
+assert.ok(upload.includes('pending.baseServerVersion'), 'queued writes must compare against their captured base revision');
+assert.ok(upload.includes('queue.acknowledge(localStorage,uploadUserId,pending.operationId'), 'queue entries are acknowledged only after a matching remote snapshot is verified');
+assert.ok(upload.includes('queue.rebase(localStorage,uploadUserId,snapshot(),lastRemoteStamp'), 'a newer local snapshot created during an upload must remain queued and be rebased after verification');
+assert.ok(upload.includes('const actualStamp=before&&before.updated_at?before.updated_at:null;'), 'queued writes must check the latest remote revision before attempting a write');
 assert.ok(index.includes("status('Cloud conflict')") && index.includes("ready=false;status('Cloud conflict')"), 'a detected cloud conflict must pause automatic uploads');
-assert.ok(!index.includes(".upsert({user_id:uploadUserId,payload,updated_at:stamp}"), 'cloud sync must not blindly overwrite a newer remote snapshot');
 assert.ok(index.includes("conflict.code='NEXUS_CLOUD_CONFLICT'"), 'verification mismatches must be treated as cloud conflicts');
 assert.ok(index.includes("else{ready=false;status('Sync error')"), 'failed cloud writes must pause automatic retries until reinitialization');
 
@@ -66,10 +76,10 @@ assert.ok(!accountChoice.includes('Cloud replacement cancelled; the account clou
 assert.ok(accountChoice.includes('lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;'), 'confirmed cloud replacement must retain the observed revision for conditional writes');
 assert.ok(accountChoice.includes("if(choice==='merge'){lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;applyLocalMerged("), 'merging with an existing cloud backup must use the fetched revision for a conditional write');
 
-assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v15';"), 'cache version must advance after fixing the stale core-script cache');
-assert.ok(serviceWorker.includes("'./backup-restore-utils.js'"), 'offline app shell must cache the helper');
+assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v16';"), 'cache version must advance after adding the offline queue helper');
+assert.ok(serviceWorker.includes("'./backup-restore-utils.js'") && serviceWorker.includes("'./offline-sync-queue.js'"), 'offline app shell must cache both safety helpers');
 const networkFirstSources = serviceWorker.split('const networkFirst=')[1]?.split(';')[0] || '';
-assert.ok(networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')"), 'critical helper and FSRS scripts must revalidate online and fall back to cache offline');
-assert.ok(workflow.includes('node scripts/test-data-safety-wiring.mjs'), 'CI must run these integration-wiring checks');
+assert.ok(networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/offline-sync-queue.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')"), 'critical helpers and FSRS scripts must revalidate online and fall back to cache offline');
+assert.ok(workflow.includes('node scripts/test-offline-sync-queue.mjs') && workflow.includes('node scripts/test-data-safety-wiring.mjs'), 'CI must run the queue and integration-wiring checks');
 
 console.log('Data-safety integration wiring checks passed.');
