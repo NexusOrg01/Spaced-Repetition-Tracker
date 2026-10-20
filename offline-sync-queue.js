@@ -28,10 +28,10 @@ function getBase(s,owner){
  if(!obj(value)||!obj(value.state)||!obj(value.featureState))throw fail('The last-synced workspace base is invalid; automatic conflict resolution is paused to protect your data.');
  return copy(value);
 }
-function rememberBase(s,owner,payload){
+function rememberBase(s,owner,payload,serverVersion){
  if(!owner||!obj(payload)||!obj(payload.state)||!obj(payload.featureState))throw fail('A verified workspace snapshot is required to remember the sync base.');
  const map=readOwnerMap(s,BASE,'The last-synced workspace base');
- map[String(owner)]={state:copy(payload.state),featureState:copy(payload.featureState)};
+ map[String(owner)]={state:copy(payload.state),featureState:copy(payload.featureState),serverVersion:typeof serverVersion==='string'&&serverVersion?serverVersion:null};
  write(s,[{key:BASE,value:JSON.stringify(map)}]);
  return true;
 }
