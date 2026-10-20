@@ -7,6 +7,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const index = readFileSync(resolve(root, 'index.html'), 'utf8');
 const serviceWorker = readFileSync(resolve(root, 'sw.js'), 'utf8');
 const workflow = readFileSync(resolve(root, '.github/workflows/validate-curricula.yml'), 'utf8');
+const guard = readFileSync(resolve(root, 'workspace-isolation-guard.js'), 'utf8');
 
 function section(source, startMarker, endMarker, label) {
   const start = source.indexOf(startMarker);
