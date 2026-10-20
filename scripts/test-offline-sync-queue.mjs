@@ -1,0 +1,21 @@
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+const require=createRequire(import.meta.url);
+const {QUEUE_KEY,enqueue,listPending,acknowledge,defer,inspect}=require('../offline-sync-queue.js');
+class MemoryStorage{constructor(){this.values=new Map();this.failOnSet=null;this.setCount=0;}getItem(k){return this.values.has(k)?this.values.get(k):null;}setItem(k,v){this.setCount++;if(this.failOnSet===this.setCount)throw new Error('synthetic quota failure');this.values.set(k,String(v));}removeItem(k){this.values.delete(k);}}
+const s=new MemoryStorage();
+const a=enqueue(s,{ownerId:'account-A',entityType:'topic',entityId:'topic-1',operationType:'upsert',schemaVersion:1,baseServerVersion:'rev-10',payload:{name:'Demand'}},{now:1000});
+const b=enqueue(s,{ownerId:'account-B',entityType:'topic',entityId:'topic-2',operationType:'upsert',schemaVersion:1,payload:{name:'Supply'}},{now:1001});
+assert.ok(a.operationId&&a.operationId!==b.operationId);assert.equal(a.ownerId,'account-A');assert.equal(a.localSequence,1);assert.equal(a.baseServerVersion,'rev-10');
+assert.deepEqual(listPending(s,'account-A',{now:2000}).map(x=>x.operationId),[a.operationId]);assert.deepEqual(listPending(s,'account-B',{now:2000}).map(x=>x.operationId),[b.operationId]);assert.deepEqual(listPending(s,'account-C',{now:2000}),[]);
+assert.throws(()=>enqueue(s,{entityType:'topic',entityId:'x',operationType:'upsert',schemaVersion:1}),/explicit immutable account or guest namespace/);
+assert.throws(()=>acknowledge(s,'account-A',a.operationId,{}),/explicit server confirmation/);assert.equal(acknowledge(s,'account-B',a.operationId,{serverConfirmed:true}),false);assert.equal(inspect(s).length,2);
+const retry=defer(s,'account-A',a.operationId,'NETWORK_TIMEOUT',{now:2000,jitter:0.5});assert.equal(retry.attempts,1);assert.ok(retry.nextAttemptAt>2000);assert.equal(listPending(s,'account-A',{now:2001}).length,0);assert.equal(listPending(s,'account-A',{now:retry.nextAttemptAt}).length,1);
+assert.equal(acknowledge(s,'account-A',a.operationId,{serverConfirmed:true}),true);assert.equal(acknowledge(s,'account-A',a.operationId,{serverConfirmed:true}),false);
+const rollback=new MemoryStorage();rollback.setItem('workspace','before');rollback.setCount=0;rollback.failOnSet=2;
+assert.throws(()=>enqueue(rollback,{ownerId:'account-A',entityType:'workspace',entityId:'all',operationType:'snapshot',schemaVersion:1,payload:{version:2}},{companionEntries:[{key:'workspace',value:'after'}]}),/persistence failed/);
+assert.equal(rollback.getItem('workspace'),'before');assert.equal(rollback.getItem(QUEUE_KEY),null);
+const corrupt=new MemoryStorage();corrupt.setItem(QUEUE_KEY,'{bad json');assert.throws(()=>inspect(corrupt),/unreadable/);assert.equal(corrupt.getItem(QUEUE_KEY),'{bad json');
+const duplicate=new MemoryStorage();const first=enqueue(duplicate,{operationId:'same-id',ownerId:'account-A',entityType:'review-event',entityId:'event-1',operationType:'append',schemaVersion:1,payload:{rating:4}});
+assert.throws(()=>enqueue(duplicate,{operationId:'same-id',ownerId:'account-A',entityType:'review-event',entityId:'event-2',operationType:'append',schemaVersion:1,payload:{rating:5}}),/already exists/);assert.equal(inspect(duplicate)[0].operationId,first.operationId);
+console.log('Account-bound offline queue primitive tests passed.');
