@@ -26,3 +26,7 @@ Portable JSON backups continue to include tracker state, validated FSRS cards em
 - Server authorization still depends on the existing `nexus_user_data` schema and RLS policies. No live Supabase schema or policy was changed. A separate test Supabase project was not exposed by the available connection, so live RLS enforcement and real-account cross-device tests remain unverified.
 - The outbox stores a second copy of each owner's current pending workspace snapshot in localStorage. Large workspaces may approach browser storage quotas. A failed transaction rolls back and surfaces a save error; export a full JSON backup before continuing. A future IndexedDB migration should move workspace and queue together only after a tested recovery path is available.
 - Do not test the preview against the production Supabase project. Do not merge until CI and the manual preview checklist pass.
+
+## Account-switch display isolation
+
+The account UI exposes the active Supabase user ID in the account element's title. A first-party guard compares that identity to the persisted workspace owner. If they differ, it covers and makes the app inert until the active account owns the loaded workspace. If a cloud load fails, the previous workspace remains stored but hidden; retrying reloads the active session, while signing out restores offline access to the previous workspace. This is a client-side display-safety barrier, not encryption of browser storage.

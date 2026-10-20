@@ -76,10 +76,17 @@ assert.ok(!accountChoice.includes('Cloud replacement cancelled; the account clou
 assert.ok(accountChoice.includes('lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;'), 'confirmed cloud replacement must retain the observed revision for conditional writes');
 assert.ok(accountChoice.includes("if(choice==='merge'){lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;applyLocalMerged("), 'merging with an existing cloud backup must use the fetched revision for a conditional write');
 
-assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v17';"), 'cache version must advance after adding the offline queue helper');
-assert.ok(serviceWorker.includes("'./backup-restore-utils.js'") && serviceWorker.includes("'./offline-sync-queue.js'") && serviceWorker.includes("'./nexus-build-config.js'"), 'offline app shell must cache both safety helpers');
+assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v18';"), 'cache version must advance after adding the offline queue helper');
+assert.ok(serviceWorker.includes("'./backup-restore-utils.js'") && serviceWorker.includes("'./offline-sync-queue.js'") && serviceWorker.includes("'./workspace-isolation-guard.js'") && serviceWorker.includes("'./nexus-build-config.js'"), 'offline app shell must cache both safety helpers');
 const networkFirstSources = serviceWorker.split('const networkFirst=')[1]?.split(';')[0] || '';
-assert.ok(networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/offline-sync-queue.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-build-config.js')"), 'critical helpers and FSRS scripts must revalidate online and fall back to cache offline');
-assert.ok(workflow.includes('node scripts/test-offline-sync-queue.mjs') && workflow.includes('node scripts/test-data-safety-wiring.mjs'), 'CI must run the queue and integration-wiring checks');
+assert.ok(networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/offline-sync-queue.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-isolation-guard.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-build-config.js')"), 'critical helpers and FSRS scripts must revalidate online and fall back to cache offline');
+assert.ok(workflow.includes('node scripts/test-offline-sync-queue.mjs') && workflow.includes('node scripts/test-workspace-isolation-guard.mjs') && workflow.includes('node scripts/test-data-safety-wiring.mjs'), 'CI must run the queue and integration-wiring checks');
+
+
+const guardTag = '<script src="./workspace-isolation-guard.js"></script>';
+const guardAt = index.indexOf(guardTag);
+const isolationOverlayAt = index.indexOf('id="workspaceIsolationLock"');
+assert.ok(isolationOverlayAt >= 0 && guardAt > isolationOverlayAt && guardAt > index.indexOf('window.NexusCloudSync={schedule,upload};'), 'install the workspace isolation guard after cloud-sync UI exists');
+assert.ok(index.includes('aria-modal="true"') && index.includes('workspaceIsolationSignOut') && index.includes('workspaceIsolationRetry'), 'the account-mismatch lock must be modal and provide retry/sign-out recovery');
 
 console.log('Data-safety integration wiring checks passed.');
