@@ -150,7 +150,11 @@ context = {
   setTimeout, clearTimeout, setInterval, clearInterval,
   state: localState,
   clone: v => JSON.parse(JSON.stringify(v)),
-  normalizeState: v => JSON.parse(JSON.stringify(v)),
+  normalizeState: v => {
+    const normalized = JSON.parse(JSON.stringify(v));
+    if (Array.isArray(normalized.topics)) normalized.topics = normalized.topics.map(topic => ({ ...topic, fsrs: undefined }));
+    return normalized;
+  },
   renderAll() {},
   confirm: () => true,
   prompt: () => null
@@ -364,4 +368,78 @@ assert.ok(recoveredAfterNetworkDrop.includes('network-drop-device-cloud'),'cloud
 assert.equal(queue.hasPending(storage,accountA.id),false,'automatic recovery after connectivity returns must clear only a verified merge');
 assert.equal(getElement('cloudStatus').textContent,'Synced','reconnection must leave the account synced without a manual reload');
 assert.ok(!getElement('cloudHelpText').textContent.toLowerCase().includes('choose one of the available data options'),'the recovered same-account race must not show the three-option dialog');
+// Reproduce Device B's reported failure: the real app normalizer adds an
+// optional fsrs property whose value is undefined to topics without an FSRS card.
+// Independent edits to two fields of the same topic must still converge.
+const beforeSameTopicMerge = rows.get(accountA.id);
+const sameTopicBaseStamp = new Date(Date.parse(beforeSameTopicMerge.updated_at) + 60000).toISOString();
+const sameTopicBaseState = JSON.parse(JSON.stringify(beforeSameTopicMerge.payload.state));
+sameTopicBaseState.topics.push({
+  id: 'same-topic-field-merge',
+  name: 'Shared topic before edits',
+  subjectId: 'subject-general',
+  notes: 'Base notes',
+  dueDate: '2026-11-01'
+});
+const sameTopicBaseFeatures = JSON.parse(JSON.stringify(beforeSameTopicMerge.payload.featureState || {}));
+const sameTopicBasePayload = {
+  ...beforeSameTopicMerge.payload,
+  state: sameTopicBaseState,
+  featureState: sameTopicBaseFeatures,
+  exportedAt: new Date().toISOString()
+};
+rows.set(accountA.id, {
+  ...beforeSameTopicMerge,
+  payload: sameTopicBasePayload,
+  updated_at: sameTopicBaseStamp
+});
+context.state = sameTopicBaseState;
+storage.setItem(STATE_KEY, JSON.stringify(sameTopicBaseState));
+storage.setItem(FEATURE_KEY, JSON.stringify(sameTopicBaseFeatures));
+queue.rememberStamp(storage, accountA.id, sameTopicBaseStamp);
+queue.rememberBase(storage, accountA.id, {
+  state: sameTopicBaseState,
+  featureState: sameTopicBaseFeatures
+}, sameTopicBaseStamp);
+
+const deviceBState = JSON.parse(JSON.stringify(sameTopicBaseState));
+deviceBState.topics.find(topic => topic.id === 'same-topic-field-merge').name = 'Device B offline rename';
+context.state = deviceBState;
+storage.setItem(STATE_KEY, JSON.stringify(deviceBState));
+const deviceBPayload = {
+  ...sameTopicBasePayload,
+  state: deviceBState,
+  exportedAt: new Date().toISOString()
+};
+queue.commitWorkspace(storage, [
+  { key: STATE_KEY, value: JSON.stringify(deviceBState) },
+  { key: FEATURE_KEY, value: JSON.stringify(sameTopicBaseFeatures) }
+], deviceBPayload);
+
+const deviceACloudState = JSON.parse(JSON.stringify(sameTopicBaseState));
+deviceACloudState.topics.find(topic => topic.id === 'same-topic-field-merge').notes = 'Device A cloud notes edit';
+const sameTopicRemoteStamp = new Date(Date.parse(sameTopicBaseStamp) + 60000).toISOString();
+rows.set(accountA.id, {
+  ...rows.get(accountA.id),
+  payload: {
+    ...sameTopicBasePayload,
+    state: deviceACloudState,
+    exportedAt: new Date().toISOString()
+  },
+  updated_at: sameTopicRemoteStamp
+});
+
+await window.NexusCloudSync.reconnect();
+const convergedSameTopic = rows.get(accountA.id).payload.state.topics.find(topic => topic.id === 'same-topic-field-merge');
+assert.equal(convergedSameTopic.name, 'Device B offline rename',
+  'the offline name edit must survive automatic merge of the same topic');
+assert.equal(convergedSameTopic.notes, 'Device A cloud notes edit',
+  'the independent cloud notes edit must survive automatic merge of the same topic');
+assert.equal(queue.hasPending(storage, accountA.id), false,
+  'same-topic field edits must be acknowledged only after verified cloud read-back');
+assert.equal(getElement('cloudStatus').textContent, 'Synced',
+  'the same-topic merge must complete without the JSON undefined error');
+assert.ok(!getElement('cloudHelpText').textContent.includes('"undefined" is not valid JSON'),
+  'the unsupported undefined JSON value must not escape from the merge helper');
+
 console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, and network-drop recovery.');
