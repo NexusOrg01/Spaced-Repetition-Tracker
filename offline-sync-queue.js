@@ -11,15 +11,32 @@ function create(q,owner,payload,base,old){if(!obj(payload)||!obj(payload.state)|
 function commitWorkspace(s,entries,payload,options={}){if(!s||!Array.isArray(entries)||!entries.length)throw new Error('Invalid workspace transaction.');const out=entries.map(x=>({key:x.key,value:x.value})),owner=s.getItem(options.ownerKey||OWNER);if(!owner){write(s,out);return {queued:false};}const raw=s.getItem(KEY);let q;try{q=read(s);}catch(e){if(raw===null)throw e;if(s.getItem(QUARANTINE)!==null)throw fail('Queue recovery slot is occupied; no workspace changes were written.');out.push({key:QUARANTINE,value:raw});q=fresh();}const old=q.pending[owner]&&q.pending[owner].status==='pending'?q.pending[owner]:null,sm=stamps(s),archiving=options.archivePending===true&&!!old,base=Object.prototype.hasOwnProperty.call(options,'baseServerVersion')?options.baseServerVersion:archiving?(sm[owner]||null):old?old.baseServerVersion:(sm[owner]||null);if(archiving){const item={...copy(old),status:'archived',archivedAt:now(),archiveReason:String(options.reason||'explicit-restore')};q.archived.push(item);q.pending[owner]=item;}const previous=q.pending[owner]&&q.pending[owner].status==='pending'?q.pending[owner]:null,item=create(q,owner,payload,base,previous);q.pending[owner]=item;out.push({key:KEY,value:JSON.stringify(q)});write(s,out);return {queued:true,ownerUserId:owner,operation:copy(item)};}
 function getPending(s,owner){if(!owner)return null;const x=read(s).pending[String(owner)];return x&&x.status==='pending'?copy(x):null;}
 function rebase(s,owner,payload,base,reason){if(!owner)throw new Error('Verified account owner required.');const q=read(s),key=String(owner),old=getPending(s,key),x=create(q,key,payload,base,old);if(reason)x.rebaseReason=String(reason).slice(0,80);q.pending[key]=x;write(s,[{key:KEY,value:JSON.stringify(q)}]);return copy(x);}
-function rebaseWithBase(s,owner,payload,base,reason,basePayload){
+function rebaseWithBase(s,owner,payload,base,reason,basePayload,transaction={}){
  if(!owner||!obj(basePayload)||!obj(basePayload.state)||!obj(basePayload.featureState))throw fail('A verified cloud snapshot is required to atomically advance the merge base.');
  const q=read(s),key=String(owner),old=q.pending[key]&&q.pending[key].status==='pending'?q.pending[key]:null,x=create(q,key,payload,base,old);
  if(reason)x.rebaseReason=String(reason).slice(0,80);
  q.pending[key]=x;
  const bases=readOwnerMap(s,BASE,'The last-synced workspace base');
  bases[key]={state:copy(basePayload.state),featureState:copy(basePayload.featureState),serverVersion:typeof base==='string'&&base?base:null};
- write(s,[{key:KEY,value:JSON.stringify(q)},{key:BASE,value:JSON.stringify(bases)}]);
- return copy(x);
+ const entries=[],seen=new Set(),protectedKeys=new Set([KEY,BASE,CONFLICTS,STAMP,QUARANTINE]);
+ const workspaceEntries=Array.isArray(transaction.workspaceEntries)?transaction.workspaceEntries:[];
+ for(const entry of workspaceEntries){
+  if(!entry||typeof entry.key!=='string'||typeof entry.value!=='string'||protectedKeys.has(entry.key)||seen.has(entry.key))throw fail('Invalid atomic workspace reconciliation entries.');
+  seen.add(entry.key);entries.push({key:entry.key,value:entry.value});
+ }
+ let archivedConflicts=0;
+ if(transaction.conflicts!==undefined&&!Array.isArray(transaction.conflicts))throw fail('The sync conflict list is invalid; reconciliation is paused.');
+ if(Array.isArray(transaction.conflicts)&&transaction.conflicts.length){
+  const map=readOwnerMap(s,CONFLICTS,'The sync conflict recovery archive'),rows=Array.isArray(map[key])?map[key]:[];
+  const metadata=obj(transaction.conflictMetadata)?transaction.conflictMetadata:{};
+  rows.push({ownerUserId:key,createdAt:now(),baseServerVersion:metadata.baseServerVersion||null,remoteServerVersion:metadata.remoteServerVersion||null,conflicts:copy(transaction.conflicts)});
+  map[key]=rows.slice(-10);
+  entries.push({key:CONFLICTS,value:JSON.stringify(map)});
+  archivedConflicts=transaction.conflicts.length;
+ }
+ entries.push({key:KEY,value:JSON.stringify(q)},{key:BASE,value:JSON.stringify(bases)});
+ write(s,entries);
+ return {operation:copy(x),archivedConflicts};
 }
 function archive(s,owner,reason){if(!owner)return false;const q=read(s),key=String(owner),old=getPending(s,key);if(!old)return false;const item={...old,status:'archived',archivedAt:now(),archiveReason:String(reason||'user-selected-cloud-restore')};q.archived.push(item);q.pending[key]=item;write(s,[{key:KEY,value:JSON.stringify(q)}]);return true;}
 function acknowledge(s,owner,operationId,base,stamp){if(!owner||!operationId)throw new Error('Verified account owner and operation ID required.');const q=read(s),key=String(owner),x=q.pending[key],sm=stamps(s);sm[key]=typeof stamp==='string'&&stamp?stamp:null;let acknowledged=false,rebased=false;if(x&&x.status==='pending'&&x.operationId===operationId){delete q.pending[key];acknowledged=true;}else if(x&&x.status==='pending'&&x.baseServerVersion===(base||null)){q.pending[key]={...x,baseServerVersion:sm[key],updatedAt:now()};rebased=true;}write(s,[{key:KEY,value:JSON.stringify(q)},{key:STAMP,value:JSON.stringify(sm)}]);return {acknowledged,rebased};}

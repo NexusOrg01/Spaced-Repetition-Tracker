@@ -27,6 +27,11 @@ assert.equal(policy.canAutoResumePending({baseServerVersion:null}, null), true,
 assert.equal(policy.canAutoResumePending({baseServerVersion:'rev-1'}, 'rev-2'), false,
   'a newer cloud revision must require conflict resolution');
 assert.equal(policy.canAutoResumePending(null, 'rev-1'), false, 'no queue entry must never auto-resume');
+const sameMillis=Date.parse('2026-10-20T12:00:00.000Z');
+assert.equal(policy.nextRevisionStamp('2026-10-20T12:00:00.000Z',sameMillis),'2026-10-20T12:00:00.001Z',
+  'the next cloud revision must advance even when two writes occur in the same millisecond');
+assert.ok(Date.parse(policy.nextRevisionStamp('2026-10-20T12:00:00.900Z',sameMillis))>Date.parse('2026-10-20T12:00:00.900Z'),
+  'a client clock behind the saved revision must still produce a strictly newer revision');
 
 const recoveryTag = '<script src="./cloud-sync-recovery.js"></script>';
 const cloudTag = '<script src="./cloud-sync.js"></script>';
@@ -65,6 +70,12 @@ assert.ok(cloud.includes('sameWorkspace(remote.payload,pending.payload)') &&
   cloud.includes('sameWorkspace(before.payload,payload)') &&
   cloud.includes('sameWorkspace(remote.payload,pendingForUser.payload)'),
   'pending reconciliation must ignore export metadata and compare the actual workspace contents');
+assert.ok(cloud.includes('nextCloudStamp(pending.baseServerVersion)') && cloud.includes('nextCloudStamp(priorStamp)'),
+  'every cloud revision write must advance strictly beyond the compared revision, including same-millisecond writes');
+assert.ok(cloud.includes('const normalizedBase=savedBase?normalizeWorkspacePayload(savedBase):null') &&
+  cloud.includes('const normalizedLocal=normalizeWorkspacePayload(pending.payload)') &&
+  cloud.includes('const normalizedRemote=normalizeWorkspacePayload(remote.payload)'),
+  'three-way comparisons must use the same normalized schema on both sides and the saved base');
 assert.ok(cloud.includes("localStorage.getItem(OWNER_KEY)!==uploadUserId") &&
   cloud.includes("authData.user.id!==uploadUserId"),
   'writes require both persisted workspace ownership and a verified active account');

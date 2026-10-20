@@ -14,5 +14,10 @@
   function canAutoResumePending(pending,remoteStamp){
     return !!pending&&(pending.baseServerVersion||null)===(remoteStamp||null);
   }
-  return {retryDelay,shouldRetry,canAutoResumePending};
+  function nextRevisionStamp(previous,nowValue){
+    const now=typeof nowValue==='number'&&Number.isFinite(nowValue)?nowValue:Date.now();
+    const prior=Date.parse(previous||'');
+    return new Date(Number.isFinite(prior)?Math.max(now,prior+1):now).toISOString();
+  }
+  return {retryDelay,shouldRetry,canAutoResumePending,nextRevisionStamp};
 });

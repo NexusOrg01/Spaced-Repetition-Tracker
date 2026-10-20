@@ -54,9 +54,10 @@
   function rows(value){return Array.isArray(value)?value:[];}
   function rowMap(value){
     const map=new Map();
-    rows(value).forEach((row,index)=>{
-      if(!isObject(row))return;
-      const id=row.id===undefined||row.id===null?'__missing_'+index:String(row.id);
+    rows(value).forEach(row=>{
+      if(!isObject(row))throw new Error('Cannot safely merge a malformed workspace record. Repair the record before syncing.');
+      if(row.id===undefined||row.id===null||String(row.id)==='')throw new Error('Cannot safely merge a record without a stable ID. Repair the record before syncing.');
+      const id=String(row.id);
       if(map.has(id))throw new Error('Cannot safely merge records with duplicate stable record ID "'+id+'". Fix the duplicate IDs before syncing.');
       map.set(id,row);
     });

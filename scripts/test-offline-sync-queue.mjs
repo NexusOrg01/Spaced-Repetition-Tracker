@@ -75,4 +75,45 @@ const stateKey='recall.study.tracker.v1';
  assert.equal(history[0].conflicts[0].remote,'cloud','losing field values must remain recoverable before merged upload');
  assert.deepEqual(queue.getConflictHistory(s,'account-B'),[]);
 }
+{
+ const initial=payload('cloud-base');
+ const s=new MemoryStorage({[queue.OWNER]:'account-A',[stateKey]:'old-state',['recall.study.features.v1']:'old-features'});
+ queue.rememberBase(s,'account-A',payload('old-base'),'rev-1');
+ queue.commitWorkspace(s,[{key:stateKey,value:JSON.stringify(payload('old-local').state)}],payload('old-local'));
+ const conflicts=[{path:'state.topics[t1].notes',base:'base',local:'local',remote:'cloud',resolution:'local'}];
+ const result=queue.rebaseWithBase(s,'account-A',payload('merged'),'rev-2','atomic-test',
+  {state:initial.state,featureState:initial.featureState},
+  {workspaceEntries:[
+    {key:stateKey,value:JSON.stringify(payload('merged').state)},
+    {key:'recall.study.features.v1',value:JSON.stringify(payload('merged').featureState)},
+    {key:queue.OWNER,value:'account-A'}
+   ],conflicts,conflictMetadata:{baseServerVersion:'rev-1',remoteServerVersion:'rev-2'}});
+ assert.equal(s.getItem(stateKey),JSON.stringify(payload('merged').state),'workspace state must commit together with its new queue and base');
+ assert.equal(s.getItem('recall.study.features.v1'),JSON.stringify(payload('merged').featureState),'Study Hub state must be part of the atomic merge commit');
+ assert.equal(queue.getPending(s,'account-A').payload.state.topics[0].id,'merged');
+ assert.equal(queue.getBase(s,'account-A').serverVersion,'rev-2');
+ assert.equal(queue.getConflictHistory(s,'account-A')[0].conflicts[0].remote,'cloud','conflict alternatives must commit in the same transaction as the merge');
+ assert.equal(result.archivedConflicts,1);
+}
+{
+ const s=new MemoryStorage({[queue.OWNER]:'account-A',[stateKey]:'pre-merge-state',['recall.study.features.v1']:'pre-merge-features'});
+ queue.rememberBase(s,'account-A',payload('base'),'rev-1');
+ queue.commitWorkspace(s,[{key:stateKey,value:JSON.stringify(payload('local-before-merge').state)}],payload('local-before-merge'));
+ const before={state:s.getItem(stateKey),features:s.getItem('recall.study.features.v1'),pending:JSON.stringify(queue.getPending(s,'account-A')),base:JSON.stringify(queue.getBase(s,'account-A')),conflicts:s.getItem(queue.CONFLICTS)};
+ s.failKey=stateKey;s.failOnce=true;
+ assert.throws(()=>queue.rebaseWithBase(s,'account-A',payload('merged'),'rev-2','atomic-test',
+   {state:payload('cloud').state,featureState:payload('cloud').featureState},
+   {workspaceEntries:[
+     {key:stateKey,value:JSON.stringify(payload('merged').state)},
+     {key:'recall.study.features.v1',value:JSON.stringify(payload('merged').featureState)},
+     {key:queue.OWNER,value:'account-A'}
+    ],conflicts:[{path:'state.topics[t1].notes',local:'local',remote:'cloud'}],
+    conflictMetadata:{baseServerVersion:'rev-1',remoteServerVersion:'rev-2'}}),/complete restore|simulated quota failure/,
+   'an atomic merge transaction must fail without partially replacing local workspace or queue metadata');
+ assert.equal(s.getItem(stateKey),before.state);
+ assert.equal(s.getItem('recall.study.features.v1'),before.features);
+ assert.deepEqual(queue.getPending(s,'account-A'),JSON.parse(before.pending));
+ assert.deepEqual(queue.getBase(s,'account-A'),JSON.parse(before.base));
+ assert.equal(s.getItem(queue.CONFLICTS),before.conflicts);
+}
 console.log('Account-bound offline sync queue tests passed.');

@@ -86,4 +86,9 @@ const snap=(state,featureState={})=>({app:'Nexus',schema:4,exportedAt:'2026-10-2
  assert.equal(Object.getPrototypeOf(settings),Object.prototype,'merging special keys must not mutate the merged object prototype');
  assert.equal({}.polluted,undefined,'workspace merge must not pollute Object.prototype');
 }
+{
+ const missingId=snap({topics:[{name:'unidentified topic',subjectId:'sub'}]});
+ assert.throws(()=>merge.merge(snap({topics:[]}),missingId,snap({topics:[]})),/without a stable ID/,
+  'merge must fail closed when it cannot reliably match a record across devices');
+}
 console.log('Automatic three-way workspace merge tests passed.');
