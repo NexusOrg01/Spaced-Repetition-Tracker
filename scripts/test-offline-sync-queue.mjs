@@ -14,7 +14,7 @@ const stateKey='recall.study.tracker.v1';
 {
  const s=new MemoryStorage({[queue.OWNER]:'account-A'});queue.rememberStamp(s,'account-A','rev-1');
  const first=queue.commitWorkspace(s,[{key:stateKey,value:JSON.stringify(payload('first').state)}],payload('first'));
- assert.equal(first.queued,true);assert.equal(first.operation.ownerUserId,'account-A');assert.equal(first.operation.entityType,'workspace');assert.equal(first.operation.operationType,'snapshot');assert.equal(first.operation.schemaVersion,1);assert.equal(first.operation.baseServerVersion,'rev-1');assert.ok(first.operation.operationId);assert.equal(queue.getPending(s,'account-A').operationId,first.operation.operationId);assert.equal(queue.getPending(s,'account-B'),null);
+ assert.equal(first.queued,true);assert.equal(first.operation.ownerUserId,'account-A');assert.equal(first.operation.entityType,'workspace');assert.equal(first.operation.operationType,'snapshot');assert.equal(first.operation.schemaVersion,1);assert.equal(first.operation.baseServerVersion,'rev-1');assert.match(first.operation.operationId,/^nexus-op-[0-9a-f-]{36}$/,'operation IDs must be generated from cryptographically secure UUIDs');assert.equal(queue.getPending(s,'account-A').operationId,first.operation.operationId);assert.equal(queue.getPending(s,'account-B'),null);
 }
 {
  const s=new MemoryStorage({[queue.OWNER]:'account-A'});queue.rememberStamp(s,'account-A','rev-1');
@@ -34,7 +34,7 @@ const stateKey='recall.study.tracker.v1';
  const b=queue.commitWorkspace(s,[{key:stateKey,value:'two'}],payload('two')).operation;
  const older=queue.acknowledge(s,'account-A',a.operationId,a.baseServerVersion,'rev-2');
  assert.equal(older.acknowledged,false);assert.equal(older.rebased,true);assert.equal(queue.getPending(s,'account-A').operationId,b.operationId);assert.equal(queue.getPending(s,'account-A').baseServerVersion,'rev-2');
- const newer=queue.acknowledge(s,'account-A',b.operationId,'rev-2','rev-3');assert.equal(newer.acknowledged,true);assert.equal(queue.getPending(s,'account-A'),null);assert.equal(queue.getStamp(s,'account-A'),'rev-3');
+ const newer=queue.acknowledge(s,'account-A',b.operationId,'rev-2','rev-3');assert.equal(newer.acknowledged,true);assert.equal(queue.getPending(s,'account-A'),null);assert.equal(Object.hasOwn(JSON.parse(s.getItem(queue.KEY)).pending,'account-A'),false,'verified queue payload bytes must be removed after acknowledgement');assert.equal(queue.getStamp(s,'account-A'),'rev-3');
 }
 {
  const s=new MemoryStorage({[queue.OWNER]:'account-A'});
