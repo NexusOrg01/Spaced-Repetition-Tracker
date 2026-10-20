@@ -155,7 +155,7 @@ async function upload(){
  const uploadUserId=session.user.id;
  async function assertUploadOwner(){await assertActiveUser(uploadUserId);if(localStorage.getItem(OWNER_KEY)!==uploadUserId)throw new Error('The local workspace owner changed during sync. The pending snapshot was not applied to another account.');}
  if(localStorage.getItem(OWNER_KEY)!==uploadUserId){ready=false;status('Account queue paused');say('The active account does not own this local workspace. No cloud write was attempted; reconnect to the correct account.');return false;}
- syncing=true;status('Syncing…');let uploaded=false,attemptedPayload=null,attemptedOperationId=null,attemptedBase=null,attemptedPriorStamp=null;
+ syncing=true;status('Syncing…');let uploaded=false,retryReconcileAfterConflict=false,attemptedPayload=null,attemptedOperationId=null,attemptedBase=null,attemptedPriorStamp=null;
  const queue=window.NexusOfflineSyncQueue;
  try{
   const {data:authData,error:authError}=await client.auth.getUser();
@@ -217,14 +217,19 @@ async function upload(){
       if(queue&&attemptedOperationId)queue.acknowledge(localStorage,uploadUserId,attemptedOperationId,attemptedBase,lastRemoteStamp);
       else if(queue){queue.rememberStamp(localStorage,uploadUserId,lastRemoteStamp);const later=queue.getPending(localStorage,uploadUserId);if(later&&later.baseServerVersion===(attemptedPriorStamp||null))queue.rebase(localStorage,uploadUserId,snapshot(),lastRemoteStamp,'local-change-during-upload');}
       status('Synced');say('Verified: the cloud already contains this exact snapshot, so the interrupted write was safely acknowledged.');uploaded=true;alreadyCommitted=true;
+     }else if(latest&&latest.payload&&localStorage.getItem(OWNER_KEY)===uploadUserId&&session&&session.user.id===uploadUserId){
+      // The write raced with a real cloud edit. Preserve the queued snapshot and
+      // reconnect once this upload/init turn has settled so normal initialization
+      // performs the three-way merge without requiring a page refresh.
+      retryReconcileAfterConflict=true;
      }
     }
    }catch(recoveryError){console.warn('Nexus ambiguous cloud-write recovery could not verify the snapshot',recoveryError);}
-   if(!alreadyCommitted){ready=false;status('Cloud conflict');say('Another device changed the cloud backup after this device queued its snapshot. Local data and the pending snapshot are preserved; automatic cloud writes are paused. Review the data and choose merge or replace to resolve this conflict.');}
+   if(!alreadyCommitted){ready=false;status('Cloud conflict');say(retryReconcileAfterConflict?'Another device changed this account’s cloud backup at the same time. Your local snapshot is preserved; Nexus is reopening the latest revision to merge both workspaces automatically.':'The cloud conflict could not be verified automatically. Your local data and pending snapshot are preserved; reconnect before retrying.');}
   }
   else{ready=false;status('Sync error');say('Cloud upload failed or could not be verified. Local data and the pending snapshot are preserved. Nexus will retry automatically when the connection is available.');scheduleRetry();}
   console.error('Nexus cloud sync failed',e);
- }finally{syncing=false;if(pendingSync){pendingSync=false;if(ready)schedule();else scheduleRetry();}}
+ }finally{syncing=false;if(retryReconcileAfterConflict){retryReconcileAfterConflict=false;setTimeout(()=>{const activeConnect=connectPromise;if(activeConnect)activeConnect.then(()=>connect());else connect();},0);}if(pendingSync){pendingSync=false;if(ready)schedule();else scheduleRetry();}}
  return uploaded;
 }
 function schedule(){if(!client||!session||!ready||(typeof navigator!=='undefined'&&!navigator.onLine))return;clearTimeout(timer);timer=setTimeout(()=>{if(syncing){pendingSync=true;return;}upload();},650);}
