@@ -2,6 +2,13 @@
 
 A mobile-friendly, offline-first study tracker packaged as an installable Progressive Web App (PWA). The bundle is static and does not need a build command. Optional cloud sync is preconfigured to use the Nexus Supabase project.
 
+
+## Support Nexus
+
+Nexus is free to use, and its features are not locked behind payments. If Nexus helps you organise your studies and manage your revision schedule, you can optionally support its continued development and maintenance through [GitHub Sponsors](https://github.com/sponsors/kkmalithmalshan2000-png).
+
+Contributions are entirely voluntary. There are no paid tiers, subscriptions, or supporter-only features, and you do not need to donate to use Nexus.
+
 ## Deploy free with Netlify
 
 1. Download and extract `nexus-netlify-bundle.zip`.
