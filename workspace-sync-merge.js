@@ -15,6 +15,7 @@
   }
   const same=(a,b)=>a===ABSENT||b===ABSENT?a===b:stable(a)===stable(b);
   function shown(value){return value===ABSENT?null:copy(value);}
+  function putOwn(target,key,value){Object.defineProperty(target,key,{value,enumerable:true,configurable:true,writable:true});}
   function recordConflict(conflicts,path,base,local,remote,resolution){
     conflicts.push({path,base:shown(base),local:shown(local),remote:shown(remote),basePresent:base!==ABSENT,localPresent:local!==ABSENT,remotePresent:remote!==ABSENT,resolution:resolution||'local'});
   }
@@ -41,7 +42,7 @@
         const lv=Object.prototype.hasOwnProperty.call(local,key)?local[key]:ABSENT;
         const rv=Object.prototype.hasOwnProperty.call(remote,key)?remote[key]:ABSENT;
         const value=mergeValue(bv,lv,rv,path+'.'+key,conflicts);
-        if(value!==ABSENT)out[key]=value;
+        if(value!==ABSENT)putOwn(out,key,value);
       }
       return out;
     }
@@ -56,6 +57,7 @@
     rows(value).forEach((row,index)=>{
       if(!isObject(row))return;
       const id=row.id===undefined||row.id===null?'__missing_'+index:String(row.id);
+      if(map.has(id))throw new Error('Cannot safely merge records with duplicate stable record ID "'+id+'". Fix the duplicate IDs before syncing.');
       map.set(id,row);
     });
     return map;
@@ -92,7 +94,7 @@
     const keys=new Set([...Object.keys(b),...Object.keys(l),...Object.keys(r)]),out={};
     for(const key of keys){
       const value=mergeSet(rows(b[key]),rows(l[key]),rows(r[key]));
-      if(value.length)out[key]=value;
+      if(value.length)putOwn(out,key,value);
     }
     return out;
   }
