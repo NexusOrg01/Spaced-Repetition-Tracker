@@ -64,7 +64,7 @@ assert.ok(upload.includes('queue.rebase(localStorage,uploadUserId,snapshot(),las
 assert.ok(upload.includes('const actualStamp=before&&before.updated_at?before.updated_at:null;'), 'queued writes must check the latest remote revision before attempting a write');
 assert.ok(cloudSync.includes("status('Cloud conflict')") && cloudSync.includes("ready=false;status('Cloud conflict')"), 'a detected cloud conflict must pause automatic uploads');
 assert.ok(cloudSync.includes("conflict.code='NEXUS_CLOUD_CONFLICT'"), 'verification mismatches must be treated as cloud conflicts');
-assert.ok(cloudSync.includes("else{ready=false;status('Sync error')"), 'failed cloud writes must pause automatic retries until reinitialization');
+assert.ok(cloudSync.includes("else{ready=false;status('Sync error')"), 'transient cloud failures must expose an error state while automatic retry preserves pending data');
 
 const accountChoice = section(cloudSync, 'async function initializeSession(s){', 'function stableJson(v)', 'account-choice cancellation safeguards');
 const destructiveChoiceGuard = accountChoice.indexOf("while(choice==='replace-cloud'||choice==='replace'){");
