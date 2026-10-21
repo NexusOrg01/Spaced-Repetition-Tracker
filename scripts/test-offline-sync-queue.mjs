@@ -145,16 +145,21 @@ const stateKey='recall.study.tracker.v1';
  assert.deepEqual(queue.getPending(legacyStorage,'large-account').payload,largePayload,'legacy uncompressed queue data must remain readable');
 }
 
+
 {
- const grownState=JSON.parse(JSON.stringify(largeState));
+ const quotaHistory=Array.from({length:3000},(_,i)=>({id:'quota-history-'+i,topicId:'topic-'+(i%90),rating:(i%5)+1,reviewedAt:'2025-10-'+String((i%27)+1).padStart(2,'0'),note:'Demand, supply, elasticity revision practice. '.repeat(i%4)+('Entry '+i+' — 学習 📚')}));
+ const quotaState={schema:3,streams:[{id:'commerce',name:'Commerce'}],subjects:[{id:'economics',name:'Economics',streamId:'commerce',order:0}],topics:Array.from({length:90},(_,i)=>({id:'topic-'+i,subjectId:'economics',name:'Topic '+i,notes:'Revision notes for the A/L examination. '.repeat(3)})),history:quotaHistory,exams:[],settings:{theme:'system',intervalCap:120}};
+ const quotaFeatures={version:1,settings:{},journal:Array.from({length:120},(_,i)=>({id:'journal-'+i,text:'Study reflection '+i+' — economics revision'})),papers:[],goals:[],studyLogs:[]};
+ const originalPayload={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:'2026-10-21T00:00:00.000Z',state:quotaState,featureState:quotaFeatures};
+ const grownState=JSON.parse(JSON.stringify(quotaState));
  grownState.topics[0].notes+='quota expansion '.repeat(3000);
- const grownPayload={...largePayload,state:grownState,exportedAt:'2026-10-21T00:01:00.000Z'};
- const oldPending={ownerUserId:'large-account',operationId:'nexus-op-old',localSequence:1,baseServerVersion:null,status:'pending',payload:largePayload};
+ const grownPayload={...originalPayload,state:grownState,exportedAt:'2026-10-21T00:01:00.000Z'};
+ const oldPending={ownerUserId:'large-account',operationId:'nexus-op-old',localSequence:1,baseServerVersion:null,status:'pending',payload:originalPayload};
  const uncompressedQueue=JSON.stringify({schemaVersion:queue.SCHEMA,sequence:1,pending:{'large-account':oldPending},archived:[]});
  const initial={
   [queue.OWNER]:'large-account',
-  [stateKey]:JSON.stringify(largeState),
-  ['recall.study.features.v1']:JSON.stringify(largeFeatures),
+  [stateKey]:JSON.stringify(quotaState),
+  ['recall.study.features.v1']:JSON.stringify(quotaFeatures),
   [queue.KEY]:uncompressedQueue
  };
  const initialUse=Object.entries(initial).reduce((n,[key,value])=>n+key.length+value.length,0);
@@ -162,7 +167,7 @@ const stateKey='recall.study.tracker.v1';
  assert.throws(()=>{quotaStorage.setItem('probe','x'.repeat(12001));},/quota exceeded/,'quota fixture must enforce an aggregate storage cap');
  queue.commitWorkspace(quotaStorage,[
   {key:stateKey,value:JSON.stringify(grownState)},
-  {key:'recall.study.features.v1',value:JSON.stringify(largeFeatures)}
+  {key:'recall.study.features.v1',value:JSON.stringify(quotaFeatures)}
  ],grownPayload);
  assert.equal(quotaStorage.getItem(stateKey),JSON.stringify(grownState),'freeing compacted metadata space must allow an otherwise blocked workspace restore');
  assert.ok(quotaStorage.getItem(queue.KEY).startsWith('NEXUS_LZW_UTF8_V1:'),'the previously large queue should be compacted before writing the workspace');
