@@ -7,7 +7,7 @@ import vm from 'node:vm';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const source = readFileSync(resolve(root, 'sw.js'), 'utf8');
 const ORIGIN = 'https://nexus.test/';
-const CACHE_NAME = 'nexus-rating-analytics-v22';
+const CACHE_NAME = 'nexus-rating-analytics-v23';
 const CACHE_PREFIX = 'nexus-rating-analytics-';
 
 function response(status = 200, type = 'basic', label = '') {
@@ -119,7 +119,7 @@ async function settle(event) {
 {
   const h = createHarness(async () => response(200, 'basic', 'fresh-network'));
   const cache = await h.caches.open(CACHE_NAME);
-  for (const asset of ['./fsrs-bundle.js', './backup-restore-utils.js', './offline-sync-queue.js', './workspace-isolation-guard.js', './nexus-build-config.js', './cloud-sync-recovery.js', './workspace-sync-merge.js', './cloud-sync.js']) {
+  for (const asset of ['./app-core.js', './study-hub.js', './fsrs-bundle.js', './backup-restore-utils.js', './offline-sync-queue.js', './workspace-isolation-guard.js', './nexus-build-config.js', './cloud-sync-recovery.js', './workspace-sync-merge.js', './cloud-sync.js']) {
     const request = new h.RequestStub(asset);
     await cache.put(request, response(200, 'basic', 'stale-cache'));
     h.resetNetworkCalls();
@@ -136,7 +136,7 @@ async function settle(event) {
 {
   const h = createHarness(async () => { throw new Error('offline'); });
   const cache = await h.caches.open(CACHE_NAME);
-  for (const asset of ['./backup-restore-utils.js', './offline-sync-queue.js', './nexus-build-config.js', './cloud-sync-recovery.js', './workspace-sync-merge.js', './cloud-sync.js']) {
+  for (const asset of ['./app-core.js', './study-hub.js', './backup-restore-utils.js', './offline-sync-queue.js', './nexus-build-config.js', './cloud-sync-recovery.js', './workspace-sync-merge.js', './cloud-sync.js']) {
     const request = new h.RequestStub(asset);
     await cache.put(request, response(200, 'basic', 'offline-cache'));
     const event = eventFor(request);
@@ -199,6 +199,6 @@ async function settle(event) {
 
 assert.ok(source.includes('keys.filter(k=>k.startsWith(CACHE_PREFIX)&&k!==CACHE_NAME)'),
   'the activation handler must scope cache cleanup to Nexus-owned cache names');
-assert.ok(source.includes('const CACHE_NAME=CACHE_PREFIX+\'v22\';'),
+assert.ok(source.includes('const CACHE_NAME=CACHE_PREFIX+\'v23\';'),
   'the app-shell cache version must advance after service-worker behavior changes');
 console.log('Service-worker reliability tests passed.');
