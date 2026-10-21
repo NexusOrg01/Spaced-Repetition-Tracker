@@ -126,7 +126,7 @@ assert.ok(appSource.includes('aria-modal="true"') && appSource.includes('workspa
 assert.ok(guard.includes('retry.hidden=false;') && guard.includes('signOut.hidden=false;'), 'retry and sign-out must remain available even if account loading stalls');
 
 
-const curriculumInstaller=section(appCore,'function installCurriculum(packId=','function renderTopics()', 'transactional curriculum installation');
+const curriculumInstaller=section(appCore,'function installCurriculum(packId,','function renderTopics()', 'transactional curriculum installation');
 assert.ok(curriculumInstaller.includes('const previousState=state;') && curriculumInstaller.includes('state=clone(state);'), 'curriculum installation must stage mutations without altering the committed in-memory workspace');
 assert.ok(curriculumInstaller.includes('if(!save()){') && curriculumInstaller.includes('state=previousState;'), 'a failed curriculum persistence transaction must restore the previous in-memory workspace and not claim success');
 assert.ok(curriculumInstaller.includes('renderSetup();') && curriculumInstaller.indexOf('if(!save()){')<curriculumInstaller.indexOf("notify(added?'Added"), 'successful pack installation must refresh the Library stream/subject tree and confirm only after save succeeds');
