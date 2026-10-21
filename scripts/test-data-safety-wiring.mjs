@@ -57,7 +57,7 @@ assert.ok(appSource.includes('fsrs:window.NexusBackupRestoreUtils.sanitizeFsrsCa
 assert.ok(appSource.includes('window.NexusNormalizeFeatureState=value=>'), 'cloud data must use the shared Study Hub normalizer');
 assert.ok(appSource.includes('window.NexusMergeFeatureState=(current,imported,rawImported)=>'), 'cloud data must use the shared Study Hub merge helper');
 
-const restore = section(appCore, 'async function restoreOrMerge(file){', 'function formatElapsed(ms)', 'JSON restore');
+const restore = section(studyHub, 'async function restoreOrMerge(file){', 'function formatElapsed(ms)', 'JSON restore');
 const restoreCommit = restore.indexOf('NexusOfflineSyncQueue.commitWorkspace(localStorage,');
 const restoreAssignment = restore.indexOf('state=nextState;');
 assert.ok(restore.includes('window.NexusBackupRestoreUtils.validateBackupState(raw)'), 'validate backup records before normalization can silently discard malformed entries');
