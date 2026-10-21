@@ -123,7 +123,23 @@ function getConflictHistory(s,owner){
  const map=readOwnerMap(s,CONFLICTS,'The sync conflict recovery archive');
  return Array.isArray(map[String(owner)])?copy(map[String(owner)]):[];
 }
+function compactMetadata(s){
+ if(!s||typeof s.getItem!=='function'||typeof s.setItem!=='function')return {compacted:0,charactersFreed:0};
+ let compacted=0,charactersFreed=0;
+ for(const key of [KEY,BASE,CONFLICTS]){
+  const raw=s.getItem(key);if(typeof raw!=='string'||!raw)continue;
+  try{
+   const plain=expandStorageValue(raw),parsed=JSON.parse(plain);
+   if(!obj(parsed))continue;
+   if(key===KEY){try{read(s);}catch(_){continue;}}
+   else{try{readOwnerMap(s,key,key===BASE?'The last-synced workspace base':'The sync conflict recovery archive');}catch(_){continue;}}
+   const next=compactStorageValue(plain);
+   if(next.length<raw.length){s.setItem(key,next);compacted++;charactersFreed+=raw.length-next.length;}
+  }catch(_){/* Best effort only: never block or rewrite a workspace because metadata compaction failed. */}
+ }
+ return {compacted,charactersFreed};
+}
 function summary(s,owner){const q=read(s),x=owner?q.pending[String(owner)]:null;return {schemaVersion:SCHEMA,pendingForOwner:!!(x&&x.status==='pending'),localSequence:x&&x.status==='pending'?x.localSequence:null,archivedForOwner:q.archived.filter(a=>a&&a.ownerUserId===String(owner)).length};}
 function allPending(s){const q=read(s);return Object.keys(q.pending).map(k=>q.pending[k]).filter(x=>x&&x.status==='pending').map(copy);}
-return {KEY,OWNER,STAMP,BASE,CONFLICTS,SCHEMA,commitWorkspace,getPending,hasPending:(s,o)=>!!getPending(s,o),getAllPending:allPending,rebase,rebaseWithBase,archive,acknowledge,rememberStamp,getStamp,getBase,rememberBase,archiveConflicts,getConflictHistory,summary};
+return {KEY,OWNER,STAMP,BASE,CONFLICTS,SCHEMA,commitWorkspace,compactMetadata,getPending,hasPending:(s,o)=>!!getPending(s,o),getAllPending:allPending,rebase,rebaseWithBase,archive,acknowledge,rememberStamp,getStamp,getBase,rememberBase,archiveConflicts,getConflictHistory,summary};
 });
