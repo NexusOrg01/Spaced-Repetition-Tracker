@@ -89,7 +89,7 @@ assert.ok(appSource.includes("const restoreFocusUi=()=>{if(focusStart)openFocusM
 assert.ok(appSource.includes('focusStart=Date.now();focusPausedAt=null;fsState.focusStartedAt=new Date(focusStart).toISOString();fsState.focusActualStartedAt=new Date(focusStart).toISOString();fsState.focusPausedAt=null;saveFs();'), 'starting a new focus session must clear stale pause state and initialize the original wall-clock start before persisting');
 assert.ok(serviceWorker.includes("'./fsrs-bundle.js'") && serviceWorker.includes("'./backup-restore-utils.js'") && serviceWorker.includes("'./offline-sync-queue.js'") && serviceWorker.includes("'./workspace-isolation-guard.js'") && serviceWorker.includes("'./nexus-build-config.js'") && serviceWorker.includes("'./cloud-sync-recovery.js'") && serviceWorker.includes("'./workspace-sync-merge.js'") && serviceWorker.includes("'./cloud-sync.js'"),
   'offline app shell must cache the scheduler and backup safety helpers');
-assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v23';"), 'the service-worker cache must be versioned and scoped to Nexus-owned caches');
+assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v24';"), 'the service-worker cache must be versioned and scoped to Nexus-owned caches');
 const networkFirstSources = serviceWorker.split('const networkFirst=')[1]?.split(';')[0] || '';
 assert.ok(networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/offline-sync-queue.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-isolation-guard.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-build-config.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync-recovery.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-sync-merge.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync.js')"), 'online loads must refresh the coupled FSRS and backup helpers while preserving offline cache fallback');
 assert.equal(manifest.theme_color, '#6C8AFF', 'installed app chrome should use the Nexus brand color');
@@ -100,4 +100,19 @@ assert.ok(serviceWorker.includes('return caches.open(CACHE_NAME).then(cache=>cac
 assert.ok(serviceWorker.includes("url.pathname.startsWith('/api/')"), 'same-origin API responses must bypass the service-worker cache');
 assert.ok(serviceWorker.includes('const CORE_APP_SHELL=') && serviceWorker.includes('const OPTIONAL_APP_SHELL=') && serviceWorker.includes('cache.add(new Request(u,{cache:\'reload\'})).catch(()=>{})'), 'optional icons and catalogue failures must not block offline shell installation');
 
+const offlineQueueSource = readFileSync(resolve(root, 'offline-sync-queue.js'), 'utf8');
+assert.ok(offlineQueueSource.includes('wordCode*256+next') && offlineQueueSource.includes('returnOperationPayload===false'),
+  'large snapshot compression must avoid per-byte phrase strings and callers must be able to skip unused full-payload clones');
+assert.ok(appCore.includes('function getHistoryMetrics()') && appCore.includes('const reviewedToday=getHistoryMetrics().byDate.get(today())||0;'),
+  'overview history totals must reuse indexed history metrics instead of rescanning the entire history per render');
+assert.ok(appCore.includes('const orderedHistory=getSortedHistory();') && appCore.includes("const activeView=document.querySelector('.view.active')?.id||'view-overview';"),
+  'tracker rendering must reuse the sorted history cache and refresh only the visible view');
+assert.ok(studyHub.includes('function getTopicHistoryStats()') && studyHub.includes('const stats=getTopicHistoryStats().get(String(t.id))'),
+  'Study Hub mastery and planning must reuse a per-topic history index instead of filtering all history for each topic');
+assert.ok(studyHub.includes('for(const record of state.history){const date=record&&record.reviewedAt;') && !studyHub.includes('state.history.filter(h=>h.reviewedAt===d)'),
+  'the Overview heatmap must count history in one pass rather than rescanning the full history for each day');
+assert.ok(bundle.includes('const candidates = state.topics.filter((t) => !t.fsrs && t.reviewCount > 0);') && bundle.includes('if (!candidates.length) return;'),
+  'normal render/save cycles must skip FSRS migration history scans after every reviewed topic has a scheduler card');
+assert.ok(appSource.includes('id="nexus-mobile-render-performance"') && appSource.includes('@media (hover: none) and (pointer: coarse)') && appSource.includes('backdrop-filter: none !important') && appSource.includes('animation: none !important'),
+  'touch-first layouts must reduce sticky-tab blur and per-item entrance animations without changing native scrolling behavior');
 console.log('FSRS and core feature regression tests passed.');

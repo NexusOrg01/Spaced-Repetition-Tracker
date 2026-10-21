@@ -63,7 +63,7 @@
     'Economics':'ආර්ථික විද්‍යාව','ECON':'ආර්ථික විද්‍යාව'
   };
   const RATING_LABELS = {1:'Again',2:'Hard',3:'Good',4:'Very good',5:'Easy'};
-  let state, undoState=null, undoTimer=null, toastTimer=null, editTopicId=null, reviewTopicId=null, selectedReviewRating=null, editStreamId=null, editSubjectId=null, editExamId=null, installPrompt=null, historyVisibleLimit=100, historyInsightsDirty=true, historySortedCache=null;
+  let state, undoState=null, undoTimer=null, toastTimer=null, editTopicId=null, reviewTopicId=null, selectedReviewRating=null, editStreamId=null, editSubjectId=null, editExamId=null, installPrompt=null, historyVisibleLimit=100, historyInsightsDirty=true, historySortedCache=null, historySortedCacheSource=null, historySortedCacheLength=-1, historySortedCacheFirst=null, historyMetricsCache=null;
   const $ = id => document.getElementById(id);
   const clone = obj => JSON.parse(JSON.stringify(obj));
   const makeId = prefix => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
@@ -153,7 +153,7 @@
     return data;
   }
   function loadState(){const current=safeRead(STORAGE_KEY);if(current){try{return detachPristineStarterContent(normalizeState(current));}catch(e){console.warn('Saved data was invalid; using recovery defaults',e);}}const old=safeRead('alSrsTrackerV2');if(old){try{return migrateOld(old.state||old);}catch(e){console.warn(e);}}const legacyT=safeRead('alTrackerData'),legacyH=safeRead('alHistoryLog');if(Array.isArray(legacyT)||Array.isArray(legacyH))return migrateOld({topics:legacyT||[],history:legacyH||[]});return baseState();}
-  function save(){try{const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():(()=>{try{const x=JSON.parse(localStorage.getItem('recall.study.features.v1')||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{}}catch(_){return {}}})();if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[{key:STORAGE_KEY,value:JSON.stringify(state)}],{state,featureState});$('saveStatus').textContent='Saved on this device';$('saveStatus').style.color='';if(window.NexusCloudSync)window.NexusCloudSync.schedule();return true;}catch(e){$('saveStatus').textContent='Save failed — export backup';$('saveStatus').style.color='var(--red)';notify('Could not save data. Export a backup and check browser storage.');return false;}}
+  function save(){try{const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():(()=>{try{const x=JSON.parse(localStorage.getItem('recall.study.features.v1')||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{}}catch(_){return {}}})();if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[{key:STORAGE_KEY,value:JSON.stringify(state)}],{state,featureState},{returnOperationPayload:false});$('saveStatus').textContent='Saved on this device';$('saveStatus').style.color='';if(window.NexusCloudSync)window.NexusCloudSync.schedule();return true;}catch(e){$('saveStatus').textContent='Save failed — export backup';$('saveStatus').style.color='var(--red)';notify('Could not save data. Export a backup and check browser storage.');return false;}}
   function notify(text,undoable=false){$('toastText').textContent=text;$('undoBtn').style.display=undoable?'':'none';$('toast').classList.toggle('undoable',undoable);$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),6500);}
   function startUndo(text){if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();undoState=clone(state);clearTimeout(undoTimer);notify(text,true);undoTimer=setTimeout(()=>{undoState=null;$('undoBtn').style.display='none';},6500);}
   function undo(){if(!undoState)return;state=undoState;undoState=null;clearTimeout(undoTimer);if(window.NexusUndoCascadeDelete)window.NexusUndoCascadeDelete();save();renderAll();$('toast').classList.remove('show');}
@@ -167,11 +167,20 @@
   function interval(rating,previous){const prev=Math.max(0,Number(previous)||0);let d;if(rating===1)d=1;else if(rating===2)d=prev?Math.max(prev+1,Math.round(prev*1.25)):2;else if(rating===3)d=prev?Math.round(prev*2):4;else if(rating===4)d=prev?Math.round(prev*2.5):7;else d=prev?Math.round(prev*3):12;return Math.min(120,Math.max(1,d));}
   function subjectDisplay(t){const s=subjectFor(t),st=streamFor(s);return {subject:s?.name||'Unknown subject',stream:st?.name||'Unknown stream'};}
   function nearestExam(){return state.exams.filter(e=>validDate(e.date)).slice().sort((a,b)=>{const ad=a.date>=today()?0:1,bd=b.date>=today()?0:1;return ad-bd|| (ad===0?a.date.localeCompare(b.date):b.date.localeCompare(a.date));})[0]||null;}
-  function switchView(name){document.querySelectorAll('.tab').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.view===name)));document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id===`view-${name}`));if(name==='topics'){renderSetup();renderTopics();}if(name==='explore')renderExplore();if(name==='history')renderHistory();if(name==='setup')renderSetup();window.scrollTo({top:0,behavior:'smooth'});}
+  function switchView(name){
+    document.querySelectorAll('.tab').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.view===name)));
+    document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id===`view-${name}`));
+    if(name==='overview'){renderOverview();if(window.NexusRefreshHomeConsistencySummary)window.NexusRefreshHomeConsistencySummary();}
+    if(name==='topics'){refreshFilterOptions();renderTopics();}
+    if(name==='explore')renderExplore();
+    if(name==='history'){refreshFilterOptions();renderHistory();}
+    if(name==='setup')renderSetup();
+    window.scrollTo({top:0,behavior:'smooth'});
+  }
   function statCard(label,value,foot){return `<div class="stat"><div class="stat-label">${esc(label)}</div><div class="stat-value">${esc(value)}</div><div class="stat-foot">${esc(foot)}</div></div>`;}
   function renderOverview(){
     const topics=activeTopics(), due=topics.filter(t=>['overdue','due'].includes(status(t))), newTopics=topics.filter(t=>status(t)==='new');
-    const reviewedToday=state.history.filter(h=>h.reviewedAt===today()).length;
+    const reviewedToday=getHistoryMetrics().byDate.get(today())||0;
     $('statsGrid').innerHTML=statCard('Due now',due.length,`${due.filter(t=>status(t)==='overdue').length} overdue`)+statCard('Not reviewed',newTopics.length,'Active topics with no review')+statCard('Reviewed topics',topics.filter(t=>t.reviewCount>0).length,`of ${topics.length} active topics`)+statCard('Reviews today',reviewedToday,'Review records dated today');
     const ex=nearestExam();if(ex){const remaining=dayDiff(today(),ex.date);$('examBanner').innerHTML=`<div><h3>${esc(ex.name)}</h3><p>${esc(ex.type)} · ${fmtDate(ex.date)}${ex.notes?` · ${esc(ex.notes)}`:''}</p></div><div class="countdown"><strong>${remaining>=0?remaining:Math.abs(remaining)}</strong><span>${remaining>0?'days remaining':remaining===0?'today':'days since'}</span></div>`;}else{$('examBanner').innerHTML=`<div><h3>No exam dates added</h3><p>Add an exam or deadline to display a countdown here.</p></div><button class="btn btn-sm" id="bannerAddExam">＋ Add exam</button>`;$('bannerAddExam').addEventListener('click',()=>openExam());}
     const queue=topics.slice().sort((a,b)=>dueRank(status(a))-dueRank(status(b))||((a.dueDate||'9999').localeCompare(b.dueDate||'9999'))).filter(t=>['overdue','due','new'].includes(status(t))).slice(0,7);
@@ -180,16 +189,53 @@
     $('progressList').innerHTML=subjectGroups.length?subjectGroups.map(g=>{const p=g.ts.length?Math.round(g.done/g.ts.length*100):0;return `<div class="progress-row"><div class="progress-label"><strong>${esc(g.s.name)}</strong><span>${g.done}/${g.ts.length} · ${p}%</span></div><div class="progress-track"><div class="progress-fill" style="width:${p}%"></div></div><div class="muted small" style="margin-top:4px">${esc(g.stream)}</div></div>`;}).join(''):`<div class="empty">Add a subject to see progress.</div>`;
     renderUpcomingQueue();renderOverviewAnalytics();
   }
+  function addHistoryMetricRecord(metrics,record){
+    if(!record)return;
+    const date=record.reviewedAt;
+    if(validDate(date)){metrics.byDate.set(date,(metrics.byDate.get(date)||0)+1);metrics.dates.add(date);}
+    metrics.ratingSum+=Number(record.rating)||0;
+    const ratingIndex=Number(record.rating)-1;
+    if(Number.isInteger(ratingIndex)&&ratingIndex>=0&&ratingIndex<5)metrics.ratingCounts[ratingIndex]++;
+  }
+  function buildHistoryMetrics(entries){
+    const metrics={source:entries,length:entries.length,firstRecord:entries[0],byDate:new Map(),dates:new Set(),ratingSum:0,ratingCounts:[0,0,0,0,0]};
+    for(const record of entries)addHistoryMetricRecord(metrics,record);
+    return metrics;
+  }
+  function getHistoryMetrics(){
+    const entries=state.history,cache=historyMetricsCache;
+    if(cache&&cache.source===entries){
+      if(cache.length===entries.length)return cache;
+      if(entries.length===cache.length+1&&entries[1]===cache.firstRecord){
+        addHistoryMetricRecord(cache,entries[0]);cache.length=entries.length;cache.firstRecord=entries[0];return cache;
+      }
+    }
+    historyMetricsCache=buildHistoryMetrics(entries);return historyMetricsCache;
+  }
+  function recentHistoryCount(days,metrics=getHistoryMetrics()){
+    const end=today();let count=0;
+    for(let i=0;i<days;i++)count+=metrics.byDate.get(plusDays(end,-i))||0;
+    return count;
+  }
   function dailyReviewSeries(days, entries=state.history){
-    const base=today(),first=plusDays(base,-(days-1)),counts=new Map();
-    for(const h of entries){if(validDate(h.reviewedAt)&&h.reviewedAt>=first&&h.reviewedAt<=base)counts.set(h.reviewedAt,(counts.get(h.reviewedAt)||0)+1);}
+    const base=today(),counts=new Map();
+    if(entries===state.history){
+      const indexed=getHistoryMetrics().byDate;
+      for(const [date,count] of indexed)if(date<=base&&date>=plusDays(base,-(days-1)))counts.set(date,count);
+    }else{
+      const first=plusDays(base,-(days-1));
+      for(const h of entries){if(validDate(h.reviewedAt)&&h.reviewedAt>=first&&h.reviewedAt<=base)counts.set(h.reviewedAt,(counts.get(h.reviewedAt)||0)+1);}
+    }
     return Array.from({length:days},(_,i)=>{const date=plusDays(base,i-(days-1)),d=new Date(date+'T12:00:00');return {date,count:counts.get(date)||0,label:days>7?String(d.getDate()):d.toLocaleDateString(undefined,{weekday:'short'}).replace('.',''),short:d.toLocaleDateString(undefined,{day:'numeric',month:'short'})};});
   }
   function currentStudyStreak(){
-    const dates=new Set(state.history.map(h=>h.reviewedAt).filter(validDate));let start=dates.has(today())?0:1,streak=0;
+    const dates=getHistoryMetrics().dates;let start=dates.has(today())?0:1,streak=0;
     for(let i=start;i<3660;i++){if(dates.has(plusDays(today(),-i)))streak++;else break;}return streak;
   }
-  function averageRating(entries=state.history){return entries.length?entries.reduce((sum,h)=>sum+(Number(h.rating)||0),0)/entries.length:0;}
+  function averageRating(entries=state.history){
+    if(entries===state.history){const metrics=getHistoryMetrics();return entries.length?metrics.ratingSum/entries.length:0;}
+    return entries.length?entries.reduce((sum,h)=>sum+(Number(h.rating)||0),0)/entries.length:0;
+  }
   function metricMarkup(value,label){return `<div class="insight-metric"><strong>${esc(value)}</strong><span>${esc(label)}</span></div>`;}
   let chartGradientCounter=0;
   function nextChartGradientId(prefix){return String(prefix||'nexus-chart')+'-'+(++chartGradientCounter);}
@@ -224,7 +270,7 @@
     return '<div class="overview-line-wrap">'+svg+'</div>';
   }
   function renderOverviewAnalytics(){
-    const recent=state.history.filter(h=>h.reviewedAt>=plusDays(today(),-6)&&h.reviewedAt<=today());
+    const recent=recentHistoryCount(7);
     const average=averageRating();
     const series=dailyReviewSeries(7);
     $('overviewAnalytics').innerHTML=`<div class="insight-metrics">${metricMarkup(recent.length,'Reviews this week')}${metricMarkup(average?average.toFixed(1)+'/5':'—','Average recall rating')}${metricMarkup(currentStudyStreak()+'d','Current study streak')}</div><div class="chart-heading"><span>Daily reviews</span><small>7-day activity</small></div>${state.history.length?overviewLineChartMarkup(series):'<div class="chart-empty">Your chart will fill in after your first review.</div>'}`;
@@ -236,8 +282,8 @@
     $('upcomingQueue').innerHTML=items.length?items.map(t=>{const d=subjectDisplay(t),days=dayDiff(today(),t.dueDate);return `<div class="due-item upcoming-row"><div style="min-width:0"><div class="due-title">${esc(t.name)}</div><div class="due-meta"><span>${esc(d.subject)}</span><span class="pill upcoming">In ${days} day${days===1?'':'s'}</span></div></div><div class="upcoming-date"><strong>${esc(fmtDate(t.dueDate))}</strong><button type="button" class="btn btn-sm" data-action="review" data-id="${esc(t.id)}">Review</button></div></div>`;}).join(''):`<div class="empty"><strong>No reviews scheduled this week</strong>Upcoming topics will appear here when their next review date falls within seven days.</div>`;
   }
   function renderHistoryInsights(){
-    const series=dailyReviewSeries(14),recent=state.history.filter(h=>h.reviewedAt>=plusDays(today(),-6)&&h.reviewedAt<=today()),average=averageRating();
-    const ratingCounts=[0,0,0,0,0];for(const h of state.history){const rating=Number(h.rating);if(rating>=1&&rating<=5)ratingCounts[rating-1]++;}
+    const series=dailyReviewSeries(14),recent=recentHistoryCount(7),average=averageRating();
+    const ratingCounts=getHistoryMetrics().ratingCounts;
     const maxRating=Math.max(1,...ratingCounts);
     $('historyInsights').innerHTML=`<div class="insight-metrics">${metricMarkup(state.history.length,'Total saved reviews')}${metricMarkup(recent.length,'Reviews in last 7 days')}${metricMarkup(average?average.toFixed(1)+'/5':'—','Average recall rating')}</div><div class="chart-heading"><span>Review activity</span><small>Last 14 days</small></div>${state.history.length?barsMarkup(series):'<div class="chart-empty">No review history yet. Complete your first review to start tracking activity.</div>'}<div class="divider"></div><div class="chart-heading"><span>Recall rating distribution</span><small>All saved reviews</small></div><div class="rating-distribution">${ratingCounts.map((count,i)=>`<div class="rating-distribution-row"><span>${i+1} · ${esc(RATING_LABELS[i+1])}</span><div class="progress-track"><div class="progress-fill" style="width:${count?Math.max(2,Math.round(count/maxRating*100)):0}%"></div></div><strong>${count}</strong></div>`).join('')}</div><p class="analytics-subtitle">A higher average rating can indicate stronger recall, but use your actual exam-question performance as the main measure of mastery.</p>`;
   }
@@ -342,7 +388,20 @@
     $('topicCountLabel').textContent=`Showing ${items.length} of ${activeTopics().length} active topics`;
     $('topicGrid').innerHTML=items.length?items.map(t=>{const d=subjectDisplay(t),s=status(t);return `<article class="topic-card"><div class="topic-card-top"><div style="min-width:0"><div class="topic-name">${esc(t.name)}</div><div class="topic-sub">${esc(d.stream)} · ${esc(d.subject)}</div></div><span class="pill ${s}">${statusText(s)}</span></div>${t.notes?`<div class="topic-note">${esc(t.notes)}</div>`:''}<div class="topic-details"><span>Last: ${fmtDate(t.lastReviewed)}</span><span>Next: ${fmtDate(t.dueDate)}</span><span>Interval: ${t.intervalDays||'—'}d</span><span>Reviews: ${t.reviewCount}</span></div><div class="topic-actions"><button class="btn btn-sm btn-primary" data-action="review" data-id="${esc(t.id)}">Review</button><button class="btn btn-sm" data-action="edit-topic" data-id="${esc(t.id)}">Edit</button><span class="spacer"></span><button class="btn btn-sm btn-danger" data-action="delete-topic" data-id="${esc(t.id)}">Delete</button></div></article>`;}).join(''):`<div class="panel" style="grid-column:1/-1"><div class="empty"><strong>No matching topics</strong>Change the filters or add a topic.</div></div>`;
   }
-  function renderHistory(){const q=$('historySearch').value.trim().toLocaleLowerCase(),streamId=$('historyStreamFilter').value,subjectId=$('historySubjectFilter').value;const subjectById=new Map(state.subjects.map(x=>[x.id,x])),subjectByName=new Map(state.subjects.map(x=>[x.name,x])),streamById=new Map(state.streams.map(x=>[x.id,x])),streamByName=new Map(state.streams.map(x=>[x.name,x]));const orderedHistory=historySortedCache||(historySortedCache=state.history.slice().sort((a,b)=>b.reviewedAt.localeCompare(a.reviewedAt)||String(b.id).localeCompare(String(a.id))));const filtered=orderedHistory.filter(h=>{const subject=subjectById.get(h.subjectId)||subjectByName.get(h.subjectName),stream=streamById.get(h.streamId)||streamByName.get(h.streamName)||streamById.get(subject?.streamId);return(!q||[h.topicName,h.subjectName,h.streamName,h.note].some(x=>String(x||'').toLocaleLowerCase().includes(q)))&&(streamId==='ALL'||stream?.id===streamId)&&(subjectId==='ALL'||subject?.id===subjectId);});
+  function compareHistoryRows(a,b){return b.reviewedAt.localeCompare(a.reviewedAt)||String(b.id).localeCompare(String(a.id));}
+  function getSortedHistory(){
+    const entries=state.history;
+    if(historySortedCache&&historySortedCacheSource===entries){
+      if(historySortedCacheLength===entries.length)return historySortedCache;
+      if(entries.length===historySortedCacheLength+1&&entries[1]===historySortedCacheFirst&&entries[0]){
+        const record=entries[0];let low=0,high=historySortedCache.length;
+        while(low<high){const middle=(low+high)>>1;if(compareHistoryRows(record,historySortedCache[middle])<0)high=middle;else low=middle+1;}
+        historySortedCache.splice(low,0,record);historySortedCacheLength=entries.length;historySortedCacheFirst=record;return historySortedCache;
+      }
+    }
+    historySortedCache=entries.slice().sort(compareHistoryRows);historySortedCacheSource=entries;historySortedCacheLength=entries.length;historySortedCacheFirst=entries[0];
+    return historySortedCache;
+  }  function renderHistory(){const q=$('historySearch').value.trim().toLocaleLowerCase(),streamId=$('historyStreamFilter').value,subjectId=$('historySubjectFilter').value;const subjectById=new Map(state.subjects.map(x=>[x.id,x])),subjectByName=new Map(state.subjects.map(x=>[x.name,x])),streamById=new Map(state.streams.map(x=>[x.id,x])),streamByName=new Map(state.streams.map(x=>[x.name,x]));const orderedHistory=getSortedHistory();const filtered=orderedHistory.filter(h=>{const subject=subjectById.get(h.subjectId)||subjectByName.get(h.subjectName),stream=streamById.get(h.streamId)||streamByName.get(h.streamName)||streamById.get(subject?.streamId);return(!q||[h.topicName,h.subjectName,h.streamName,h.note].some(x=>String(x||'').toLocaleLowerCase().includes(q)))&&(streamId==='ALL'||stream?.id===streamId)&&(subjectId==='ALL'||subject?.id===subjectId);});
     const visible=filtered.slice(0,historyVisibleLimit);
     $('historyList').innerHTML=visible.length?visible.map(h=>`<article class="history-entry"><div><h3>${esc(h.topicName)}</h3><p>${esc(h.streamName)} · ${esc(h.subjectName)} · ${fmtDate(h.reviewedAt)}</p><p>Next: ${fmtDate(h.dueDate)} · ${h.intervalDays} day interval</p>${h.note?`<div class="history-note">${esc(h.note)}</div>`:''}<div class="history-actions"><button class="btn btn-sm btn-danger" data-action="delete-history" data-id="${esc(h.id)}">Delete entry</button></div></div><div class="history-score">${h.rating}/5<br><span class="muted small">${esc(RATING_LABELS[h.rating])}</span></div></article>`).join(''):`<div class="panel"><div class="empty"><strong>No review records found</strong>Completed reviews will appear here.</div></div>`;
     $('historyCountLabel').textContent=`Showing ${visible.length} of ${filtered.length} matching records (${state.history.length} total). Deleting an entry also removes that review from Analytics and future exports; topic schedules remain unchanged.`;
@@ -352,7 +411,16 @@
   function renderSetup(){refreshFilterOptions();$('themeSelect').value=state.settings.theme;const streamsMarkup=state.streams.map(st=>{const subjects=state.subjects.filter(s=>s.streamId===st.id);return `<div class="entity"><div><strong>${esc(st.name)}</strong><small>${subjects.length} subject${subjects.length===1?'':'s'}</small>${subjects.map(s=>`<div class="entity" style="padding:8px 0 0 10px"><div><strong style="font-size:12px">${esc(s.name)}</strong><small>${activeTopics().filter(t=>t.subjectId===s.id).length} active topics</small></div><div class="inline-actions"><button class="btn btn-sm" data-action="edit-subject" data-id="${esc(s.id)}">Edit</button><button class="btn btn-sm btn-danger" data-action="delete-subject" data-id="${esc(s.id)}" ${state.topics.some(t=>t.subjectId===s.id)?'':''}>Delete</button></div></div>`).join('')}</div><div class="inline-actions"><button class="btn btn-sm" data-action="add-subject-to-stream" data-id="${esc(st.id)}">＋ Subject</button><button class="btn btn-sm" data-action="edit-stream" data-id="${esc(st.id)}">Edit</button><button class="btn btn-sm btn-danger" data-action="delete-stream" data-id="${esc(st.id)}" ${subjects.length?'':''}>Delete</button></div></div>`;}).join('');$('structureList').innerHTML=streamsMarkup||'<div class="empty">No streams created.</div>';
     const exams=state.exams.slice().sort((a,b)=>a.date.localeCompare(b.date));$('examList').innerHTML=exams.length?exams.map(ex=>`<div class="entity"><div><strong>${esc(ex.name)}</strong><small>${fmtDate(ex.date)} · ${esc(ex.type)}${validDate(ex.date)&&ex.date>=today()?` · ${dayDiff(today(),ex.date)} day(s) left`:''}</small>${ex.notes?`<small>${esc(ex.notes)}</small>`:''}</div><div class="inline-actions"><button class="btn btn-sm" data-action="edit-exam" data-id="${esc(ex.id)}">Edit</button><button class="btn btn-sm btn-danger" data-action="delete-exam" data-id="${esc(ex.id)}">Delete</button></div></div>`).join(''):'<div class="empty"><strong>No exams scheduled</strong>Add an exam or deadline.</div>';
   }
-  function renderAll(){historyInsightsDirty=true;historySortedCache=null;refreshFilterOptions();renderOverview();renderTopics();renderHistory();renderSetup();if(document.getElementById('view-explore')?.classList.contains('active'))renderExplore();applyTheme();}
+  function renderAll(){
+    historyInsightsDirty=true;
+    const activeView=document.querySelector('.view.active')?.id||'view-overview';
+    if(activeView==='view-overview'){renderOverview();if(window.NexusRefreshHomeConsistencySummary)window.NexusRefreshHomeConsistencySummary();}
+    else if(activeView==='view-topics'){refreshFilterOptions();renderTopics();}
+    else if(activeView==='view-history'){refreshFilterOptions();renderHistory();}
+    else if(activeView==='view-setup'){renderSetup();}
+    else if(activeView==='view-explore'){renderExplore();}
+    applyTheme();
+  }
   function openReview(id){
     const t=getTopic(id);if(!t)return;
     reviewTopicId=t.id;selectedReviewRating=null;

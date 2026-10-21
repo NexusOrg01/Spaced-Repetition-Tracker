@@ -13,16 +13,44 @@
   const fNum=x=>Number.isFinite(Number(x))?Number(x):0;
   // Cache daily focus-goal totals between minute boundaries; the visible clock still ticks every second.
   let focusGoalCacheKey='',focusGoalLoggedMinutes=0;
-  function saveFs(){focusGoalCacheKey='';try{if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[{key:FEATURE_KEY,value:JSON.stringify(fsState)}],{state,featureState:fsState});if(window.NexusCloudSync)window.NexusCloudSync.schedule();return true;}catch(e){console.error(e);try{notify('Study Hub data could not be saved. Export a backup now.');}catch(_){}return false;}}
+  function saveFs(){focusGoalCacheKey='';try{if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[{key:FEATURE_KEY,value:JSON.stringify(fsState)}],{state,featureState:fsState},{returnOperationPayload:false});if(window.NexusCloudSync)window.NexusCloudSync.schedule();return true;}catch(e){console.error(e);try{notify('Study Hub data could not be saved. Export a backup now.');}catch(_){}return false;}}
   window.NexusFeatureStorageKey=FEATURE_KEY;window.NexusNormalizeFeatureState=value=>window.NexusBackupRestoreUtils.normalizeFeatureState(value,freshFeatureState());window.NexusMergeFeatureState=(current,imported,rawImported)=>window.NexusBackupRestoreUtils.mergeFeatureState(current,imported,freshFeatureState(),rawImported);window.NexusGetFeatureState=()=>clone(fsState);window.NexusSetFeatureState=(value,options={})=>{focusGoalCacheKey='';fsState=window.NexusNormalizeFeatureState(value);focusStart=fsState.focusStartedAt?new Date(fsState.focusStartedAt).getTime():null;focusPausedAt=fsState.focusPausedAt?new Date(fsState.focusPausedAt).getTime():null;focusTopicId=fsState.focusTopicId||'';focusSubjectId=fsState.focusSubjectId||'';if(focusTimer){clearInterval(focusTimer);focusTimer=null;}if(focusStart)focusTimer=setInterval(refreshLiveFocusUi,1000);if(options.persist!==false)saveFs();if(options.render!==false)renderHub();if(focusStart&&options.render!==false)refreshLiveFocusUi();return true;};
   let cascadeUndoState=null;window.NexusCascadeDeleteSubject=(subjectId,topicIds)=>{cascadeUndoState=clone(fsState);fsState.journal=fsState.journal.filter(x=>x.subjectId!==subjectId&&!topicIds.includes(x.topicId));fsState.papers=fsState.papers.filter(x=>x.subjectId!==subjectId);delete fsState.syllabusTargets[subjectId];fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIds.includes(id));saveFs();renderHub();};window.NexusCascadeDeleteStream=(streamId,subjectIds,topicIds)=>{cascadeUndoState=clone(fsState);fsState.journal=fsState.journal.filter(x=>!subjectIds.includes(x.subjectId)&&!topicIds.includes(x.topicId));fsState.papers=fsState.papers.filter(x=>!subjectIds.includes(x.subjectId));subjectIds.forEach(id=>delete fsState.syllabusTargets[id]);fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIds.includes(id));saveFs();renderHub();};window.NexusUndoCascadeDelete=()=>{if(cascadeUndoState){fsState=clone(cascadeUndoState);cascadeUndoState=null;saveFs();renderHub();}};window.NexusClearCascadeUndo=()=>{cascadeUndoState=null;};window.NexusRenderHub=()=>renderHub();
-  function featureMeta(t){const hs=state.history.filter(h=>h.topicId===t.id).sort((a,b)=>(b.reviewedAt||'').localeCompare(a.reviewedAt||''));const recent=hs.slice(0,5);const avg=recent.length?recent.reduce((n,h)=>n+fNum(h.rating),0)/recent.length:(t.lastRating||0);const allAvg=hs.length?hs.reduce((n,h)=>n+fNum(h.rating),0)/hs.length:(t.lastRating||0);const weak=Boolean(t.lapses||avg&&avg<3||status(t)==='overdue'&&dayDiff(t.dueDate,today())>5);let score=0;if(t.reviewCount>0){score=Math.round(Math.max(0,Math.min(100,(avg/5)*65+Math.min(t.reviewCount,6)/6*20+Math.min(t.intervalDays,30)/30*15)));if(t.lastRating===1)score=Math.max(5,score-15);}return {hs,avg,allAvg,score,weak};}
+  let topicHistoryStatsCache={source:null,length:-1,byTopic:new Map()};
+  function getTopicHistoryStats(){
+    const history=state.history,cache=topicHistoryStatsCache;
+    if(cache.source===history&&cache.length===history.length)return cache.byTopic;
+    const byTopic=new Map();
+    for(const record of history){
+      const id=String(record&&record.topicId||'');if(!id)continue;
+      let item=byTopic.get(id);if(!item){item={hs:[],sum:0};byTopic.set(id,item);}
+      item.hs.push(record);item.sum+=fNum(record.rating);
+    }
+    for(const item of byTopic.values()){
+      item.hs.sort((a,b)=>(b.reviewedAt||'').localeCompare(a.reviewedAt||''));
+      const recent=item.hs.slice(0,5);
+      item.avg=recent.length?recent.reduce((sum,record)=>sum+fNum(record.rating),0)/recent.length:0;
+      item.allAvg=item.hs.length?item.sum/item.hs.length:0;
+    }
+    topicHistoryStatsCache={source:history,length:history.length,byTopic};return byTopic;
+  }
+  function featureMeta(t){
+    const stats=getTopicHistoryStats().get(String(t.id)),hs=stats?.hs||[],avg=hs.length?stats.avg:(t.lastRating||0),allAvg=hs.length?stats.allAvg:(t.lastRating||0);
+    const weak=Boolean(t.lapses||avg&&avg<3||status(t)==='overdue'&&dayDiff(t.dueDate,today())>5);let score=0;
+    if(t.reviewCount>0){score=Math.round(Math.max(0,Math.min(100,(avg/5)*65+Math.min(t.reviewCount,6)/6*20+Math.min(t.intervalDays,30)/30*15)));if(t.lastRating===1)score=Math.max(5,score-15);}
+    return {hs,avg,allAvg,score,weak};
+  }
   function estimateMinutes(t){const m=featureMeta(t);return Math.max(6,Math.min(30,Math.round(10+(m.weak?7:0)+(m.avg&&m.avg<3?5:0)+(status(t)==='overdue'?Math.min(5,Math.ceil(Math.max(0,dayDiff(t.dueDate,today()))/5)):0))));}
   function weeklyReviewCount(){const start=dateShift(today(),-6);return state.history.filter(h=>h.reviewedAt>=start&&h.reviewedAt<=today()).length;}
   function isMastered(t){const m=featureMeta(t);return t.reviewCount>=2&&m.avg>=3.5&&t.intervalDays>=4&&status(t)!=='overdue';}
-  function streakCount(){const set=new Set(state.history.map(h=>h.reviewedAt));let n=0,d=today();if(!set.has(d))d=dateShift(d,-1);while(set.has(d)&&n<3650){n++;d=dateShift(d,-1);}return n;}
+  function streakCount(){return currentStudyStreak();}
   function studyLogMinutes(entry){const seconds=entry&&entry.durationSeconds;if(seconds!==undefined&&seconds!==null&&Number.isFinite(Number(seconds)))return Math.max(0,Number(seconds))/60;return Math.max(0,fNum(entry&&entry.minutes));}function formatStudyDuration(seconds){const total=Math.max(0,Math.round(Number(seconds)||0)),minutes=Math.floor(total/60),remainder=total%60;return minutes?`${minutes} min${remainder?' '+remainder+' sec':''}`:`${remainder} sec`;}function totalStudyMinutes(){return fsState.studyLogs.reduce((n,x)=>n+studyLogMinutes(x),0);}
-  function reviewActivity(days){const out=[];for(let i=days-1;i>=0;i--){const d=dateShift(today(),-i);out.push({date:d,count:state.history.filter(h=>h.reviewedAt===d).length});}return out;}
+  function reviewActivity(days){
+    const end=today(),start=dateShift(end,-(days-1)),counts=new Map();
+    for(const record of state.history){const date=record&&record.reviewedAt;if(typeof date==='string'&&date.length===10&&date>=start&&date<=end)counts.set(date,(counts.get(date)||0)+1);}
+    const out=[];for(let i=days-1;i>=0;i--){const date=dateShift(end,-i);out.push({date,count:counts.get(date)||0});}
+    return out;
+  }
   function nearestFutureExam(){return state.exams.filter(e=>safeDate(e.date)&&e.date>=today()).sort((a,b)=>a.date.localeCompare(b.date))[0]||null;}
   function updateKpis(){const ts=activeTopics(),due=ts.filter(t=>['overdue','due'].includes(status(t))).length,weak=ts.filter(t=>featureMeta(t).weak).length,mastered=ts.filter(isMastered).length;const todayDone=loggedMinutesToday()+liveFocusMinutesToday();const taskPlan=buildPlan(false);const planned=taskPlan.reduce((n,t)=>n+t.minutes,0);hubEl('hubKpis').innerHTML=`<div class="hub-kpi"><strong>${due}</strong><span>Due or overdue</span></div><div class="hub-kpi"><strong>${weak}</strong><span>Topics needing attention</span></div><div class="hub-kpi"><strong>${mastered}/${ts.length}</strong><span>Mastered topics</span></div><div class="hub-kpi"><strong>${formatStudyDuration(todayDone*60)}</strong><span>Study time today${planned?` · ${planned} min suggested`:''}</span></div>`;}
   function topicPriority(t){const m=featureMeta(t),st=status(t);const revisionBoost=fsState.settings.finalRevision&&!isMastered(t)?45:0;return revisionBoost+(st==='overdue'?100+Math.min(30,Math.max(0,dayDiff(t.dueDate,today()))):st==='due'?80:st==='new'?60:st==='upcoming'?10:0)+(m.weak?30:0)+(m.avg&&m.avg<2.5?20:0)+(t.lapses||0)*3-(m.score/20);}
@@ -336,7 +364,7 @@
     }).join('');
   }
     function renderHomeConsistencySummary(){
-    const target=hubEl('homeConsistencySummary');if(!target||!fsState||!state)return;
+    const target=hubEl('homeConsistencySummary');if(!target||!fsState||!state||!hubEl('view-overview')?.classList.contains('active'))return;
     const selection=getRatingAnalyticsSelection(),from=selection.from,to=selection.to,valid=selection.valid!==false,recent=selection.records||[],rangeDays=valid?Math.max(1,dayDiff(from,to)+1):30;
     const active=activeTopics(),mastered=active.filter(isMastered).length,overdue=active.filter(t=>status(t)==='overdue').length,masteryPct=active.length?Math.round(mastered/active.length*100):0,dueSoon=active.filter(t=>safeDate(t.dueDate)&&t.dueDate>=today()&&t.dueDate<=dateShift(today(),6)).length;
     const now=today(),weekStart=dateShift(now,-6),weeklyMinutes=fsState.studyLogs.filter(l=>safeDate(l.date)&&l.date>=weekStart&&l.date<=now).reduce((sum,l)=>sum+studyLogMinutes(l),0),weeklyTarget=Math.max(1,fNum(fsState.settings.dailyMinutes)||90)*7,weeklyPct=Math.min(100,Math.round(weeklyMinutes/weeklyTarget*100));
@@ -345,6 +373,7 @@
     const intelligence='<div class="insight-grid"><div class="insight-metric"><span class="insight-label">Review momentum</span><strong>'+(momentum===null?'New baseline':(momentum>0?'+':'')+momentum+'%')+'</strong><small>'+(momentum===null?'No prior-period data':'vs. previous '+rangeDays+' days')+'</small></div><div class="insight-metric"><span class="insight-label">Mastery coverage</span><strong>'+masteryPct+'%</strong><small>'+mastered+' of '+active.length+' active topics</small><div class="insight-track"><span style="width:'+masteryPct+'%"></span></div></div><div class="insight-metric"><span class="insight-label">Next 7-day load</span><strong>'+dueSoon+'</strong><small>'+overdue+' overdue now</small></div><div class="insight-metric"><span class="insight-label">Weekly study goal</span><strong>'+weeklyPct+'%</strong><small>'+weeklyMinutes+' / '+weeklyTarget+' min logged</small><div class="insight-track"><span style="width:'+weeklyPct+'%"></span></div></div><div class="insight-metric"><span class="insight-label">Current review streak</span><strong>'+streak+' days</strong><small>Consecutive days with at least one saved review</small></div></div>';
     target.innerHTML=intelligence+'<div class="home-heatmap-head"><div><strong>Review activity heatmap</strong><small>Each square represents a day; darker squares indicate more saved reviews.</small></div><div class="ra-field"><label for="homeHeatmapPeriod">Heatmap period</label><select class="hub-input" id="homeHeatmapPeriod">'+selectOptions([['7','7 days'],['30','30 days'],['84','12 weeks'],['180','6 months'],['365','12 months']],String(heatDays))+'</select></div></div><div class="hub-heatmap analytics-heatmap home-activity-heatmap">'+heat+'</div>';
   }
+  window.NexusRefreshHomeConsistencySummary=renderHomeConsistencySummary;
   function renderActivityAnalytics(selection){
      const studyLogMinutes=record=>{const seconds=record&&record.durationSeconds;if(seconds!==undefined&&seconds!==null&&Number.isFinite(Number(seconds)))return Math.max(0,Number(seconds))/60;return Math.max(0,Number(record&&record.minutes)||0);};
      const formatStudyDuration=seconds=>{const total=Math.max(0,Math.round(Number(seconds)||0)),minutes=Math.floor(total/60),remainder=total%60;return minutes?`${minutes} min${remainder?' '+remainder+' sec':''}`:`${remainder} sec`;};
@@ -668,7 +697,7 @@
     if(!added){notify(`CSV import complete: 0 added, ${dupes} duplicates skipped, ${invalid} invalid rows skipped.`);return;}
     window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[
       {key:window.NexusStorageKey,value:JSON.stringify(nextState)}
-    ],{state:nextState,featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}});
+    ],{state:nextState,featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}},{returnOperationPayload:false});
     state=nextState;
     const saveStatus=$('saveStatus');
     if(saveStatus){saveStatus.textContent='Saved on this device';saveStatus.style.color='';}
@@ -724,7 +753,7 @@
       window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[
         {key:STORAGE_KEY,value:serializedState},
         {key:FEATURE_KEY,value:serializedFeatures}
-      ],{state:nextState,featureState:nextFeatures},{archivePending:mode==='REPLACE',reason:'manual-restore-replace'});
+      ],{state:nextState,featureState:nextFeatures},{archivePending:mode==='REPLACE',reason:'manual-restore-replace',returnOperationPayload:false});
       committed=true;
       state=nextState;
       fsState=nextFeatures;
