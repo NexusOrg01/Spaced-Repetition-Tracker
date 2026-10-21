@@ -304,7 +304,7 @@ async function signOut(){
  ready=false;clearTimeout(timer);clearRetry();
  let detached=false;
  try{
-  if(owner&&window.NexusOfflineSyncQueue)detached=window.NexusOfflineSyncQueue.detachOwner(localStorage,owner);
+  if(owner){if(!window.NexusOfflineSyncQueue||typeof window.NexusOfflineSyncQueue.detachOwner!=='function')throw new Error('Safe workspace detachment is unavailable; sign-out was paused to protect cloud data.');detached=window.NexusOfflineSyncQueue.detachOwner(localStorage,owner);}
   if(client){const result=await client.auth.signOut();if(result&&result.error)throw result.error;}
   session=null;ready=false;clearTimeout(timer);clearRetry();status('Not signed in · offline ready');
   say('You are signed out. Your workspace remains on this device. Changes made while signed out stay local and are not uploaded to the previous account. On your next sign-in, Nexus will ask you to reconcile the local workspace with that account’s cloud backup if they differ.');
@@ -315,7 +315,7 @@ async function signOut(){
   }
   ready=!!(session&&session.user&&session.user.id===owner);
   status('Sign-out not verified');
-  say('Sign-out could not be verified. Nexus preserved local data and paused cloud writes; check the active account before continuing. '+String(error&&error.message||''));
+  say(ready?'Sign-out did not complete; you remain signed in to the current account. Your workspace ownership was restored where possible. '+String(error&&error.message||''):'Sign-out could not be verified. Nexus preserved local data and paused cloud writes; check the active account before continuing. '+String(error&&error.message||''));
   setControls();console.error('Nexus sign-out failed.',error);
  }
 }
