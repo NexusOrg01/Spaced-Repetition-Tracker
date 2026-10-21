@@ -379,14 +379,18 @@
   function ensureMigrated() {
     const stored = readCards();
     for (const t of state.topics) if (!t.fsrs && stored[t.id]) t.fsrs = N.sanitize(stored[t.id]);
+    // After migration, ordinary saves/view renders should not rescan years of history.
+    const candidates = state.topics.filter((t) => !t.fsrs && t.reviewCount > 0);
+    if (!candidates.length) return;
+    const pendingIds = new Set(candidates.map((t) => t.id));
     const byTopic = new Map();
     for (const h of state.history) {
+      if (!pendingIds.has(h.topicId)) continue;
       if (!byTopic.has(h.topicId)) byTopic.set(h.topicId, []);
       byTopic.get(h.topicId).push(h);
     }
     let changed = false;
-    for (const t of state.topics) {
-      if (t.fsrs || !(t.reviewCount > 0)) continue;
+    for (const t of candidates) {
       const hs = byTopic.get(t.id);
       if (hs && hs.length) N.migrateTopic(t, hs);
       if (!t.fsrs) t.fsrs = N.seedFromTopic(t);
@@ -394,7 +398,6 @@
     }
     if (changed) save();
   }
-
   // 4) Show current recall probability on topic cards.
   function decorateTopics() {
     document.querySelectorAll("#topicGrid .topic-card").forEach((card) => {
