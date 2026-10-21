@@ -171,7 +171,29 @@ const stateKey='recall.study.tracker.v1';
  ],grownPayload);
  assert.equal(quotaStorage.getItem(stateKey),JSON.stringify(grownState),'freeing compacted metadata space must allow an otherwise blocked workspace restore');
  assert.ok(quotaStorage.getItem(queue.KEY).startsWith('NEXUS_LZW_UTF8_V1:'),'the previously large queue should be compacted before writing the workspace');
+
  assert.deepEqual(queue.getPending(quotaStorage,'large-account').payload,grownPayload,'quota-relief transaction must preserve every pending payload field');
+
+ const legacyBase=JSON.stringify({'large-account':{state:quotaState,featureState:quotaFeatures,serverVersion:'rev-base'}});
+ const hydrationInitial={
+  [queue.OWNER]:'large-account',
+  [stateKey]:JSON.stringify(quotaState),
+  ['recall.study.features.v1']:JSON.stringify(quotaFeatures),
+  [queue.KEY]:uncompressedQueue,
+  [queue.BASE]:legacyBase
+ };
+ const hydrationUse=Object.entries(hydrationInitial).reduce((n,[key,value])=>n+key.length+value.length,0);
+ const hydrationStorage=new QuotaStorage(hydrationInitial,hydrationUse+12000);
+ const optimized=queue.compactMetadata(hydrationStorage);
+ assert.ok(optimized.compacted>=2&&optimized.charactersFreed>0,'preflight must compact legacy outbox and merge base before cloud hydration');
+ assert.ok(hydrationStorage.getItem(queue.KEY).startsWith('NEXUS_LZW_UTF8_V1:')&&hydrationStorage.getItem(queue.BASE).startsWith('NEXUS_LZW_UTF8_V1:'),'preflight should compact both full workspace copies');
+ NexusBackupRestoreUtils.commitLocalStorageAtomically(hydrationStorage,[
+  {key:stateKey,value:JSON.stringify(grownState)},
+  {key:'recall.study.features.v1',value:JSON.stringify(quotaFeatures)},
+  {key:queue.OWNER,value:'large-account'}
+ ]);
+ assert.equal(hydrationStorage.getItem(stateKey),JSON.stringify(grownState),'preflight compaction must create enough space for the cloud workspace transaction');
+ assert.deepEqual(queue.getBase(hydrationStorage,'large-account'),{state:quotaState,featureState:quotaFeatures,serverVersion:'rev-base'},'preflight compaction must preserve the common merge base exactly');
 }
 
 console.log('Account-bound offline sync queue tests passed.');
