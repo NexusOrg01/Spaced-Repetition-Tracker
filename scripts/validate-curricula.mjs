@@ -262,15 +262,15 @@ for (const [index, match] of [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/sc
 }
 assert(checkedScripts > 0, 'No inline JavaScript blocks were checked.');
 
-// Check the authored first-party classic scripts in page order as one parse unit.
+// Check authored first-party classic scripts in page order as one parse unit.
 // This catches cross-file top-level lexical collisions that per-file syntax checks miss.
-const pageScriptTags = [...html.matchAll(/<script\\b([^>]*)>([\\s\\S]*?)<\\/script\\s*>/gi)];
+const pageScriptTags = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)];
 const pageScriptSources = [];
 const srcCounts = new Map();
 for (const [index, match] of pageScriptTags.entries()) {
   const attrs = match[1] || '';
-  if (/\\btype\\s*=\\s*["'](?:application\\/(?:json|ld\\+json)|importmap)["']/i.test(attrs)) continue;
-  const srcMatch = attrs.match(/\\bsrc\\s*=\\s*["']([^"']+)["']/i);
+  if (/\btype\s*=\s*["'](?:application\/(?:json|ld\+json)|importmap)["']/i.test(attrs)) continue;
+  const srcMatch = attrs.match(/\bsrc\s*=\s*["']([^"']+)["']/i);
   if (srcMatch) {
     const src = srcMatch[1];
     if (!src.startsWith('./')) continue; // Ignore the separately hosted Vercel Insights script.
@@ -295,7 +295,7 @@ for (const asset of ['./app-core.js', './study-hub.js']) {
 }
 const scriptIndex = asset => pageScriptTags.findIndex(match => {
   const attrs = match[1] || '';
-  return (attrs.match(/\\bsrc\\s*=\\s*["']([^"']+)["']/i) || [])[1] === asset;
+  return (attrs.match(/\bsrc\s*=\s*["']([^"']+)["']/i) || [])[1] === asset;
 });
 assert(scriptIndex('./offline-sync-queue.js') < scriptIndex('./app-core.js') &&
   scriptIndex('./app-core.js') < scriptIndex('./study-hub.js') &&
@@ -303,10 +303,11 @@ assert(scriptIndex('./offline-sync-queue.js') < scriptIndex('./app-core.js') &&
   scriptIndex('./cloud-sync.js') < scriptIndex('./workspace-isolation-guard.js'),
   'The extracted scripts must retain their dependency-safe order in index.html.');
 try {
-  new vm.Script(pageScriptSources.join('\\n;\\n'), {filename:'index.html:first-party-classic-script-sequence'});
+  new vm.Script(pageScriptSources.join('\n;\n'), {filename:'index.html:first-party-classic-script-sequence'});
 } catch (error) {
   errors.push('The first-party classic scripts have an integration syntax/binding error: ' + error.message);
 }
+
 for (const [name, source] of [['app-core.js', appCore], ['study-hub.js', studyHub]]) {
   try { new vm.Script(source, {filename:name}); }
   catch (error) { errors.push(name+' has a syntax error: '+error.message); }
