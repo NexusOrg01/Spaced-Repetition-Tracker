@@ -9,6 +9,11 @@ class MemoryStorage {
   setItem(key,value){if(this.failOnce&&key===this.failKey){this.failOnce=false;throw new Error('simulated quota failure');}this.values.set(key,String(value));}
   removeItem(key){this.values.delete(key);}
 }
+class QuotaStorage extends MemoryStorage {
+ constructor(initial={},quota=Infinity){super(initial);this.quota=quota;}
+ size(){let n=0;for(const [key,value] of this.values)n+=key.length+String(value).length;return n;}
+ setItem(key,value){const next=String(value);let total=this.size()-(this.values.has(key)?key.length+String(this.values.get(key)).length:0)+key.length+next.length;if(total>this.quota)throw new Error('simulated total browser storage quota exceeded');this.values.set(key,next);}
+}
 const payload=id=>({app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:'2026-10-20T00:00:00.000Z',state:{schema:3,streams:[],subjects:[],topics:[{id,name:id}],history:[],exams:[],settings:{}},featureState:{version:1,journal:[{id,text:id}],papers:[],goals:[],studyLogs:[]}});
 const stateKey='recall.study.tracker.v1';
 {
@@ -138,6 +143,30 @@ const stateKey='recall.study.tracker.v1';
  assert.deepEqual(queue.getBase(largeStorage,'large-account'),{state:largeState,featureState:largeFeatures,serverVersion:'rev-large'},'compressed merge bases must round-trip without data changes');
  const legacyStorage=new MemoryStorage({[queue.OWNER]:'large-account',[queue.KEY]:JSON.stringify({schemaVersion:queue.SCHEMA,sequence:1,pending:{'large-account':queue.getPending(largeStorage,'large-account')},archived:[]})});
  assert.deepEqual(queue.getPending(legacyStorage,'large-account').payload,largePayload,'legacy uncompressed queue data must remain readable');
+}
+
+{
+ const grownState=JSON.parse(JSON.stringify(largeState));
+ grownState.topics[0].notes+='quota expansion '.repeat(3000);
+ const grownPayload={...largePayload,state:grownState,exportedAt:'2026-10-21T00:01:00.000Z'};
+ const oldPending={ownerUserId:'large-account',operationId:'nexus-op-old',localSequence:1,baseServerVersion:null,status:'pending',payload:largePayload};
+ const uncompressedQueue=JSON.stringify({schemaVersion:queue.SCHEMA,sequence:1,pending:{'large-account':oldPending},archived:[]});
+ const initial={
+  [queue.OWNER]:'large-account',
+  [stateKey]:JSON.stringify(largeState),
+  ['recall.study.features.v1']:JSON.stringify(largeFeatures),
+  [queue.KEY]:uncompressedQueue
+ };
+ const initialUse=Object.entries(initial).reduce((n,[key,value])=>n+key.length+value.length,0);
+ const quotaStorage=new QuotaStorage(initial,initialUse+12000);
+ assert.throws(()=>{quotaStorage.setItem('probe','x'.repeat(12001));},/quota exceeded/,'quota fixture must enforce an aggregate storage cap');
+ queue.commitWorkspace(quotaStorage,[
+  {key:stateKey,value:JSON.stringify(grownState)},
+  {key:'recall.study.features.v1',value:JSON.stringify(largeFeatures)}
+ ],grownPayload);
+ assert.equal(quotaStorage.getItem(stateKey),JSON.stringify(grownState),'freeing compacted metadata space must allow an otherwise blocked workspace restore');
+ assert.ok(quotaStorage.getItem(queue.KEY).startsWith('NEXUS_LZW_UTF8_V1:'),'the previously large queue should be compacted before writing the workspace');
+ assert.deepEqual(queue.getPending(quotaStorage,'large-account').payload,grownPayload,'quota-relief transaction must preserve every pending payload field');
 }
 
 console.log('Account-bound offline sync queue tests passed.');
