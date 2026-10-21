@@ -131,7 +131,7 @@ const analyticsFunctionNames = [
 'renderActivityAnalytics',
   'paperScoreTrendsMarkup'
 ];
-const analyticsFunctionSources = Object.fromEntries(analyticsFunctionNames.map(name => [name, extractFunctionDeclaration(html, name)]));
+const analyticsFunctionSources = Object.fromEntries(analyticsFunctionNames.map(name => [name, extractFunctionDeclaration(appSource, name)]));
 const activitySource = analyticsFunctionSources.renderActivityAnalytics || '';
 assert(activitySource && !/\b(?:lineActivityMarkup|buildActivityBuckets|smoothCurvePath|nextChartGradientId|safeDate|dateShift|dayDiff|fNum|localEsc)\b/.test(activitySource), 'Activity must not depend on helpers private to the main app IIFE.');
 for (const name of analyticsFunctionNames) assert(Boolean(analyticsFunctionSources[name]), 'Analytics runtime validation could not extract '+name+'.');
