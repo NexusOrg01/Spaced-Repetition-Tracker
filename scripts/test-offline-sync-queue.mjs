@@ -116,4 +116,28 @@ const stateKey='recall.study.tracker.v1';
  assert.deepEqual(queue.getBase(s,'account-A'),JSON.parse(before.base));
  assert.equal(s.getItem(queue.CONFLICTS),before.conflicts);
 }
+
+{
+ const history=Array.from({length:3000},(_,i)=>({
+  id:'history-'+i,topicId:'topic-'+(i%90),rating:(i%5)+1,
+  reviewedAt:'2025-'+String((i%12)+1).padStart(2,'0')+'-'+String((i%27)+1).padStart(2,'0'),
+  note:'Demand, supply, elasticity and revision practice. '.repeat(i%4)+('Study entry '+i+' — 学習 📚')
+ }));
+ const largeState={schema:3,streams:[{id:'commerce',name:'Commerce'}],subjects:[{id:'economics',name:'Economics',streamId:'commerce',order:0}],topics:Array.from({length:90},(_,i)=>({id:'topic-'+i,subjectId:'economics',name:'Topic '+i,notes:'Revision notes for the A/L examination. '.repeat(3)})),history,exams:[],settings:{theme:'system',intervalCap:120}};
+ const largeFeatures={version:1,settings:{},journal:Array.from({length:120},(_,i)=>({id:'journal-'+i,text:'Study reflection '+i+' — economics revision'})),papers:[],goals:[],studyLogs:[]};
+ const largePayload={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:'2026-10-21T00:00:00.000Z',state:largeState,featureState:largeFeatures};
+ const largeStorage=new MemoryStorage({[queue.OWNER]:'large-account'});
+ queue.commitWorkspace(largeStorage,[{key:stateKey,value:JSON.stringify(largeState)}],largePayload);
+ const compactQueue=largeStorage.getItem(queue.KEY);
+ assert.ok(compactQueue.startsWith('NEXUS_LZW_UTF8_V1:'),'large pending snapshots should use compact local storage encoding');
+ assert.ok(compactQueue.length<JSON.stringify({schemaVersion:queue.SCHEMA,sequence:1,pending:{'large-account':queue.getPending(largeStorage,'large-account')},archived:[]}).length*.92,'compaction should materially reduce the queue size');
+ assert.deepEqual(queue.getPending(largeStorage,'large-account').payload,largePayload,'compressed queued payloads must round-trip without data changes');
+ queue.rememberBase(largeStorage,'large-account',largePayload,'rev-large');
+ const compactBase=largeStorage.getItem(queue.BASE);
+ assert.ok(compactBase.startsWith('NEXUS_LZW_UTF8_V1:'),'large merge bases should use compact local storage encoding');
+ assert.deepEqual(queue.getBase(largeStorage,'large-account'),{state:largeState,featureState:largeFeatures,serverVersion:'rev-large'},'compressed merge bases must round-trip without data changes');
+ const legacyStorage=new MemoryStorage({[queue.OWNER]:'large-account',[queue.KEY]:JSON.stringify({schemaVersion:queue.SCHEMA,sequence:1,pending:{'large-account':queue.getPending(largeStorage,'large-account')},archived:[]})});
+ assert.deepEqual(queue.getPending(legacyStorage,'large-account').payload,largePayload,'legacy uncompressed queue data must remain readable');
+}
+
 console.log('Account-bound offline sync queue tests passed.');
