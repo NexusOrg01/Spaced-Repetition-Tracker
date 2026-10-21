@@ -125,4 +125,20 @@ assert.ok(isolationOverlayAt >= 0 && guardAt > isolationOverlayAt && guardAt > i
 assert.ok(appSource.includes('aria-modal="true"') && appSource.includes('workspaceIsolationSignOut') && appSource.includes('workspaceIsolationRetry'), 'the account-mismatch lock must be modal and provide retry/sign-out recovery');
 assert.ok(guard.includes('retry.hidden=false;') && guard.includes('signOut.hidden=false;'), 'retry and sign-out must remain available even if account loading stalls');
 
+
+const curriculumInstaller=section(appCore,'function installCurriculum(packId=','function renderTopics()', 'transactional curriculum installation');
+assert.ok(curriculumInstaller.includes('const previousState=state;') && curriculumInstaller.includes('state=clone(state);'), 'curriculum installation must stage mutations without altering the committed in-memory workspace');
+assert.ok(curriculumInstaller.includes('if(!save()){') && curriculumInstaller.includes('state=previousState;'), 'a failed curriculum persistence transaction must restore the previous in-memory workspace and not claim success');
+assert.ok(curriculumInstaller.includes('renderSetup();') && curriculumInstaller.indexOf('if(!save()){')<curriculumInstaller.indexOf("notify(added?'Added"), 'successful pack installation must refresh the Library stream/subject tree and confirm only after save succeeds');
+assert.ok(curriculumInstaller.includes("selectedSubjects=pack.subjects.map(subject=>({subject,selectedTopics:subject.topics.filter(topic=>topicName===null||topic===topicName)})).filter(entry=>(!subjectId||entry.subject.id===subjectId)&&entry.selectedTopics.length)"), 'invalid subject/topic selections must not create empty parent stream or subject records');
+
+assert.ok(cloudSync.includes("DETACHED_OWNER_KEY='nexus.cloud.detached-workspace-owner.v1'"), 'signed-out workspace detachment must be represented independently of the previous account owner');
+assert.ok(cloudSync.includes('window.NexusOfflineSyncQueue.detachOwner(localStorage,owner)'), 'explicit sign-out must atomically detach the workspace from its previous account');
+const signOutSource=section(cloudSync,'async function signOut(){','window.NexusCloudSync=', 'sign-out owner isolation');
+assert.ok(signOutSource.indexOf('detachOwner')>=0 && signOutSource.indexOf('detachOwner')<signOutSource.indexOf('client.auth.signOut()'), 'detach workspace ownership before completing sign-out');
+const initSource=section(cloudSync,'async function initializeSession(s){','function stableJson(v)', 'detached workspace re-sign-in');
+assert.ok(initSource.includes('!detachedWorkspace'), 'a detached local workspace must bypass automatic queued-snapshot hydration and upload');
+assert.ok(initSource.includes("archive(localStorage,newUserId,'signed-out-workspace-detached')"), 'stale per-account pending work must be preserved in recovery history before local/cloud reconciliation');
+assert.ok(initSource.includes("if(detachedWorkspace)localStorage.setItem(DETACHED_OWNER_KEY,'');"), 'clear the detached marker only after successful account reconciliation');
+
 console.log('Data-safety integration wiring checks passed.');
