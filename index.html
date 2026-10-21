@@ -915,6 +915,26 @@ body :not(dialog):not(.standalone-screen):not(.menu-pop){overscroll-behavior-y:a
 #workspaceIsolationLock button{min-height:44px}
 </style>
 <style id="nexus-action-icon-polish">.nexus-action-icon{width:1.05em;height:1.05em;display:inline-block;vertical-align:-.18em;flex:none;margin-right:.38em}</style>
+
+<style id="nexus-mobile-render-performance">
+/* Keep touch scrolling native and reduce per-frame paint work on touch-first devices. */
+@media (hover: none) and (pointer: coarse) {
+  .tabs {
+    background: var(--surface) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  .view.active,
+  .panel, .stat, .topic-card, .queue-item, .due-item, .progress-row,
+  .history-entry, .hub-card, .chart-bar, .hub-chart-bar {
+    animation: none !important;
+  }
+  .btn:hover, .tab:hover, .stat:hover, .topic-card:hover, .history-entry:hover {
+    transform: none !important;
+  }
+}
+</style>
+
 </head>
 <body>
   <main class="app">
