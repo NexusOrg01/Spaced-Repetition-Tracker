@@ -113,4 +113,6 @@ assert.ok(studyHub.includes('for(const record of state.history){const date=recor
   'the Overview heatmap must count history in one pass rather than rescanning the full history for each day');
 assert.ok(bundle.includes('const candidates = state.topics.filter((t) => !t.fsrs && t.reviewCount > 0);') && bundle.includes('if (!candidates.length) return;'),
   'normal render/save cycles must skip FSRS migration history scans after every reviewed topic has a scheduler card');
+assert.ok(appSource.includes('id="nexus-mobile-render-performance"') && appSource.includes('@media (hover: none) and (pointer: coarse)') && appSource.includes('backdrop-filter: none !important') && appSource.includes('animation: none !important'),
+  'touch-first layouts must reduce sticky-tab blur and per-item entrance animations without changing native scrolling behavior');
 console.log('FSRS and core feature regression tests passed.');
