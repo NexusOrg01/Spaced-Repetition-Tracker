@@ -364,22 +364,41 @@
   }
   function installCurriculum(packId,subjectId=null,topicName=null){
     const pack=CURRICULUM_PACKS.find(item=>item.id===packId);if(!pack)return;
-    const selectedSubjects=pack.subjects.filter(subject=>!subjectId||subject.id===subjectId);if(!selectedSubjects.length)return;
-    let stream=findPackStream(pack);
-    if(!stream){let streamId=pack.streamId||makeId('stream');if(state.streams.some(item=>item.id===streamId))streamId=makeId('stream');stream={id:streamId,name:pack.streamName};state.streams.push(stream);}
-    let added=0;
-    for(const subject of selectedSubjects){
-      const selectedTopics=subject.topics.filter(topic=>topicName===null||topic===topicName);if(!selectedTopics.length)continue;
-      let installedSubject=findPackSubject(pack,subject,stream);
-      if(!installedSubject){let id=subject.workspaceId||makeId('subject');if(state.subjects.some(item=>item.id===id))id=makeId('subject');installedSubject={id,name:subject.name,streamId:stream.id,order:state.subjects.filter(item=>item.streamId===stream.id).length};state.subjects.push(installedSubject);}
-      for(const name of selectedTopics){
-        if(state.topics.some(topic=>topic.subjectId===installedSubject.id&&topic.name===name))continue;
-        const topicIndex=subject.topics.indexOf(name)+1;let id=subject.legacyIdPrefix?subject.legacyIdPrefix+'-'+String(topicIndex).padStart(2,'0'):makeId('topic');if(state.topics.some(topic=>topic.id===id))id=makeId('topic');
-        state.topics.push({id,subjectId:installedSubject.id,name,notes:'',custom:false,createdAt:today(),lastReviewed:'',lastRating:null,dueDate:'',intervalDays:0,reviewCount:0,streak:0,lapses:0,archived:false});added++;
+    // Resolve the actual selection before changing the hierarchy. An invalid topic must not create an empty stream/subject.
+    const selectedSubjects=pack.subjects.map(subject=>({subject,selectedTopics:subject.topics.filter(topic=>topicName===null||topic===topicName)})).filter(entry=>(!subjectId||entry.subject.id===subjectId)&&entry.selectedTopics.length);
+    if(!selectedSubjects.length){notify('Nothing was installed. The selected curriculum item could not be found.');return;}
+    const previousState=state;
+    try{
+      // Stage the entire change on a detached copy so a failed localStorage transaction can restore the prior in-memory state too.
+      state=clone(state);
+      let stream=findPackStream(pack);
+      if(!stream){let streamId=pack.streamId||makeId('stream');if(state.streams.some(item=>item.id===streamId))streamId=makeId('stream');stream={id:streamId,name:pack.streamName};state.streams.push(stream);}
+      let added=0;
+      for(const entry of selectedSubjects){
+        const subject=entry.subject;
+        let installedSubject=findPackSubject(pack,subject,stream);
+        if(!installedSubject){let id=subject.workspaceId||makeId('subject');if(state.subjects.some(item=>item.id===id))id=makeId('subject');installedSubject={id,name:subject.name,streamId:stream.id,order:state.subjects.filter(item=>item.streamId===stream.id).length};state.subjects.push(installedSubject);}
+        for(const name of entry.selectedTopics){
+          if(state.topics.some(topic=>topic.subjectId===installedSubject.id&&topic.name===name))continue;
+          const topicIndex=subject.topics.indexOf(name)+1;let id=subject.legacyIdPrefix?subject.legacyIdPrefix+'-'+String(topicIndex).padStart(2,'0'):makeId('topic');if(state.topics.some(topic=>topic.id===id))id=makeId('topic');
+          state.topics.push({id,subjectId:installedSubject.id,name,notes:'',custom:false,createdAt:today(),lastReviewed:'',lastRating:null,dueDate:'',intervalDays:0,reviewCount:0,streak:0,lapses:0,archived:false});added++;
+        }
       }
+      if(!save()){
+        state=previousState;
+        renderAll();renderSetup();renderExplore();
+        notify('Installation was not saved. Your previous workspace is unchanged; check browser storage and try again.');
+        return;
+      }
+      // Setup renders the actual Stream/Subject tree, which renderAll() intentionally skips while Explore is active.
+      renderAll();renderSetup();renderExplore();
+      notify(added?'Added '+added+' curriculum topic'+(added===1?'':'s')+' to your Library.':'Everything in this selection is already installed.');
+    }catch(error){
+      state=previousState;
+      try{renderAll();renderSetup();renderExplore();}catch(renderError){console.error('Could not redraw the previous workspace after curriculum install failed.',renderError);}
+      console.error('Nexus curriculum installation failed; prior workspace restored.',error);
+      notify('Installation failed. Your previous workspace was restored; no install was confirmed.');
     }
-    save();renderAll();renderExplore();
-    notify(added?'Added '+added+' curriculum topic'+(added===1?'':'s')+' to your Library.':'Everything in this selection is already installed.');
   }
   function renderTopics(){
     const q=$('topicSearch').value.trim().toLocaleLowerCase(),streamId=$('topicStreamFilter').value,subjectId=$('topicSubjectFilter').value,stat=$('topicStatusFilter').value,sort=$('topicSort').value;
