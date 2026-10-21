@@ -6,6 +6,9 @@ import vm from 'node:vm';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const html = readFileSync(resolve(root, 'index.html'), 'utf8');
+const appCore = readFileSync(resolve(root, 'app-core.js'), 'utf8');
+const studyHub = readFileSync(resolve(root, 'study-hub.js'), 'utf8');
+const appSource = html + '\n' + appCore + '\n' + studyHub;
 const bundle = readFileSync(resolve(root, 'fsrs-bundle.js'), 'utf8');
 const backupUtils = readFileSync(resolve(root, 'backup-restore-utils.js'), 'utf8');
 const serviceWorker = readFileSync(resolve(root, 'sw.js'), 'utf8');
@@ -62,7 +65,7 @@ const replayed = scheduler.replay([
 ]);
 assert.equal(replayed.lastReview, '2026-10-21', 'history replay must sort reviews chronologically');
 
-assert.ok(html.includes('<script defer src="./fsrs-bundle.js"></script>'), 'the FSRS integration bundle must be loaded by the app');
+assert.ok(appSource.includes('<script defer src="./fsrs-bundle.js"></script>'), 'the FSRS integration bundle must be loaded by the app');
 assert.ok(bundle.includes('save = function () { persistCards(); return baseSave.apply(this, arguments); }'),
   'FSRS memory state must be persisted whenever Nexus saves tracker data');
 assert.ok(bundle.includes('saveReview = function (rating)') && bundle.includes('t.fsrs = pending.fsrs;'),
@@ -71,22 +74,22 @@ assert.ok(bundle.includes('if (/^\\d{4}-\\d{2}-\\d{2}$/.test(customDue)) pending
   'a user-selected due date must override the FSRS due date without discarding the memory update');
 assert.ok(bundle.includes('function ensureMigrated()') && bundle.includes('N.migrateTopic(t, hs)'),
   'existing review history must be available for FSRS state migration');
-assert.ok(html.includes('focus=window.NexusBackupRestoreUtils.sanitizeFocusState(x)'), 'saved focus timestamps must be sanitized before initializing the timer');
-assert.ok(html.includes('durationSeconds:elapsedSeconds') && html.includes('mins=Math.floor(elapsedSeconds/60)'), 'focus history must store exact elapsed seconds and must never round a short session up to one minute');
-assert.ok(html.includes('function studyLogMinutes(entry)') && html.includes('function formatStudyDuration(seconds)'), 'study-time totals and histories must account for saved seconds and format durations precisely');
-assert.ok(html.includes("rows=[['Date','Whole Minutes','Total Seconds','Type','Note']") && html.includes("'Duration: '+formatStudyDuration(studyLogMinutes(l)*60)"), 'study logs and analytics history must expose precise durations');
-assert.ok(html.includes('function renderStudyLogHistory()') && html.includes('max-height:300px;overflow-y:auto') && html.includes('data-hub-action="study-history-toggle"'), 'study-time history must live in its own bounded scrolling box with a collapse/expand control');
-assert.ok(html.includes('body :not(dialog):not(.standalone-screen):not(.menu-pop){overscroll-behavior-y:auto;-webkit-overflow-scrolling:touch}') && html.includes('overscroll-behavior-y:auto;touch-action:pan-y;-webkit-overflow-scrolling:touch;border:1px solid var(--border)'), 'all inner vertical lists must hand scroll back to the parent at their top and bottom edges, while the history box opts into native vertical panning');
-assert.ok(html.includes('function deleteStudyLog(id)') && html.includes('data-hub-action="delete-study-log"') && html.includes("saveFs();renderHub();notify('Study-time entry deleted."), 'individual history entries must be deleted with confirmation and recalculate saved totals/exports');
-assert.ok(html.includes('function discardFocusSession()') && html.includes('data-focus-action="discard"') && html.includes('No study time was logged.'), 'an accidental active timer can be discarded without creating a history entry');
-assert.ok(html.includes('startedAt:new Date(wallStart).toISOString()') && html.includes('endedAt:new Date(stoppedAt).toISOString()'), 'new focus logs must retain actual wall-clock start and stop times as well as active duration');
+assert.ok(appSource.includes('focus=window.NexusBackupRestoreUtils.sanitizeFocusState(x)'), 'saved focus timestamps must be sanitized before initializing the timer');
+assert.ok(appSource.includes('durationSeconds:elapsedSeconds') && appSource.includes('mins=Math.floor(elapsedSeconds/60)'), 'focus history must store exact elapsed seconds and must never round a short session up to one minute');
+assert.ok(appSource.includes('function studyLogMinutes(entry)') && appSource.includes('function formatStudyDuration(seconds)'), 'study-time totals and histories must account for saved seconds and format durations precisely');
+assert.ok(appSource.includes("rows=[['Date','Whole Minutes','Total Seconds','Type','Note']") && appSource.includes("'Duration: '+formatStudyDuration(studyLogMinutes(l)*60)"), 'study logs and analytics history must expose precise durations');
+assert.ok(appSource.includes('function renderStudyLogHistory()') && appSource.includes('max-height:300px;overflow-y:auto') && appSource.includes('data-hub-action="study-history-toggle"'), 'study-time history must live in its own bounded scrolling box with a collapse/expand control');
+assert.ok(appSource.includes('body :not(dialog):not(.standalone-screen):not(.menu-pop){overscroll-behavior-y:auto;-webkit-overflow-scrolling:touch}') && appSource.includes('overscroll-behavior-y:auto;touch-action:pan-y;-webkit-overflow-scrolling:touch;border:1px solid var(--border)'), 'all inner vertical lists must hand scroll back to the parent at their top and bottom edges, while the history box opts into native vertical panning');
+assert.ok(appSource.includes('function deleteStudyLog(id)') && appSource.includes('data-hub-action="delete-study-log"') && appSource.includes("saveFs();renderHub();notify('Study-time entry deleted."), 'individual history entries must be deleted with confirmation and recalculate saved totals/exports');
+assert.ok(appSource.includes('function discardFocusSession()') && appSource.includes('data-focus-action="discard"') && appSource.includes('No study time was logged.'), 'an accidental active timer can be discarded without creating a history entry');
+assert.ok(appSource.includes('startedAt:new Date(wallStart).toISOString()') && appSource.includes('endedAt:new Date(stoppedAt).toISOString()'), 'new focus logs must retain actual wall-clock start and stop times as well as active duration');
 assert.ok(backupUtils.includes('focusActualStartedAt: actualStarted || started') && backupUtils.includes('focusActualStartedAt: cleanTimestamp('), 'actual focus start time must survive local state normalization and backup/restore');
-assert.ok(html.includes('if(focusStart&&!focusTimer)focusTimer=setInterval(refreshLiveFocusUi,1000);'), 'an active focus timer must restart its refresh interval after a normal page reload');
-assert.ok(html.includes("const restoreFocusUi=()=>{if(focusStart)openFocusMode();else refreshLiveFocusUi();};") && html.includes("document.addEventListener('DOMContentLoaded',restoreFocusUi,{once:true})"), 'an active focus session must reopen the focus clock after the dialog is present in the DOM');
-assert.ok(html.includes('focusStart=Date.now();focusPausedAt=null;fsState.focusStartedAt=new Date(focusStart).toISOString();fsState.focusActualStartedAt=new Date(focusStart).toISOString();fsState.focusPausedAt=null;saveFs();'), 'starting a new focus session must clear stale pause state and initialize the original wall-clock start before persisting');
+assert.ok(appSource.includes('if(focusStart&&!focusTimer)focusTimer=setInterval(refreshLiveFocusUi,1000);'), 'an active focus timer must restart its refresh interval after a normal page reload');
+assert.ok(appSource.includes("const restoreFocusUi=()=>{if(focusStart)openFocusMode();else refreshLiveFocusUi();};") && appSource.includes("document.addEventListener('DOMContentLoaded',restoreFocusUi,{once:true})"), 'an active focus session must reopen the focus clock after the dialog is present in the DOM');
+assert.ok(appSource.includes('focusStart=Date.now();focusPausedAt=null;fsState.focusStartedAt=new Date(focusStart).toISOString();fsState.focusActualStartedAt=new Date(focusStart).toISOString();fsState.focusPausedAt=null;saveFs();'), 'starting a new focus session must clear stale pause state and initialize the original wall-clock start before persisting');
 assert.ok(serviceWorker.includes("'./fsrs-bundle.js'") && serviceWorker.includes("'./backup-restore-utils.js'") && serviceWorker.includes("'./offline-sync-queue.js'") && serviceWorker.includes("'./workspace-isolation-guard.js'") && serviceWorker.includes("'./nexus-build-config.js'") && serviceWorker.includes("'./cloud-sync-recovery.js'") && serviceWorker.includes("'./workspace-sync-merge.js'") && serviceWorker.includes("'./cloud-sync.js'"),
   'offline app shell must cache the scheduler and backup safety helpers');
-assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v22';"), 'the service-worker cache must be versioned and scoped to Nexus-owned caches');
+assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v23';"), 'the service-worker cache must be versioned and scoped to Nexus-owned caches');
 const networkFirstSources = serviceWorker.split('const networkFirst=')[1]?.split(';')[0] || '';
 assert.ok(networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/offline-sync-queue.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-isolation-guard.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-build-config.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync-recovery.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-sync-merge.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync.js')"), 'online loads must refresh the coupled FSRS and backup helpers while preserving offline cache fallback');
 assert.equal(manifest.theme_color, '#6C8AFF', 'installed app chrome should use the Nexus brand color');

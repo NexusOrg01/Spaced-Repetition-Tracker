@@ -26,7 +26,7 @@ assert.ok((directives.get('script-src-attr') || []).includes("'none'"), 'HTML in
 
 const inlineScripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)]
   .filter(match => !/\bsrc\s*=/.test(match[1]));
-assert.equal(inlineScripts.length, 6, 'the cloud sync runtime is externalized so retry behavior can be tested without weakening CSP');
+assert.equal(inlineScripts.length, 4, 'the tracker core and Study Hub runtime are externalized without weakening CSP');
 for (const [index, match] of inlineScripts.entries()) {
   const hash = "'sha256-" + createHash('sha256').update(match[2], 'utf8').digest('base64') + "'";
   assert.ok(scriptSources.has(hash), 'CSP must include the exact hash for inline script #' + index + ': ' + hash);

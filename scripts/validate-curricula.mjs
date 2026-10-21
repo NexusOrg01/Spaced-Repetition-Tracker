@@ -6,6 +6,9 @@ const htmlPath = new URL('../index.html', import.meta.url);
 const cloudSyncPath = new URL('../cloud-sync.js', import.meta.url);
 const catalog = JSON.parse(fs.readFileSync(cataloguePath, 'utf8'));
 const html = fs.readFileSync(htmlPath, 'utf8');
+const appCore = fs.readFileSync(new URL('../app-core.js', import.meta.url), 'utf8');
+const studyHub = fs.readFileSync(new URL('../study-hub.js', import.meta.url), 'utf8');
+const appSource = html + '\n' + appCore + '\n' + studyHub;
 const cloudSync = fs.readFileSync(cloudSyncPath, 'utf8');
 const errors = [];
 const assert = (condition, message) => { if (!condition) errors.push(message); };
@@ -43,52 +46,52 @@ for (const [packIndex, pack] of (catalog.packs || []).entries()) {
 }
 assert(packIds.has('sl-al-commerce-si'), 'The existing Commerce starter pack must remain available.');
 assert(!(catalog.packs || []).some(pack => /^temporary(?:-|$)/i.test(pack?.id || '')), 'Temporary test curricula must not remain in the catalogue.');
-assert(!html.includes('temporary-biology-test'), 'The temporary Biology test pack must be removed from the app version.');
-assert(html.includes('id="hubRatingGrouping"'), 'Analytics must expose topic, subject, and syllabus grouping.');
-assert(html.includes('id="hubRatingPeriod"') && html.includes("['week','This week']") && html.includes("['month','This month']") && html.includes("['year','This year']"), 'Analytics must expose this-week, this-month, and this-year periods.');
-assert(html.includes('id="hubRatingCustomStart"') && html.includes('id="hubRatingCustomEnd"'), 'Analytics must support a custom calendar date range.');
-assert(html.includes('function ratingAnalyticsSvgMarkup') && html.includes('data-rating-line=') && html.includes('Line chart of review difficulty ratings over time') && html.includes('same count scale'), 'Analytics must render a shared-scale multi-line chart for the selected rating difficulties.');
-assert(html.includes('No reviews for the selected difficulties in this timeframe'), 'Analytics must show a clear empty-state message instead of an unexplained blank chart.');
-assert(html.includes('class="hub-nav analytics-nav"') && html.includes("data-analytics-section=") && html.includes("if(a==='analytics-section')"), 'Analytics must expose the four-section top navigation.');
-assert(html.includes('aria-label="Practice and paper log"') && html.includes('aria-label="Study time by subject"') && html.includes('touch-action:pan-y'), 'Practice records and study-time breakdowns must use scrollable touch-friendly regions.');
-assert(html.includes("new Map()") && html.includes("dateToBin=new Map()"), 'Analytics review history must be aggregated instead of repeatedly filtering every record for every day.');
-assert(html.includes('function renderActivityAnalytics(selection)') && html.includes('class="nexus-activity-svg"') && html.includes('const buildActivitySeries=') && html.includes('class="nexus-activity-area"'), 'Activity must use a dedicated, self-contained smooth line renderer.');
-assert(html.includes('function paperScoreTrendsMarkup') && html.includes('paper-trend-line') && html.includes('paper-trend-area') && html.includes('all records remain below'), 'Paper marks must use smooth gradient trend charts while preserving the full attempt log.');
-assert(html.includes('homeOpenAnalytics') && html.includes('linear-gradient(135deg,#8978f8,#6c63df)'), 'The Home Analytics launch button must retain its premium purple theme.');
-assert(!html.includes('id="homeOpenCalendar"') && html.includes('id="homeOpenCalendarSecondary"'), 'Home must keep View schedule and remove the duplicate Open calendar button.');
-assert(html.includes('data-rating-point=') && html.includes('class="ra-line"') && html.includes('class="nexus-activity-line"'), 'Analytics line charts must provide discrete points and a visible trend path.');
-assert(html.includes('data-hub-action="analytics-toggle-rating"') && html.includes("if(a==='analytics-toggle-rating')"), 'Every rating legend item must toggle its series in the graph.');
-assert(html.includes("fsState.analyticsVisibleRatings=current.filter(r=>r!==rating)") && html.includes("fsState.analyticsVisibleRatings=[...current,rating].sort((x,y)=>x-y)"), 'Rating filters must support hiding and restoring multiple ratings.');
-assert(html.includes('getVisibleAnalyticsRatings()') && html.includes('data-rating-line=') && html.includes('data-scale-max=') && html.includes('same count scale'), 'Difficulty toggles must filter lines that share the same count axis.');
-assert(html.includes("data-rating-line=\"'+rating+'\""), 'Each rating curve must remain individually addressable for visibility filters.');
-assert(html.includes('class="hub-premium-heading panel"') && html.includes('.hub-premium-heading{'), 'Study Hub must use the premium purple title card.');
-assert(!html.includes('<p class="subtitle">v5.0</p>') && html.includes('<footer class="footer"><span>Nexus: Spaced Repetition Tracker · v5.0</span>') && html.indexOf('<footer class="footer">') > html.indexOf('<!-- RECALL STUDY HUB ADDON END -->') && html.includes('id="helpBtn"') && html.indexOf('id="helpBtn"') > html.indexOf('<footer class="footer">'), 'Version information and the How to use control must remain in the bottom footer, after Study Hub.');
-assert(html.includes('id="appMode" hidden'), 'The hidden legacy app-mode node must remain available to existing runtime code without displaying verbose status copy.');
-assert(html.includes("new URL('icon-192.png',window.location.href)") && html.includes('class="cover-brand"') && html.includes('class="cover-logo"') && html.includes('<strong>NEXUS</strong>') && html.includes('SPACED REPETITION TRACKER'), 'The Analytics PDF cover must show the Nexus logo and app name in a premium branded header.');
+assert(!appSource.includes('temporary-biology-test'), 'The temporary Biology test pack must be removed from the app version.');
+assert(appSource.includes('id="hubRatingGrouping"'), 'Analytics must expose topic, subject, and syllabus grouping.');
+assert(appSource.includes('id="hubRatingPeriod"') && appSource.includes("['week','This week']") && appSource.includes("['month','This month']") && appSource.includes("['year','This year']"), 'Analytics must expose this-week, this-month, and this-year periods.');
+assert(appSource.includes('id="hubRatingCustomStart"') && appSource.includes('id="hubRatingCustomEnd"'), 'Analytics must support a custom calendar date range.');
+assert(appSource.includes('function ratingAnalyticsSvgMarkup') && appSource.includes('data-rating-line=') && appSource.includes('Line chart of review difficulty ratings over time') && appSource.includes('same count scale'), 'Analytics must render a shared-scale multi-line chart for the selected rating difficulties.');
+assert(appSource.includes('No reviews for the selected difficulties in this timeframe'), 'Analytics must show a clear empty-state message instead of an unexplained blank chart.');
+assert(appSource.includes('class="hub-nav analytics-nav"') && appSource.includes("data-analytics-section=") && appSource.includes("if(a==='analytics-section')"), 'Analytics must expose the four-section top navigation.');
+assert(appSource.includes('aria-label="Practice and paper log"') && appSource.includes('aria-label="Study time by subject"') && appSource.includes('touch-action:pan-y'), 'Practice records and study-time breakdowns must use scrollable touch-friendly regions.');
+assert(appSource.includes("new Map()") && appSource.includes("dateToBin=new Map()"), 'Analytics review history must be aggregated instead of repeatedly filtering every record for every day.');
+assert(appSource.includes('function renderActivityAnalytics(selection)') && appSource.includes('class="nexus-activity-svg"') && appSource.includes('const buildActivitySeries=') && appSource.includes('class="nexus-activity-area"'), 'Activity must use a dedicated, self-contained smooth line renderer.');
+assert(appSource.includes('function paperScoreTrendsMarkup') && appSource.includes('paper-trend-line') && appSource.includes('paper-trend-area') && appSource.includes('all records remain below'), 'Paper marks must use smooth gradient trend charts while preserving the full attempt log.');
+assert(appSource.includes('homeOpenAnalytics') && appSource.includes('linear-gradient(135deg,#8978f8,#6c63df)'), 'The Home Analytics launch button must retain its premium purple theme.');
+assert(!appSource.includes('id="homeOpenCalendar"') && appSource.includes('id="homeOpenCalendarSecondary"'), 'Home must keep View schedule and remove the duplicate Open calendar button.');
+assert(appSource.includes('data-rating-point=') && appSource.includes('class="ra-line"') && appSource.includes('class="nexus-activity-line"'), 'Analytics line charts must provide discrete points and a visible trend path.');
+assert(appSource.includes('data-hub-action="analytics-toggle-rating"') && appSource.includes("if(a==='analytics-toggle-rating')"), 'Every rating legend item must toggle its series in the graph.');
+assert(appSource.includes("fsState.analyticsVisibleRatings=current.filter(r=>r!==rating)") && appSource.includes("fsState.analyticsVisibleRatings=[...current,rating].sort((x,y)=>x-y)"), 'Rating filters must support hiding and restoring multiple ratings.');
+assert(appSource.includes('getVisibleAnalyticsRatings()') && appSource.includes('data-rating-line=') && appSource.includes('data-scale-max=') && appSource.includes('same count scale'), 'Difficulty toggles must filter lines that share the same count axis.');
+assert(appSource.includes("data-rating-line=\"'+rating+'\""), 'Each rating curve must remain individually addressable for visibility filters.');
+assert(appSource.includes('class="hub-premium-heading panel"') && appSource.includes('.hub-premium-heading{'), 'Study Hub must use the premium purple title card.');
+assert(!appSource.includes('<p class="subtitle">v5.0</p>') && appSource.includes('<footer class="footer"><span>Nexus: Spaced Repetition Tracker · v5.0</span>') && appSource.indexOf('<footer class="footer">') > appSource.indexOf('<!-- RECALL STUDY HUB ADDON END -->') && appSource.includes('id="helpBtn"') && appSource.indexOf('id="helpBtn"') > appSource.indexOf('<footer class="footer">'), 'Version information and the How to use control must remain in the bottom footer, after Study Hub.');
+assert(appSource.includes('id="appMode" hidden'), 'The hidden legacy app-mode node must remain available to existing runtime code without displaying verbose status copy.');
+assert(appSource.includes("new URL('icon-192.png',window.location.href)") && appSource.includes('class="cover-brand"') && appSource.includes('class="cover-logo"') && appSource.includes('<strong>NEXUS</strong>') && appSource.includes('SPACED REPETITION TRACKER'), 'The Analytics PDF cover must show the Nexus logo and app name in a premium branded header.');
 
-assert(html.includes("map.set('ALL',{value:'ALL'") && html.includes("if(String(entityId)==='ALL')return records||[];"), 'Analytics must support an aggregate view across all topics, subjects, and syllabuses.');
-assert(html.includes('function ensureAnalyticsEntityForRange(level)') && html.includes('ensureAnalyticsEntityForRange(level);'), 'Opening Analytics must fall back to combined data when the current entity has no reviews in the selected timeframe.');
-assert(html.includes("const all=options.find(option=>option.value==='ALL')") && html.includes("const next=all?.value||best?.value||options[0]?.value||'';"), 'Monthly analytics must default to the combined view when the current entity has no reviews in the selected timeframe.');
+assert(appSource.includes("map.set('ALL',{value:'ALL'") && appSource.includes("if(String(entityId)==='ALL')return records||[];"), 'Analytics must support an aggregate view across all topics, subjects, and syllabuses.');
+assert(appSource.includes('function ensureAnalyticsEntityForRange(level)') && appSource.includes('ensureAnalyticsEntityForRange(level);'), 'Opening Analytics must fall back to combined data when the current entity has no reviews in the selected timeframe.');
+assert(appSource.includes("const all=options.find(option=>option.value==='ALL')") && appSource.includes("const next=all?.value||best?.value||options[0]?.value||'';"), 'Monthly analytics must default to the combined view when the current entity has no reviews in the selected timeframe.');
 
-assert(html.includes("if(el.id==='hubRatingPeriod'||el.id==='hubRatingGrouping')") && html.includes('ensureAnalyticsEntityForRange(level);'), 'Changing timeframe must use the safe entity fallback when the selected entity has no reviews in that range.');
-assert(html.includes('id="hubRatingEntity"'), 'Analytics must let users select the topic, subject, or syllabus being analysed.');
-assert(html.includes('id="homeOpenAnalytics"') && html.includes('id="analyticsStandalone"'), 'Analytics must have a dedicated full-screen screen launched from Home.');
-assert(html.includes("ratingOptions.map(x=>[x.value,x.label+' — '+x.subtitle])"), 'Analytics selector options must be passed as [value, label] pairs to the shared selectOptions helper.');
-assert(!html.includes("options.map(x=>({value:x.value,label:x.label+' — '+x.subtitle}))"), 'Analytics must not pass non-iterable objects to the tuple-based selectOptions helper.');
-assert(html.includes('position:fixed;z-index:30001}'), 'The persistent Undo toast must appear above standalone overlays such as Danger Zone.');
-assert(!html.includes("$('homeOpenAnalytics').addEventListener('click',openAnalyticsWindow)"), 'Main app script must not reference private Study Hub functions before its initialization completes.');
-assert(html.includes("document.addEventListener('click',e=>{\n    const openButton=e.target.closest('#homeOpenAnalytics');") && html.includes("hubEl('openDangerZoneBtn').addEventListener('click',openDangerZone)"), 'Open Analytics must use stable document delegation while Danger Zone remains wired in the Study Hub scope.');
-assert(!html.includes('data-hub-tab="analytics"'), 'Analytics must not remain a Study Hub tab.');
-assert(!html.includes('data-view="history"') && html.includes('id="dangerZoneStandalone"'), 'Review history must be moved out of the main navigation and into Danger Zone.');
-assert(html.includes('DANGER ZONE — Clear every saved review-history entry?'), 'History deletion must warn users that analytics records will be lost.');
-assert(html.includes('function exportAnalyticsPdf()') && html.includes('data-hub-action="analytics-export-pdf"'), 'Analytics must include the detailed printable PDF report action.');
-assert(!html.includes("downloadBlob('nexus-study-review-report.html'") && !html.includes("const fallbackReport='<!doctype html>"), 'PDF export must use the clean live-app print flow, not the preview-only HTML fallback.');
-assert(html.includes('function paperScoreTrendsMarkup') && html.includes('paper-trend-line') && html.includes('paper-trend-area'), 'Paper analytics must retain its smooth subject-separated trend charts in the app.');
-assert(!html.includes('reviewHeatmapMarkup') && !html.includes('pdf-heatmap-cell'), 'Preview-only PDF heatmap code must be removed when restoring the live report.');
-assert(html.includes('.paper-trend-svg') && html.includes('nexus-activity-svg{display:block;width:100%'), 'Paper charts and rebuilt Activity charts must retain responsive graph styling.');
-assert(html.includes('ra-svg-dense') && html.includes("period==='month'") && html.includes("period==='year'"), 'Month/year graphs must retain their day/month axis labels.');
-assert(html.includes('function ratingAnalyticsTimelineTableMarkup') && html.includes('View exact counts by date / interval'), 'Analytics must provide exact per-rating counts for each timeline interval.');
-assert(html.includes('DANGER ZONE — Delete this review record?'), 'Deleting an individual review must warn that it will be removed from analytics.');
+assert(appSource.includes("if(el.id==='hubRatingPeriod'||el.id==='hubRatingGrouping')") && appSource.includes('ensureAnalyticsEntityForRange(level);'), 'Changing timeframe must use the safe entity fallback when the selected entity has no reviews in that range.');
+assert(appSource.includes('id="hubRatingEntity"'), 'Analytics must let users select the topic, subject, or syllabus being analysed.');
+assert(appSource.includes('id="homeOpenAnalytics"') && appSource.includes('id="analyticsStandalone"'), 'Analytics must have a dedicated full-screen screen launched from Home.');
+assert(appSource.includes("ratingOptions.map(x=>[x.value,x.label+' — '+x.subtitle])"), 'Analytics selector options must be passed as [value, label] pairs to the shared selectOptions helper.');
+assert(!appSource.includes("options.map(x=>({value:x.value,label:x.label+' — '+x.subtitle}))"), 'Analytics must not pass non-iterable objects to the tuple-based selectOptions helper.');
+assert(appSource.includes('position:fixed;z-index:30001}'), 'The persistent Undo toast must appear above standalone overlays such as Danger Zone.');
+assert(!appSource.includes("$('homeOpenAnalytics').addEventListener('click',openAnalyticsWindow)"), 'Main app script must not reference private Study Hub functions before its initialization completes.');
+assert(appSource.includes("document.addEventListener('click',e=>{\n    const openButton=e.target.closest('#homeOpenAnalytics');") && appSource.includes("hubEl('openDangerZoneBtn').addEventListener('click',openDangerZone)"), 'Open Analytics must use stable document delegation while Danger Zone remains wired in the Study Hub scope.');
+assert(!appSource.includes('data-hub-tab="analytics"'), 'Analytics must not remain a Study Hub tab.');
+assert(!appSource.includes('data-view="history"') && appSource.includes('id="dangerZoneStandalone"'), 'Review history must be moved out of the main navigation and into Danger Zone.');
+assert(appSource.includes('DANGER ZONE — Clear every saved review-history entry?'), 'History deletion must warn users that analytics records will be lost.');
+assert(appSource.includes('function exportAnalyticsPdf()') && appSource.includes('data-hub-action="analytics-export-pdf"'), 'Analytics must include the detailed printable PDF report action.');
+assert(!appSource.includes("downloadBlob('nexus-study-review-report.html'") && !appSource.includes("const fallbackReport='<!doctype html>"), 'PDF export must use the clean live-app print flow, not the preview-only HTML fallback.');
+assert(appSource.includes('function paperScoreTrendsMarkup') && appSource.includes('paper-trend-line') && appSource.includes('paper-trend-area'), 'Paper analytics must retain its smooth subject-separated trend charts in the app.');
+assert(!appSource.includes('reviewHeatmapMarkup') && !appSource.includes('pdf-heatmap-cell'), 'Preview-only PDF heatmap code must be removed when restoring the live report.');
+assert(appSource.includes('.paper-trend-svg') && appSource.includes('nexus-activity-svg{display:block;width:100%'), 'Paper charts and rebuilt Activity charts must retain responsive graph styling.');
+assert(appSource.includes('ra-svg-dense') && appSource.includes("period==='month'") && appSource.includes("period==='year'"), 'Month/year graphs must retain their day/month axis labels.');
+assert(appSource.includes('function ratingAnalyticsTimelineTableMarkup') && appSource.includes('View exact counts by date / interval'), 'Analytics must provide exact per-rating counts for each timeline interval.');
+assert(appSource.includes('DANGER ZONE — Delete this review record?'), 'Deleting an individual review must warn that it will be removed from analytics.');
 
 // Execute the real analytics selection, binning, SVG, and table functions against
 // deterministic review records for each supported timeframe.
@@ -128,7 +131,7 @@ const analyticsFunctionNames = [
 'renderActivityAnalytics',
   'paperScoreTrendsMarkup'
 ];
-const analyticsFunctionSources = Object.fromEntries(analyticsFunctionNames.map(name => [name, extractFunctionDeclaration(html, name)]));
+const analyticsFunctionSources = Object.fromEntries(analyticsFunctionNames.map(name => [name, extractFunctionDeclaration(appSource, name)]));
 const activitySource = analyticsFunctionSources.renderActivityAnalytics || '';
 assert(activitySource && !/\b(?:lineActivityMarkup|buildActivityBuckets|smoothCurvePath|nextChartGradientId|safeDate|dateShift|dayDiff|fNum|localEsc)\b/.test(activitySource), 'Activity must not depend on helpers private to the main app IIFE.');
 for (const name of analyticsFunctionNames) assert(Boolean(analyticsFunctionSources[name]), 'Analytics runtime validation could not extract '+name+'.');
@@ -203,7 +206,7 @@ if (analyticsFunctionNames.every(name => analyticsFunctionSources[name])) {
           assert(svg.includes('data-rating-line="'+rating+'"') && svg.includes('stroke="'+color+'"'), testCase.period+' rating '+rating+' line must use the matching rating-button color.');
         }
       }
-      assert(svg.includes('same count scale') || html.includes('same count scale'), testCase.period+' graph must use a shared count scale and a clear time axis.');
+      assert(svg.includes('same count scale') || appSource.includes('same count scale'), testCase.period+' graph must use a shared count scale and a clear time axis.');
       if(testCase.period==='month'){
         assert(timeline.records.length===5, 'This month must retain current-month review data rather than rendering an empty date range.');
         assert(svg.includes('data-rating-point=') && lineGroups.length>0, 'This month must show discrete line points where review records exist.');
@@ -259,34 +262,85 @@ for (const [index, match] of [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/sc
 }
 assert(checkedScripts > 0, 'No inline JavaScript blocks were checked.');
 
+// Check authored first-party classic scripts in page order as one parse unit.
+// This catches cross-file top-level lexical collisions that per-file syntax checks miss.
+const pageScriptTags = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)];
+const pageScriptSources = [];
+const srcCounts = new Map();
+for (const [index, match] of pageScriptTags.entries()) {
+  const attrs = match[1] || '';
+  if (/\btype\s*=\s*["'](?:application\/(?:json|ld\+json)|importmap)["']/i.test(attrs)) continue;
+  const srcMatch = attrs.match(/\bsrc\s*=\s*["']([^"']+)["']/i);
+  if (srcMatch) {
+    const src = srcMatch[1];
+    if (!src.startsWith('./')) continue; // Ignore the separately hosted Vercel Insights script.
+    srcCounts.set(src, (srcCounts.get(src) || 0) + 1);
+    if (src === './nexus-build-config.js') {
+      // Generated by scripts/build.mjs; it is an isolated IIFE and contributes no global bindings.
+      pageScriptSources.push('(()=>{})();');
+      continue;
+    }
+    try {
+      pageScriptSources.push(fs.readFileSync(new URL(src, htmlPath), 'utf8'));
+    } catch (error) {
+      errors.push('Could not load first-party script ' + src + ' from the source tree: ' + error.message);
+    }
+    continue;
+  }
+  const source = match[2] || '';
+  if (source.trim()) pageScriptSources.push(source);
+}
+for (const asset of ['./app-core.js', './study-hub.js']) {
+  assert(srcCounts.get(asset) === 1, 'index.html must reference ' + asset + ' exactly once.');
+}
+const scriptIndex = asset => pageScriptTags.findIndex(match => {
+  const attrs = match[1] || '';
+  return (attrs.match(/\bsrc\s*=\s*["']([^"']+)["']/i) || [])[1] === asset;
+});
+assert(scriptIndex('./offline-sync-queue.js') < scriptIndex('./app-core.js') &&
+  scriptIndex('./app-core.js') < scriptIndex('./study-hub.js') &&
+  scriptIndex('./study-hub.js') < scriptIndex('./cloud-sync.js') &&
+  scriptIndex('./cloud-sync.js') < scriptIndex('./workspace-isolation-guard.js'),
+  'The extracted scripts must retain their dependency-safe order in index.html.');
+try {
+  new vm.Script(pageScriptSources.join('\n;\n'), {filename:'index.html:first-party-classic-script-sequence'});
+} catch (error) {
+  errors.push('The first-party classic scripts have an integration syntax/binding error: ' + error.message);
+}
 
-assert(html.includes("return hero+nav+sharedTimeframeFilter+'<div class=\"analytics-section-content\"") && html.includes('id="hubRatingPeriod"'), 'A shared timeframe filter must appear below the Analytics navigation.');
-assert(html.includes('const buildActivitySeries=') && html.includes("longRange?'Total review count':'Daily review count'") && html.includes("longRange?'Total study time':'Daily study time'"), 'Long Activity graph ranges must aggregate and label the selected period.');
-assert(html.includes('homeConsistencySummary') && html.includes('homeHeatmapPeriod') && !html.includes("['consistency','Heatmap & streaks']"), 'Heatmap and streak summary must be located on Overview.');
-assert(!html.includes('id="startReviewBtn"') && !html.includes("startReviewBtn').addEventListener"), 'Overview must not expose a Start review action.');
+for (const [name, source] of [['app-core.js', appCore], ['study-hub.js', studyHub]]) {
+  try { new vm.Script(source, {filename:name}); }
+  catch (error) { errors.push(name+' has a syntax error: '+error.message); }
+}
+
+
+assert(appSource.includes("return hero+nav+sharedTimeframeFilter+'<div class=\"analytics-section-content\"") && appSource.includes('id="hubRatingPeriod"'), 'A shared timeframe filter must appear below the Analytics navigation.');
+assert(appSource.includes('const buildActivitySeries=') && appSource.includes("longRange?'Total review count':'Daily review count'") && appSource.includes("longRange?'Total study time':'Daily study time'"), 'Long Activity graph ranges must aggregate and label the selected period.');
+assert(appSource.includes('homeConsistencySummary') && appSource.includes('homeHeatmapPeriod') && !appSource.includes("['consistency','Heatmap & streaks']"), 'Heatmap and streak summary must be located on Overview.');
+assert(!appSource.includes('id="startReviewBtn"') && !appSource.includes("startReviewBtn').addEventListener"), 'Overview must not expose a Start review action.');
 assert(!/inbox/i.test(html), 'Analytics wording must use records rather than inbox terminology.');
-assert(html.includes('Practice & paper records') && html.includes('Study time by subject') && html.includes('analytics-card-toggle'), 'Practice records and the rebuilt Activity study-time breakdown must support collapsing.');
-assert(html.includes('color-mix(in srgb,var(--surface) 91%,#8978f8 9%)') && html.includes("4:'#84cc16',5:'#059669'"), 'Summary card tint and distinct green rating palette must be present.');
+assert(appSource.includes('Practice & paper records') && appSource.includes('Study time by subject') && appSource.includes('analytics-card-toggle'), 'Practice records and the rebuilt Activity study-time breakdown must support collapsing.');
+assert(appSource.includes('color-mix(in srgb,var(--surface) 91%,#8978f8 9%)') && appSource.includes("4:'#84cc16',5:'#059669'"), 'Summary card tint and distinct green rating palette must be present.');
 
 
-assert(html.includes("window.open('','_blank')") && html.includes('Could not open the PDF report') && !html.includes('Nexus PDF export failed'), 'PDF export must match the clean live print-window flow.');
-assert(html.includes('function exportAnalyticsCsv()') && html.includes("if(action==='analytics-export'){exportAnalyticsCsv();return;}") && html.includes('text/csv;charset=utf-8'), 'Analytics CSV export must use the shared timeframe and produce a downloadable UTF-8 CSV.');
-assert(html.includes(".join(',')).join('\\\\r\\\\n')"), 'Analytics CSV rows must be comma-separated with CRLF row endings.');
-assert(html.includes("const toggle=e.target.closest('[data-home-collapse]')") && html.includes('data-home-collapse="dueQueue"') && html.includes('data-home-collapse="progressList"') && html.includes('data-home-collapse="upcomingQueue"') && html.includes('data-home-collapse="overviewAnalytics"'), 'Overview list cards must use labelled Collapse/Expand buttons.');
-assert(html.includes('function openAnalyticsWindow()') && html.includes('Nexus Analytics failed to open') && html.includes('analyticsDefaultParent'), 'Analytics opening must recover stale overlay/reparenting state instead of silently ignoring taps.');
-assert(html.includes("document.addEventListener('change',e=>{") && html.includes("if(el.id==='hubRatingPeriod'||el.id==='hubRatingGrouping')"), 'Analytics filter changes must be handled at a stable document-level listener.');
+assert(appSource.includes("window.open('','_blank')") && appSource.includes('Could not open the PDF report') && !appSource.includes('Nexus PDF export failed'), 'PDF export must match the clean live print-window flow.');
+assert(appSource.includes('function exportAnalyticsCsv()') && appSource.includes("if(action==='analytics-export'){exportAnalyticsCsv();return;}") && appSource.includes('text/csv;charset=utf-8'), 'Analytics CSV export must use the shared timeframe and produce a downloadable UTF-8 CSV.');
+assert(appSource.includes(".join(',')).join('\\\\r\\\\n')"), 'Analytics CSV rows must be comma-separated with CRLF row endings.');
+assert(appSource.includes("const toggle=e.target.closest('[data-home-collapse]')") && appSource.includes('data-home-collapse="dueQueue"') && appSource.includes('data-home-collapse="progressList"') && appSource.includes('data-home-collapse="upcomingQueue"') && appSource.includes('data-home-collapse="overviewAnalytics"'), 'Overview list cards must use labelled Collapse/Expand buttons.');
+assert(appSource.includes('function openAnalyticsWindow()') && appSource.includes('Nexus Analytics failed to open') && appSource.includes('analyticsDefaultParent'), 'Analytics opening must recover stale overlay/reparenting state instead of silently ignoring taps.');
+assert(appSource.includes("document.addEventListener('change',e=>{") && appSource.includes("if(el.id==='hubRatingPeriod'||el.id==='hubRatingGrouping')"), 'Analytics filter changes must be handled at a stable document-level listener.');
 
 
-assert(!html.includes("arrow.textContent='⌃'") && !html.includes('function makeCollapsible(panelSelector'), 'Overview must not inject the legacy arrow-only collapse controls; use labelled Collapse/Expand buttons.');
-assert(html.indexOf("if(analyticsSection==='activity')") < html.indexOf('getRatingAnalyticsEntityOptions(ratingLevel)'), 'Activity must route before Review-difficulty-only grouping helpers are evaluated.');
-assert(html.includes("const safeDate=d=>{if(!/^\\d{4}-\\d{2}-\\d{2}$/.test(String(d||'')))return false;") && html.includes('function renderActivityAnalytics(selection)'), 'Activity must use self-contained date validation and a dedicated renderer.');
-assert(html.includes("renderActivityChart(reviewSeries,reviewTitle,'Reviews','#8978f8'") && html.includes("renderActivityChart(studySeries,studyTitle,'Minutes','#32bfc0'") && html.includes("if(analyticsSection==='activity')"), 'Activity must render its two graphs through the isolated Activity route.');
-assert(html.includes("Array.isArray(state&&state.history)?state.history:[]") && html.includes("Array.isArray(fsState&&fsState.studyLogs)?fsState.studyLogs:[]") && html.includes("buildActivitySeries(from,to,reviewsByDate)") && html.includes("buildActivitySeries(from,to,minutesByDate)"), 'Activity graph inputs must be normalized saved review history and study logs for the selected timeframe.');
-assert(!html.includes("reportHtml='<!doctype html>") && !html.includes("downloadBlob('nexus-study-review-report.html'") && !html.includes("const fallbackReport='<!doctype html>"), 'The preview-only PDF HTML fallback must be fully removed.');
+assert(!appSource.includes("arrow.textContent='⌃'") && !appSource.includes('function makeCollapsible(panelSelector'), 'Overview must not inject the legacy arrow-only collapse controls; use labelled Collapse/Expand buttons.');
+assert(appSource.indexOf("if(analyticsSection==='activity')") < appSource.indexOf('getRatingAnalyticsEntityOptions(ratingLevel)'), 'Activity must route before Review-difficulty-only grouping helpers are evaluated.');
+assert(appSource.includes("const safeDate=d=>{if(!/^\\d{4}-\\d{2}-\\d{2}$/.test(String(d||'')))return false;") && appSource.includes('function renderActivityAnalytics(selection)'), 'Activity must use self-contained date validation and a dedicated renderer.');
+assert(appSource.includes("renderActivityChart(reviewSeries,reviewTitle,'Reviews','#8978f8'") && appSource.includes("renderActivityChart(studySeries,studyTitle,'Minutes','#32bfc0'") && appSource.includes("if(analyticsSection==='activity')"), 'Activity must render its two graphs through the isolated Activity route.');
+assert(appSource.includes("Array.isArray(state&&state.history)?state.history:[]") && appSource.includes("Array.isArray(fsState&&fsState.studyLogs)?fsState.studyLogs:[]") && appSource.includes("buildActivitySeries(from,to,reviewsByDate)") && appSource.includes("buildActivitySeries(from,to,minutesByDate)"), 'Activity graph inputs must be normalized saved review history and study logs for the selected timeframe.');
+assert(!appSource.includes("reportHtml='<!doctype html>") && !appSource.includes("downloadBlob('nexus-study-review-report.html'") && !appSource.includes("const fallbackReport='<!doctype html>"), 'The preview-only PDF HTML fallback must be fully removed.');
 // Existing shared-filter placement assertion above also covers all Analytics sections.
 
 
-const safeDateSourceMatch = html.match(/const safeDate=(d=>[\s\S]*?);\n\s*const localEsc=/);
+const safeDateSourceMatch = appSource.match(/const safeDate=(d=>[\s\S]*?);\n\s*const localEsc=/);
 assert(Boolean(safeDateSourceMatch), 'A self-contained safeDate helper must be present for the Study Hub runtime.');
 if (safeDateSourceMatch) {
   try {
