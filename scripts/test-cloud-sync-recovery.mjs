@@ -49,6 +49,11 @@ assert.ok(cloud.includes('function enqueueInitialSnapshot(ownerId)') && (cloud.m
   'every first/clean cloud workspace must create a durable queued snapshot before insert');
 assert.ok(cloud.includes('The cloud backup was not rewritten.'),
   'choosing to use an existing cloud workspace should hydrate it without rewriting the remote snapshot');
+const initializeStart=cloud.indexOf('async function initializeSession(s){');
+const remoteReadAt=cloud.indexOf('const remote=await fetchRemote(newUserId);',initializeStart);
+const freshLocalSnapshotAt=cloud.indexOf('localPayload=snapshot();',remoteReadAt);
+assert.ok(initializeStart>=0&&remoteReadAt>initializeStart&&freshLocalSnapshotAt>remoteReadAt, 'account hydration must snapshot the latest local workspace after the async cloud read so edits made while connecting are included in reconciliation');
+
 assert.ok(cloud.includes('canAutoResumePending(pendingForUser,remote&&remote.updated_at||null)') &&
   cloud.includes('const autoUploaded=await upload()') &&
   cloud.includes('pendingAutomaticallySynced'),
