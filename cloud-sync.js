@@ -82,6 +82,8 @@ function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
     {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)}
   ];
   if(ownerId)entries.push({key:OWNER_KEY,value:String(ownerId)});
+  // Free redundant snapshot space before applying a cloud workspace to this browser.
+  if(window.NexusOfflineSyncQueue&&typeof window.NexusOfflineSyncQueue.compactMetadata==='function')window.NexusOfflineSyncQueue.compactMetadata(localStorage);
   window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,entries);
   state=nextState;
   window.NexusSetFeatureState(nextFeatures,{persist:false,render:false});
