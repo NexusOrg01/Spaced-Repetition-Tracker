@@ -6,6 +6,7 @@ import vm from 'node:vm';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const source = readFileSync(resolve(root, 'sw.js'), 'utf8');
+const appCoreSource = readFileSync(resolve(root, 'app-core.js'), 'utf8');
 const ORIGIN = 'https://nexus.test/';
 const CACHE_NAME = 'nexus-rating-analytics-v34';
 const CACHE_PREFIX = 'nexus-rating-analytics-';
@@ -201,4 +202,6 @@ assert.ok(source.includes('keys.filter(k=>k.startsWith(CACHE_PREFIX)&&k!==CACHE_
   'the activation handler must scope cache cleanup to Nexus-owned cache names');
 assert.ok(source.includes('const CACHE_NAME=CACHE_PREFIX+\'v34\';'),
   'the app-shell cache version must advance after service-worker behavior changes');
+assert.ok(appCoreSource.includes("navigator.serviceWorker.register('./sw.js',{updateViaCache:'none'})"),
+  'service-worker checks must bypass HTTP caching so offline clients can receive the repaired app shell');
 console.log('Service-worker reliability tests passed.');
