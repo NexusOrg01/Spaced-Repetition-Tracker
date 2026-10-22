@@ -29,6 +29,14 @@ assert.deepEqual(resolvePreviewConfig({
   key: 'sb_publishable_test_key_value_long_enough'
 }, 'Cloudflare branch previews may enable auth with a separate staging project');
 assert.equal(resolvePreviewConfig({
+  VERCEL_ENV: 'preview',
+  VERCEL_GIT_COMMIT_REF: 'ai-dev/rebuild-commerce-sync-integrity'
+}), null, 'the fix preview must remain offline-safe when no isolated test credentials are configured');
+assert.equal(resolvePreviewConfig({
+  CF_PAGES: '1',
+  CF_PAGES_BRANCH: 'ai-dev/rebuild-commerce-sync-integrity'
+}), null, 'the Cloudflare fix preview must remain offline-safe when no isolated test credentials are configured');
+assert.equal(resolvePreviewConfig({
   CF_PAGES: '1',
   CF_PAGES_BRANCH: 'main',
   NEXUS_SUPABASE_URL: previewEnv.NEXUS_SUPABASE_URL,
