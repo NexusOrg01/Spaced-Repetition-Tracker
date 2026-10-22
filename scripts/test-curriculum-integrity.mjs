@@ -389,4 +389,35 @@ assert.ok(!repairedStaleTombstone.state.settings.curriculumTombstones.includes(i
   'contradictory stream tombstone must be removed only after surviving canonical footprint proves it stale');
 assert.equal(repairedStaleTombstone.state.topics.filter(t=>!t.id.startsWith('custom-')).length,46);
 
+// Reproduce the failing refresh shape: the cloud/local snapshot retained one reviewed
+// Commerce topic and its subject, but omitted the Commerce stream. Normalization can attach
+// that subject to the user's surviving custom stream. Repair must infer the pack from stable
+// catalogue identity, restore the missing stream and siblings, and reattach the subject.
+const orphanedCommerceState = cloneState(reviewedState);
+orphanedCommerceState.streams = orphanedCommerceState.streams.filter(stream => stream.id !== commerce.streamId);
+orphanedCommerceState.subjects = orphanedCommerceState.subjects.map(subject =>
+  subject.id === reviewedSubject.workspaceId ? { ...subject, streamId: 'custom-stream-1' } : subject
+);
+orphanedCommerceState.settings.installedCurricula = [];
+orphanedCommerceState.settings.curriculumTombstones = [];
+const orphanedRepair = integrity.repair(orphanedCommerceState, [commerce], {
+  today: () => '2026-10-22', makeId: prefix => prefix + '-orphan-recovery'
+});
+assert.equal(orphanedRepair.restoredStreams, 1, 'the missing Commerce stream must be reconstructed');
+assert.equal(orphanedCommerceState.subjects.find(subject => subject.id === reviewedSubject.workspaceId).streamId,
+  commerce.streamId, 'the reviewed Commerce subject must be reattached from the custom stream');
+assert.equal(orphanedCommerceState.subjects.filter(subject => subject.streamId === commerce.streamId).length,
+  commerce.subjects.length, 'all Commerce subjects must be restored to the correct parent stream');
+assert.equal(orphanedCommerceState.topics.filter(topic =>
+  !topic.id.startsWith('custom-') && commerce.subjects.some(subject => subject.topics.includes(topic.name))
+).length, 46, 'all 46 catalogue topics must survive the broken-parent refresh case');
+const orphanedReviewed = orphanedCommerceState.topics.find(topic => topic.id === 'legacy-reviewed-topic-id');
+assert.ok(orphanedReviewed, 'the reviewed topic must not be replaced with a duplicate');
+assert.equal(orphanedReviewed.reviewCount, originalReviewedSchedule.reviewCount);
+assert.equal(orphanedReviewed.lastReviewed, originalReviewedSchedule.lastReviewed);
+assert.equal(orphanedCommerceState.topics.find(topic => topic.id === 'custom-topic-1').name, 'My sample topic',
+  'custom topics must remain unchanged during pack recovery');
+assert.ok(orphanedCommerceState.streams.some(stream => stream.id === 'custom-stream-1'),
+  'reconstructing Commerce must not delete the user's custom stream');
+
 console.log('Curriculum integrity tests passed: refresh recovery, three-way merge recovery, scoped installs, custom data, review schedules/history, read-only diagnostics, idempotence, and deletion tombstones.');
