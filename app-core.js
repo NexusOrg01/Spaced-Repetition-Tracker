@@ -77,7 +77,7 @@
     // New workspaces start empty. Starter curricula are installed explicitly from Explore.
     return {schema:3,streams:[],subjects:[],topics:[],exams:[],history:[],settings:{theme:'system',intervalCap:120,installedCurricula:[],curriculumTombstones:[]}};
   }
-  function repairInstalledCurricula(data){const api=window.NexusCurriculumIntegrity;return api&&typeof api.repair==='function'?api.repair(data,CURRICULUM_PACKS,{today,makeId}).state:data;}
+  function repairInstalledCurricula(data){const api=window.NexusCurriculumIntegrity;if(!api||typeof api.repair!=='function')return data;const candidate=typeof api.applyIntentLedger==='function'?api.applyIntentLedger(data,localStorage):data;return api.repair(candidate,CURRICULUM_PACKS,{today,makeId}).state;}
   window.NexusRepairInstalledCurricula=repairInstalledCurricula;
   function safeRead(key){try{const val=localStorage.getItem(key);return val?JSON.parse(val):null;}catch(e){console.warn('Could not read saved data',e);return null;}}
   function normalizeTopic(t, fallbackSub){return {id:String(t.id||makeId('topic')),subjectId:String(t.subjectId||fallbackSub),name:String(t.name||t.topic||'Untitled topic').slice(0,240),notes:String(t.notes||'').slice(0,1000),custom:t.custom!==false,createdAt:validDate(t.createdAt)?t.createdAt:today(),lastReviewed:validDate(t.lastReviewed)?t.lastReviewed:(validDate(t.lastDate)?t.lastDate:''),lastRating:Number(t.lastRating??t.score)>=1&&Number(t.lastRating??t.score)<=5?Number(t.lastRating??t.score):null,dueDate:validDate(t.dueDate)?t.dueDate:(validDate(t.nextDate)?t.nextDate:''),intervalDays:Math.max(0,Math.min(120,Number(t.intervalDays)||0)),reviewCount:Math.max(0,Math.min(100000,Number(t.reviewCount)||0)),streak:Math.max(0,Number(t.streak)||0),lapses:Math.max(0,Number(t.lapses??t.lapseCount)||0),archived:Boolean(t.archived),fsrs:window.NexusBackupRestoreUtils.sanitizeFsrsCard(t.fsrs)};}
@@ -168,7 +168,7 @@
     return data;
   }
   function loadState(){const current=safeRead(STORAGE_KEY);if(current){try{return detachPristineStarterContent(normalizeState(current));}catch(e){console.warn('Saved data was invalid; using recovery defaults',e);}}const old=safeRead('alSrsTrackerV2');if(old){try{return migrateOld(old.state||old);}catch(e){console.warn(e);}}const legacyT=safeRead('alTrackerData'),legacyH=safeRead('alHistoryLog');if(Array.isArray(legacyT)||Array.isArray(legacyH))return migrateOld({topics:legacyT||[],history:legacyH||[]});return baseState();}
-  function save(){try{const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():(()=>{try{const x=JSON.parse(localStorage.getItem('recall.study.features.v1')||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{}}catch(_){return {}}})();if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[{key:STORAGE_KEY,value:JSON.stringify(state)}],{state,featureState},{returnOperationPayload:false});$('saveStatus').textContent='Saved on this device';$('saveStatus').style.color='';if(window.NexusCloudSync)window.NexusCloudSync.schedule();return true;}catch(e){$('saveStatus').textContent='Save failed — export backup';$('saveStatus').style.color='var(--red)';notify('Could not save data. Export a backup and check browser storage.');return false;}}
+  function save(options={}){try{const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():(()=>{try{const x=JSON.parse(localStorage.getItem('recall.study.features.v1')||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{}}catch(_){return {}}})();if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');const entries=[{key:STORAGE_KEY,value:JSON.stringify(state)}];const ledgerEntry=window.NexusCurriculumIntegrity&&window.NexusCurriculumIntegrity.createIntentLedgerEntry?window.NexusCurriculumIntegrity.createIntentLedgerEntry(state,localStorage,{replace:options.replaceCurriculumLedger===true}):null;if(ledgerEntry)entries.push(ledgerEntry);window.NexusOfflineSyncQueue.commitWorkspace(localStorage,entries,{state,featureState},{returnOperationPayload:false});$('saveStatus').textContent='Saved on this device';$('saveStatus').style.color='';if(window.NexusCloudSync)window.NexusCloudSync.schedule();return true;}catch(e){$('saveStatus').textContent='Save failed — export backup';$('saveStatus').style.color='var(--red)';notify('Could not save data. Export a backup and check browser storage.');return false;}}
   function notify(text,undoable=false){$('toastText').textContent=text;$('undoBtn').style.display=undoable?'':'none';$('toast').classList.toggle('undoable',undoable);$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),6500);}
   function startUndo(text){if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();undoState=clone(state);clearTimeout(undoTimer);notify(text,true);undoTimer=setTimeout(()=>{undoState=null;$('undoBtn').style.display='none';},6500);}
   function undo(){if(!undoState)return;state=undoState;undoState=null;clearTimeout(undoTimer);if(window.NexusUndoCascadeDelete)window.NexusUndoCascadeDelete();save();renderAll();$('toast').classList.remove('show');}
@@ -349,9 +349,11 @@
       // behind catalogue updates and otherwise leave a partial workspace persisted.
       if(state&&window.NexusCurriculumIntegrity&&typeof window.NexusCurriculumIntegrity.repair==='function'){
         const previousState=state;
-        const repair=window.NexusCurriculumIntegrity.repair(clone(state),loaded,{today,makeId});
-        if(repair.changed){
-          state=repair.state;
+        const candidate=window.NexusCurriculumIntegrity.applyIntentLedger
+          ?window.NexusCurriculumIntegrity.applyIntentLedger(clone(state),localStorage):clone(state);
+        const repaired=window.NexusCurriculumIntegrity.repair(candidate,loaded,{today,makeId}).state;
+        if(JSON.stringify(repaired)!==JSON.stringify(previousState)){
+          state=repaired;
           if(save())renderAll();
           else state=previousState;
         }
@@ -418,7 +420,7 @@
       }
       const scope=subjectId?(topicName!==null?'topic':'subject'):'pack';
       if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markInstall(state,pack,scope,subjectId,topicName);
-      if(!save()){
+      if(!save({replaceCurriculumLedger:true})){
         state=previousState;renderAll();renderSetup();renderExplore();
         notify('Installation was not saved. Your previous workspace is unchanged; check browser storage and try again.');
         return;
@@ -554,9 +556,9 @@
   const csvCell=v=>window.NexusBackupRestoreUtils.csvCell(v);
   function exportHistory(){const rows=[['Review date','Stream','Subject','Topic','Rating','Rating meaning','Interval days','Next due','Note'],...state.history.map(h=>[h.reviewedAt,h.streamName,h.subjectName,h.topicName,h.rating,RATING_LABELS[h.rating],h.intervalDays,h.dueDate,h.note])];downloadFile(`nexus-history-${today()}.csv`,'\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('History CSV exported.');}
   function exportTopics(){const rows=[['Stream','Subject','Topic','Notes','Last reviewed','Last rating','Next due','Interval days','Review count','Streak','Lapses','Status'],...state.topics.map(t=>{const d=subjectDisplay(t);return[d.stream,d.subject,t.name,t.notes,t.lastReviewed,t.lastRating,t.dueDate,t.intervalDays,t.reviewCount,t.streak,t.lapses,status(t)];})];downloadFile(`nexus-topics-${today()}.csv`,'\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('Topics CSV exported.');}
-  async function importBackup(file){if(!file)return;try{const parsed=JSON.parse(await file.text()),raw=parsed?.state||parsed;const restored=normalizeState(raw);if(!restored.topics||!restored.history||!restored.subjects)throw new Error('Required backup sections are missing.');if(!confirm(`Import ${restored.topics.length} topics, ${restored.history.length} history records, and ${restored.exams.length} exams? This replaces current local data.`))return;startUndo('Backup imported.');state=restored;save();renderAll();switchView('overview');notify('Backup restored.',true);}catch(err){alert(`Could not import this backup. ${err.message||'Check the file format.'}`);}finally{$('importFile').value='';}}
+  async function importBackup(file){if(!file)return;const previousState=state;try{const parsed=JSON.parse(await file.text()),raw=parsed?.state||parsed;const rawState=normalizeState(raw,{skipCurriculumRepair:true});const restored=window.NexusCurriculumIntegrity?window.NexusCurriculumIntegrity.repair(rawState,CURRICULUM_PACKS,{today,makeId}).state:rawState;if(!restored.topics||!restored.history||!restored.subjects)throw new Error('Required backup sections are missing.');if(!confirm(`Import ${restored.topics.length} topics, ${restored.history.length} history records, and ${restored.exams.length} exams? This replaces current local data.`))return;startUndo('Backup imported.');state=restored;if(!save({replaceCurriculumLedger:true})){state=previousState;renderAll();return;}renderAll();switchView('overview');notify('Backup restored.',true);}catch(err){alert(`Could not import this backup. ${err.message||'Check the file format.'}`);}finally{$('importFile').value='';}}
   function clearHistory(){if(!state.history.length){notify('History is already empty.');return;}if(!confirm('DANGER ZONE — Clear every saved review-history entry?\n\nAll rating analytics, review-history exports and historical counts based on these records will be lost. Topic schedules may remain unchanged. Use Undo immediately or restore a backup if this was accidental. Continue?'))return;startUndo('History cleared.');state.history=[];save();renderAll();notify('History cleared; schedules remain unchanged.',true);}
-  function resetAll(){if(!confirm('Reset all local data, including topics, custom streams, subjects, exams, settings and history? Download a backup first if you may need it.'))return;startUndo('Tracker reset.');state=baseState();save();renderAll();switchView('overview');notify('Tracker reset.',true);}
+  function resetAll(){if(!confirm('Reset all local data, including topics, custom streams, subjects, exams, settings and history? Download a backup first if you may need it.'))return;startUndo('Tracker reset.');state=baseState();save({replaceCurriculumLedger:true});renderAll();switchView('overview');notify('Tracker reset.',true);}
   function applyTheme(){document.documentElement.dataset.theme=state.settings.theme;$('themeSelect').value=state.settings.theme;$('themeBtn').textContent=state.settings.theme==='light'?'☀':state.settings.theme==='dark'?'☾':'◐';$('themeBtn').title=`Theme: ${state.settings.theme}. Click to cycle.`;}
   function cycleTheme(){const seq=['system','light','dark'];state.settings.theme=seq[(seq.indexOf(state.settings.theme)+1)%seq.length];save();applyTheme();notify(`Theme: ${state.settings.theme}.`);}
   function openHelp(){$('helpDialog').showModal();}
@@ -753,7 +755,7 @@
       localStorage.removeItem(STORAGE_KEY);
       OLD_KEYS.forEach(k=>localStorage.removeItem(k));
       state = baseState();
-      save(); renderAll();
+      save({replaceCurriculumLedger:true}); renderAll();
     };
     
     // Dropdown filters toggle

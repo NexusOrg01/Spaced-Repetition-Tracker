@@ -2,6 +2,29 @@
 'use strict';
 const rec=x=>!!x&&typeof x==='object'&&!Array.isArray(x),norm=s=>String(s||'').trim().toLocaleLowerCase(),unique=v=>Array.from(new Set((Array.isArray(v)?v:[]).filter(x=>typeof x==='string'&&x.length>0))).slice(0,5000);
 const pk=id=>'installed:pack:'+id,sk=(id,sid)=>'installed:subject:'+id+':'+sid,tk=(id,sid,n)=>'installed:topic:'+id+':'+sid+':'+JSON.stringify(String(n)),ds=id=>'deleted:stream:'+id,dsub=(id,sid)=>'deleted:subject:'+id+':'+sid,dt=(id,sid,n)=>'deleted:topic:'+id+':'+sid+':'+JSON.stringify(String(n));
+
+const INTENT_LEDGER_KEY='nexus.curriculum.intent-ledger.v1';
+function readIntentLedger(storage){
+ if(!storage||typeof storage.getItem!=='function')return[];
+ try{const raw=storage.getItem(INTENT_LEDGER_KEY);if(!raw)return[];const value=JSON.parse(raw);return rec(value)&&value.schemaVersion===1?unique(value.installedCurricula):[];}catch(_){return[];}
+}
+function applyIntentLedger(state,storage){
+ if(!rec(state))return state;
+ const ledger=readIntentLedger(storage);if(!ledger.length)return state;
+ if(!rec(state.settings))state.settings={};
+ const installed=new Set(unique(state.settings.installedCurricula));
+ const deleted=new Set(unique(state.settings.curriculumTombstones));
+ for(const marker of ledger){const match=marker.match(/^installed:(?:pack|subject|topic):([^:]+)(?::|$)/);const packId=match?match[1]:'';if(packId&&deleted.has(ds(packId)))continue;installed.add(marker);}
+ state.settings.installedCurricula=Array.from(installed).slice(-5000);
+ return state;
+}
+function createIntentLedgerEntry(state,storage,options={}){
+ if(!storage||typeof storage.getItem!=='function')return null;
+ const installed=new Set(options.replace===true?[]:readIntentLedger(storage));
+ const current=rec(state)&&rec(state.settings)&&Array.isArray(state.settings.installedCurricula)?state.settings.installedCurricula:[];
+ for(const marker of current)if(typeof marker==='string'&&marker)installed.add(marker);
+ return {key:INTENT_LEDGER_KEY,value:JSON.stringify({schemaVersion:1,installedCurricula:Array.from(installed).slice(-5000)})};
+}
 function ensure(s){if(!rec(s.settings))s.settings={};s.settings.installedCurricula=unique(s.settings.installedCurricula);s.settings.curriculumTombstones=unique(s.settings.curriculumTombstones);if(!Array.isArray(s.streams))s.streams=[];if(!Array.isArray(s.subjects))s.subjects=[];if(!Array.isArray(s.topics))s.topics=[];return{installed:new Set(s.settings.installedCurricula),deleted:new Set(s.settings.curriculumTombstones)};}
 const packStream=(stream,pack)=>!!stream&&((pack.streamId&&String(stream.id)===String(pack.streamId))||norm(stream.name)===norm(pack.streamName)),findSubject=(rows,ps,streamId)=>(rows||[]).find(s=>String(s.streamId)===String(streamId)&&((ps.workspaceId&&String(s.id)===String(ps.workspaceId))||norm(s.name)===norm(ps.name)))||null,safePrefix=ps=>({'seed-bs':'curr-bs','seed-acc':'curr-acc','seed-econ':'curr-econ'})[String(ps.legacyIdPrefix||'').toLocaleLowerCase()]||String(ps.legacyIdPrefix||''),makeId=(fn,p)=>typeof fn==='function'?fn(p):p+'-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8);
 function repair(state,packs,options={}){if(!rec(state)||!Array.isArray(packs))return{state,changed:false,restoredStreams:0,restoredSubjects:0,restoredTopics:0};const m=ensure(state),before=JSON.stringify({settings:state.settings,streams:state.streams,subjects:state.subjects,topics:state.topics}),now=typeof options.today==='function'?options.today:()=>new Date().toISOString().slice(0,10);let restoredStreams=0,restoredSubjects=0,restoredTopics=0;
@@ -52,5 +75,5 @@ function diagnose(state,packs){
   return {packId:pack.id,fullPackMarker,scopedMarkers:scoped,streamFound:!!stream,streamDeleted,expectedSubjectCount:(pack.subjects||[]).length,presentSubjectCount:(pack.subjects||[]).length-missingSubjects.length,expectedTopicCount:expectedTopics,presentTopicCount:presentTopics,missingSubjects,missingTopics,assessment};
  });
 }
-return{repair,diagnose,markInstall,markDeletedTopic,markDeletedSubject,markDeletedStream,keys:{pack:pk,subject:sk,topicScope:tk,streamDelete:ds,subjectDelete:dsub,topicDelete:dt}};
+return{repair,diagnose,applyIntentLedger,createIntentLedgerEntry,intentLedgerKey:INTENT_LEDGER_KEY,markInstall,markDeletedTopic,markDeletedSubject,markDeletedStream,keys:{pack:pk,subject:sk,topicScope:tk,streamDelete:ds,subjectDelete:dsub,topicDelete:dt}};
 });

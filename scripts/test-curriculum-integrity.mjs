@@ -12,7 +12,7 @@ const cloudSyncSource = readFileSync(new URL('../cloud-sync.js', import.meta.url
 // Guard the real lifecycle wiring, not just the pure repair helper: the authoritative
 // catalogue must trigger a second repair, and every cloud/account snapshot must be repaired
 // before it is committed to local storage.
-assert.match(appCoreSource, /CURRICULUM_PACKS=loaded;[\s\S]*NexusCurriculumIntegrity\.repair\(clone\(state\),loaded/);
+assert.match(appCoreSource, /CURRICULUM_PACKS=loaded;[\s\S]*NexusCurriculumIntegrity\.applyIntentLedger[\s\S]*NexusCurriculumIntegrity\.repair\(candidate,loaded/);
 assert.match(appCoreSource, /if\(repair\.changed\)[\s\S]*state=repair\.state;[\s\S]*if\(save\(\)\)renderAll\(\)/);
 assert.match(cloudSyncSource, /function applyWorkspaceSnapshot\(nextState,rawFeatures,ownerId\)[\s\S]*NexusRepairInstalledCurricula\(nextState\)[\s\S]*JSON\.stringify\(safeState\)/);
 
@@ -238,19 +238,77 @@ const repairedSecondPass = integrity.repair(cloneState(repairedAfterMerge.state)
 });
 assert.equal(repairedSecondPass.changed, false, 'post-merge recovery must be idempotent');
 
-// A scoped topic install is intentional and must not be promoted to a whole-pack install.
+
 const selectedTopicMarker = integrity.keys.topicScope(commerce.id, reviewedSubject.id, reviewedName);
+// A scoped marker from a stale client must not erase a last-verified full-pack install.
 const scopedLocal = cloneState(staleLocalState);
 scopedLocal.settings.installedCurricula = [selectedTopicMarker];
 const scopedMerge = workspaceMerge.merge(
   makeSnapshot(fullPackState), makeSnapshot(scopedLocal), makeSnapshot(fullPackState)
 ).payload.state;
-assert.ok(!scopedMerge.settings.installedCurricula.includes(packMarker),
-  'explicit scoped-install intent must take precedence over the old full-pack baseline');
+assert.ok(scopedMerge.settings.installedCurricula.includes(packMarker),
+  'a scoped marker in a stale snapshot must not suppress full-pack intent proven by the last common baseline');
 const scopedDiagnostic = integrity.diagnose(scopedMerge, [commerce])[0];
-assert.equal(scopedDiagnostic.assessment, 'scoped-install-only');
+assert.equal(scopedDiagnostic.assessment, 'installed-pack-incomplete');
 const scopedCopyBefore = JSON.stringify(scopedMerge);
 integrity.diagnose(scopedMerge, [commerce]);
 assert.equal(JSON.stringify(scopedMerge), scopedCopyBefore, 'curriculum diagnostics must be strictly read-only');
+
+// Without full-pack intent in the last verified baseline, a topic-only install stays scoped.
+const topicOnlyBase = cloneState(staleLocalState);
+topicOnlyBase.settings.installedCurricula = [selectedTopicMarker];
+const topicOnlyMerge = workspaceMerge.merge(
+  makeSnapshot(topicOnlyBase), makeSnapshot(topicOnlyBase), makeSnapshot(topicOnlyBase)
+).payload.state;
+assert.ok(!topicOnlyMerge.settings.installedCurricula.includes(packMarker),
+  'a genuinely topic-only baseline must not be upgraded to a full-pack install');
+
+// Independent local ledger: install a full pack, then simulate a damaged workspace
+// which loses the marker and untouched topics but retains the reviewed topic + stale scope marker.
+const ledgerStorage = {
+  values: new Map(),
+  getItem(key) { return this.values.has(key) ? this.values.get(key) : null; },
+  setItem(key, value) { this.values.set(key, String(value)); },
+  removeItem(key) { this.values.delete(key); }
+};
+const ledgerEntry = integrity.createIntentLedgerEntry(fullPackState, ledgerStorage, { replace: true });
+ledgerStorage.setItem(ledgerEntry.key, ledgerEntry.value);
+const ledgerDamaged = cloneState(staleLocalState);
+ledgerDamaged.settings.installedCurricula = [selectedTopicMarker];
+const ledgerHydrated = integrity.applyIntentLedger(ledgerDamaged, ledgerStorage);
+assert.ok(ledgerHydrated.settings.installedCurricula.includes(packMarker),
+  'install intent must survive if a workspace snapshot drops the full-pack marker');
+const ledgerRepair = integrity.repair(ledgerHydrated, [commerce], {
+  today: () => '2026-10-22', makeId: prefix => prefix + '-intent-ledger-repair'
+});
+assert.equal(ledgerRepair.restoredTopics, 45, 'ledger-backed repair must restore all 45 missing pack topics');
+assert.equal(ledgerRepair.state.topics.filter(t => !t.id.startsWith('custom-')).length, 46,
+  'ledger-backed repair must recover all 46 Commerce topics');
+assert.ok(ledgerRepair.state.streams.some(s => s.id === 'custom-stream-merge'));
+assert.ok(ledgerRepair.state.topics.some(t => t.id === 'custom-topic-merge'));
+const ledgerReviewed = ledgerRepair.state.topics.find(t => t.id === locallyReviewed.id);
+assert.equal(ledgerReviewed.reviewCount, 2);
+assert.equal(ledgerReviewed.lastReviewed, '2026-10-20');
+assert.equal(ledgerRepair.state.history.length, 1);
+
+// A deliberate stream-deletion tombstone overrides the historical local install ledger.
+const deletedStreamState = cloneState(ledgerDamaged);
+deletedStreamState.settings.curriculumTombstones = [integrity.keys.streamDelete(commerce.id)];
+const streamDeletedHydration = integrity.applyIntentLedger(deletedStreamState, ledgerStorage);
+assert.ok(!streamDeletedHydration.settings.installedCurricula.includes(packMarker),
+  'a stream-deletion tombstone must override the independent install ledger');
+const streamDeletedRepair = integrity.repair(streamDeletedHydration, [commerce], {
+  today: () => '2026-10-22', makeId: prefix => prefix + '-deleted-stream'
+});
+assert.equal(streamDeletedRepair.restoredTopics, 0);
+assert.equal(streamDeletedRepair.state.topics.length, 2,
+  'explicit stream deletion must not resurrect the Commerce pack');
+
+// Explicit scoped-install transitions replace any prior full-pack ledger entry.
+const resetLedgerEntry = integrity.createIntentLedgerEntry(
+  { settings: { installedCurricula: [selectedTopicMarker] } }, ledgerStorage, { replace: true }
+);
+assert.deepEqual(JSON.parse(resetLedgerEntry.value).installedCurricula, [selectedTopicMarker],
+  'intentional scoped installation can replace old full-pack intent');
 
 console.log('Curriculum integrity tests passed: refresh recovery, three-way merge recovery, scoped installs, custom data, review schedules/history, read-only diagnostics, idempotence, and deletion tombstones.');

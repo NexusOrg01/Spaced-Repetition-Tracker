@@ -143,7 +143,6 @@
     const markerValues=s=>rows(settingsOf(s).installedCurricula).map(String);
     const tombstones=new Set(rows(settingsOf(mergedState).curriculumTombstones).map(String));
     const mergedMarkers=new Set(markerValues(mergedState));
-    const snapshots=[baseState,localState,remoteState];
     const baseMarkers=markerValues(baseState);
     const streams=rows(mergedState.streams),subjects=rows(mergedState.subjects),topics=rows(mergedState.topics);
     const baseStreams=rows(baseState&&baseState.streams),baseSubjects=rows(baseState&&baseState.subjects);
@@ -152,9 +151,9 @@
       if(!marker.startsWith('installed:pack:'))continue;
       const packId=marker.slice('installed:pack:'.length);
       if(!packId||mergedMarkers.has(marker)||tombstones.has('deleted:stream:'+packId))continue;
-      const hasExplicitScope=snapshots.some(s=>markerValues(s).some(value=>
-        value.startsWith('installed:subject:'+packId+':')||value.startsWith('installed:topic:'+packId+':')));
-      if(hasExplicitScope)continue;
+      // The last verified base proves that this pack was installed as a whole.
+      // Stale scoped markers must not erase that intent; explicit deletion tombstones
+      // remain authoritative when the reconstructed workspace is repaired.
       const catalogueTopics=baseTopics.filter(t=>/^(?:curr|seed)-(?:bs|acc|econ)-\d+$/i.test(String(t&&t.id||'')));
       let survivingFootprint=false;
       for(const baseSubject of baseSubjects){
