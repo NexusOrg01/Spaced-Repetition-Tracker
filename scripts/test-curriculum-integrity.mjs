@@ -302,6 +302,39 @@ assert.equal(ledgerRepair.state.topics.filter(t => !t.id.startsWith('custom-')).
   'ledger-backed repair must recover all 46 Commerce topics');
 assert.ok(ledgerRepair.state.streams.some(s => s.id === 'custom-stream-merge'));
 assert.ok(ledgerRepair.state.topics.some(t => t.id === 'custom-topic-merge'));
+
+ // A stream-deletion tombstone may be stale after a partial snapshot. Preserve the
+ // historical full-pack intent in the separate ledger while the tombstone blocks repair
+ // when no records survive; if a reviewed canonical record later survives, recover all.
+ const deletedWorkspace = {
+   streams: [], subjects: [], topics: [],
+   settings: { installedCurricula: [], curriculumTombstones: [integrity.keys.streamDelete(commerce.id)] }
+ };
+ const tombstonedLedgerEntry = integrity.createIntentLedgerEntry(
+   deletedWorkspace, ledgerStorage, { packs: [commerce] }
+ );
+ ledgerStorage.setItem(tombstonedLedgerEntry.key, tombstonedLedgerEntry.value);
+ assert.ok(JSON.parse(tombstonedLedgerEntry.value).installedCurricula.includes(packMarker),
+   'a stale stream tombstone must not erase historical full-pack intent from the independent ledger');
+ const survivingReviewedOnly = {
+   schema: 3,
+   streams: [{ id: commerce.streamId, name: commerce.streamName }],
+   subjects: [{ id: reviewedSubject.workspaceId, name: reviewedSubject.name, streamId: commerce.streamId, order: 0 }],
+   topics: [{ ...cloneState(locallyReviewed), subjectId: reviewedSubject.workspaceId }],
+   settings: { installedCurricula: [selectedTopicMarker], curriculumTombstones: [integrity.keys.streamDelete(commerce.id)] }
+ };
+ const rehydratedAfterTombstone = integrity.applyIntentLedger(
+   survivingReviewedOnly, ledgerStorage, undefined, [commerce]
+ );
+ const recoveredAfterTombstone = integrity.repair(rehydratedAfterTombstone, [commerce], {
+   today: () => '2026-10-22', makeId: prefix => prefix + '-tombstone-intent'
+ });
+ assert.equal(recoveredAfterTombstone.restoredTopics, 45,
+   'a surviving reviewed Commerce topic plus preserved full-pack intent must restore the 45 missing topics');
+ assert.equal(recoveredAfterTombstone.state.topics.length, 46,
+   'the tombstone recovery must preserve the reviewed topic without duplicates');
+ assert.ok(!recoveredAfterTombstone.state.settings.curriculumTombstones.includes(integrity.keys.streamDelete(commerce.id)),
+   'the contradictory tombstone must clear only after the surviving catalogue footprint proves it stale');
 const ledgerReviewed = ledgerRepair.state.topics.find(t => t.id === locallyReviewed.id);
 assert.equal(ledgerReviewed.reviewCount, 2);
 assert.equal(ledgerReviewed.lastReviewed, '2026-10-20');
