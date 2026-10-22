@@ -60,7 +60,9 @@ function assertStableRecordIds(payload){
 function normalizeWorkspacePayload(payload){
  if(!payload||!payload.state||!Array.isArray(payload.state.streams))throw new Error('A valid workspace snapshot is required for automatic reconciliation.');
  assertStableRecordIds(payload);
- return {...payload,state:normalizeState(payload.state),featureState:window.NexusNormalizeFeatureState(Object.prototype.hasOwnProperty.call(payload,'featureState')?payload.featureState:undefined)};
+ const normalized=normalizeState(payload.state);
+ const safeState=window.NexusRepairCurriculumState?window.NexusRepairCurriculumState(normalized):normalized;
+ return {...payload,state:safeState,featureState:window.NexusNormalizeFeatureState(Object.prototype.hasOwnProperty.call(payload,'featureState')?payload.featureState:undefined)};
 }
 function nextCloudStamp(previous){
  const policy=window.NexusCloudSyncRecovery;
@@ -70,22 +72,23 @@ function nextCloudStamp(previous){
 }
 async function assertActiveUser(userId){const {data,error}=await client.auth.getSession();if(error)throw error;const activeId=data&&data.session&&data.session.user?data.session.user.id:null;if(activeId!==userId||!session||session.user.id!==userId)throw new Error('The active account changed during sync. No cloud data was applied or written. Retry the account connection.');}
 async function fetchRemote(userId){const uid=userId||(session&&session.user&&session.user.id);if(!client||!uid)throw new Error('No active account is available for cloud sync.');const {data,error}=await client.from('nexus_user_data').select('payload,updated_at').eq('user_id',uid).maybeSingle();if(error)throw error;return data;}
-function emptyState(){return {schema:3,streams:[{id:'stream-general',name:'General'}],subjects:[{id:'subject-general',name:'General',streamId:'stream-general',order:0}],topics:[],exams:[],history:[],settings:{theme:'system',intervalCap:120}};}
-function mergeState(local,remote){const l=normalizeState(local),r=normalizeState(remote),union=(a,b)=>{const m=new Map();for(const x of b||[])m.set(String(x.id),clone(x));for(const x of a||[])m.set(String(x.id),clone(x));return Array.from(m.values());};const streams=union(l.streams,r.streams),subjects=union(l.subjects,r.subjects),topics=union(l.topics,r.topics),exams=union(l.exams,r.exams),history=union(l.history,r.history);if(!streams.length)streams.push({id:'stream-general',name:'General'});const streamIds=new Set(streams.map(x=>x.id));for(const sub of subjects)if(!streamIds.has(sub.streamId))sub.streamId=streams[0].id;const subjectIds=new Set(subjects.map(x=>x.id));for(const t of topics)if(!subjectIds.has(t.subjectId)){const fallback=subjects[0]||{id:'subject-general',name:'General',streamId:streams[0].id,order:0};if(!subjectIds.has(fallback.id))subjects.push(fallback);t.subjectId=fallback.id;}return normalizeState({...r,streams,subjects,topics,exams,history,settings:{...r.settings,...l.settings}});}
+function emptyState(){return {schema:3,streams:[{id:'stream-general',name:'General'}],subjects:[{id:'subject-general',name:'General',streamId:'stream-general',order:0}],topics:[],exams:[],history:[],settings:{theme:'system',intervalCap:120,installedCurricula:[],curriculumTombstones:[]}};}
+function mergeState(local,remote){const l=normalizeState(local),r=normalizeState(remote),union=(a,b)=>{const m=new Map();for(const x of b||[])m.set(String(x.id),clone(x));for(const x of a||[])m.set(String(x.id),clone(x));return Array.from(m.values());},unionStrings=(a,b)=>Array.from(new Set([...(Array.isArray(a)?a:[]),...(Array.isArray(b)?b:[])].filter(x=>typeof x==='string'&&x.length>0))).slice(-5000);const streams=union(l.streams,r.streams),subjects=union(l.subjects,r.subjects),topics=union(l.topics,r.topics),exams=union(l.exams,r.exams),history=union(l.history,r.history);if(!streams.length)streams.push({id:'stream-general',name:'General'});const streamIds=new Set(streams.map(x=>x.id));for(const sub of subjects)if(!streamIds.has(sub.streamId))sub.streamId=streams[0].id;const subjectIds=new Set(subjects.map(x=>x.id));for(const t of topics)if(!subjectIds.has(t.subjectId)){const fallback=subjects[0]||{id:'subject-general',name:'General',streamId:streams[0].id,order:0};if(!subjectIds.has(fallback.id))subjects.push(fallback);t.subjectId=fallback.id;}return normalizeState({...r,streams,subjects,topics,exams,history,settings:{...r.settings,...l.settings,installedCurricula:unionStrings(r.settings?.installedCurricula,l.settings?.installedCurricula),curriculumTombstones:unionStrings(r.settings?.curriculumTombstones,l.settings?.curriculumTombstones)}});}
 function hasLocalWork(s){if(!s)return false;const core=s.state||s||{},f=s.featureState||{};const coreWork=!!(core.topics?.length||core.history?.length||core.exams?.length||core.streams?.length>1||core.subjects?.length>1);const featureWork=['journal','papers','goals','studyLogs','selectedTopicIds'].some(k=>Array.isArray(f[k])&&f[k].length>0)||Object.keys(f.syllabusTargets||{}).length>0||Object.keys(f.taskChecks||{}).length>0||!!(f.lastBackupAt||f.lastReminderAt||f.focusStartedAt||f.focusPausedAt||f.focusTopicId||f.focusSubjectId);const defaults={dailyMinutes:90,sessionMinutes:25,scheduler:'classic',weeklyReviewGoal:100,backlogDays:7,reminders:false,reminderTime:'08:00',maxInterval:120,finalRevision:false,workloadDays:7};const settings=f.settings||{};const settingsWork=Object.keys(defaults).some(k=>settings[k]!==undefined&&settings[k]!==defaults[k]);return coreWork||featureWork||settingsWork;}
 function chooseLocalData(){return new Promise(resolve=>{const dlg=el('accountChoiceDialog');if(!dlg){resolve('cancel');return;}let done=false;const onCancel=e=>e.preventDefault();const finish=v=>{if(done)return;done=true;dlg.removeEventListener('cancel',onCancel);if(dlg.open)dlg.close();resolve(v);};dlg.addEventListener('cancel',onCancel);dlg.querySelectorAll('[data-account-choice]').forEach(b=>b.onclick=()=>finish(b.dataset.accountChoice));if(!dlg.open)dlg.showModal();});}
 function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
   if(!window.NexusBackupRestoreUtils||!window.NexusStorageKey||!window.NexusFeatureStorageKey||!window.NexusNormalizeFeatureState||!window.NexusSetFeatureState)throw new Error('Safe local workspace storage is unavailable. Cloud data was not applied.');
+  const safeState=window.NexusRepairCurriculumState?window.NexusRepairCurriculumState(nextState):nextState;
   const nextFeatures=window.NexusNormalizeFeatureState(rawFeatures);
   const entries=[
-    {key:window.NexusStorageKey,value:JSON.stringify(nextState)},
+    {key:window.NexusStorageKey,value:JSON.stringify(safeState)},
     {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)}
   ];
   if(ownerId)entries.push({key:OWNER_KEY,value:String(ownerId)});
   // Free redundant snapshot space before applying a cloud workspace to this browser.
   if(window.NexusOfflineSyncQueue&&typeof window.NexusOfflineSyncQueue.compactMetadata==='function')window.NexusOfflineSyncQueue.compactMetadata(localStorage);
   window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,entries);
-  state=nextState;
+  state=safeState;
   window.NexusSetFeatureState(nextFeatures,{persist:false,render:false});
   renderAll();
   if(window.NexusRenderHub)window.NexusRenderHub();
@@ -93,7 +96,8 @@ function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
 }
 function applyRemote(payload,ownerId,serverVersion){
   if(!payload||!payload.state||!Array.isArray(payload.state.streams))throw new Error('Cloud backup format is invalid.');
-  const nextState=normalizeState(payload.state);
+  const normalizedState=normalizeState(payload.state);
+  const nextState=window.NexusRepairCurriculumState?window.NexusRepairCurriculumState(normalizedState):normalizedState;
   const hasFeatures=Object.prototype.hasOwnProperty.call(payload,'featureState');
   const nextFeatures=window.NexusNormalizeFeatureState(hasFeatures?payload.featureState:undefined);
   ready=false;
@@ -202,8 +206,20 @@ async function upload(){
   const {data:authData,error:authError}=await client.auth.getUser();
   if(authError)throw new Error('Supabase could not verify the active login before cloud write: '+authError.message);
   if(!authData.user||authData.user.id!==uploadUserId||!session||session.user.id!==uploadUserId)throw new Error('The active Google/account session changed or could not be verified. Cloud write paused to protect the other account. Sign in again and retry.');
-  const pending=queue?queue.getPending(localStorage,uploadUserId):null;
+  let pending=queue?queue.getPending(localStorage,uploadUserId):null;
   const priorStamp=lastRemoteStamp;attemptedPriorStamp=priorStamp;
+  // Rebuild catalogue-owned rows before any cloud write. Commit the repaired workspace and
+  // matching outbox snapshot together so an old queued snapshot cannot remove local pack rows.
+  if(window.NexusRepairCurriculumState&&window.NexusStorageKey&&queue){
+   const beforeRepair=JSON.stringify(state);
+   state=window.NexusRepairCurriculumState(state);
+   if(JSON.stringify(state)!==beforeRepair){
+    const repairPayload={state:clone(state),featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}};
+    queue.commitWorkspace(localStorage,[{key:window.NexusStorageKey,value:JSON.stringify(state)}],repairPayload,{baseServerVersion:pending?pending.baseServerVersion:(priorStamp||null),returnOperationPayload:false});
+    pending=queue.getPending(localStorage,uploadUserId);
+    renderAll();
+   }
+  }
   const payload=pending?pending.payload:snapshot();attemptedPayload=payload;attemptedOperationId=pending?pending.operationId:null;attemptedBase=pending?pending.baseServerVersion:(priorStamp||null);
   if(pending){
    const before=await fetchRemote(uploadUserId);
