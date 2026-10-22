@@ -12,6 +12,7 @@ const queue = require('../offline-sync-queue.js');
 const recovery = require('../cloud-sync-recovery.js');
 const curriculumIntegrity = require('../curriculum-integrity.js');
 const commerceCatalogue = JSON.parse(readFileSync(resolve(root, 'curricula/catalog.json'), 'utf8'));
+globalThis.NexusCurriculumPacks = commerceCatalogue.packs;
 const commercePack = commerceCatalogue.packs.find(pack => pack.id === 'sl-al-commerce-si');
 const workspaceMerge = require('../workspace-sync-merge.js');
 const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
@@ -555,6 +556,78 @@ assert.ok(!getElement('cloudHelpText').textContent.includes('"undefined" is not 
     'unrelated remote manual topics must survive the full reconciliation');
   assert.ok(!queue.hasPending(storage, accountA.id),
     'the repaired cloud workspace must be verified before the outbox entry is acknowledged');
+
+  // Critical regression: the local device is clean and exactly matches its last-synced
+  // baseline, but a newer cloud revision has lost all untouched catalogue rows and markers.
+  // This must still merge against the baseline rather than replacing the local workspace
+  // wholesale; stable topic IDs must retain review and FSRS data, not merely recreate names.
+  const knownGoodBaselineState = JSON.parse(JSON.stringify(converged));
+  const knownGoodFeatures = JSON.parse(JSON.stringify(commerceFeatures));
+  const baselineCloudRow = rows.get(accountA.id);
+  const cleanBaselineStamp = baselineCloudRow.updated_at;
+  assert.equal(queue.hasPending(storage, accountA.id), false,
+    'the clean-baseline regression must begin without a pending local outbox entry');
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(knownGoodBaselineState));
+  storage.setItem(FEATURE_KEY, JSON.stringify(knownGoodFeatures));
+  context.state = knownGoodBaselineState;
+  queue.rememberBase(storage, accountA.id, {
+    state: knownGoodBaselineState, featureState: knownGoodFeatures
+  }, cleanBaselineStamp);
+  queue.rememberStamp(storage, accountA.id, cleanBaselineStamp);
+
+  const commerceSubjectIds = new Set(commercePack.subjects.map(subject => subject.workspaceId));
+  const partialCleanRemoteState = {
+    ...JSON.parse(JSON.stringify(knownGoodBaselineState)),
+    streams: knownGoodBaselineState.streams.filter(stream => stream.id !== commercePack.streamId),
+    subjects: knownGoodBaselineState.subjects.filter(subject => !commerceSubjectIds.has(subject.id)),
+    topics: knownGoodBaselineState.topics.filter(topic =>
+      !commerceSubjectIds.has(topic.subjectId) &&
+      !/^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))),
+    settings: {
+      ...knownGoodBaselineState.settings,
+      installedCurricula: [],
+      curriculumTombstones: []
+    }
+  };
+  const cleanRecoveryRemotePayload = payloadFor(null);
+  cleanRecoveryRemotePayload.state = partialCleanRemoteState;
+  cleanRecoveryRemotePayload.featureState = knownGoodFeatures;
+  const cleanRecoveryRemoteStamp = new Date(Date.parse(cleanBaselineStamp) + 60000).toISOString();
+  rows.set(accountA.id, {
+    user_id: accountA.id,
+    payload: cleanRecoveryRemotePayload,
+    updated_at: cleanRecoveryRemoteStamp
+  });
+
+  await window.NexusCloudSync.reconnect();
+  for (let i = 0; i < 300; i++) {
+    const synced = rows.get(accountA.id)?.payload?.state;
+    const count = synced?.topics?.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length || 0;
+    if (!queue.hasPending(storage, accountA.id) && count === 46 &&
+        synced.topics.some(topic => topic.id === 'commerce-local-manual-topic') &&
+        synced.topics.some(topic => topic.id === 'commerce-cloud-manual-topic')) break;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  const cleanBaselineConverged = rows.get(accountA.id).payload.state;
+  assert.equal(cleanBaselineConverged.topics.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length, 46,
+    'a clean local baseline must recover all 46 catalogue rows from a newer incomplete cloud snapshot');
+  assert.equal(cleanBaselineConverged.topics.find(topic => topic.id === 'curr-bs-01').name, 'User-edited Commerce topic',
+    'an omitted but locally unchanged catalogue topic must retain its edited name');
+  assert.equal(cleanBaselineConverged.topics.find(topic => topic.id === 'curr-bs-01').reviewCount, 2,
+    'an omitted but locally unchanged catalogue topic must retain review progress');
+  assert.deepEqual(cleanBaselineConverged.topics.find(topic => topic.id === 'curr-bs-01').fsrs,
+    { stability: 3.5, difficulty: 4.2, reps: 2 },
+    'an omitted but locally unchanged catalogue topic must retain its FSRS card');
+  assert.ok(cleanBaselineConverged.streams.some(stream => stream.id === commercePack.streamId),
+    'a clean-baseline merge must restore the omitted Commerce stream');
+  assert.equal(cleanBaselineConverged.subjects.filter(subject => commerceSubjectIds.has(subject.id)).length, 3,
+    'a clean-baseline merge must restore all three Commerce subjects');
+  assert.ok(cleanBaselineConverged.topics.some(topic => topic.id === 'commerce-local-manual-topic') &&
+    cleanBaselineConverged.topics.some(topic => topic.id === 'commerce-cloud-manual-topic'),
+    'recovering Commerce must preserve manual workspace records from both local and cloud');
+  assert.equal(queue.hasPending(storage, accountA.id), false,
+    'the recovered clean-baseline workspace must be verified before its outbox entry is cleared');
 }
 
-console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, and Commerce curriculum reconciliation.');
+console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, and clean-baseline recovery from incomplete cloud snapshots.');
