@@ -157,6 +157,8 @@ const cleanedLegacy = cleanupFactory({
     custom: false, notes: '', archived: false, reviewCount: 0, lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, streak: 0, lapses: 0 }],
   history: [], exams: []
 });
-assert.equal(cleanedLegacy.topics.length, 0, 'genuinely old untouched seed rows must still be removed by the migration cleanup');
+assert.equal(cleanedLegacy.topics.length, 1, 'legacy seed-prefixed records must be preserved because they may be an explicitly installed curriculum');
+assert.equal(cleanedLegacy.subjects.length, 1, 'subjects containing ambiguous legacy curriculum records must not be deleted');
+assert.equal(cleanedLegacy.streams.length, 1, 'the parent stream for ambiguous legacy curriculum records must be preserved');
 
 console.log('FSRS and core feature regression tests passed.');
