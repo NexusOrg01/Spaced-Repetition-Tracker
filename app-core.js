@@ -122,7 +122,29 @@
     if(!Array.isArray(raw.streams)||!Array.isArray(raw.subjects)||!Array.isArray(raw.topics))return migrateOld(raw,options);
     const streams=raw.streams.filter(s=>s&&s.id&&s.name).map(s=>({id:String(s.id),name:String(s.name).slice(0,100)}));
     const subjects=raw.subjects.filter(s=>s&&s.id&&s.name).map((s,i)=>({id:String(s.id),name:String(s.name).slice(0,100),streamId:String(s.streamId||''),order:Number(s.order)||i}));
-    const topics=raw.topics.filter(t=>t&&t.name).map(t=>normalizeTopic(t,String(t.subjectId||'')));
+    // Older releases used seed-* IDs for the installed Commerce pack. Some older startup
+    // cleanup paths treated those IDs as disposable starter samples and deleted untouched
+    // topics while retaining reviewed topics. Migrate IDs before any other normalization so
+    // legacy data is safe even when it is opened by a mixed-version/offline client.
+    const legacyTopicIds=new Map();
+    const topics=[];
+    for(const rawTopic of raw.topics.filter(t=>t&&t.name)){
+      const topic=normalizeTopic(rawTopic,String(rawTopic.subjectId||''));
+      const legacy=topic.id.match(/^seed-(bs|acc|econ)-(.+)$/i);
+      if(legacy){
+        const oldId=topic.id;
+        topic.id='curr-'+legacy[1].toLowerCase()+'-'+legacy[2];
+        legacyTopicIds.set(oldId,topic.id);
+      }
+      const existingIndex=topics.findIndex(item=>item.id===topic.id);
+      if(existingIndex<0){topics.push(topic);continue;}
+      // If both old and migrated IDs exist, keep one row and retain whichever carries
+      // the stronger review state. History is redirected to the canonical ID below.
+      const existing=topics[existingIndex];
+      const incomingScore=(Number(topic.reviewCount)||0)+(topic.lastReviewed?1000000:0);
+      const existingScore=(Number(existing.reviewCount)||0)+(existing.lastReviewed?1000000:0);
+      if(incomingScore>existingScore)topics[existingIndex]={...topic,id:existing.id,fsrs:topic.fsrs||existing.fsrs};
+    }
     // Empty workspaces are valid; only create a fallback parent when actual topics need one.
     if(topics.length&&!streams.length)streams.push({id:'stream-general',name:'General'});
     if(topics.length&&!subjects.length)subjects.push({id:'subject-general',name:'General',streamId:streams[0].id,order:0});
@@ -130,7 +152,7 @@
     for(const sub of subjects){if(!streamIds.has(sub.streamId)){if(!streams.length)streams.push({id:'stream-general',name:'General'});sub.streamId=streams[0].id;streamIds.add(sub.streamId);}}
     const subjectIds=new Set(subjects.map(s=>s.id));
     for(const t of topics){if(!subjectIds.has(t.subjectId)){let sub=subjects[0];if(!sub){sub={id:'subject-general',name:'General',streamId:streams[0].id,order:0};subjects.push(sub);subjectIds.add(sub.id);}t.subjectId=sub.id;}}
-    const cleanHistory=Array.isArray(raw.history)?raw.history.slice(0,200000).map((h,i)=>{const rating=Number(h.rating??h.score);const reviewed=validDate(h.reviewedAt||h.reviewedDate)?(h.reviewedAt||h.reviewedDate):today();return {id:String(h.id||`history-${i}-${Date.now()}`),topicId:String(h.topicId||''),streamId:String(h.streamId||''),subjectId:String(h.subjectId||''),streamName:String(h.streamName||''),subjectName:String(h.subjectName||h.subject||'Unknown subject').slice(0,100),topicName:String(h.topicName||h.topic||'Untitled topic').slice(0,240),reviewedAt:reviewed,rating:rating>=1&&rating<=5?rating:3,intervalDays:Math.min(120,Math.max(1,Number(h.intervalDays)||1)),dueDate:validDate(h.dueDate||h.nextDate)?(h.dueDate||h.nextDate):'',note:String(h.note||'').slice(0,1000)};}):[];
+    const cleanHistory=Array.isArray(raw.history)?raw.history.slice(0,200000).map((h,i)=>{const rating=Number(h.rating??h.score);const reviewed=validDate(h.reviewedAt||h.reviewedDate)?(h.reviewedAt||h.reviewedDate):today();return {id:String(h.id||`history-${i}-${Date.now()}`),topicId:legacyTopicIds.get(String(h.topicId||''))||String(h.topicId||''),streamId:String(h.streamId||''),subjectId:String(h.subjectId||''),streamName:String(h.streamName||''),subjectName:String(h.subjectName||h.subject||'Unknown subject').slice(0,100),topicName:String(h.topicName||h.topic||'Untitled topic').slice(0,240),reviewedAt:reviewed,rating:rating>=1&&rating<=5?rating:3,intervalDays:Math.min(120,Math.max(1,Number(h.intervalDays)||1)),dueDate:validDate(h.dueDate||h.nextDate)?(h.dueDate||h.nextDate):'',note:String(h.note||'').slice(0,1000)};}):[];
     const exams=Array.isArray(raw.exams)?raw.exams.filter(e=>e&&e.name).map(sanitizeExam):[];
     const theme=['system','light','dark'].includes(raw.settings?.theme)?raw.settings.theme:'system';
     const strings=value=>Array.isArray(value)?Array.from(new Set(value.filter(x=>typeof x==='string'&&x.length>0))).slice(0,5000):[];
