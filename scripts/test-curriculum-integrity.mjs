@@ -14,7 +14,8 @@ const cloudSyncSource = readFileSync(new URL('../cloud-sync.js', import.meta.url
 // before it is committed to local storage.
 assert.match(appCoreSource, /CURRICULUM_PACKS=loaded;[\s\S]*NexusCurriculumIntegrity\.applyIntentLedger[\s\S]*NexusCurriculumIntegrity\.repair\(candidate,loaded/);
 assert.match(appCoreSource, /if\(repair\.changed\)[\s\S]*state=repair\.state;[\s\S]*if\(save\(\)\)renderAll\(\)/);
-assert.match(cloudSyncSource, /function applyWorkspaceSnapshot\(nextState,rawFeatures,ownerId\)[\s\S]*NexusRepairInstalledCurricula\(nextState\)[\s\S]*JSON\.stringify\(safeState\)/);
+assert.match(cloudSyncSource, /function applyWorkspaceSnapshot\(nextState,rawFeatures,ownerId\)[\s\S]*NexusRepairInstalledCurricula\(nextState,ownerId\)[\s\S]*JSON\.stringify\(safeState\)/);
+assert.match(cloudSyncSource, /NexusRepairInstalledCurricula\(clone\(incomingState\),ownerId\)/);
 
 const pack = {
   id: 'sl-al-commerce-si',
@@ -310,5 +311,21 @@ const resetLedgerEntry = integrity.createIntentLedgerEntry(
 );
 assert.deepEqual(JSON.parse(resetLedgerEntry.value).installedCurricula, [selectedTopicMarker],
   'intentional scoped installation can replace old full-pack intent');
+
+// The install-intent ledger is owner-scoped so account A cannot populate account B.
+const accountLedgerStorage = {
+  values: new Map([['nexus.cloud.last-user-id','account-A']]),
+  getItem(key) { return this.values.has(key) ? this.values.get(key) : null; },
+  setItem(key, value) { this.values.set(key, String(value)); },
+  removeItem(key) { this.values.delete(key); }
+};
+const accountALedger = integrity.createIntentLedgerEntry(fullPackState, accountLedgerStorage, { replace: true });
+accountLedgerStorage.setItem(accountALedger.key, accountALedger.value);
+const accountAHydrated = integrity.applyIntentLedger(cloneState(ledgerDamaged), accountLedgerStorage, 'account-A');
+assert.ok(accountAHydrated.settings.installedCurricula.includes(packMarker),
+  'account A should recover its own installed curriculum intent');
+const accountBHydrated = integrity.applyIntentLedger(cloneState(ledgerDamaged), accountLedgerStorage, 'account-B');
+assert.ok(!accountBHydrated.settings.installedCurricula.includes(packMarker),
+  'account A curriculum intent must never be hydrated into account B');
 
 console.log('Curriculum integrity tests passed: refresh recovery, three-way merge recovery, scoped installs, custom data, review schedules/history, read-only diagnostics, idempotence, and deletion tombstones.');
