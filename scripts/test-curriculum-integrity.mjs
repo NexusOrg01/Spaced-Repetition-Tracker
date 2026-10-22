@@ -254,6 +254,59 @@ const repairedSecondPass = integrity.repair(cloneState(repairedAfterMerge.state)
 });
 assert.equal(repairedSecondPass.changed, false, 'post-merge recovery must be idempotent');
 
+// Reproduce the user's refresh/cloud failure: the last verified baseline has the full
+// Commerce pack, but both the local and remote snapshots have lost the Commerce stream
+// and all untouched catalogue subjects/topics. Only one reviewed topic plus user-created
+// data survives, with its catalogue subject attached to the user's custom stream.
+const brokenHierarchy = cloneState(staleLocalState);
+brokenHierarchy.streams = [{ id: 'custom-stream-merge', name: 'My sample stream' }];
+brokenHierarchy.subjects = [
+  { id: reviewedSubject.workspaceId, name: reviewedSubject.name, streamId: 'custom-stream-merge', order: 0 },
+  { id: 'custom-subject-merge', name: 'My sample subject', streamId: 'custom-stream-merge', order: 1 }
+];
+brokenHierarchy.topics = [
+  { ...cloneState(locallyReviewed), subjectId: reviewedSubject.workspaceId },
+  cloneState(staleLocalState.topics.find(topic => topic.id === 'custom-topic-merge'))
+];
+brokenHierarchy.settings = { theme: 'dark', intervalCap: 120, installedCurricula: [], curriculumTombstones: [] };
+const incompleteCloudMerge = workspaceMerge.merge(
+  makeSnapshot(fullPackState), makeSnapshot(brokenHierarchy), makeSnapshot(brokenHierarchy)
+);
+assert.ok(incompleteCloudMerge.payload.state.settings.installedCurricula.includes(packMarker),
+  'a verified full-pack marker must survive missing stream/subject evidence unless the user explicitly deleted the stream');
+const repairedIncompleteCloud = integrity.repair(incompleteCloudMerge.payload.state, [commerce], {
+  today: () => '2026-10-22', makeId: prefix => prefix + '-incomplete-cloud-recovery'
+});
+assert.equal(repairedIncompleteCloud.restoredStreams, 1,
+  'refresh recovery must recreate the missing Commerce stream');
+assert.equal(repairedIncompleteCloud.restoredTopics, 45,
+  'refresh recovery must restore the 45 untouched topics rather than leave only the reviewed topic');
+assert.equal(repairedIncompleteCloud.state.topics.filter(topic =>
+  commerce.subjects.some(subject => subject.topics.includes(topic.name)) && topic.custom === false
+).length, 46, 'all 46 Commerce topics must survive the exact missing-hierarchy case');
+assert.ok(repairedIncompleteCloud.state.subjects.some(subject =>
+  subject.id === reviewedSubject.workspaceId && subject.streamId === commerce.streamId
+), 'the reviewed subject must be reattached to the restored Commerce stream');
+assert.ok(repairedIncompleteCloud.state.streams.some(stream => stream.id === 'custom-stream-merge'),
+  'the user-created stream must remain untouched');
+assert.ok(repairedIncompleteCloud.state.topics.some(topic => topic.id === 'custom-topic-merge'),
+  'the user-created topic must remain untouched');
+assert.equal(repairedIncompleteCloud.state.topics.find(topic => topic.id === locallyReviewed.id).reviewCount, 2,
+  'the reviewed topic schedule must be preserved during catalogue recovery');
+
+// A deliberate whole-stream deletion carries an explicit tombstone and must not regain
+// full-pack install intent merely because the previous baseline had installed it.
+const deletedHierarchy = cloneState(brokenHierarchy);
+deletedHierarchy.settings.curriculumTombstones = [integrity.keys.streamDelete(commerce.id)];
+const explicitStreamDeleteMerge = workspaceMerge.merge(
+  makeSnapshot(fullPackState), makeSnapshot(deletedHierarchy), makeSnapshot(deletedHierarchy)
+);
+assert.ok(explicitStreamDeleteMerge.payload.state.settings.curriculumTombstones.includes(
+  integrity.keys.streamDelete(commerce.id)
+), 'an explicit stream deletion must remain recorded through merge');
+assert.ok(!explicitStreamDeleteMerge.payload.state.settings.installedCurricula.includes(packMarker),
+  'an explicit stream deletion tombstone must prevent restoration of the full-pack marker');
+
 
 const selectedTopicMarker = integrity.keys.topicScope(commerce.id, reviewedSubject.id, reviewedName);
 // A scoped marker from a stale client must not erase a last-verified full-pack install.
