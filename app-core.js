@@ -134,22 +134,9 @@
     return {schema:3,streams,subjects,topics,history:cleanHistory,exams,settings:{theme,intervalCap:120}};
   }
   function detachPristineStarterContent(data){
-    if(!data||!Array.isArray(data.topics))return data;
-    const historyTopicIds=new Set((data.history||[]).map(h=>String(h.topicId||'')));
-    const historyNames=new Set((data.history||[]).map(h=>String(h.topicName||'')));
-    const seedExpected=new Map(),seedCounts={BS:0,ACC:0,ECON:0};
-    const seedSubjectNames={BS:'ව්‍යාපාර අධ්‍යයනය',ACC:'ගිණුම්කරණය',ECON:'ආර්ථික විද්‍යාව'};
-    for(const [prefix,subjectName,name] of SEED){const n=++seedCounts[prefix];seedExpected.set(`seed-${prefix.toLowerCase()}-${String(n).padStart(2,'0')}`,{name,subjectName,subjectId:({BS:'sub-bs',ACC:'sub-acc',ECON:'sub-econ'})[prefix]});}
-    data.topics=data.topics.filter(t=>{
-      const expected=seedExpected.get(String(t.id||''));
-      const parent=(data.subjects||[]).find(sub=>sub.id===t.subjectId);
-      const untouched=expected&&expected.name===t.name&&expected.subjectName===parent?.name&&t.custom===false&&!String(t.notes||'').trim()&&!t.archived&&!t.reviewCount&&!t.lastReviewed&&!t.lastRating&&!t.dueDate&&!t.intervalDays&&!t.streak&&!t.lapses&&!historyTopicIds.has(String(t.id))&&!historyNames.has(String(t.name));
-      return !untouched;
-    });
-    const defaultSubjects={ 'sub-bs':'ව්‍යාපාර අධ්‍යයනය','sub-acc':'ගිණුම්කරණය','sub-econ':'ආර්ථික විද්‍යාව' };
-    data.subjects=(data.subjects||[]).filter(sub=>data.topics.some(t=>t.subjectId===sub.id)||defaultSubjects[sub.id]!==sub.name);
-    data.streams=(data.streams||[]).filter(st=>data.subjects.some(sub=>sub.streamId===st.id)||st.id!=='stream-commerce'||st.name!=='වාණිජ (Commerce)');
-    data.exams=(data.exams||[]).filter(ex=>!(ex.id==='exam-al-2027'&&ex.name==='GCE Advanced Level'&&ex.date==='2027-08-01'&&ex.type==='Academic exam'&&!String(ex.notes||'').trim()));
+    // Previous releases and the explicit Commerce pack shared seed-* IDs, so the stored
+    // records cannot be reliably classified as disposable samples. Preserve saved work.
+    // New workspaces are already empty in baseState(); do not guess and delete on startup.
     return data;
   }
   function loadState(){const current=safeRead(STORAGE_KEY);if(current){try{return detachPristineStarterContent(normalizeState(current));}catch(e){console.warn('Saved data was invalid; using recovery defaults',e);}}const old=safeRead('alSrsTrackerV2');if(old){try{return migrateOld(old.state||old);}catch(e){console.warn(e);}}const legacyT=safeRead('alTrackerData'),legacyH=safeRead('alHistoryLog');if(Array.isArray(legacyT)||Array.isArray(legacyH))return migrateOld({topics:legacyT||[],history:legacyH||[]});return baseState();}
