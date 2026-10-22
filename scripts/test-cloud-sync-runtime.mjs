@@ -196,6 +196,10 @@ assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'offline-A', 'sig
 assert.ok(queue.hasPending(storage, accountA.id), 'account A pending work must remain parked during account B session');
 assert.ok(rows.has(accountB.id), 'account B may initialize its own independent cloud workspace');
 assert.equal(rows.get(accountB.id).payload.state.topics.length, 0, 'account B must not receive account A study data');
+assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics.length, 0,
+  'switching directly from account A to account B must replace the local workspace with B data, not leave A records on screen');
+assert.equal(context.state.topics.length, 0,
+  'the in-memory workspace must also be isolated immediately after switching accounts');
 activeSession = { user: accountA };
 await window.NexusCloudSync.reconnect();
 for (let i = 0; i < 100 && queue.hasPending(storage, accountA.id); i++) {
