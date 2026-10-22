@@ -111,6 +111,65 @@
   function isInstalledMarkerForPack(marker, id) {
     return marker === packMarker(id) || marker.startsWith('installed:subject:' + id + ':') || marker.startsWith('installed:topic:' + id + ':');
   }
+  function purgeDeletedScope(state, pack, deleted) {
+    const id = String(pack.id), stream = findStream(state, pack);
+    const streamMatches = subject => {
+      const parent = rows(state.streams).find(item => String(item.id) === String(subject.streamId));
+      return !!parent && ((pack.streamId && String(parent.id) === String(pack.streamId)) ||
+        normalizeName(parent.name) === normalizeName(pack.streamName));
+    };
+    const definitions = rows(pack.subjects);
+    if (deleted.has(deletedPack(id))) {
+      const subjectIds = new Set(rows(state.subjects).filter(subject =>
+        definitions.some(definition => definition.workspaceId && String(subject.id) === String(definition.workspaceId)) ||
+        (streamMatches(subject) && definitions.some(definition =>
+          normalizeName(subject.name) === normalizeName(definition.name)))).map(subject => String(subject.id)));
+      const topicIds = new Set(rows(state.topics).filter(topic => {
+        const subject = rows(state.subjects).find(item => String(item.id) === String(topic.subjectId));
+        return subjectIds.has(String(topic.subjectId)) || definitions.some(definition => {
+          const prefix = canonicalPrefix(definition) + '-', oldPrefix = legacyPrefix(definition) + '-';
+          return String(topic.id || '').startsWith(prefix) || String(topic.id || '').startsWith(oldPrefix);
+        });
+      }).map(topic => String(topic.id)));
+      state.topics = rows(state.topics).filter(topic => !topicIds.has(String(topic.id)));
+      state.history = rows(state.history).filter(entry => !subjectIds.has(String(entry.subjectId)) &&
+        !topicIds.has(String(entry.topicId)) && !(pack.streamId && String(entry.streamId) === String(pack.streamId)));
+      state.subjects = rows(state.subjects).filter(subject => !subjectIds.has(String(subject.id)));
+      state.streams = rows(state.streams).filter(item =>
+        !(pack.streamId && String(item.id) === String(pack.streamId)) &&
+        normalizeName(item.name) !== normalizeName(pack.streamName));
+      return;
+    }
+    for (const definition of definitions) {
+      if (deleted.has(deletedSubject(id, definition.id))) {
+        const subjectIds = new Set(rows(state.subjects).filter(subject =>
+          (definition.workspaceId && String(subject.id) === String(definition.workspaceId)) ||
+          (streamMatches(subject) && normalizeName(subject.name) === normalizeName(definition.name))).map(subject => String(subject.id)));
+        const topicIds = new Set(rows(state.topics).filter(topic => {
+          const currentId = String(topic.id || '');
+          return subjectIds.has(String(topic.subjectId)) ||
+            currentId.startsWith(canonicalPrefix(definition) + '-') ||
+            currentId.startsWith(legacyPrefix(definition) + '-');
+        }).map(topic => String(topic.id)));
+        state.topics = rows(state.topics).filter(topic => !topicIds.has(String(topic.id)));
+        state.history = rows(state.history).filter(entry => !subjectIds.has(String(entry.subjectId)) && !topicIds.has(String(entry.topicId)));
+        state.subjects = rows(state.subjects).filter(subject => !subjectIds.has(String(subject.id)));
+      }
+      for (const name of rows(definition.topics)) {
+        if (!deleted.has(deletedTopic(id, definition.id, name))) continue;
+        const ids = new Set([topicIdFor(definition, name), oldTopicIdFor(definition, name)].filter(Boolean));
+        const subject = rows(state.subjects).find(item =>
+          (definition.workspaceId && String(item.id) === String(definition.workspaceId)) ||
+          (stream && String(item.streamId) === String(stream.id) && normalizeName(item.name) === normalizeName(definition.name)));
+        const removed = rows(state.topics).filter(topic => ids.has(String(topic.id)) ||
+          (!!subject && String(topic.subjectId) === String(subject.id) && String(topic.name) === String(name)));
+        const topicIds = new Set(removed.map(topic => String(topic.id)));
+        state.topics = rows(state.topics).filter(topic => !topicIds.has(String(topic.id)));
+        state.history = rows(state.history).filter(entry => !topicIds.has(String(entry.topicId)) &&
+          !(String(entry.subjectId || '') === String(subject && subject.id || '') && String(entry.topicName || '') === String(name)));
+      }
+    }
+  }
   function repair(state, packs, options) {
     const opts = options || {};
     if (!isRecord(state) || !Array.isArray(packs)) return { state, changed: false, restoredStreams: 0, restoredSubjects: 0, restoredTopics: 0 };
@@ -120,7 +179,9 @@
     for (const pack of packs) {
       if (!isRecord(pack) || !pack.id || !Array.isArray(pack.subjects)) continue;
       const id = String(pack.id);
-      // A whole-pack deletion is explicit and must beat stale markers or snapshots.
+      // Deletion tombstones must also remove matching rows from a stale snapshot before
+      // repair. Merely skipping reconstruction would allow a cloud merge to resurrect them.
+      purgeDeletedScope(state, pack, marker.deleted);
       if (marker.deleted.has(deletedPack(id))) continue;
       const existingStream = findStream(state, pack);
       let intent = rows(state.settings.installedCurricula).filter(value => isInstalledMarkerForPack(value, id));
@@ -225,9 +286,15 @@
     if (!isRecord(state) || !topic) return;
     const subject = rows(state.subjects).find(item => String(item.id) === String(topic.subjectId));
     const context = packContext(state, packs, subject);
-    if (!context || !rows(context.definition.topics).includes(String(topic.name))) return;
+    if (!context) return;
+    let catalogueName = rows(context.definition.topics).includes(String(topic.name)) ? String(topic.name) : '';
+    if (!catalogueName) catalogueName = rows(context.definition.topics).find(name =>
+      String(topic.id) === topicIdFor(context.definition, name) || String(topic.id) === oldTopicIdFor(context.definition, name)) || '';
+    if (!catalogueName) return;
     const marker = ensureState(state);
-    marker.deleted.add(deletedTopic(context.pack.id, context.definition.id, topic.name));
+    marker.deleted.add(deletedTopic(context.pack.id, context.definition.id, catalogueName));
+    marker.installed.delete(topicMarker(context.pack.id, context.definition.id, catalogueName));
+    state.settings.installedCurricula = Array.from(marker.installed).slice(-5000);
     state.settings.curriculumTombstones = Array.from(marker.deleted).slice(-5000);
   }
   function markDeletedSubject(state, packs, subject) {
