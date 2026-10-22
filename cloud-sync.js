@@ -351,6 +351,7 @@ async function upload(){
     if(window.NexusRenderHub)window.NexusRenderHub();
    }
   }
+  if(window.NexusRecordDataIntegrityDiagnostic&&payload&&payload.state)window.NexusRecordDataIntegrityDiagnostic('cloud-upload-payload-after-repair',payload.state);
   attemptedPayload=payload;attemptedOperationId=pending?pending.operationId:null;attemptedBase=pending?pending.baseServerVersion:(priorStamp||null);
   if(pending){
    const before=await fetchRemote(uploadUserId);
