@@ -350,8 +350,10 @@
       if(state&&window.NexusCurriculumIntegrity&&typeof window.NexusCurriculumIntegrity.repair==='function'){
         const repair=window.NexusCurriculumIntegrity.repair(state,loaded,{today,makeId});
         if(repair.changed){
+          const previousState=state;
           state=repair.state;
           if(save())renderAll();
+          else state=previousState;
         }
       }
       renderExplore();
