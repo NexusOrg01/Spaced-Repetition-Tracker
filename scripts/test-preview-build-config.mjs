@@ -38,6 +38,16 @@ assert.equal(resolvePreviewConfig({
 }), null, 'the Cloudflare fix preview must remain offline-safe when no isolated test credentials are configured');
 assert.equal(resolvePreviewConfig({
   CF_PAGES: '1',
+  CF_PAGES_BRANCH: 'ai-dev/rebuild-commerce-sync-integrity',
+  NEXUS_SUPABASE_URL: previewEnv.NEXUS_SUPABASE_URL
+}), null, 'a partial Cloudflare config must fall back to offline-safe mode');
+assert.equal(resolvePreviewConfig({
+  CF_PAGES: '1',
+  CF_PAGES_BRANCH: 'ai-dev/rebuild-commerce-sync-integrity',
+  NEXUS_SUPABASE_ANON_KEY: previewEnv.NEXUS_SUPABASE_ANON_KEY
+}), null, 'a key without a project URL must fall back to offline-safe mode');
+assert.equal(resolvePreviewConfig({
+  CF_PAGES: '1',
   CF_PAGES_BRANCH: 'main',
   NEXUS_SUPABASE_URL: previewEnv.NEXUS_SUPABASE_URL,
   NEXUS_SUPABASE_ANON_KEY: previewEnv.NEXUS_SUPABASE_ANON_KEY
@@ -53,7 +63,7 @@ assert.throws(() => resolvePreviewConfig({ ...previewEnv, NEXUS_SUPABASE_URL: 'h
 assert.throws(() => resolvePreviewConfig({ ...previewEnv, NEXUS_SUPABASE_ANON_KEY: 'sb_secret_this_must_not_be_accepted' }),
   /publishable key or a legacy anon JWT/, 'secret keys must be rejected');
 assert.throws(() => resolvePreviewConfig({ ...previewEnv, NEXUS_SUPABASE_ANON_KEY: '' }),
-  /requires both/, 'missing staging variables must fail the designated preview build');
+  /requires both/, 'missing staging variables must fail the legacy designated preview build');
 assert.match(renderConfigScript(null), /const config=null/);
-assert.match(renderConfigScript({ url: previewEnv.NEXUS_SUPABASE_URL, key: previewEnv.NEXUS_SUPABASE_ANON_KEY }), /nexus\.cloud\.config\.v1/);
+assert.match(renderConfigScript({ url: previewEnv.NEXUS_SUPABASE_URL, key: previewEnv.NEXUS_SUPABASE_ANON_KEY }), /nexus\\.cloud\\.config\\.v1/);
 console.log('Preview-only Supabase configuration guard tests passed.');
