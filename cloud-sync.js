@@ -95,11 +95,11 @@ function emptyState(){return {schema:3,streams:[{id:'stream-general',name:'Gener
 function mergeState(local,remote){const l=normalizeState(local),r=normalizeState(remote),union=(a,b)=>{const m=new Map();for(const x of b||[])m.set(String(x.id),clone(x));for(const x of a||[])m.set(String(x.id),clone(x));return Array.from(m.values());};const streams=union(l.streams,r.streams),subjects=union(l.subjects,r.subjects),topics=union(l.topics,r.topics),exams=union(l.exams,r.exams),history=union(l.history,r.history);if(!streams.length)streams.push({id:'stream-general',name:'General'});const streamIds=new Set(streams.map(x=>x.id));for(const sub of subjects)if(!streamIds.has(sub.streamId))sub.streamId=streams[0].id;const subjectIds=new Set(subjects.map(x=>x.id));for(const t of topics)if(!subjectIds.has(t.subjectId)){const fallback=subjects[0]||{id:'subject-general',name:'General',streamId:streams[0].id,order:0};if(!subjectIds.has(fallback.id))subjects.push(fallback);t.subjectId=fallback.id;}return normalizeState({...r,streams,subjects,topics,exams,history,settings:{...r.settings,...l.settings}});}
 function hasLocalWork(s){if(!s)return false;const core=s.state||s||{},f=s.featureState||{};const coreWork=!!(core.topics?.length||core.history?.length||core.exams?.length||core.streams?.length>1||core.subjects?.length>1);const featureWork=['journal','papers','goals','studyLogs','selectedTopicIds'].some(k=>Array.isArray(f[k])&&f[k].length>0)||Object.keys(f.syllabusTargets||{}).length>0||Object.keys(f.taskChecks||{}).length>0||!!(f.lastBackupAt||f.lastReminderAt||f.focusStartedAt||f.focusPausedAt||f.focusTopicId||f.focusSubjectId);const defaults={dailyMinutes:90,sessionMinutes:25,scheduler:'classic',weeklyReviewGoal:100,backlogDays:7,reminders:false,reminderTime:'08:00',maxInterval:120,finalRevision:false,workloadDays:7};const settings=f.settings||{};const settingsWork=Object.keys(defaults).some(k=>settings[k]!==undefined&&settings[k]!==defaults[k]);return coreWork||featureWork||settingsWork;}
 function chooseLocalData(){return new Promise(resolve=>{const dlg=el('accountChoiceDialog');if(!dlg){resolve('cancel');return;}let done=false;const onCancel=e=>e.preventDefault();const finish=v=>{if(done)return;done=true;dlg.removeEventListener('cancel',onCancel);if(dlg.open)dlg.close();resolve(v);};dlg.addEventListener('cancel',onCancel);dlg.querySelectorAll('[data-account-choice]').forEach(b=>b.onclick=()=>finish(b.dataset.accountChoice));if(!dlg.open)dlg.showModal();});}
-function curriculumIntentLedgerEntry(state,ownerId,replace=true){
+function curriculumIntentLedgerEntry(state,ownerId,replace=false){
   const create=window.NexusCreateCurriculumIntentLedgerEntry;
   return typeof create==='function'?create(state,ownerId,{replace}):null;
 }
-function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
+function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,options={}){
   if(!window.NexusBackupRestoreUtils||!window.NexusStorageKey||!window.NexusFeatureStorageKey||!window.NexusNormalizeFeatureState||!window.NexusSetFeatureState)throw new Error('Safe local workspace storage is unavailable. Cloud data was not applied.');
   // Every snapshot entry point (cloud restore, account reconciliation, and merge) must
   // pass through the same curriculum integrity guard before it is persisted locally.
@@ -114,7 +114,7 @@ function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
   // Persist the repair evidence atomically with the repaired workspace. Otherwise a
   // successful cloud hydration/merge can repair the visible rows but leave the independent
   // ledger stale, allowing a later incomplete cloud snapshot to erase that recovery.
-  const intentEntry=curriculumIntentLedgerEntry(safeState,ownerId,true);
+  const intentEntry=curriculumIntentLedgerEntry(safeState,ownerId,options.replaceCurriculumIntent===true);
   if(intentEntry)entries.push(intentEntry);
   if(ownerId)entries.push({key:OWNER_KEY,value:String(ownerId)});
   // Free redundant snapshot space before applying a cloud workspace to this browser.
@@ -148,7 +148,7 @@ function applyLocalMerged(localPayload,remotePayload){
 }
 function resetToEmpty(ownerId){
   ready=false;
-  applyWorkspaceSnapshot(emptyState(),{},ownerId);
+  applyWorkspaceSnapshot(emptyState(),{},ownerId,{replaceCurriculumIntent:true});
 }
 function enqueueInitialSnapshot(ownerId){const queue=window.NexusOfflineSyncQueue;if(!queue||!window.NexusStorageKey||!window.NexusFeatureStorageKey)throw new Error('Safe offline snapshot queue is unavailable.');if(localStorage.getItem(OWNER_KEY)!==ownerId)throw new Error('The initial snapshot owner could not be verified.');if(queue.hasPending(localStorage,ownerId))return;const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():{};const entries=[{key:window.NexusStorageKey,value:JSON.stringify(state)},{key:window.NexusFeatureStorageKey,value:JSON.stringify(featureState)}];const intentEntry=curriculumIntentLedgerEntry(state,ownerId,true);if(intentEntry)entries.push(intentEntry);queue.commitWorkspace(localStorage,entries,snapshot(),{baseServerVersion:null});}
 async function reconcileConcurrentSnapshot(userId,initialRemote){
@@ -192,7 +192,7 @@ async function reconcileConcurrentSnapshot(userId,initialRemote){
     {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)},
     {key:OWNER_KEY,value:String(userId)}
    ];
-  const intentEntry=curriculumIntentLedgerEntry(nextState,userId,true);
+  const intentEntry=curriculumIntentLedgerEntry(nextState,userId,false);
   if(intentEntry)workspaceEntries.push(intentEntry);
   const rebased=queue.rebaseWithBase(localStorage,userId,mergedSnapshot,remoteStamp,'automatic-three-way-merge',
    {state:normalizedRemote.state,featureState:normalizedRemote.featureState},
@@ -246,7 +246,7 @@ function alignPendingToCurrentWorkspace(userId,localPayload,pending){
   {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)},
   {key:OWNER_KEY,value:String(userId)}
  ];
- const intentEntry=curriculumIntentLedgerEntry(nextState,userId,true);
+ const intentEntry=curriculumIntentLedgerEntry(nextState,userId,false);
  if(intentEntry)workspaceEntries.push(intentEntry);
  const baseVersion=base&&typeof base.serverVersion==='string'&&base.serverVersion?base.serverVersion:(pending.baseServerVersion||null);
  if(basePayload&&typeof queue.rebaseWithBase==='function'){
