@@ -6,8 +6,28 @@ function previewCloudBlockedMessage(){status('Preview · cloud sync disabled');s
 let client=null,session=null,syncing=false,ready=false,timer=null,retryTimer=null,retryAttempt=0,lastRemoteStamp=null,supabaseLoadPromise=null,pendingSync=false,lastUserId=null,initializing=false,initializingUserId=null,queuedSession=null,hasQueuedSession=false;
 const el=id=>document.getElementById(id),status=m=>{if(el('cloudStatus'))el('cloudStatus').textContent=m;if(m==='Synced')clearRetry();},say=m=>{if(el('cloudHelpText'))el('cloudHelpText').textContent=m;updateConflictRecoveryButton();},config=()=>{try{return {...DEFAULT_CONFIG,...JSON.parse(localStorage.getItem(CFG_KEY)||'{}')}}catch(_){return {...DEFAULT_CONFIG}}};
 function conflictRecoveryOwner(){return session&&session.user&&session.user.id||localStorage.getItem(OWNER_KEY)||'';}
+
+function installIntegrityDiagnosticsButton(){
+ if(!location.hostname.includes('git-fix-curriculum-'))return;
+ const help=el('cloudHelpText');if(!help||!help.insertAdjacentElement)return;
+ let button=el('nexusDataIntegrityDiagnosticsDownload');
+ if(!button){
+  button=document.createElement('button');button.id='nexusDataIntegrityDiagnosticsDownload';button.type='button';button.className='btn btn-sm';button.style.marginTop='8px';button.textContent='Download data-integrity diagnostics';
+  button.title='Downloads stage-by-stage Commerce catalogue counts, installed markers and deletion tombstones. It excludes authentication tokens and Study Hub content.';
+  button.addEventListener('click',()=>{
+   let stages=[];try{stages=typeof window.NexusGetDataIntegrityDiagnostics==='function'?window.NexusGetDataIntegrityDiagnostics():[];}catch(_){}
+   const queue=window.NexusOfflineSyncQueue,owner=localStorage.getItem(OWNER_KEY)||'';
+   let pendingSummary=null;
+   try{const pending=queue&&owner?queue.getPending(localStorage,owner):null;if(pending&&pending.payload&&pending.payload.state&&window.NexusRecordDataIntegrityDiagnostic){pendingSummary=window.NexusRecordDataIntegrityDiagnostic('download-current-pending-outbox',pending.payload.state);stages=window.NexusGetDataIntegrityDiagnostics();}}catch(error){pendingSummary={error:String(error&&error.message||error)};}
+   const report={app:'Nexus Spaced Repetition Tracker',type:'data-integrity-diagnostics',schema:1,exportedAt:new Date().toISOString(),note:'Counts and catalogue topic names only; no auth tokens or Study Hub content.',stages,currentLocal:window.NexusRecordDataIntegrityDiagnostic?window.NexusRecordDataIntegrityDiagnostic('download-current-local-workspace'):null,pendingOutbox:pendingSummary};
+   try{const blob=new Blob([JSON.stringify(report,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='nexus-data-integrity-diagnostics-'+new Date().toISOString().replace(/[:.]/g,'-')+'.json';document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(error){say('Could not download diagnostics: '+String(error&&error.message||error));}
+  });
+  help.insertAdjacentElement('afterend',button);
+ }
+}
 function updateConflictRecoveryButton(){
  const help=el('cloudHelpText'),queue=window.NexusOfflineSyncQueue;
+ installIntegrityDiagnosticsButton();
  if(!help||!queue||typeof help.insertAdjacentElement!=='function')return;
  let button=el('nexusConflictRecoveryDownload');
  if(!button){
@@ -83,7 +103,9 @@ function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
   if(!window.NexusBackupRestoreUtils||!window.NexusStorageKey||!window.NexusFeatureStorageKey||!window.NexusNormalizeFeatureState||!window.NexusSetFeatureState)throw new Error('Safe local workspace storage is unavailable. Cloud data was not applied.');
   // Every snapshot entry point (cloud restore, account reconciliation, and merge) must
   // pass through the same curriculum integrity guard before it is persisted locally.
+  if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('cloud-before-local-apply',nextState);
   const safeState=window.NexusRepairInstalledCurricula?window.NexusRepairInstalledCurricula(nextState,ownerId):nextState;
+  if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('cloud-after-local-repair',safeState);
   const nextFeatures=window.NexusNormalizeFeatureState(rawFeatures);
   const entries=[
     {key:window.NexusStorageKey,value:JSON.stringify(safeState)},
@@ -107,6 +129,7 @@ function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
 function applyRemote(payload,ownerId,serverVersion){
   if(!payload||!payload.state||!Array.isArray(payload.state.streams))throw new Error('Cloud backup format is invalid.');
   const rawNormalize=window.NexusNormalizeStateWithoutCurriculumRepair;
+  if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('cloud-remote-before-normalize',payload.state);
   const incomingState=rawNormalize?rawNormalize(payload.state):normalizeState(payload.state);
   const nextState=window.NexusRepairInstalledCurricula?window.NexusRepairInstalledCurricula(clone(incomingState),ownerId):normalizeState(payload.state);
   const hasFeatures=Object.prototype.hasOwnProperty.call(payload,'featureState'),nextFeatures=window.NexusNormalizeFeatureState(hasFeatures?payload.featureState:undefined),repaired=stableJson(incomingState)!==stableJson(nextState);
@@ -305,6 +328,7 @@ async function upload(){
   }
   const priorStamp=lastRemoteStamp;attemptedPriorStamp=priorStamp;
   let payload=pending?clone(pending.payload):snapshot();
+  if(window.NexusRecordDataIntegrityDiagnostic&&payload&&payload.state)window.NexusRecordDataIntegrityDiagnostic('cloud-before-upload-repair',payload.state);
   if(payload&&payload.state&&typeof window.NexusRepairInstalledCurricula==='function'){
    const repairedState=window.NexusRepairInstalledCurricula(clone(payload.state),uploadUserId);
    if(stableJson(repairedState)!==stableJson(payload.state)){
