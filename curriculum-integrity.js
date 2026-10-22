@@ -478,8 +478,104 @@
     }).slice(-5000);
     return { changed, conflicts };
   }
+  function restoreMissingInstalledRows(baseState, localState, remoteState, mergedState, packs) {
+    if (!isRecord(mergedState) || !Array.isArray(packs)) return { changed: false, restoredStreams: 0, restoredSubjects: 0, restoredTopics: 0 };
+    if (!isRecord(mergedState.settings)) mergedState.settings = {};
+    const intent = intentState(mergedState);
+    const sources = [localState, baseState].filter(isRecord);
+    let changed = false, restoredStreams = 0, restoredSubjects = 0, restoredTopics = 0;
+    const sourceStream = pack => sources.map(state => findStream(state, pack)).find(Boolean) || null;
+    const sourceSubject = (pack, definition) => {
+      for (const source of sources) {
+        const stream = findStream(source, pack);
+        const match = rows(source.subjects).find(subject =>
+          (definition.workspaceId && String(subject.id) === String(definition.workspaceId)) ||
+          (!!stream && String(subject.streamId) === String(stream.id) && normalizeName(subject.name) === normalizeName(definition.name)));
+        if (match) return match;
+      }
+      return null;
+    };
+    for (const pack of packs) {
+      if (!isRecord(pack) || !pack.id || !Array.isArray(pack.subjects)) continue;
+      const id = String(pack.id);
+      if (intent.deleted.has(deletedPack(id))) continue;
+      const installAll = intent.installed.has(packMarker(id));
+      const selected = pack.subjects.map(definition => {
+        if (intent.deleted.has(deletedSubject(id, definition.id))) return null;
+        const full = installAll || intent.installed.has(subjectMarker(id, definition.id));
+        const names = rows(definition.topics).filter(name =>
+          (full || intent.installed.has(topicMarker(id, definition.id, name))) &&
+          !intent.deleted.has(deletedTopic(id, definition.id, name)));
+        return full || names.length ? { definition, names } : null;
+      }).filter(Boolean);
+      if (!selected.length) continue;
+
+      let stream = findStream(mergedState, pack);
+      if (!stream) {
+        const existing = sourceStream(pack);
+        const candidate = existing ? { ...existing } : {
+          id: String(pack.streamId || 'stream-' + id),
+          name: String(pack.streamName || pack.title || 'Curriculum')
+        };
+        if (rows(mergedState.streams).some(item => String(item.id) === String(candidate.id))) {
+          candidate.id = String(pack.streamId || candidate.id) + '-restored';
+          let suffix = 2;
+          while (rows(mergedState.streams).some(item => String(item.id) === String(candidate.id))) {
+            candidate.id = String(pack.streamId || 'stream-' + id) + '-restored-' + suffix++;
+          }
+        }
+        mergedState.streams.push(candidate);
+        stream = candidate;
+        changed = true;
+        restoredStreams++;
+      }
+
+      for (const entry of selected) {
+        const definition = entry.definition;
+        let subject = rows(mergedState.subjects).find(item =>
+          (definition.workspaceId && String(item.id) === String(definition.workspaceId)) ||
+          (String(item.streamId) === String(stream.id) && normalizeName(item.name) === normalizeName(definition.name)));
+        if (!subject) {
+          const source = sourceSubject(pack, definition);
+          subject = source ? { ...source, streamId: String(stream.id) } : {
+            id: String(definition.workspaceId || 'subject-' + id + '-' + definition.id),
+            name: String(definition.name || 'Subject'),
+            streamId: String(stream.id),
+            order: rows(mergedState.subjects).filter(item => String(item.streamId) === String(stream.id)).length
+          };
+          if (rows(mergedState.subjects).some(item => String(item.id) === String(subject.id))) {
+            subject.id = String(subject.id) + '-restored';
+          }
+          mergedState.subjects.push(subject);
+          changed = true;
+          restoredSubjects++;
+        } else if (String(subject.streamId) !== String(stream.id)) {
+          subject.streamId = String(stream.id);
+          changed = true;
+        }
+
+        for (const name of entry.names) {
+          if (topicByCatalogIdentity(mergedState, definition, name, subject)) continue;
+          let sourceTopic = null;
+          for (const sourceState of sources) {
+            const sourceSubjectRecord = rows(sourceState.subjects).find(item =>
+              (definition.workspaceId && String(item.id) === String(definition.workspaceId)) ||
+              normalizeName(item.name) === normalizeName(definition.name));
+            sourceTopic = topicByCatalogIdentity(sourceState, definition, name, sourceSubjectRecord);
+            if (sourceTopic) break;
+          }
+          if (!sourceTopic) continue;
+          mergedState.topics.push({ ...sourceTopic, subjectId: String(subject.id) });
+          changed = true;
+          restoredTopics++;
+        }
+      }
+    }
+    return { changed, restoredStreams, restoredSubjects, restoredTopics };
+  }
   return {
     keys: { pack: packMarker, subject: subjectMarker, topic: topicMarker, deletedPack, deletedSubject, deletedTopic },
-    repair, markInstalled, markDeletedTopic, markDeletedSubject, markDeletedStream, diagnose, reconcileMergedIntents
+    repair, markInstalled, markDeletedTopic, markDeletedSubject, markDeletedStream, diagnose, reconcileMergedIntents,
+    restoreMissingInstalledRows
   };
 });
