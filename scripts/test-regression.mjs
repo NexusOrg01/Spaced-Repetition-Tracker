@@ -131,7 +131,7 @@ const cleanupFactory = vm.runInNewContext(
 const validatorStart=appCore.indexOf('function validateCurriculumCatalog(raw){');
 const validatorEnd=appCore.indexOf('\n  async function loadCurriculumCatalog()',validatorStart);
 assert.ok(validatorStart>=0&&validatorEnd>validatorStart,'the catalogue validator must remain independently testable');
-const validatorFactory=vm.runInNewContext('('+appCore.slice(validatorStart,validatorEnd).replace(/^\s*/,'').replace(/\n\s*$/,'')+'; return validateCurriculumCatalog; )',vm.createContext({}));
+const validatorFactory=vm.runInNewContext('(function(){\n'+appCore.slice(validatorStart,validatorEnd)+'\nreturn validateCurriculumCatalog;\n})()',vm.createContext({}));
 const staleCatalogue=JSON.parse(JSON.stringify(curriculumCatalog));
 for(const pack of staleCatalogue.packs)for(const subject of pack.subjects){
   if(subject.legacyIdPrefix==='curr-bs')subject.legacyIdPrefix='seed-bs';
@@ -140,7 +140,7 @@ for(const pack of staleCatalogue.packs)for(const subject of pack.subjects){
 }
 const normalizedStaleCatalogue=validatorFactory(staleCatalogue);
 const normalizedCommerce=normalizedStaleCatalogue.find(pack=>pack.id==='sl-al-commerce-si');
-assert.deepEqual(normalizedCommerce.subjects.map(subject=>subject.legacyIdPrefix),['curr-bs','curr-acc','curr-econ'],
+assert.deepEqual(Array.from(normalizedCommerce.subjects,subject=>subject.legacyIdPrefix),['curr-bs','curr-acc','curr-econ'],
   'stale seed-prefixed catalogues must be upgraded before they can create IDs removed by older startup cleanup');
 const commercePack = curriculumCatalog.packs.find(pack => pack.id === 'sl-al-commerce-si');
 assert.ok(commercePack, 'the built-in Sinhala Commerce pack must remain in the catalogue');
