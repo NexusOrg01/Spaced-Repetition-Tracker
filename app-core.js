@@ -173,6 +173,36 @@
   }
   function loadState(){const current=safeRead(STORAGE_KEY);if(current){try{return detachPristineStarterContent(normalizeState(current));}catch(e){console.warn('Saved data was invalid; using recovery defaults',e);}}const old=safeRead('alSrsTrackerV2');if(old){try{return migrateOld(old.state||old);}catch(e){console.warn(e);}}const legacyT=safeRead('alTrackerData'),legacyH=safeRead('alHistoryLog');if(Array.isArray(legacyT)||Array.isArray(legacyH))return migrateOld({topics:legacyT||[],history:legacyH||[]});return baseState();}
   function save(options={}){try{const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():(()=>{try{const x=JSON.parse(localStorage.getItem('recall.study.features.v1')||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{}}catch(_){return {}}})();if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');const entries=[{key:STORAGE_KEY,value:JSON.stringify(state)}];const ledgerEntry=window.NexusCurriculumIntegrity&&window.NexusCurriculumIntegrity.createIntentLedgerEntry?window.NexusCurriculumIntegrity.createIntentLedgerEntry(state,localStorage,{replace:options.replaceCurriculumLedger===true,replacePackIds:options.replaceCurriculumLedgerForPack?[String(options.replaceCurriculumLedgerForPack)]:[],packs:CURRICULUM_PACKS}):null;if(ledgerEntry)entries.push(ledgerEntry);window.NexusOfflineSyncQueue.commitWorkspace(localStorage,entries,{state,featureState},{returnOperationPayload:false});$('saveStatus').textContent='Saved on this device';$('saveStatus').style.color='';if(window.NexusCloudSync)window.NexusCloudSync.schedule();return true;}catch(e){$('saveStatus').textContent='Save failed — export backup';$('saveStatus').style.color='var(--red)';notify('Could not save data. Export a backup and check browser storage.');return false;}}
+
+  // Preview-only, privacy-conscious data-integrity trace. Records counts and catalogue
+  // identity evidence at persistence boundaries; never auth tokens or Study Hub content.
+  const DATA_INTEGRITY_DIAG_KEY='nexus.data-integrity-diagnostics.v1';
+  function summarizeIntegrityState(stage,raw){
+    const data=raw&&raw.state&&Array.isArray(raw.state.topics)?raw.state:raw;
+    if(!data||typeof data!=='object')return {stage,at:new Date().toISOString(),invalidState:true};
+    const streams=Array.isArray(data.streams)?data.streams:[],subjects=Array.isArray(data.subjects)?data.subjects:[],topics=Array.isArray(data.topics)?data.topics:[];
+    const pack=CURRICULUM_PACKS.find(item=>item.id==='sl-al-commerce-si');
+    const normName=value=>String(value||'').trim().toLocaleLowerCase();
+    const stream=pack?(streams.find(x=>String(x.id)===String(pack.streamId))||streams.find(x=>normName(x.name)===normName(pack.streamName))):null;
+    const perSubject=pack?pack.subjects.map(ps=>{
+      const subject=(stream&&subjects.find(x=>String(x.streamId)===String(stream.id)&&((ps.workspaceId&&String(x.id)===String(ps.workspaceId))||normName(x.name)===normName(ps.name))))||subjects.find(x=>(ps.workspaceId&&String(x.id)===String(ps.workspaceId))||normName(x.name)===normName(ps.name));
+      const rows=subject?topics.filter(x=>String(x.subjectId)===String(subject.id)):[];
+      const present=rows.filter(x=>ps.topics.includes(String(x.name)));
+      return {catalogueSubject:ps.id,subjectId:subject?String(subject.id):null,subjectPresent:!!subject,topicCount:rows.length,catalogueTopicsPresent:present.length,reviewedCatalogueTopics:present.filter(x=>Number(x.reviewCount)>0||!!x.lastReviewed).map(x=>String(x.name)),missingCatalogueTopics:ps.topics.filter(name=>!present.some(x=>String(x.name)===name))};
+    }):[];
+    const markers=Array.isArray(data.settings?.installedCurricula)?data.settings.installedCurricula.filter(x=>String(x).includes('sl-al-commerce-si')):[];
+    const tombstones=Array.isArray(data.settings?.curriculumTombstones)?data.settings.curriculumTombstones.filter(x=>String(x).includes('sl-al-commerce-si')):[];
+    return {stage,at:new Date().toISOString(),counts:{streams:streams.length,subjects:subjects.length,topics:topics.length,history:Array.isArray(data.history)?data.history.length:0},commerce:{streamPresent:!!stream,streamId:stream?String(stream.id):null,subjects:perSubject,installedMarkers:markers,tombstones},ownerAssigned:!!localStorage.getItem('nexus.cloud.last-user-id')};
+  }
+  window.NexusRecordDataIntegrityDiagnostic=function(stage,raw){
+    try{
+      const item=summarizeIntegrityState(String(stage||'unspecified'),raw||state);
+      let log=[];try{const old=JSON.parse(localStorage.getItem(DATA_INTEGRITY_DIAG_KEY)||'[]');if(Array.isArray(old))log=old;}catch(_){}
+      log.push(item);localStorage.setItem(DATA_INTEGRITY_DIAG_KEY,JSON.stringify(log.slice(-80)));
+      return item;
+    }catch(error){console.warn('Nexus data-integrity diagnostics could not record a stage.',error);return null;}
+  };
+  window.NexusGetDataIntegrityDiagnostics=function(){try{return JSON.parse(localStorage.getItem(DATA_INTEGRITY_DIAG_KEY)||'[]');}catch(_){return [];}};
   function notify(text,undoable=false){$('toastText').textContent=text;$('undoBtn').style.display=undoable?'':'none';$('toast').classList.toggle('undoable',undoable);$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),6500);}
   function startUndo(text){if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();undoState=clone(state);clearTimeout(undoTimer);notify(text,true);undoTimer=setTimeout(()=>{undoState=null;$('undoBtn').style.display='none';},6500);}
   function undo(){if(!undoState)return;state=undoState;undoState=null;clearTimeout(undoTimer);if(window.NexusUndoCascadeDelete)window.NexusUndoCascadeDelete();save();renderAll();$('toast').classList.remove('show');}
@@ -348,6 +378,7 @@
       if(!response.ok)throw new Error('Catalogue request returned '+response.status+'.');
       const loaded=validateCurriculumCatalog(await response.json());
       CURRICULUM_PACKS=loaded;
+      if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('catalog-loaded-before-repair',state);
       // Re-run integrity repair after the authoritative catalogue arrives. Startup first
       // normalizes local data against a lightweight fallback pack; that fallback can lag
       // behind catalogue updates and otherwise leave a partial workspace persisted.
@@ -362,6 +393,7 @@
           else state=previousState;
         }
       }
+      if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('catalog-loaded-after-repair',state);
       renderExplore();
     }catch(error){console.warn('Nexus curriculum catalogue could not be refreshed; using the built-in Commerce fallback.',error);}
   }
@@ -781,5 +813,5 @@
 
   })();
 
-  state=loadState();save();renderAll();
+  state=loadState();if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('startup-after-load',state);save();if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('startup-after-initial-save',state);renderAll();
   loadCurriculumCatalog();
