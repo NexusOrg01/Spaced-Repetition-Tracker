@@ -13,7 +13,7 @@ const cloudSyncSource = readFileSync(new URL('../cloud-sync.js', import.meta.url
 // catalogue must trigger a second repair, and every cloud/account snapshot must be repaired
 // before it is committed to local storage.
 assert.match(appCoreSource, /CURRICULUM_PACKS=loaded;[\s\S]*NexusCurriculumIntegrity\.applyIntentLedger\(clone\(state\),localStorage,undefined,loaded\)[\s\S]*NexusCurriculumIntegrity\.repair\(candidate,loaded/);
-assert.match(appCoreSource, /if\(JSON\.stringify\(repaired\)!==JSON\.stringify\(previousState\)\)[\s\S]*state=repaired;[\s\S]*if\(save\(\)\)renderAll\(\)/);
+assert.match(appCoreSource, /if\(JSON\.stringify\(repaired\)!==JSON\.stringify\(previousState\)\)[\s\S]*state=repaired;[\s\S]*if\(save\(\)\)\{renderAll\(\);renderSetup\(\);renderExplore\(\);\}/);
 assert.match(appCoreSource, /function save\(options=\{\}\)\{try\{[\s\S]*NexusCurriculumIntegrity\.applyIntentLedger\(state,localStorage,undefined,CURRICULUM_PACKS\)[\s\S]*NexusCurriculumIntegrity\.repair\(state,CURRICULUM_PACKS/,
   'each local persistence transaction must rehydrate durable install intent and repair catalogue rows before writing');
 assert.match(cloudSyncSource, /function applyWorkspaceSnapshot\(nextState,rawFeatures,ownerId,options=\{\}\)[\s\S]*NexusRepairInstalledCurricula\(nextState,ownerId\)[\s\S]*JSON\.stringify\(safeState\)/);
