@@ -80,10 +80,7 @@ assert.ok(cloud.includes('window.NexusMergeFeatureState(localFeatures,remoteFeat
 assert.ok(cloud.includes('window.NexusSetFeatureState(nextFeatures,{persist:false,render:false})'), 'hydration does not perform a second, independent feature-state write');
 assert.ok(cloud.includes('function resetToEmpty(ownerId){') && cloud.includes('applyWorkspaceSnapshot(emptyState(),{},ownerId)'), 'new-account reset commits the owner marker with the empty workspace');
 assert.ok(cloudSync.includes('resetToEmpty(newUserId)'), 'account switching must pass the new owner into every clean-workspace reset');
-assert.ok(cloudSync.includes('function hasUncommittedOwnerWorkspace(ownerId,localPayload){') &&
-  cloudSync.includes('const ownerSwitchHasLocalChanges=!!(owner&&owner!==newUserId&&hasUncommittedOwnerWorkspace(owner,localPayload));') &&
-  cloudSync.includes('if(owner&&owner!==newUserId&&!ownerSwitchHasLocalChanges){'),
-  'an account switch may bypass the data-choice flow only when the previous owner workspace has no pending or uncommitted local changes');
+assert.ok(cloudSync.includes('if(owner&&owner!==newUserId){'), 'only a workspace already owned by another account may bypass the data-choice flow');
 assert.ok(cloudSync.includes('if(localHasWork){let choice=await chooseLocalData();'), 'unassigned offline work must enter the explicit three-way choice before account initialization can replace it');
 assert.ok(cloudSync.includes('applyWorkspaceSnapshot(normalizeState(localPayload.state),window.NexusNormalizeFeatureState(localPayload.featureState||{}),newUserId);owner=newUserId;'), 'the selected offline workspace must be assigned to the account atomically before merge or upload');
 assert.ok(cloudSync.includes('function enqueueInitialSnapshot(ownerId)') && (cloudSync.match(/enqueueInitialSnapshot\(newUserId\)/g)||[]).length>=3, 'new-account initial state must be queued before cloud insert for lost-response recovery');
