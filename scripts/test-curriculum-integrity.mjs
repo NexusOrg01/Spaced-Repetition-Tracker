@@ -12,8 +12,8 @@ const cloudSyncSource = readFileSync(new URL('../cloud-sync.js', import.meta.url
 // Guard the real lifecycle wiring, not just the pure repair helper: the authoritative
 // catalogue must trigger a second repair, and every cloud/account snapshot must be repaired
 // before it is committed to local storage.
-assert.match(appCoreSource, /CURRICULUM_PACKS=loaded;[\s\S]*NexusCurriculumIntegrity\.applyIntentLedger[\s\S]*NexusCurriculumIntegrity\.repair\(candidate,loaded/);
-assert.match(appCoreSource, /if\(repair\.changed\)[\s\S]*state=repair\.state;[\s\S]*if\(save\(\)\)renderAll\(\)/);
+assert.match(appCoreSource, /CURRICULUM_PACKS=loaded;[\s\S]*NexusCurriculumIntegrity\.applyIntentLedger\(clone\(state\),localStorage,undefined,loaded\)[\s\S]*NexusCurriculumIntegrity\.repair\(candidate,loaded/);
+assert.match(appCoreSource, /if\(JSON\.stringify\(repaired\)!==JSON\.stringify\(previousState\)\)[\s\S]*state=repaired;[\s\S]*if\(save\(\)\)renderAll\(\)/);
 assert.match(cloudSyncSource, /function applyWorkspaceSnapshot\(nextState,rawFeatures,ownerId\)[\s\S]*NexusRepairInstalledCurricula\(nextState,ownerId\)[\s\S]*JSON\.stringify\(safeState\)/);
 assert.match(cloudSyncSource, /NexusRepairInstalledCurricula\(clone\(incomingState\),ownerId\)/);
 
@@ -294,16 +294,20 @@ assert.equal(ledgerRepair.state.history.length, 1);
 
 // A deliberate stream-deletion tombstone overrides the historical local install ledger.
 const deletedStreamState = cloneState(ledgerDamaged);
+const deletedSubjectIds = new Set(deletedStreamState.subjects.filter(s=>s.streamId===commerce.streamId).map(s=>s.id));
+deletedStreamState.streams = deletedStreamState.streams.filter(s=>s.id!==commerce.streamId);
+deletedStreamState.subjects = deletedStreamState.subjects.filter(s=>s.streamId!==commerce.streamId);
+deletedStreamState.topics = deletedStreamState.topics.filter(t=>!deletedSubjectIds.has(t.subjectId));
 deletedStreamState.settings.curriculumTombstones = [integrity.keys.streamDelete(commerce.id)];
-const streamDeletedHydration = integrity.applyIntentLedger(deletedStreamState, ledgerStorage);
+const streamDeletedHydration = integrity.applyIntentLedger(deletedStreamState, ledgerStorage, undefined, [commerce]);
 assert.ok(!streamDeletedHydration.settings.installedCurricula.includes(packMarker),
-  'a stream-deletion tombstone must override the independent install ledger');
+  'a stream-deletion tombstone without canonical descendants must override the independent install ledger');
 const streamDeletedRepair = integrity.repair(streamDeletedHydration, [commerce], {
   today: () => '2026-10-22', makeId: prefix => prefix + '-deleted-stream'
 });
 assert.equal(streamDeletedRepair.restoredTopics, 0);
-assert.equal(streamDeletedRepair.state.topics.length, 2,
-  'explicit stream deletion must not resurrect the Commerce pack');
+assert.equal(streamDeletedRepair.state.topics.length, 1,
+  'explicit stream deletion must not resurrect the Commerce pack or its reviewed topic');
 
 // Explicit scoped-install transitions replace any prior full-pack ledger entry.
 const resetLedgerEntry = integrity.createIntentLedgerEntry(
@@ -327,5 +331,23 @@ assert.ok(accountAHydrated.settings.installedCurricula.includes(packMarker),
 const accountBHydrated = integrity.applyIntentLedger(cloneState(ledgerDamaged), accountLedgerStorage, 'account-B');
 assert.ok(!accountBHydrated.settings.installedCurricula.includes(packMarker),
   'account A curriculum intent must never be hydrated into account B');
+
+// A contradictory stream tombstone is stale when canonical Commerce descendants survive.
+const staleTombstoneState = cloneState(ledgerDamaged);
+staleTombstoneState.streams = [{ id: commerce.streamId, name: commerce.streamName },
+  ...staleTombstoneState.streams.filter(s=>s.id!==commerce.streamId)];
+staleTombstoneState.subjects = [{ id: reviewedSubject.workspaceId, name: reviewedSubject.name, streamId: commerce.streamId, order: 0 },
+  ...staleTombstoneState.subjects.filter(s=>s.id!==reviewedSubject.workspaceId)];
+staleTombstoneState.topics = staleTombstoneState.topics.map(t=>t.id===locallyReviewed.id?{...t,subjectId:reviewedSubject.workspaceId}:t);
+staleTombstoneState.settings.curriculumTombstones = [integrity.keys.streamDelete(commerce.id)];
+const staleTombstoneHydrated = integrity.applyIntentLedger(staleTombstoneState, ledgerStorage, undefined, [commerce]);
+const repairedStaleTombstone = integrity.repair(staleTombstoneHydrated, [commerce], {
+  today: () => '2026-10-22', makeId: prefix => prefix + '-stale-tombstone'
+});
+assert.equal(repairedStaleTombstone.restoredTopics, 45,
+  'a stale stream tombstone must not block recovery when canonical Commerce records still survive');
+assert.ok(!repairedStaleTombstone.state.settings.curriculumTombstones.includes(integrity.keys.streamDelete(commerce.id)),
+  'contradictory stream tombstone must be removed only after surviving canonical footprint proves it stale');
+assert.equal(repairedStaleTombstone.state.topics.filter(t=>!t.id.startsWith('custom-')).length,46);
 
 console.log('Curriculum integrity tests passed: refresh recovery, three-way merge recovery, scoped installs, custom data, review schedules/history, read-only diagnostics, idempotence, and deletion tombstones.');
