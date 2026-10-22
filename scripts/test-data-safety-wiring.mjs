@@ -133,7 +133,7 @@ const topicDeletePatch=section(appCore,'// Patch delete functions with extra pro
 assert.ok(topicDeletePatch.includes("if(typeof origDeleteTopic === 'function') return origDeleteTopic(id);"), 'global topic-delete wrapper must delegate to the tombstone-aware core handler');
 assert.ok(!topicDeletePatch.includes('state.history = state.history.filter(h=>h.topicId!==id)'), 'topic deletion must not silently erase review history through a legacy wrapper');
 assert.ok(appCore.includes('NexusCurriculumIntegrity.createIntentLedgerEntry') && appCore.includes('replaceCurriculumLedger:true'), 'curriculum intent must be persisted separately and explicit replacement/reset actions must reset the intent ledger');
-assert.ok(appCore.includes('api.applyIntentLedger(data,localStorage,ownerId)'), 'normal state/cloud hydration must restore the local curriculum intent ledger before repair');
+assert.ok(appCore.includes('api.applyIntentLedger(data,localStorage,ownerId,CURRICULUM_PACKS)'), 'normal state/cloud hydration must restore the local curriculum intent ledger before repair');
 assert.ok(cloudSync.includes('NexusRepairInstalledCurricula(nextState,ownerId)') && cloudSync.includes('NexusRepairInstalledCurricula(clone(incomingState),ownerId)'), 'cloud snapshot repair must use the target account ledger rather than the previous local account ledger');
 const curriculumInstaller=section(appCore,'function installCurriculum(packId,','function renderTopics()', 'transactional curriculum installation');
 assert.ok(curriculumInstaller.includes('const previousState=state;') && curriculumInstaller.includes('state=clone(state);'), 'curriculum installation must stage mutations without altering the committed in-memory workspace');
