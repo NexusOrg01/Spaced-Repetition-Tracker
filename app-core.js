@@ -339,8 +339,23 @@
     return packs;
   }
   async function loadCurriculumCatalog(){
-    try{const response=await fetch('./curricula/catalog.json');if(!response.ok)throw new Error('Catalogue request returned '+response.status+'.');const loaded=validateCurriculumCatalog(await response.json());CURRICULUM_PACKS=loaded;renderExplore();}
-    catch(error){console.warn('Nexus curriculum catalogue could not be refreshed; using the built-in Commerce fallback.',error);}
+    try{
+      const response=await fetch('./curricula/catalog.json');
+      if(!response.ok)throw new Error('Catalogue request returned '+response.status+'.');
+      const loaded=validateCurriculumCatalog(await response.json());
+      CURRICULUM_PACKS=loaded;
+      // Re-run integrity repair after the authoritative catalogue arrives. Startup first
+      // normalizes local data against a lightweight fallback pack; that fallback can lag
+      // behind catalogue updates and otherwise leave a partial workspace persisted.
+      if(state&&window.NexusCurriculumIntegrity&&typeof window.NexusCurriculumIntegrity.repair==='function'){
+        const repair=window.NexusCurriculumIntegrity.repair(state,loaded,{today,makeId});
+        if(repair.changed){
+          state=repair.state;
+          if(save())renderAll();
+        }
+      }
+      renderExplore();
+    }catch(error){console.warn('Nexus curriculum catalogue could not be refreshed; using the built-in Commerce fallback.',error);}
   }
   function findPackStream(pack){
     // Prefer the stable pack stream ID even if a user has renamed the workspace label.
