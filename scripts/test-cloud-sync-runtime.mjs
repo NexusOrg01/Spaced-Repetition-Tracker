@@ -202,6 +202,7 @@ queue.commitWorkspace(storage, [
   { key: STATE_KEY, value: JSON.stringify(stateFor('second-offline-A')) },
   { key: FEATURE_KEY, value: JSON.stringify(featuresFor('second-offline-A')) }
 ], payloadFor('second-offline-A'));
+context.state = stateFor('second-offline-A');
 activeSession = { user: accountB };
 await window.NexusCloudSync.reconnect();
 assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'offline-A', 'signing into account B must not upload account A pending work');
@@ -628,6 +629,53 @@ assert.ok(!getElement('cloudHelpText').textContent.includes('"undefined" is not 
     'recovering Commerce must preserve manual workspace records from both local and cloud');
   assert.equal(queue.hasPending(storage, accountA.id), false,
     'the recovered clean-baseline workspace must be verified before its outbox entry is cleared');
+}
+
+
+// Critical account-handoff regression: Commerce is installed while signed out after a
+// previous account's clean baseline was saved. Signing into another account must pause
+// for an explicit data choice, not silently reset the populated local workspace.
+{
+  const signedOutCommerceState = {
+    schema: 3,
+    streams: [
+      { id: commercePack.streamId, name: commercePack.streamName },
+      { id: 'stream-commerce-manual-test', name: 'Test' }
+    ],
+    subjects: commercePack.subjects.map((subject, order) => ({
+      id: subject.workspaceId, name: subject.name, streamId: commercePack.streamId, order
+    })),
+    topics: commercePack.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+      id: String(subject.legacyIdPrefix || '').replace(/^seed-/i, 'curr-') + '-' + String(index + 1).padStart(2, '0'),
+      subjectId: subject.workspaceId, name, notes: '', custom: false, createdAt: '2026-10-22',
+      lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, reviewCount: 0, streak: 0, lapses: 0, archived: false
+    }))),
+    exams: [], history: [],
+    settings: { theme: 'system', intervalCap: 120, installedCurricula: ['installed:pack:sl-al-commerce-si'], curriculumTombstones: [] }
+  };
+  const previousOwnerBaseline = { state: stateFor(null), featureState: featuresFor(null) };
+  const previousOwnerStamp = rows.get(accountA.id)?.updated_at || null;
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(signedOutCommerceState));
+  storage.setItem(FEATURE_KEY, JSON.stringify(featuresFor(null)));
+  context.state = signedOutCommerceState;
+  queue.rememberBase(storage, accountA.id, previousOwnerBaseline, previousOwnerStamp);
+  queue.rememberStamp(storage, accountA.id, previousOwnerStamp);
+  assert.equal(queue.hasPending(storage, accountA.id), false,
+    'the signed-out pack-install reproduction starts without an old-account pending snapshot');
+  activeSession = { user: accountB };
+  await window.NexusCloudSync.reconnect();
+  const preserved = JSON.parse(storage.getItem(STATE_KEY));
+  assert.equal(preserved.topics.length, 46,
+    'signing into a different account must not silently erase a signed-out Commerce install');
+  assert.ok(preserved.settings.installedCurricula.includes('installed:pack:sl-al-commerce-si'),
+    'the Commerce install marker must remain when account setup needs an explicit data choice');
+  assert.equal(storage.getItem(OWNER), accountA.id,
+    'the new account must not claim ownership until the data choice is completed');
+  assert.equal(rows.get(accountB.id).payload.state.topics.length, 0,
+    'local Commerce data must not be uploaded to the new account before explicit consent');
+  assert.equal(getElement('cloudStatus').textContent, 'Data choice required',
+    'the user must see that account setup is paused instead of losing local data');
 }
 
 console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, and clean-baseline recovery from incomplete cloud snapshots.');
