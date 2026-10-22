@@ -754,4 +754,4 @@ assert.ok(!getElement('cloudHelpText').textContent.includes('"undefined" is not 
     'the sign-in must pause for an explicit data choice instead of silently adopting the target pending snapshot');
 }
 
-console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, and clean-baseline recovery from incomplete cloud snapshots.');
+console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, and target-account pending-snapshot isolation.');
