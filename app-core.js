@@ -172,7 +172,7 @@
     return data;
   }
   function loadState(){const current=safeRead(STORAGE_KEY);if(current){try{return detachPristineStarterContent(normalizeState(current));}catch(e){console.warn('Saved data was invalid; using recovery defaults',e);}}const old=safeRead('alSrsTrackerV2');if(old){try{return migrateOld(old.state||old);}catch(e){console.warn(e);}}const legacyT=safeRead('alTrackerData'),legacyH=safeRead('alHistoryLog');if(Array.isArray(legacyT)||Array.isArray(legacyH))return migrateOld({topics:legacyT||[],history:legacyH||[]});return baseState();}
-  function save(options={}){try{if(window.NexusCurriculumIntegrity&&typeof window.NexusCurriculumIntegrity.repair==='function'){if(typeof window.NexusCurriculumIntegrity.applyIntentLedger==='function')window.NexusCurriculumIntegrity.applyIntentLedger(state,localStorage,undefined,CURRICULUM_PACKS);state=window.NexusCurriculumIntegrity.repair(state,CURRICULUM_PACKS,{today,makeId}).state;}const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():(()=>{try{const x=JSON.parse(localStorage.getItem('recall.study.features.v1')||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{}}catch(_){return {}}})();if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');const entries=[{key:STORAGE_KEY,value:JSON.stringify(state)}];const ledgerEntry=window.NexusCurriculumIntegrity&&window.NexusCurriculumIntegrity.createIntentLedgerEntry?window.NexusCurriculumIntegrity.createIntentLedgerEntry(state,localStorage,{replace:options.replaceCurriculumLedger===true,replacePackIds:options.replaceCurriculumLedgerForPack?[String(options.replaceCurriculumLedgerForPack)]:[],packs:CURRICULUM_PACKS}):null;if(ledgerEntry)entries.push(ledgerEntry);window.NexusOfflineSyncQueue.commitWorkspace(localStorage,entries,{state,featureState},{returnOperationPayload:false});$('saveStatus').textContent='Saved on this device';$('saveStatus').style.color='';if(window.NexusCloudSync)window.NexusCloudSync.schedule();return true;}catch(e){$('saveStatus').textContent='Save failed — export backup';$('saveStatus').style.color='var(--red)';notify('Could not save data. Export a backup and check browser storage.');return false;}}
+  function save(options={}){try{if(window.NexusCurriculumIntegrity&&typeof window.NexusCurriculumIntegrity.repair==='function'){if(typeof window.NexusCurriculumIntegrity.applyIntentLedger==='function')window.NexusCurriculumIntegrity.applyIntentLedger(state,localStorage,undefined,CURRICULUM_PACKS);state=window.NexusCurriculumIntegrity.repair(state,CURRICULUM_PACKS,{today,makeId}).state;}if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('local-save-after-repair',state);const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():(()=>{try{const x=JSON.parse(localStorage.getItem('recall.study.features.v1')||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{}}catch(_){return {}}})();if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');const entries=[{key:STORAGE_KEY,value:JSON.stringify(state)}];const ledgerEntry=window.NexusCurriculumIntegrity&&window.NexusCurriculumIntegrity.createIntentLedgerEntry?window.NexusCurriculumIntegrity.createIntentLedgerEntry(state,localStorage,{replace:options.replaceCurriculumLedger===true,replacePackIds:options.replaceCurriculumLedgerForPack?[String(options.replaceCurriculumLedgerForPack)]:[],packs:CURRICULUM_PACKS}):null;if(ledgerEntry)entries.push(ledgerEntry);window.NexusOfflineSyncQueue.commitWorkspace(localStorage,entries,{state,featureState},{returnOperationPayload:false});if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('local-save-committed',state);$('saveStatus').textContent='Saved on this device';$('saveStatus').style.color='';if(window.NexusCloudSync)window.NexusCloudSync.schedule();return true;}catch(e){$('saveStatus').textContent='Save failed — export backup';$('saveStatus').style.color='var(--red)';notify('Could not save data. Export a backup and check browser storage.');return false;}}
 
   // Preview-only, privacy-conscious data-integrity trace. Records counts and catalogue
   // identity evidence at persistence boundaries; never auth tokens or Study Hub content.
@@ -192,7 +192,11 @@
     }):[];
     const markers=Array.isArray(data.settings?.installedCurricula)?data.settings.installedCurricula.filter(x=>String(x).includes('sl-al-commerce-si')):[];
     const tombstones=Array.isArray(data.settings?.curriculumTombstones)?data.settings.curriculumTombstones.filter(x=>String(x).includes('sl-al-commerce-si')):[];
-    return {stage,at:new Date().toISOString(),counts:{streams:streams.length,subjects:subjects.length,topics:topics.length,history:Array.isArray(data.history)?data.history.length:0},commerce:{streamPresent:!!stream,streamId:stream?String(stream.id):null,subjects:perSubject,installedMarkers:markers,tombstones},ownerAssigned:!!localStorage.getItem('nexus.cloud.last-user-id')};
+    const owner=String(localStorage.getItem('nexus.cloud.last-user-id')||'');
+    const ledgerKey='nexus.curriculum.intent-ledger.v1.'+encodeURIComponent(owner?'account:'+owner:'local');
+    let intentLedger={present:false,commerceMarkers:[]};
+    try{const ledger=JSON.parse(localStorage.getItem(ledgerKey)||'null');if(ledger&&ledger.schemaVersion===1&&Array.isArray(ledger.installedCurricula))intentLedger={present:true,commerceMarkers:ledger.installedCurricula.filter(x=>String(x).includes('sl-al-commerce-si')).slice(0,20)};}catch(_){}
+    return {stage,at:new Date().toISOString(),counts:{streams:streams.length,subjects:subjects.length,topics:topics.length,history:Array.isArray(data.history)?data.history.length:0},commerce:{streamPresent:!!stream,streamId:stream?String(stream.id):null,subjects:perSubject,installedMarkers:markers,tombstones},ownerAssigned:!!owner,ownerScope:owner?'account':'local',intentLedger};
   }
   window.NexusRecordDataIntegrityDiagnostic=function(stage,raw){
     try{
@@ -456,11 +460,13 @@
       }
       const scope=subjectId?(topicName!==null?'topic':'subject'):'pack';
       if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markInstall(state,pack,scope,subjectId,topicName);
+      if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('install-after-markers-before-save',state);
       if(!save({replaceCurriculumLedgerForPack:pack.id})){
         state=previousState;renderAll();renderSetup();renderExplore();
         notify('Installation was not saved. Your previous workspace is unchanged; check browser storage and try again.');
         return;
       }
+      if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('install-after-save-confirmed',state);
       // Setup renders the actual Stream/Subject tree, which renderAll() intentionally skips while Explore is active.
       renderAll();renderSetup();renderExplore();
       notify(added?'Added '+added+' curriculum topic'+(added===1?'':'s')+' to your Library.':'Everything in this selection is already installed.');
@@ -589,6 +595,12 @@
   function deleteExam(id){const ex=state.exams.find(e=>e.id===id);if(!ex||!confirm(`Delete “${ex.name}”?`))return;startUndo('Exam deleted.');state.exams=state.exams.filter(e=>e.id!==id);save();renderAll();notify('Exam deleted.',true);}
   function downloadFile(filename,content,type){const blob=new Blob([content],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);}
   function exportBackup(){const packet={app:'Nexus Spaced Repetition Tracker',schema:3,exportedAt:new Date().toISOString(),state};downloadFile(`nexus-backup-${today()}.json`,JSON.stringify(packet,null,2),'application/json;charset=utf-8');notify('Full backup downloaded. Keep it somewhere safe.');}
+  function exportDataIntegrityDiagnostics(){
+    if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('manual-diagnostics-export',state);
+    const packet={app:'Nexus Spaced Repetition Tracker',schema:1,exportedAt:new Date().toISOString(),purpose:'Privacy-conscious diagnostic trace for curriculum persistence troubleshooting. Contains record counts, built-in Commerce catalogue names/identifiers, install/tombstone markers, and persistence-stage timestamps. It excludes authentication tokens and Study Hub content.',diagnostics:window.NexusGetDataIntegrityDiagnostics?window.NexusGetDataIntegrityDiagnostics():[]};
+    downloadFile(`nexus-data-integrity-diagnostics-${today()}.json`,JSON.stringify(packet,null,2),'application/json;charset=utf-8');
+    notify('Data-integrity diagnostics downloaded. Send this JSON file for analysis.');
+  }
   const csvCell=v=>window.NexusBackupRestoreUtils.csvCell(v);
   function exportHistory(){const rows=[['Review date','Stream','Subject','Topic','Rating','Rating meaning','Interval days','Next due','Note'],...state.history.map(h=>[h.reviewedAt,h.streamName,h.subjectName,h.topicName,h.rating,RATING_LABELS[h.rating],h.intervalDays,h.dueDate,h.note])];downloadFile(`nexus-history-${today()}.csv`,'\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('History CSV exported.');}
   function exportTopics(){const rows=[['Stream','Subject','Topic','Notes','Last reviewed','Last rating','Next due','Interval days','Review count','Streak','Lapses','Status'],...state.topics.map(t=>{const d=subjectDisplay(t);return[d.stream,d.subject,t.name,t.notes,t.lastReviewed,t.lastRating,t.dueDate,t.intervalDays,t.reviewCount,t.streak,t.lapses,status(t)];})];downloadFile(`nexus-topics-${today()}.csv`,'\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('Topics CSV exported.');}
@@ -629,6 +641,13 @@
   $('reviewNote').addEventListener('input',()=>{});
   $('themeBtn').addEventListener('click',cycleTheme);$('themeSelect').addEventListener('change',()=>{state.settings.theme=$('themeSelect').value;save();applyTheme();notify('Theme preference saved.');});$('helpBtn').addEventListener('click',openHelp);$('installBtn').addEventListener('click',install);$('supportNexusBtn').addEventListener('click',()=>$('supportNexusDialog').showModal());$('pwaInstallOption').addEventListener('click',installPwa);
   $('backupBtn').addEventListener('click',exportBackup);$('menuBackup').addEventListener('click',()=>{$('moreMenu').open=false;exportBackup();});$('restoreBtn').addEventListener('click',()=>$('importFile').click());$('menuRestore').addEventListener('click',()=>{$('moreMenu').open=false;$('importFile').click();});$('importFile').addEventListener('change',e=>importBackup(e.target.files?.[0]));
+  const integrityDiagnosticsBtn=$('dataIntegrityDiagnosticsBtn');
+  if(integrityDiagnosticsBtn){
+    const diagnosticsHost=String(location.hostname||'').toLocaleLowerCase();
+    const productionHost=diagnosticsHost==='spaced-repetition-tracker-delta.vercel.app';
+    const previewHost=diagnosticsHost.endsWith('.vercel.app')&&!productionHost;
+    if(previewHost){integrityDiagnosticsBtn.hidden=false;integrityDiagnosticsBtn.style.display='inline-flex';integrityDiagnosticsBtn.addEventListener('click',exportDataIntegrityDiagnostics);}
+  }
   $('historyCsvBtn').addEventListener('click',exportHistory);$('setupHistoryCsvBtn').addEventListener('click',exportHistory);$('menuHistoryCsv').addEventListener('click',()=>{exportHistory();$('moreMenu').open=false;});$('setupTopicsCsvBtn').addEventListener('click',exportTopics);$('menuTopicsCsv').addEventListener('click',()=>{exportTopics();$('moreMenu').open=false;});$('clearHistoryBtn').addEventListener('click',clearHistory);$('resetBtn').addEventListener('click',resetAll);$('undoBtn').addEventListener('click',undo);$('menuSettings').addEventListener('click',()=>{switchView('setup');$('moreMenu').open=false;});
   $('topicDialog').addEventListener('close',()=>{editTopicId=null;});$('streamDialog').addEventListener('close',()=>{editStreamId=null;});$('subjectDialog').addEventListener('close',()=>{editSubjectId=null;});$('examDialog').addEventListener('close',()=>{editExamId=null;});$('reviewDialog').addEventListener('close',()=>{reviewTopicId=null;});
   document.querySelectorAll('[data-rating]').forEach(b=>b.addEventListener('focus',()=>{}));
