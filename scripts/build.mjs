@@ -28,8 +28,9 @@ export function resolvePreviewConfig(env) {
   const key = String(env.NEXUS_SUPABASE_ANON_KEY || '').trim();
   const usesLegacyRequiredStaging = env.VERCEL_ENV === 'preview' &&
     env.VERCEL_GIT_COMMIT_REF === 'feat/account-bound-offline-sync';
-  // The Commerce-fix preview stays offline-safe until a separate test project is configured.
-  if (!rawUrl && !key && !usesLegacyRequiredStaging) return null;
+  // The Commerce-fix preview stays offline-safe until both values from a separate test project reach the build.
+  // A partially configured preview must never receive half a cloud configuration or fail its static build.
+  if ((!rawUrl || !key) && !usesLegacyRequiredStaging) return null;
   if (!rawUrl || !key) throw new Error('Preview branch requires both NEXUS_SUPABASE_URL and NEXUS_SUPABASE_ANON_KEY.');
   let url;
   try { url = new URL(rawUrl); } catch { throw new Error('NEXUS_SUPABASE_URL must be a valid HTTPS Supabase project URL.'); }
