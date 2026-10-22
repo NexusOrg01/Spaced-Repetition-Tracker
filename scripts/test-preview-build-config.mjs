@@ -28,6 +28,24 @@ assert.deepEqual(resolvePreviewConfig({
   url: 'https://nexus-staging-test.supabase.co',
   key: 'sb_publishable_test_key_value_long_enough'
 }, 'Cloudflare branch previews may enable auth with a separate staging project');
+assert.deepEqual(resolvePreviewConfig({
+  VERCEL_ENV: 'preview',
+  VERCEL_GIT_COMMIT_REF: 'ai-dev/fix-signin-preserve-offline-workspace',
+  NEXUS_SUPABASE_URL: previewEnv.NEXUS_SUPABASE_URL,
+  NEXUS_SUPABASE_ANON_KEY: previewEnv.NEXUS_SUPABASE_ANON_KEY
+}), {
+  url: 'https://nexus-staging-test.supabase.co',
+  key: 'sb_publishable_test_key_value_long_enough'
+}, 'the account-handoff fix preview may use only the isolated staging project');
+assert.deepEqual(resolvePreviewConfig({
+  CF_PAGES: '1',
+  CF_PAGES_BRANCH: 'ai-dev/fix-signin-preserve-offline-workspace',
+  NEXUS_SUPABASE_URL: previewEnv.NEXUS_SUPABASE_URL,
+  NEXUS_SUPABASE_ANON_KEY: previewEnv.NEXUS_SUPABASE_ANON_KEY
+}), {
+  url: 'https://nexus-staging-test.supabase.co',
+  key: 'sb_publishable_test_key_value_long_enough'
+}, 'the account-handoff Cloudflare preview may use the isolated staging project');
 assert.equal(resolvePreviewConfig({
   VERCEL_ENV: 'preview',
   VERCEL_GIT_COMMIT_REF: 'ai-dev/rebuild-commerce-sync-integrity'
@@ -36,6 +54,14 @@ assert.equal(resolvePreviewConfig({
   CF_PAGES: '1',
   CF_PAGES_BRANCH: 'ai-dev/rebuild-commerce-sync-integrity'
 }), null, 'the Cloudflare fix preview must remain offline-safe when no isolated test credentials are configured');
+assert.equal(resolvePreviewConfig({
+  VERCEL_ENV: 'preview',
+  VERCEL_GIT_COMMIT_REF: 'ai-dev/fix-signin-preserve-offline-workspace'
+}), null, 'the account-handoff preview must remain offline-safe without isolated test credentials');
+assert.equal(resolvePreviewConfig({
+  CF_PAGES: '1',
+  CF_PAGES_BRANCH: 'ai-dev/fix-signin-preserve-offline-workspace'
+}), null, 'the account-handoff Cloudflare preview must remain offline-safe without isolated test credentials');
 assert.equal(resolvePreviewConfig({
   CF_PAGES: '1',
   CF_PAGES_BRANCH: 'ai-dev/rebuild-commerce-sync-integrity',
