@@ -42,12 +42,12 @@ assert.equal(resolvePreviewConfig({
   NEXUS_SUPABASE_URL: previewEnv.NEXUS_SUPABASE_URL,
   NEXUS_SUPABASE_ANON_KEY: previewEnv.NEXUS_SUPABASE_ANON_KEY
 }), null, 'Cloudflare production/main must never inject staging values');
-assert.equal(resolvePreviewConfig({
+assert.throws(() => resolvePreviewConfig({
   CF_PAGES: '1',
   CF_PAGES_BRANCH: 'ai-dev/rebuild-commerce-sync-integrity',
   NEXUS_SUPABASE_URL: 'https://txugbdavblpettcnhcxl.supabase.co',
   NEXUS_SUPABASE_ANON_KEY: previewEnv.NEXUS_SUPABASE_ANON_KEY
-}), null, 'Cloudflare previews must still reject production Supabase');
+}), /separate HTTPS Supabase project/, 'Cloudflare previews must still reject production Supabase');
 assert.throws(() => resolvePreviewConfig({ ...previewEnv, NEXUS_SUPABASE_URL: 'https://txugbdavblpettcnhcxl.supabase.co' }),
   /separate HTTPS Supabase project/, 'production Supabase must be rejected as a staging target');
 assert.throws(() => resolvePreviewConfig({ ...previewEnv, NEXUS_SUPABASE_ANON_KEY: 'sb_secret_this_must_not_be_accepted' }),
