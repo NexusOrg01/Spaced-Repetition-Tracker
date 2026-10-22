@@ -20,6 +20,11 @@
     conflicts.push({path,base:shown(base),local:shown(local),remote:shown(remote),basePresent:base!==ABSENT,localPresent:local!==ABSENT,remotePresent:remote!==ABSENT,resolution:resolution||'local'});
   }
   function mergeValue(base,local,remote,path,conflicts){
+    // Curriculum install intent and deletion tombstones are sets, not opaque settings
+    // blobs. Merge membership against the same base so a one-sided install or delete
+    // survives a three-way cloud reconciliation without clobbering unrelated markers.
+    if(/(?:^|\\.)settings\\.(installedCurricula|curriculumTombstones)$/.test(path)&&
+      (Array.isArray(base)||Array.isArray(local)||Array.isArray(remote)))return mergeSet(base,local,remote);
     if(same(local,remote))return copy(local);
     if(same(local,base))return copy(remote);
     if(same(remote,base))return copy(local);
