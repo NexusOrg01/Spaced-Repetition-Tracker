@@ -20,9 +20,9 @@ assert.match(appCoreSource, /window\.NexusCreateCurriculumIntentLedgerEntry=func
   'cloud snapshot transactions must have an owner-scoped curriculum ledger writer');
 assert.match(cloudSyncSource, /function curriculumIntentLedgerEntry\(state,ownerId,replace=true\)/,
   'all cloud persistence paths must use one explicit curriculum-ledger transaction helper');
-assert.match(cloudSyncSource, /const intentEntry=curriculumIntentLedgerEntry\(safeState,ownerId,true\);if\(intentEntry\)entries\.push\(intentEntry\)/,
+assert.match(cloudSyncSource, /const intentEntry=curriculumIntentLedgerEntry\(safeState,ownerId,true\);\s*if\(intentEntry\)entries\.push\(intentEntry\)/,
   'cloud hydration and workspace choices must atomically persist repaired workspace plus install intent');
-assert.match(cloudSyncSource, /const intentEntry=curriculumIntentLedgerEntry\(nextState,userId,true\);if\(intentEntry\)workspaceEntries\.push\(intentEntry\)/,
+assert.match(cloudSyncSource, /const intentEntry=curriculumIntentLedgerEntry\(nextState,userId,true\);\s*if\(intentEntry\)workspaceEntries\.push\(intentEntry\)/,
   'three-way cloud reconciliation must atomically persist curriculum intent with its new merge base');
 
 const pack = {
