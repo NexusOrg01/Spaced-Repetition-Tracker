@@ -14,17 +14,21 @@ const cloudSyncSource = readFileSync(new URL('../cloud-sync.js', import.meta.url
 // before it is committed to local storage.
 assert.match(appCoreSource, /CURRICULUM_PACKS=loaded;[\s\S]*NexusCurriculumIntegrity\.applyIntentLedger\(clone\(state\),localStorage,undefined,loaded\)[\s\S]*NexusCurriculumIntegrity\.repair\(candidate,loaded/);
 assert.match(appCoreSource, /if\(JSON\.stringify\(repaired\)!==JSON\.stringify\(previousState\)\)[\s\S]*state=repaired;[\s\S]*if\(save\(\)\)renderAll\(\)/);
-assert.match(cloudSyncSource, /function applyWorkspaceSnapshot\(nextState,rawFeatures,ownerId\)[\s\S]*NexusRepairInstalledCurricula\(nextState,ownerId\)[\s\S]*JSON\.stringify\(safeState\)/);
+assert.match(appCoreSource, /function save\(options=\{\}\)\{try\{[\s\S]*NexusCurriculumIntegrity\.applyIntentLedger\(state,localStorage,undefined,CURRICULUM_PACKS\)[\s\S]*NexusCurriculumIntegrity\.repair\(state,CURRICULUM_PACKS/,
+  'each local persistence transaction must rehydrate durable install intent and repair catalogue rows before writing');
+assert.match(cloudSyncSource, /function applyWorkspaceSnapshot\(nextState,rawFeatures,ownerId,options=\{\}\)[\s\S]*NexusRepairInstalledCurricula\(nextState,ownerId\)[\s\S]*JSON\.stringify\(safeState\)/);
 assert.match(cloudSyncSource, /NexusRepairInstalledCurricula\(clone\(incomingState\),ownerId\)/);
 assert.match(appCoreSource, /window\.NexusCreateCurriculumIntentLedgerEntry=function\(data,ownerId,options=\{\}\)/,
   'cloud snapshot transactions must have an owner-scoped curriculum ledger writer');
-assert.match(cloudSyncSource, /function curriculumIntentLedgerEntry\(state,ownerId,replace=true\)/,
+assert.match(cloudSyncSource, /function curriculumIntentLedgerEntry\(state,ownerId,replace=false\)/,
   'all cloud persistence paths must use one explicit curriculum-ledger transaction helper');
-assert.match(cloudSyncSource, /const intentEntry=curriculumIntentLedgerEntry\(safeState,ownerId,true\);\s*if\(intentEntry\)entries\.push\(intentEntry\)/,
+assert.match(cloudSyncSource, /function resetToEmpty\\(ownerId\\)[\\s\\S]*applyWorkspaceSnapshot\\(emptyState\\(\\),\\{\\},ownerId,\\{replaceCurriculumIntent:true\\}\\)/,
+  'an intentional clean reset must explicitly clear only that account’s prior curriculum install intent');
+assert.match(cloudSyncSource, /const intentEntry=curriculumIntentLedgerEntry\(safeState,ownerId,options\.replaceCurriculumIntent===true\);\s*if\(intentEntry\)entries\.push\(intentEntry\)/,
   'cloud hydration and workspace choices must atomically persist repaired workspace plus install intent');
-assert.match(cloudSyncSource, /const intentEntry=curriculumIntentLedgerEntry\(nextState,userId,true\);\s*if\(intentEntry\)workspaceEntries\.push\(intentEntry\)/,
+assert.match(cloudSyncSource, /const intentEntry=curriculumIntentLedgerEntry\(nextState,userId,false\);\s*if\(intentEntry\)workspaceEntries\.push\(intentEntry\)/,
   'three-way cloud reconciliation must atomically persist curriculum intent with its new merge base');
-assert.match(cloudSyncSource, /function alignPendingToCurrentWorkspace\(userId,localPayload,pending\)[\s\S]*?const intentEntry=curriculumIntentLedgerEntry\(nextState,userId,true\);\s*if\(intentEntry\)workspaceEntries\.push\(intentEntry\)/,
+assert.match(cloudSyncSource, /function alignPendingToCurrentWorkspace\(userId,localPayload,pending\)[\s\S]*?const intentEntry=curriculumIntentLedgerEntry\(nextState,userId,false\);\s*if\(intentEntry\)workspaceEntries\.push\(intentEntry\)/,
   'stale local/queue alignment must preserve install intent when it rewrites the offline queue');
 assert.match(cloudSyncSource, /Before a write, never trust a stale outbox copy over the live same-account workspace/);
 assert.match(cloudSyncSource, /window\.NexusRepairInstalledCurricula\(clone\(payload\.state\),uploadUserId\)/,
@@ -88,6 +92,23 @@ assert.equal(legacyRepair.restoredTopics, 2);
 assert.equal(legacy.topics.length, 3);
 assert.equal(legacy.topics.find(t => t.name === 'Topic two').reviewCount, 1);
 
+// A canonical pack stream is durable installation evidence even when child records and
+// the workspace marker were lost. Renaming the display name must not block reconstruction.
+const streamOnly = {
+  schema: 3,
+  streams: [{ id: 'stream-commerce', name: 'My renamed Commerce stream' }, { id: 'custom-stream', name: 'My sample stream' }],
+  subjects: [], topics: [], history: [],
+  settings: { installedCurricula: [], curriculumTombstones: [] }
+};
+const streamOnlyRepair = integrity.repair(streamOnly, [pack], {
+  today: () => '2026-10-22', makeId: prefix => prefix + '-stream-only'
+});
+assert.equal(streamOnlyRepair.restoredStreams, 0, 'a surviving renamed pack stream must not be duplicated');
+assert.equal(streamOnlyRepair.restoredSubjects, 1, 'a surviving canonical pack stream must recover its missing subject');
+assert.equal(streamOnlyRepair.restoredTopics, 3, 'a surviving canonical pack stream must recover missing catalogue topics');
+assert.equal(streamOnly.streams.find(s => s.id === 'stream-commerce').name, 'My renamed Commerce stream', 'recovery must preserve a user-renamed stream label');
+assert.ok(streamOnly.streams.some(s => s.id === 'custom-stream'), 'canonical stream recovery must preserve custom streams');
+
 // Regression: deliberate user deletions are tombstoned and must not be resurrected.
 const deletedTopic = partial.topics.find(t => t.name === 'Topic three');
 integrity.markDeletedTopic(partial, [pack], deletedTopic);
@@ -104,6 +125,22 @@ assert.ok(!partial.topics.some(t => t.name === 'Topic three'), 'explicitly delet
 const catalogue = JSON.parse(readFileSync(new URL('../curricula/catalog.json', import.meta.url), 'utf8'));
 const commerce = catalogue.packs.find(item => item.id === 'sl-al-commerce-si');
 assert.ok(commerce && commerce.subjects.length >= 3, 'the real Sinhala Commerce catalogue must be exercised');
+
+// Mirror the observed refresh case: the renamed canonical Commerce stream survives, but
+// all children and the workspace marker are missing. The real 46-topic catalogue must rebuild.
+const renamedStreamOnly = {
+  schema: 3,
+  streams: [{ id: commerce.streamId, name: 'My renamed Commerce stream' }, { id: 'custom-stream-live', name: 'My manually added stream' }],
+  subjects: [], topics: [], history: [], exams: [],
+  settings: { installedCurricula: [], curriculumTombstones: [] }
+};
+const renamedStreamRepair = integrity.repair(renamedStreamOnly, [commerce], {
+  today: () => '2026-10-22', makeId: prefix => prefix + '-renamed-stream'
+});
+assert.equal(renamedStreamRepair.restoredTopics, 46, 'the exact surviving-stream/missing-children case must restore the full real Commerce pack');
+assert.equal(renamedStreamOnly.subjects.length, commerce.subjects.length, 'all Commerce subjects must be restored under the renamed stream');
+assert.equal(renamedStreamOnly.streams.find(s => s.id === commerce.streamId).name, 'My renamed Commerce stream');
+assert.ok(renamedStreamOnly.streams.some(s => s.id === 'custom-stream-live'), 'user-created streams must survive full pack reconstruction');
 const reviewedSubject = commerce.subjects[0];
 const reviewedName = reviewedSubject.topics[0];
 const reviewedState = {
@@ -309,6 +346,16 @@ assert.ok(!explicitStreamDeleteMerge.payload.state.settings.installedCurricula.i
 
 
 const selectedTopicMarker = integrity.keys.topicScope(commerce.id, reviewedSubject.id, reviewedName);
+const scopedStreamOnly = {
+  schema: 3, streams: [{ id: commerce.streamId, name: 'Renamed Commerce' }], subjects: [], topics: [], history: [],
+  settings: { installedCurricula: [selectedTopicMarker], curriculumTombstones: [] }
+};
+const scopedStreamRepair = integrity.repair(scopedStreamOnly, [commerce], {
+  today: () => '2026-10-22', makeId: prefix => prefix + '-scoped-stream'
+});
+assert.ok(!scopedStreamOnly.settings.installedCurricula.includes(packMarker), 'canonical stream evidence must not upgrade a deliberately scoped install to the full pack');
+assert.equal(scopedStreamOnly.subjects.length, 1, 'a deliberately topic-scoped install must restore only its subject');
+assert.equal(scopedStreamOnly.topics.length, 1, 'a deliberately topic-scoped install must restore only the selected topic');
 // A scoped marker from a stale client must not erase a last-verified full-pack install.
 const scopedLocal = cloneState(staleLocalState);
 scopedLocal.settings.installedCurricula = [selectedTopicMarker];
