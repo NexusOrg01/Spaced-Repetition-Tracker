@@ -63,10 +63,15 @@ function applyIntentLedger(state,storage,ownerId,packs){
  state.settings.curriculumTombstones=Array.from(deleted).slice(-5000);
  return state;
 }
+function markerPackId(marker){const match=String(marker||'').match(/^installed:(?:pack|subject|topic):([^:]+)(?::|$)/);return match?match[1]:'';}
 function createIntentLedgerEntry(state,storage,options={}){
  if(!storage||typeof storage.getItem!=='function')return null;
  const ownerId=Object.prototype.hasOwnProperty.call(options,'ownerId')?options.ownerId:undefined;
- const installed=new Set(options.replace===true?[]:readIntentLedger(storage,ownerId));
+ // A normal install may revise one pack's scope; replace only that pack's historical
+ // markers rather than erasing intent for every curriculum in the independent ledger.
+ const replacePackIds=new Set((Array.isArray(options.replacePackIds)?options.replacePackIds:[]).map(String));
+ const previous=options.replace===true?[]:readIntentLedger(storage,ownerId).filter(marker=>!replacePackIds.has(markerPackId(marker)));
+ const installed=new Set(previous);
  const current=rec(state)&&rec(state.settings)&&Array.isArray(state.settings.installedCurricula)?state.settings.installedCurricula:[];
  for(const marker of current)if(typeof marker==='string'&&marker)installed.add(marker);
  const deleted=new Set(rec(state)&&rec(state.settings)&&Array.isArray(state.settings.curriculumTombstones)?state.settings.curriculumTombstones:[]);
