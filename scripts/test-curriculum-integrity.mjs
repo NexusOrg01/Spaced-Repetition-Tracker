@@ -24,6 +24,8 @@ assert.match(cloudSyncSource, /const intentEntry=curriculumIntentLedgerEntry\(sa
   'cloud hydration and workspace choices must atomically persist repaired workspace plus install intent');
 assert.match(cloudSyncSource, /const intentEntry=curriculumIntentLedgerEntry\(nextState,userId,true\);\s*if\(intentEntry\)workspaceEntries\.push\(intentEntry\)/,
   'three-way cloud reconciliation must atomically persist curriculum intent with its new merge base');
+assert.match(cloudSyncSource, /function alignPendingToCurrentWorkspace\(userId,localPayload,pending\)[\s\S]*?const intentEntry=curriculumIntentLedgerEntry\(nextState,userId,true\);\s*if\(intentEntry\)workspaceEntries\.push\(intentEntry\)/,
+  'stale local/queue alignment must preserve install intent when it rewrites the offline queue');
 
 const pack = {
   id: 'sl-al-commerce-si',
