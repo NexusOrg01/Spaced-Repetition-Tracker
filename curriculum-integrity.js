@@ -482,6 +482,8 @@
     if (!isRecord(mergedState) || !Array.isArray(packs)) return { changed: false, restoredStreams: 0, restoredSubjects: 0, restoredTopics: 0 };
     if (!isRecord(mergedState.settings)) mergedState.settings = {};
     const intent = intentState(mergedState);
+    const localIntent = intentState(localState);
+    const baseIntent = baseState ? intentState(baseState) : { installed: new Set(), deleted: new Set(), tokens: new Set() };
     const sources = [localState, baseState].filter(isRecord);
     let changed = false, restoredStreams = 0, restoredSubjects = 0, restoredTopics = 0;
     const sourceStream = pack => sources.map(state => findStream(state, pack)).find(Boolean) || null;
@@ -499,6 +501,19 @@
       if (!isRecord(pack) || !pack.id || !Array.isArray(pack.subjects)) continue;
       const id = String(pack.id);
       if (intent.deleted.has(deletedPack(id))) continue;
+      // A subject deletion narrows a formerly full-pack install into the remaining
+      // subjects. Do not let the cloud's missing sibling markers make all untouched
+      // subjects vanish when only one subject has an explicit deletion tombstone.
+      const wasFullInstalled = localIntent.installed.has(packMarker(id)) || baseIntent.installed.has(packMarker(id));
+      const hasSubjectDeletion = rows(pack.subjects).some(definition => intent.deleted.has(deletedSubject(id, definition.id)));
+      if (wasFullInstalled && hasSubjectDeletion) {
+        if (intent.installed.delete(packMarker(id))) changed = true;
+        for (const definition of pack.subjects) {
+          if (intent.deleted.has(deletedSubject(id, definition.id))) continue;
+          const scoped = subjectMarker(id, definition.id);
+          if (!intent.installed.has(scoped)) { intent.installed.add(scoped); changed = true; }
+        }
+      }
       const installAll = intent.installed.has(packMarker(id));
       const selected = pack.subjects.map(definition => {
         if (intent.deleted.has(deletedSubject(id, definition.id))) return null;
@@ -571,6 +586,8 @@
         }
       }
     }
+    mergedState.settings.installedCurricula = Array.from(intent.installed).slice(-5000);
+    mergedState.settings.curriculumTombstones = Array.from(intent.deleted).slice(-5000);
     return { changed, restoredStreams, restoredSubjects, restoredTopics };
   }
   return {
