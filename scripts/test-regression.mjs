@@ -13,6 +13,7 @@ const bundle = readFileSync(resolve(root, 'fsrs-bundle.js'), 'utf8');
 const backupUtils = readFileSync(resolve(root, 'backup-restore-utils.js'), 'utf8');
 const serviceWorker = readFileSync(resolve(root, 'sw.js'), 'utf8');
 const manifest = JSON.parse(readFileSync(resolve(root, 'manifest.webmanifest'), 'utf8'));
+const curriculumCatalog = JSON.parse(readFileSync(resolve(root, 'curricula/catalog.json'), 'utf8'));
 
 const integrationAt = bundle.indexOf('nexus-fsrs.js — glue between Nexus topics');
 const coreEnd = integrationAt > 0 ? bundle.lastIndexOf('/*!', integrationAt) : -1;
@@ -115,4 +116,47 @@ assert.ok(bundle.includes('const candidates = state.topics.filter((t) => !t.fsrs
   'normal render/save cycles must skip FSRS migration history scans after every reviewed topic has a scheduler card');
 assert.ok(appSource.includes('id="nexus-mobile-render-performance"') && appSource.includes('@media (hover: none) and (pointer: coarse)') && appSource.includes('backdrop-filter: none !important') && appSource.includes('animation: none !important'),
   'touch-first layouts must reduce sticky-tab blur and per-item entrance animations without changing native scrolling behavior');
+
+// Curriculum-installed topics must not reuse IDs that the legacy-starter cleanup deliberately removes.
+const seedStart = appCore.indexOf('const SEED = [');
+const seedEndAt = appCore.indexOf('\n  ];', seedStart);
+const cleanupStart = appCore.indexOf('function detachPristineStarterContent(data){');
+const cleanupEnd = appCore.indexOf('\n  function loadState(){', cleanupStart);
+assert.ok(seedStart >= 0 && seedEndAt > seedStart && cleanupStart > seedEndAt && cleanupEnd > cleanupStart,
+  'the legacy starter cleanup and source seed catalogue must remain available to the regression test');
+const cleanupFactory = vm.runInNewContext(
+  '(function(){' + appCore.slice(seedStart, seedEndAt + '\n  ];'.length) + '\n' +
+    appCore.slice(cleanupStart, cleanupEnd) + '\nreturn detachPristineStarterContent;})()'
+);
+const commercePack = curriculumCatalog.packs.find(pack => pack.id === 'sl-al-commerce-si');
+assert.ok(commercePack, 'the built-in Sinhala Commerce pack must remain in the catalogue');
+const installedStreams = [{ id: commercePack.streamId, name: commercePack.streamName }];
+const installedSubjects = commercePack.subjects.map((subject, order) => ({
+  id: subject.workspaceId, name: subject.name, streamId: commercePack.streamId, order
+}));
+const installedTopics = commercePack.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+  id: subject.legacyIdPrefix + '-' + String(index + 1).padStart(2, '0'),
+  subjectId: subject.workspaceId, name, notes: '', custom: false, archived: false,
+  reviewCount: 0, lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, streak: 0, lapses: 0
+})));
+const cleanedInstalled = cleanupFactory({
+  streams: installedStreams, subjects: installedSubjects, topics: installedTopics, history: [], exams: []
+});
+assert.equal(cleanedInstalled.topics.length, installedTopics.length,
+  'an untouched curriculum installed from the current catalogue must survive startup cleanup');
+assert.equal(cleanedInstalled.subjects.length, installedSubjects.length,
+  'installed Commerce subjects must survive startup cleanup when their topics are unreviewed');
+assert.equal(cleanedInstalled.streams.length, 1,
+  'the installed Commerce stream must survive startup cleanup when its topics are unreviewed');
+assert.ok(commercePack.subjects.every(subject => !String(subject.legacyIdPrefix || '').startsWith('seed-')),
+  'new curriculum IDs must not collide with identifiers reserved for disposable legacy starter data');
+const cleanedLegacy = cleanupFactory({
+  streams: [{ id: 'stream-commerce', name: 'වාණිජ (Commerce)' }],
+  subjects: [{ id: 'sub-acc', name: 'ගිණුම්කරණය', streamId: 'stream-commerce', order: 0 }],
+  topics: [{ id: 'seed-acc-01', subjectId: 'sub-acc', name: '1. ගිණුම්කරණය හා එහි අවශ්‍යතාවය',
+    custom: false, notes: '', archived: false, reviewCount: 0, lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, streak: 0, lapses: 0 }],
+  history: [], exams: []
+});
+assert.equal(cleanedLegacy.topics.length, 0, 'genuinely old untouched seed rows must still be removed by the migration cleanup');
+
 console.log('FSRS and core feature regression tests passed.');
