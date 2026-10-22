@@ -26,6 +26,11 @@ assert.match(cloudSyncSource, /const intentEntry=curriculumIntentLedgerEntry\(ne
   'three-way cloud reconciliation must atomically persist curriculum intent with its new merge base');
 assert.match(cloudSyncSource, /function alignPendingToCurrentWorkspace\(userId,localPayload,pending\)[\s\S]*?const intentEntry=curriculumIntentLedgerEntry\(nextState,userId,true\);\s*if\(intentEntry\)workspaceEntries\.push\(intentEntry\)/,
   'stale local/queue alignment must preserve install intent when it rewrites the offline queue');
+assert.match(cloudSyncSource, /Before a write, never trust a stale outbox copy over the live same-account workspace/);
+assert.match(cloudSyncSource, /window\.NexusRepairInstalledCurricula\(clone\(payload\.state\),uploadUserId\)/,
+  'the exact outgoing cloud payload must be repaired against the signed-in owner before upload');
+assert.match(cloudSyncSource, /queue\.commitWorkspace\(localStorage,entries,repairedPayload,\{baseServerVersion:pending\?pending\.baseServerVersion:\(priorStamp\|\|null\),returnOperationPayload:false\}\)/,
+  'last-mile curriculum repair, owner-scoped ledger, and pending cloud payload must be committed together before remote write');
 
 const pack = {
   id: 'sl-al-commerce-si',
