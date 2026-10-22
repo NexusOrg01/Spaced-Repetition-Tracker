@@ -517,6 +517,7 @@ assert.ok(source.includes('if(ready){clearDetachedOwnerAfterSuccessfulReconcilia
  const preservedAfterStaleRead=JSON.parse(storage.getItem(STATE_KEY));
  assert.ok(preservedAfterStaleRead.topics.some(x=>x.id==='curr-acc-01'),'an older cloud revision must not delete the locally verified curriculum topic');
  assert.ok(preservedAfterStaleRead.streams.some(x=>x.id==='cloud-concurrent-test-stream'),'an older cloud revision must not delete a newer verified cloud stream');
+ assert.equal(queue.getBase(storage,accountA.id).serverVersion,verifiedCurrent.updated_at,'a stale cloud response must not move the verified sync baseline backward');
  assert.equal(getElement('cloudStatus').textContent,'Automatic merge not verified','a stale cloud response must fail closed instead of claiming a successful sync');
 
 console.log('Cloud sync runtime tests passed: offline recovery, account isolation, stale queue/live workspace alignment, monotonic cloud revision checks, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, and network-drop recovery.');
