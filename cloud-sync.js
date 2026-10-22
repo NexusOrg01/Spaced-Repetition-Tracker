@@ -61,7 +61,7 @@ function assertStableRecordIds(payload){
 function normalizeWorkspacePayload(payload){
  if(!payload||!payload.state||!Array.isArray(payload.state.streams))throw new Error('A valid workspace snapshot is required for automatic reconciliation.');
  assertStableRecordIds(payload);
- return {...payload,state:normalizeState(payload.state),featureState:window.NexusNormalizeFeatureState(Object.prototype.hasOwnProperty.call(payload,'featureState')?payload.featureState:undefined)};
+ return {...payload,state:(window.NexusNormalizeState?window.NexusNormalizeState(payload.state):normalizeState(payload.state)),featureState:window.NexusNormalizeFeatureState(Object.prototype.hasOwnProperty.call(payload,'featureState')?payload.featureState:undefined)};
 }
 function nextCloudStamp(previous){
  const policy=window.NexusCloudSyncRecovery;
@@ -94,13 +94,13 @@ function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
 }
 function applyRemote(payload,ownerId,serverVersion){
   if(!payload||!payload.state||!Array.isArray(payload.state.streams))throw new Error('Cloud backup format is invalid.');
-  const nextState=normalizeState(payload.state);
-  const hasFeatures=Object.prototype.hasOwnProperty.call(payload,'featureState');
-  const nextFeatures=window.NexusNormalizeFeatureState(hasFeatures?payload.featureState:undefined);
-  ready=false;
-  applyWorkspaceSnapshot(nextState,nextFeatures,ownerId);
-  if(ownerId&&window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberBase(localStorage,ownerId,{state:nextState,featureState:nextFeatures},serverVersion||null);
-  ready=true;
+  const rawNormalize=window.NexusNormalizeStateWithoutCurriculumRepair;
+  const incomingState=rawNormalize?rawNormalize(payload.state):normalizeState(payload.state);
+  const nextState=window.NexusRepairInstalledCurricula?window.NexusRepairInstalledCurricula(clone(incomingState)):normalizeState(payload.state);
+  const hasFeatures=Object.prototype.hasOwnProperty.call(payload,'featureState'),nextFeatures=window.NexusNormalizeFeatureState(hasFeatures?payload.featureState:undefined),repaired=stableJson(incomingState)!==stableJson(nextState);
+  ready=false;applyWorkspaceSnapshot(nextState,nextFeatures,ownerId);
+  if(ownerId&&window.NexusOfflineSyncQueue){window.NexusOfflineSyncQueue.rememberBase(localStorage,ownerId,{state:incomingState,featureState:nextFeatures},serverVersion||null);if(repaired){const repairPayload={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:clone(nextState),featureState:clone(nextFeatures)};window.NexusOfflineSyncQueue.rebase(localStorage,ownerId,repairPayload,serverVersion||null,'repair-incomplete-installed-curriculum');window.NexusOfflineSyncQueue.rememberStamp(localStorage,ownerId,serverVersion||null);}}
+  ready=true;if(repaired&&ownerId)schedule();
 }
 function applyLocalMerged(localPayload,remotePayload){
   const nextState=mergeState(localPayload.state,remotePayload?.state||emptyState());

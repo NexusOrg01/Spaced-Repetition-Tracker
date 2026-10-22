@@ -20,6 +20,7 @@
     conflicts.push({path,base:shown(base),local:shown(local),remote:shown(remote),basePresent:base!==ABSENT,localPresent:local!==ABSENT,remotePresent:remote!==ABSENT,resolution:resolution||'local'});
   }
   function mergeValue(base,local,remote,path,conflicts){
+    if(/[.]settings[.](installedCurricula|curriculumTombstones)$/.test(path)&&[base,local,remote].some(Array.isArray))return mergeSet(base,local,remote);
     if(same(local,remote))return copy(local);
     if(same(local,base))return copy(remote);
     if(same(remote,base))return copy(local);
