@@ -440,6 +440,45 @@ assert.equal(ledgerReviewed.reviewCount, 2);
 assert.equal(ledgerReviewed.lastReviewed, '2026-10-20');
 assert.equal(ledgerRepair.state.history.length, 1);
 
+// Regression: the canonical Commerce stream can survive while an incomplete/stale
+// snapshot removes every subject and topic. If a stale stream tombstone is retained too,
+// the earlier guard blocks both the independent install ledger and normal repair. A real
+// stream deletion removes the stream itself, so a surviving stable stream ID is contrary evidence.
+const streamOnlyWithStaleTombstone = {
+  schema: 3,
+  streams: [{ id: commerce.streamId, name: 'My renamed Commerce stream' }],
+  subjects: [], topics: [], history: [], exams: [],
+  settings: {
+    installedCurricula: [],
+    curriculumTombstones: [integrity.keys.streamDelete(commerce.id)]
+  }
+};
+const streamOnlyLedgerHydrated = integrity.applyIntentLedger(
+  cloneState(streamOnlyWithStaleTombstone), ledgerStorage, undefined, [commerce]
+);
+assert.ok(streamOnlyLedgerHydrated.settings.installedCurricula.includes(packMarker),
+  'a surviving canonical stream must keep prior full-pack install intent despite a stale stream tombstone');
+assert.ok(!streamOnlyLedgerHydrated.settings.curriculumTombstones.includes(integrity.keys.streamDelete(commerce.id)),
+  'the contradictory stream tombstone must be cleared when the stable pack stream still exists');
+const streamOnlyFullRepair = integrity.repair(streamOnlyLedgerHydrated, [commerce], {
+  today: () => '2026-10-22', makeId: prefix => prefix + '-stream-only-stale-tombstone'
+});
+assert.equal(streamOnlyFullRepair.restoredSubjects, commerce.subjects.length,
+  'a surviving renamed Commerce stream must recover every missing subject');
+assert.equal(streamOnlyFullRepair.restoredTopics, 46,
+  'a surviving renamed Commerce stream must recover all missing Commerce topics');
+assert.equal(streamOnlyFullRepair.state.streams[0].name, 'My renamed Commerce stream',
+  'recovery must preserve the surviving user-renamed stream label');
+
+const streamOnlyNoLedger = cloneState(streamOnlyWithStaleTombstone);
+const streamOnlyNoLedgerRepair = integrity.repair(streamOnlyNoLedger, [commerce], {
+  today: () => '2026-10-22', makeId: prefix => prefix + '-stream-only-no-ledger'
+});
+assert.equal(streamOnlyNoLedgerRepair.restoredTopics, 46,
+  'canonical-stream evidence must recover the full pack even if the independent intent ledger is unavailable');
+assert.equal(streamOnlyNoLedger.settings.curriculumTombstones.length, 0,
+  'direct refresh repair must clear the stale tombstone before rebuilding a surviving pack');
+
 // A deliberate stream-deletion tombstone overrides the historical local install ledger.
 const deletedStreamState = cloneState(ledgerDamaged);
 const deletedSubjectIds = new Set(deletedStreamState.subjects.filter(s=>s.streamId===commerce.streamId).map(s=>s.id));
