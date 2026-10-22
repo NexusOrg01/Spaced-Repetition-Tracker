@@ -58,7 +58,7 @@ assert.ok(cloud.includes('canAutoResumePending(pendingForUser,remote&&remote.upd
   cloud.includes('const autoUploaded=await upload()') &&
   cloud.includes('pendingAutomaticallySynced'),
   'unchanged remote revisions should automatically upload the durable pending snapshot');
-assert.ok(cloud.includes('if(pendingForUser&&!detachedWorkspace&&window.NexusCloudSyncRecovery&&window.NexusCloudSyncRecovery.canAutoResumePending(') &&
+assert.ok(cloud.includes('if(pendingForUser&&!detachedWorkspace&&!preserveLocalCurriculumIntent&&window.NexusCloudSyncRecovery&&window.NexusCloudSyncRecovery.canAutoResumePending(') &&
   !cloud.includes('if(localHasWork&&pendingForUser&&window.NexusCloudSyncRecovery'),
   'a durable pending snapshot must be drained even when state comparison alone misses metadata-only differences');
 assert.ok(cloud.includes("else if(pendingAutomaticallySynced){say('Offline work was uploaded and verified for this account.');}") &&
