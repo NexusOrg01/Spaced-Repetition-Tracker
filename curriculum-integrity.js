@@ -346,7 +346,7 @@
   }
   function intentMarkerDetails(value) {
     const marker = String(value || '');
-    const match = /^(installed|deleted):(pack|subject|topic):([^:]+)(?::([^:]+)(?::([\\s\\S]*))?)?$/.exec(marker);
+    const match = /^(installed|deleted):(pack|subject|topic):([^:]+)(?::([^:]+)(?::([\s\S]*))?)?$/.exec(marker);
     if (!match) return null;
     return {
       verb: match[1],
