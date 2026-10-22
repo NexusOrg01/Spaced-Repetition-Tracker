@@ -21,22 +21,30 @@ function isAllowedAnonKey(key) {
 }
 
 export function resolvePreviewConfig(env) {
-  const allowedVercelPreview = env.VERCEL_ENV === 'preview' && PREVIEW_BRANCHES.has(String(env.VERCEL_GIT_COMMIT_REF || ''));
-  // CF_PAGES is normally set by Pages, but some build wrappers omit it. The exact
-  // allowlisted Pages branch plus strict separate-project URL/key validation below
-  // is the gate; never rely on the provider flag alone to decide cloud eligibility.
+  const vercelBranch = String(env.VERCEL_GIT_COMMIT_REF || '').trim();
+  const allowedVercelPreview = env.VERCEL_ENV === 'preview' && PREVIEW_BRANCHES.has(vercelBranch);
+  // Cloudflare Pages and Netlify may omit provider flags in local wrappers, so the
+  // exact allowlisted branch plus strict separate-project validation is the gate.
   const cloudflareBranch = String(env.CF_PAGES_BRANCH || '').trim();
   const allowedCloudflarePreview = PREVIEW_BRANCHES.has(cloudflareBranch);
-  if (!allowedVercelPreview && !allowedCloudflarePreview) return null;
+  const netlifyBranch = String(env.BRANCH || '').trim();
+  const netlifyContext = String(env.CONTEXT || '').trim();
+  const allowedNetlifyPreview =
+    (netlifyContext === 'deploy-preview' || netlifyContext === 'branch-deploy') &&
+    PREVIEW_BRANCHES.has(netlifyBranch);
+  if (!allowedVercelPreview && !allowedCloudflarePreview && !allowedNetlifyPreview) return null;
   const rawUrl = String(env.NEXUS_SUPABASE_URL || '').trim();
   const key = String(env.NEXUS_SUPABASE_ANON_KEY || '').trim();
   const usesLegacyRequiredStaging = env.VERCEL_ENV === 'preview' &&
     env.VERCEL_GIT_COMMIT_REF === 'feat/account-bound-offline-sync';
-  // The Commerce-fix preview stays offline-safe until both values from a separate test project reach the build.
+  // Previews stay offline-safe until both values from a separate test project reach the build.
   // A partially configured preview must never receive half a cloud configuration or fail its static build.
   if ((!rawUrl || !key) && !usesLegacyRequiredStaging) {
     if (PREVIEW_BRANCHES.has(cloudflareBranch)) {
       console.log('Cloudflare preview config diagnostics: branch=allowlisted; CF_PAGES=' + (env.CF_PAGES || 'unset') + '; URL configured=' + Boolean(rawUrl) + '; anon key configured=' + Boolean(key) + '. Values are intentionally not logged.');
+    }
+    if (allowedNetlifyPreview) {
+      console.log('Netlify preview config diagnostics: context=' + netlifyContext + '; branch=allowlisted; URL configured=' + Boolean(rawUrl) + '; anon key configured=' + Boolean(key) + '. Values are intentionally not logged.');
     }
     return null;
   }
@@ -52,9 +60,9 @@ export function resolvePreviewConfig(env) {
 }
 
 export function renderConfigScript(config) {
-  return "/* Generated at build time; do not edit or commit project credentials. */\n" +
+  return "/* Generated at build time; do not edit or commit project credentials. */\\n" +
     "(function(){'use strict';const config=" + JSON.stringify(config) +
-    ";if(!config)return;try{localStorage.setItem('nexus.cloud.config.v1',JSON.stringify(config));}catch(_){}})();\n";
+    ";if(!config)return;try{localStorage.setItem('nexus.cloud.config.v1',JSON.stringify(config));}catch(_){}})();\\n";
 }
 
 
@@ -64,7 +72,7 @@ async function verifySafeAuthStorage() {
   const end = source.indexOf('async function ensureClient(){', start);
   assert.ok(start >= 0 && end > start, 'cloud sync must define the safe Supabase auth storage adapter');
   const sandbox = {};
-  vm.runInNewContext(source.slice(start, end) + '\nglobalThis.factory = createSafeAuthStorage;', sandbox);
+  vm.runInNewContext(source.slice(start, end) + '\\nglobalThis.factory = createSafeAuthStorage;', sandbox);
   const values = new Map([
     ['sb-testproject-auth-token', 'undefined'],
     ['nexus.tracker.v3', 'undefined']
@@ -101,6 +109,10 @@ async function copySiteFiles() {
     console.log('Built static Nexus output without injecting staging credentials.');
     if (PREVIEW_BRANCHES.has(String(process.env.CF_PAGES_BRANCH || '').trim())) {
       console.log('Cloudflare preview config diagnostics: CF_PAGES=' + (process.env.CF_PAGES || 'unset') + '; branch=allowlisted; URL configured=' + Boolean(String(process.env.NEXUS_SUPABASE_URL || '').trim()) + '; anon key configured=' + Boolean(String(process.env.NEXUS_SUPABASE_ANON_KEY || '').trim()) + '. Values are intentionally not logged.');
+    }
+    if (PREVIEW_BRANCHES.has(String(process.env.BRANCH || '').trim()) &&
+        ['deploy-preview', 'branch-deploy'].includes(String(process.env.CONTEXT || '').trim())) {
+      console.log('Netlify preview config diagnostics: context=' + process.env.CONTEXT + '; branch=allowlisted; URL configured=' + Boolean(String(process.env.NEXUS_SUPABASE_URL || '').trim()) + '; anon key configured=' + Boolean(String(process.env.NEXUS_SUPABASE_ANON_KEY || '').trim()) + '. Values are intentionally not logged.');
     }
   }
 }
