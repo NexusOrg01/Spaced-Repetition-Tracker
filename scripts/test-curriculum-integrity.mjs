@@ -418,6 +418,6 @@ assert.equal(orphanedReviewed.lastReviewed, originalReviewedSchedule.lastReviewe
 assert.equal(orphanedCommerceState.topics.find(topic => topic.id === 'custom-topic-1').name, 'My sample topic',
   'custom topics must remain unchanged during pack recovery');
 assert.ok(orphanedCommerceState.streams.some(stream => stream.id === 'custom-stream-1'),
-  'reconstructing Commerce must not delete the user's custom stream');
+  "reconstructing Commerce must not delete the custom stream");
 
 console.log('Curriculum integrity tests passed: refresh recovery, three-way merge recovery, scoped installs, custom data, review schedules/history, read-only diagnostics, idempotence, and deletion tombstones.');
