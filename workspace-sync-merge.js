@@ -1,8 +1,8 @@
 (function(root,factory){
-  const api=factory();
+  const api=factory(root);
   if(typeof module==='object'&&module.exports)module.exports=api;
   if(root)root.NexusWorkspaceSyncMerge=api;
-})(typeof window!=='undefined'?window:(typeof globalThis!=='undefined'?globalThis:null),function(){
+})(typeof window!=='undefined'?window:(typeof globalThis!=='undefined'?globalThis:null),function(root){
   'use strict';
   const ABSENT=Symbol('absent');
   const isObject=x=>!!x&&typeof x==='object'&&!Array.isArray(x);
