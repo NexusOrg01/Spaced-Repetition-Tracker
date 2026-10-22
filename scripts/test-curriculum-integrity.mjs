@@ -227,6 +227,44 @@ const fullPackState = {
   topics: fullPackTopics, history: [], exams: [],
   settings: { theme: 'dark', intervalCap: 120, installedCurricula: [packMarker], curriculumTombstones: [] }
 };
+// Renames are edits to stable topic identity, not deletions of the catalogue row.
+// A refresh must not recreate the old catalogue name beside the renamed topic.
+const renamedTopicState = cloneState(fullPackState);
+const renamedTopicDefinition = commerce.subjects[0];
+const renamedTopicOriginalName = renamedTopicDefinition.topics[0];
+const renamedTopicId = renamedTopicDefinition.legacyIdPrefix + '-01';
+const renamedTopicRecord = renamedTopicState.topics.find(topic => topic.id === renamedTopicId);
+assert.ok(renamedTopicRecord, 'the installed topic must have its stable catalogue identity');
+renamedTopicRecord.name = 'User-renamed Commerce topic';
+renamedTopicRecord.reviewCount = 1;
+renamedTopicRecord.lastReviewed = '2026-10-21';
+for (let refresh = 0; refresh < 3; refresh++) {
+  const renameRepair = integrity.repair(renamedTopicState, [commerce], {
+    today: () => '2026-10-22', makeId: prefix => prefix + '-rename-' + refresh
+  });
+  assert.equal(renamedTopicState.topics.filter(topic => topic.id === renamedTopicId).length, 1,
+    'a renamed topic must retain its stable ID through refresh');
+  assert.equal(renamedTopicState.topics.find(topic => topic.id === renamedTopicId).name, 'User-renamed Commerce topic',
+    'refresh must preserve the user-edited topic name');
+  assert.equal(renamedTopicState.topics.some(topic => topic.subjectId === renamedTopicRecord.subjectId && topic.name === renamedTopicOriginalName), false,
+    'repair must not recreate the original catalogue name beside a renamed topic');
+  assert.equal(renamedTopicState.topics.length, 46, 'topic rename must not inflate the installed Commerce catalogue');
+  if (refresh > 0) assert.equal(renameRepair.changed, false, 'renamed-topic repair must become idempotent');
+}
+
+// Subject identity is stable independently of its display name.
+const renamedSubjectState = cloneState(fullPackState);
+const renamedSubjectId = commerce.subjects[0].workspaceId;
+renamedSubjectState.subjects.find(subject => subject.id === renamedSubjectId).name = 'User-renamed Commerce subject';
+const renamedSubjectRepair = integrity.repair(renamedSubjectState, [commerce], {
+  today: () => '2026-10-22', makeId: prefix => prefix + '-subject-rename'
+});
+assert.equal(renamedSubjectRepair.state.subjects.filter(subject => subject.id === renamedSubjectId).length, 1);
+assert.equal(renamedSubjectState.subjects.find(subject => subject.id === renamedSubjectId).name, 'User-renamed Commerce subject',
+  'repair must preserve a renamed subject when its stable workspace ID remains');
+assert.equal(renamedSubjectState.topics.filter(topic => topic.subjectId === renamedSubjectId).length, commerce.subjects[0].topics.length,
+  'the renamed subject must retain its complete topic hierarchy');
+
 const fullFirst = fullPackState.topics.find(topic=>topic.subjectId===reviewedSubject.workspaceId&&topic.name===reviewedName);
 const locallyReviewed = {
   ...cloneState(fullFirst), lastReviewed: '2026-10-20', lastRating: 4, dueDate: '2026-10-27',
