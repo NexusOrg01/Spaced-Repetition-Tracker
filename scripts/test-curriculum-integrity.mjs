@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const integrity = require('../curriculum-integrity.js');
+const workspaceMerge = require('../workspace-sync-merge.js');
 const root = new URL('../', import.meta.url);
 const catalogue = JSON.parse(readFileSync(new URL('../curricula/catalog.json', import.meta.url), 'utf8'));
 const appCore = readFileSync(new URL('../app-core.js', import.meta.url), 'utf8');
@@ -101,6 +102,53 @@ const freshRepair = integrity.repair(fresh, catalogue.packs, { today, makeId });
 assert.equal(freshRepair.restoredTopics, 46);
 assert.ok(fresh.settings.installedCurricula.includes(integrity.keys.pack(pack.id)));
 assert.equal(integrity.repair(copy(fresh), catalogue.packs, { today, makeId }).changed, false);
+
+// Regression: an incomplete remote snapshot silently omits both the Commerce pack
+// marker and untouched catalogue rows, but has no explicit deletion tombstone.
+// Local install intent must win over marker omission, and repair must reconstruct
+// the unchanged rows without losing local edits or unrelated manual work.
+{
+  const baseState = copy(fresh);
+  const localState = copy(fresh);
+  const edited = localState.topics.find(topic => topic.id === 'curr-bs-01');
+  edited.name = 'User-edited Commerce topic';
+  edited.reviewCount = 2;
+  edited.lastReviewed = '2026-10-21';
+  edited.dueDate = '2026-10-28';
+  edited.fsrs = { stability: 3.5, difficulty: 4.2, reps: 2 };
+  localState.streams.push({ id: 'manual-local-stream', name: 'My local stream' });
+  localState.subjects.push({ id: 'manual-local-subject', name: 'My local subject', streamId: 'manual-local-stream', order: 0 });
+  localState.topics.push({ id: 'manual-local-topic', subjectId: 'manual-local-subject', name: 'My local topic', custom: true, reviewCount: 0 });
+
+  const remoteState = emptyState();
+  remoteState.streams.push({ id: 'manual-cloud-stream', name: 'Cloud manual stream' });
+  remoteState.subjects.push({ id: 'manual-cloud-subject', name: 'Cloud manual subject', streamId: 'manual-cloud-stream', order: 0 });
+  remoteState.topics.push({ id: 'manual-cloud-topic', subjectId: 'manual-cloud-subject', name: 'Cloud manual topic', custom: true, reviewCount: 0 });
+  // No Commerce stream, subjects, topics, install marker, or deletion tombstone in remote.
+
+  const payload = state => ({ app: 'Nexus Spaced Repetition Tracker', schema: 4,
+    exportedAt: '2026-10-22T00:00:00.000Z', state, featureState: {} });
+  const merged = workspaceMerge.merge(payload(baseState), payload(localState), payload(remoteState));
+  assert.ok(merged.payload.state.settings.installedCurricula.includes(integrity.keys.pack(pack.id)),
+    'an omitted remote pack marker must not override affirmed local install intent without an explicit tombstone');
+  const repaired = integrity.repair(merged.payload.state, catalogue.packs, { today, makeId }).state;
+  assert.equal(repaired.topics.filter(topic => topic.id.startsWith('curr-')).length, 46,
+    'the merged install marker must reconstruct all 46 Commerce catalogue topics');
+  assert.equal(repaired.topics.length, 48, 'both local and cloud manual topics must remain alongside all Commerce topics');
+  assert.equal(repaired.subjects.length, 5, 'all Commerce subjects and both manual subjects must remain');
+  assert.ok(repaired.streams.some(stream => stream.id === pack.streamId), 'the Commerce stream must be reconstructed');
+  assert.ok(repaired.streams.some(stream => stream.id === 'manual-local-stream'));
+  assert.ok(repaired.streams.some(stream => stream.id === 'manual-cloud-stream'));
+  const retained = repaired.topics.find(topic => topic.id === 'curr-bs-01');
+  assert.equal(retained.name, 'User-edited Commerce topic');
+  assert.equal(retained.reviewCount, 2);
+  assert.equal(retained.lastReviewed, '2026-10-21');
+  assert.equal(retained.dueDate, '2026-10-28');
+  assert.deepEqual(retained.fsrs, { stability: 3.5, difficulty: 4.2, reps: 2 });
+  assert.ok(repaired.topics.some(topic => topic.id === 'manual-local-topic'));
+  assert.ok(repaired.topics.some(topic => topic.id === 'manual-cloud-topic'));
+}
+
 
 // A just-installed local pack must override an older cloud deletion tombstone
 // when first connecting an account, otherwise repair() purges the entire hierarchy.
