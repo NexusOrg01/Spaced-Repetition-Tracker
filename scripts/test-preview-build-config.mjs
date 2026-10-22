@@ -92,4 +92,39 @@ assert.throws(() => resolvePreviewConfig({ ...previewEnv, NEXUS_SUPABASE_ANON_KE
   /requires both/, 'missing staging variables must fail the legacy designated preview build');
 assert.match(renderConfigScript(null), /const config=null/);
 assert.match(renderConfigScript({ url: previewEnv.NEXUS_SUPABASE_URL, key: previewEnv.NEXUS_SUPABASE_ANON_KEY }), /nexus\.cloud\.config\.v1/);
+
+const netlifyPreviewEnv = {
+  CONTEXT: 'branch-deploy',
+  BRANCH: 'ai-dev/netlify-staging-auth-preview',
+  NEXUS_SUPABASE_URL: previewEnv.NEXUS_SUPABASE_URL,
+  NEXUS_SUPABASE_ANON_KEY: previewEnv.NEXUS_SUPABASE_ANON_KEY
+};
+assert.deepEqual(resolvePreviewConfig(netlifyPreviewEnv), {
+  url: previewEnv.NEXUS_SUPABASE_URL,
+  key: previewEnv.NEXUS_SUPABASE_ANON_KEY
+}, 'the allowlisted Netlify branch deploy may use only the isolated staging project');
+assert.deepEqual(resolvePreviewConfig({
+  ...netlifyPreviewEnv,
+  CONTEXT: 'deploy-preview'
+}), {
+  url: previewEnv.NEXUS_SUPABASE_URL,
+  key: previewEnv.NEXUS_SUPABASE_ANON_KEY
+}, 'the allowlisted Netlify deploy preview may use only the isolated staging project');
+assert.equal(resolvePreviewConfig({
+  ...netlifyPreviewEnv,
+  CONTEXT: 'production'
+}), null, 'Netlify production must never inject staging values');
+assert.equal(resolvePreviewConfig({
+  ...netlifyPreviewEnv,
+  BRANCH: 'main'
+}), null, 'Netlify main must never inject staging values');
+assert.equal(resolvePreviewConfig({
+  CONTEXT: 'branch-deploy',
+  BRANCH: 'ai-dev/netlify-staging-auth-preview'
+}), null, 'Netlify previews remain offline-safe without isolated staging credentials');
+assert.throws(() => resolvePreviewConfig({
+  ...netlifyPreviewEnv,
+  NEXUS_SUPABASE_URL: 'https://txugbdavblpettcnhcxl.supabase.co'
+}), /separate HTTPS Supabase project/, 'Netlify previews must reject production Supabase');
+
 console.log('Preview-only Supabase configuration guard tests passed.');
