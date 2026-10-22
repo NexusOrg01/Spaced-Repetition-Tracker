@@ -40,7 +40,12 @@ function applyIntentLedger(state,storage,ownerId,packs){
   const kind=match?match[1]:'',packId=match?match[2]:'';
   if(!packId)continue;
   if(deleted.has(ds(packId))){
-   if(!hasStrongPackFootprint(state,packMap.get(packId)))continue;
+   if(!hasStrongPackFootprint(state,packMap.get(packId))){
+    // A tombstone must also remove any stale in-snapshot marker, not merely prevent
+    // a new marker from the ledger being added.
+    for(const candidate of [...installed])if(candidate===pk(packId)||candidate.startsWith('installed:subject:'+packId+':')||candidate.startsWith('installed:topic:'+packId+':'))installed.delete(candidate);
+    continue;
+   }
    deleted.delete(ds(packId));
   }
   if(kind==='subject'){
