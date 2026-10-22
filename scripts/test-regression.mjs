@@ -90,9 +90,9 @@ assert.ok(appSource.includes("const restoreFocusUi=()=>{if(focusStart)openFocusM
 assert.ok(appSource.includes('focusStart=Date.now();focusPausedAt=null;fsState.focusStartedAt=new Date(focusStart).toISOString();fsState.focusActualStartedAt=new Date(focusStart).toISOString();fsState.focusPausedAt=null;saveFs();'), 'starting a new focus session must clear stale pause state and initialize the original wall-clock start before persisting');
 assert.ok(serviceWorker.includes("'./fsrs-bundle.js'") && serviceWorker.includes("'./backup-restore-utils.js'") && serviceWorker.includes("'./offline-sync-queue.js'") && serviceWorker.includes("'./workspace-isolation-guard.js'") && serviceWorker.includes("'./nexus-build-config.js'") && serviceWorker.includes("'./cloud-sync-recovery.js'") && serviceWorker.includes("'./workspace-sync-merge.js'") && serviceWorker.includes("'./cloud-sync.js'"),
   'offline app shell must cache the scheduler and backup safety helpers');
-assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v25';"), 'the service-worker cache must be versioned and scoped to Nexus-owned caches');
+assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v26';"), 'the service-worker cache must be versioned and scoped to Nexus-owned caches');
 const networkFirstSources = serviceWorker.split('const networkFirst=')[1]?.split(';')[0] || '';
-assert.ok(networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/offline-sync-queue.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-isolation-guard.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-build-config.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync-recovery.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-sync-merge.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync.js')"), 'online loads must refresh the coupled FSRS and backup helpers while preserving offline cache fallback');
+assert.ok(networkFirstSources.includes("url.pathname.endsWith('/app-core.js')") && networkFirstSources.includes("url.pathname.endsWith('/study-hub.js')") && networkFirstSources.includes("url.pathname.endsWith('/curricula/catalog.json')") && networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/offline-sync-queue.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-isolation-guard.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-build-config.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync-recovery.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-sync-merge.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync.js')"), 'online loads must refresh the coupled FSRS and backup helpers while preserving offline cache fallback');
 assert.equal(manifest.theme_color, '#6C8AFF', 'installed app chrome should use the Nexus brand color');
 assert.equal(manifest.display, 'standalone', 'the PWA must remain installable in standalone mode');
 assert.ok(serviceWorker.includes('if(url.search||!response||response.status!==200||response.type!==\'basic\')return Promise.resolve(response)'), 'OAuth callback and other query-bearing URLs must not be cached');
@@ -128,6 +128,20 @@ const cleanupFactory = vm.runInNewContext(
   '(function(){' + appCore.slice(seedStart, seedEndAt + '\n  ];'.length) + '\n' +
     appCore.slice(cleanupStart, cleanupEnd) + '\nreturn detachPristineStarterContent;})()'
 );
+const validatorStart=appCore.indexOf('function validateCurriculumCatalog(raw){');
+const validatorEnd=appCore.indexOf('\n  async function loadCurriculumCatalog()',validatorStart);
+assert.ok(validatorStart>=0&&validatorEnd>validatorStart,'the catalogue validator must remain independently testable');
+const validatorFactory=vm.runInNewContext('('+appCore.slice(validatorStart,validatorEnd).replace(/^\s*/,'').replace(/\n\s*$/,'')+'; return validateCurriculumCatalog; )',vm.createContext({}));
+const staleCatalogue=JSON.parse(JSON.stringify(curriculumCatalog));
+for(const pack of staleCatalogue.packs)for(const subject of pack.subjects){
+  if(subject.legacyIdPrefix==='curr-bs')subject.legacyIdPrefix='seed-bs';
+  if(subject.legacyIdPrefix==='curr-acc')subject.legacyIdPrefix='seed-acc';
+  if(subject.legacyIdPrefix==='curr-econ')subject.legacyIdPrefix='seed-econ';
+}
+const normalizedStaleCatalogue=validatorFactory(staleCatalogue);
+const normalizedCommerce=normalizedStaleCatalogue.find(pack=>pack.id==='sl-al-commerce-si');
+assert.deepEqual(normalizedCommerce.subjects.map(subject=>subject.legacyIdPrefix),['curr-bs','curr-acc','curr-econ'],
+  'stale seed-prefixed catalogues must be upgraded before they can create IDs removed by older startup cleanup');
 const commercePack = curriculumCatalog.packs.find(pack => pack.id === 'sl-al-commerce-si');
 assert.ok(commercePack, 'the built-in Sinhala Commerce pack must remain in the catalogue');
 const installedStreams = [{ id: commercePack.streamId, name: commercePack.streamName }];

@@ -301,7 +301,7 @@
         const topicNames=new Set();
         const topics=subject.topics.map(value=>{if(typeof value!=='string')throw new Error('Topics must be plain strings in '+id+'/'+sid+'.');const topic=value.trim();if(!topic||topic.length>240)throw new Error('A topic in '+id+'/'+sid+' is empty or exceeds 240 characters.');const key=topic.toLocaleLowerCase();if(topicNames.has(key))throw new Error('Duplicate topic '+topic+' in '+id+'/'+sid+'.');topicNames.add(key);return topic;});
         const workspaceId=typeof subject.workspaceId==='string'&&subject.workspaceId.trim()?subject.workspaceId.trim():'';
-        const legacyIdPrefix=typeof subject.legacyIdPrefix==='string'&&/^[a-z0-9-]+$/i.test(subject.legacyIdPrefix)?subject.legacyIdPrefix:'';
+        const rawLegacyIdPrefix=typeof subject.legacyIdPrefix==='string'&&/^[a-z0-9-]+$/i.test(subject.legacyIdPrefix)?subject.legacyIdPrefix:'';const legacyPrefixAliases={'seed-bs':'curr-bs','seed-acc':'curr-acc','seed-econ':'curr-econ'};const legacyIdPrefix=legacyPrefixAliases[rawLegacyIdPrefix.toLocaleLowerCase()]||rawLegacyIdPrefix;
         return {id:sid,name,workspaceId,legacyIdPrefix,topics};
       });
       const keywords=Array.isArray(entry.keywords)?entry.keywords.filter(x=>typeof x==='string'&&x.trim()).map(x=>x.trim()):[];
