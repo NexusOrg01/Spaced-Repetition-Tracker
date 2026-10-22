@@ -19,8 +19,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Validate catalogue and inline JavaScript syntax
-        run: node scripts/validate-curricula.mjs
+      - name: Validate catalogue, inline JavaScript, and curriculum refresh preservation
+        run: node scripts/validate-curricula.mjs && node scripts/test-curriculum-refresh-preservation.mjs
       - name: Test isolated preview configuration and build static output
         run: node scripts/test-preview-build-config.mjs && npm run build
       - name: Check and test backup, restore, and account-switch safety helpers
