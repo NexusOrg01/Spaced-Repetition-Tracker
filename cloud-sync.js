@@ -292,9 +292,42 @@ async function upload(){
   const {data:authData,error:authError}=await client.auth.getUser();
   if(authError)throw new Error('Supabase could not verify the active login before cloud write: '+authError.message);
   if(!authData.user||authData.user.id!==uploadUserId||!session||session.user.id!==uploadUserId)throw new Error('The active Google/account session changed or could not be verified. Cloud write paused to protect the other account. Sign in again and retry.');
-  const pending=queue?queue.getPending(localStorage,uploadUserId):null;
+  let pending=queue?queue.getPending(localStorage,uploadUserId):null;
+  // Before a write, never trust a stale outbox copy over the live same-account workspace.
+  // Reconcile it against the saved base first, then run curriculum integrity on the exact
+  // payload that is about to leave this device.
+  if(pending){
+   const livePayload=snapshot();
+   if(!sameWorkspace(livePayload,pending.payload)){
+    const aligned=alignPendingToCurrentWorkspace(uploadUserId,livePayload,pending);
+    pending=aligned.pending;
+   }
+  }
   const priorStamp=lastRemoteStamp;attemptedPriorStamp=priorStamp;
-  const payload=pending?pending.payload:snapshot();attemptedPayload=payload;attemptedOperationId=pending?pending.operationId:null;attemptedBase=pending?pending.baseServerVersion:(priorStamp||null);
+  let payload=pending?clone(pending.payload):snapshot();
+  if(payload&&payload.state&&typeof window.NexusRepairInstalledCurricula==='function'){
+   const repairedState=window.NexusRepairInstalledCurricula(clone(payload.state),uploadUserId);
+   if(stableJson(repairedState)!==stableJson(payload.state)){
+    const repairedPayload={...payload,exportedAt:new Date().toISOString(),state:repairedState};
+    const entries=[];
+    // The previous alignment has established that this pending payload is current. Persist
+    // the repair, ledger, and replacement outbox snapshot as a single local transaction.
+    entries.push({key:window.NexusStorageKey,value:JSON.stringify(repairedState)});
+    entries.push({key:window.NexusFeatureStorageKey,value:JSON.stringify(repairedPayload.featureState||{})});
+    const intentEntry=curriculumIntentLedgerEntry(repairedState,uploadUserId,true);
+    if(intentEntry)entries.push(intentEntry);
+    if(queue){
+     queue.commitWorkspace(localStorage,entries,repairedPayload,{baseServerVersion:pending?pending.baseServerVersion:(priorStamp||null),returnOperationPayload:false});
+     pending=queue.getPending(localStorage,uploadUserId);
+     if(!pending)throw new Error('The repaired workspace could not be queued safely; cloud write was skipped.');
+     payload=clone(pending.payload);
+    }else payload=repairedPayload;
+    state=clone(repairedState);
+    renderAll();
+    if(window.NexusRenderHub)window.NexusRenderHub();
+   }
+  }
+  attemptedPayload=payload;attemptedOperationId=pending?pending.operationId:null;attemptedBase=pending?pending.baseServerVersion:(priorStamp||null);
   if(pending){
    const before=await fetchRemote(uploadUserId);
    await assertUploadOwner();
