@@ -150,4 +150,11 @@ assert.ok(initSource.includes('!detachedWorkspace'), 'a detached local workspace
 assert.ok(initSource.includes("archive(localStorage,newUserId,'signed-out-workspace-detached')"), 'stale per-account pending work must be preserved in recovery history before local/cloud reconciliation');
 assert.ok(initSource.includes("if(detachedWorkspace)localStorage.setItem(DETACHED_OWNER_KEY,'');"), 'clear the detached marker only after successful account reconciliation');
 
+assert.ok(index.includes('id="dataIntegrityDiagnosticsBtn"'), 'a preview-only diagnostics export control must be available without browser developer tools');
+assert.ok(appCore.includes("'local-save-after-repair'") && appCore.includes("'local-save-committed'"), 'trace both the repaired workspace and the exact local persistence boundary');
+assert.ok(appCore.includes("'install-after-markers-before-save'") && appCore.includes("'install-after-save-confirmed'"), 'trace whether curriculum intent and topics existed before and after the install transaction');
+assert.ok(appCore.includes("ledgerKey='nexus.curriculum.intent-ledger.v1.'+encodeURIComponent(owner?'account:'+owner:'local')") && appCore.includes('intentLedger'), 'diagnostics must compare the owner-scoped install intent ledger with snapshot markers without exporting the account ID');
+assert.ok(appCore.includes('function exportDataIntegrityDiagnostics()') && appCore.includes('window.NexusGetDataIntegrityDiagnostics?window.NexusGetDataIntegrityDiagnostics():[]'), 'diagnostics must be exportable as a bounded JSON file');
+assert.ok(appCore.includes("diagnosticsHost.endsWith('.vercel.app')&&!productionHost") && appCore.includes("diagnosticsHost==='spaced-repetition-tracker-delta.vercel.app'"), 'diagnostic export must appear on Vercel preview deployments and remain hidden on the known production host');
+
 console.log('Data-safety integration wiring checks passed.');
