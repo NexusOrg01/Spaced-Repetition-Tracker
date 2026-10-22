@@ -52,7 +52,7 @@
   ];
   function buildFallbackCurriculumPacks(){
     const groups=new Map();
-    const meta={BS:{workspaceId:'sub-bs',legacyIdPrefix:'seed-bs'},ACC:{workspaceId:'sub-acc',legacyIdPrefix:'seed-acc'},ECON:{workspaceId:'sub-econ',legacyIdPrefix:'seed-econ'}};
+    const meta={BS:{workspaceId:'sub-bs',legacyIdPrefix:'curr-bs'},ACC:{workspaceId:'sub-acc',legacyIdPrefix:'curr-acc'},ECON:{workspaceId:'sub-econ',legacyIdPrefix:'curr-econ'}};
     for(const row of SEED){const code=row[0],name=row[1],topic=row[2];if(!groups.has(code))groups.set(code,{id:code,name,workspaceId:meta[code].workspaceId,legacyIdPrefix:meta[code].legacyIdPrefix,topics:[]});groups.get(code).topics.push(topic);}
     return [{id:'sl-al-commerce-si',title:'වාණිජ (Commerce)',country:'Sri Lanka',exam:'GCE Advanced Level',language:'Sinhala',streamName:'වාණිජ (Commerce)',streamId:'stream-commerce',description:'Commerce starter curriculum in Sinhala, organised by subject.',keywords:['commerce','වාණිජ','A/L','GCE Advanced Level','Sri Lanka','Sinhala'],subjects:[...groups.values()]}];
   }
