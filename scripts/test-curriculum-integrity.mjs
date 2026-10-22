@@ -102,6 +102,42 @@ assert.equal(freshRepair.restoredTopics, 46);
 assert.ok(fresh.settings.installedCurricula.includes(integrity.keys.pack(pack.id)));
 assert.equal(integrity.repair(copy(fresh), catalogue.packs, { today, makeId }).changed, false);
 
+// A just-installed local pack must override an older cloud deletion tombstone
+// when first connecting an account, otherwise repair() purges the entire hierarchy.
+const staleDeletedCloud = emptyState();
+staleDeletedCloud.settings.curriculumTombstones = [integrity.keys.deletedPack(pack.id)];
+const mergedWithStaleDelete = copy(fresh);
+mergedWithStaleDelete.settings.curriculumTombstones = Array.from(new Set([
+  ...(mergedWithStaleDelete.settings.curriculumTombstones || []),
+  ...staleDeletedCloud.settings.curriculumTombstones
+]));
+const installWins = integrity.reconcileMergedIntents(null, fresh, staleDeletedCloud, mergedWithStaleDelete);
+assert.ok(installWins.changed, 'resolving an install/delete collision must update the merged intent sets');
+assert.ok(!mergedWithStaleDelete.settings.curriculumTombstones.includes(integrity.keys.deletedPack(pack.id)),
+  'fresh local full-pack installation must remove the stale cloud pack-deletion tombstone');
+integrity.repair(mergedWithStaleDelete, catalogue.packs, { today, makeId });
+assert.equal(mergedWithStaleDelete.topics.length, 46,
+  'all 46 Commerce topics must survive account merge followed by curriculum repair');
+assert.ok(mergedWithStaleDelete.streams.some(stream => stream.id === pack.streamId),
+  'Commerce stream must survive account merge followed by curriculum repair');
+assert.equal(mergedWithStaleDelete.subjects.length, 3,
+  'all three Commerce subjects must survive account merge followed by curriculum repair');
+
+// Conversely, a deliberate local pack deletion must beat an old cloud install marker.
+const localDeletedPack = copy(fresh);
+const streamToDelete = localDeletedPack.streams.find(stream => stream.id === pack.streamId);
+assert.ok(streamToDelete);
+integrity.markDeletedStream(localDeletedPack, catalogue.packs, streamToDelete);
+const mergedWithStaleInstall = copy(localDeletedPack);
+mergedWithStaleInstall.settings.installedCurricula = copy(fresh.settings.installedCurricula);
+const deleteWins = integrity.reconcileMergedIntents(null, localDeletedPack, fresh, mergedWithStaleInstall);
+assert.ok(deleteWins.changed, 'resolving a deletion/install collision must update the merged intent sets');
+assert.ok(!mergedWithStaleInstall.settings.installedCurricula.includes(integrity.keys.pack(pack.id)),
+  'explicit local pack deletion must remove the stale remote full-pack install marker');
+integrity.repair(mergedWithStaleInstall, catalogue.packs, { today, makeId });
+assert.equal(mergedWithStaleInstall.topics.filter(topic => String(topic.id).startsWith('curr-')).length, 0,
+  'the explicit local pack deletion must not be undone by stale cloud install intent');
+
 // Rename by stable ID: do not recreate the original topic beside the user's edited topic.
 const renamedTopicState = copy(fresh);
 const renamedRecord = renamedTopicState.topics.find(topic => topic.id === 'curr-bs-01');
@@ -164,6 +200,10 @@ assert.ok(cloudSync.includes('window.NexusRepairCurriculumState?window.NexusRepa
   'remote snapshots must be repaired before reconciliation');
 assert.ok(cloudSync.includes('Rebuild catalogue-owned rows before any cloud write'),
   'the upload path must repair and atomically requeue the current workspace before writing');
+assert.ok(cloudSync.includes('NexusCurriculumIntegrity.reconcileMergedIntents'),
+  'the first account-choice merge must resolve conflicting curriculum install/deletion intents');
+assert.ok(mergeSource.includes('reconcileMergedIntents'),
+  'three-way sync must resolve install/deletion conflicts before curriculum repair');
 assert.ok(mergeSource.includes('installedCurricula|curriculumTombstones'),
   'three-way sync must merge curriculum intent sets instead of overwriting the whole settings arrays');
 assert.ok(serviceWorker.includes("'./curriculum-integrity.js'") &&
