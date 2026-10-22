@@ -446,7 +446,7 @@ assert.ok(!getElement('cloudHelpText').textContent.includes('"undefined" is not 
 // but only after reconciliation has completed and the local owner is verified.
 const detachedHelperStart = source.indexOf('function clearDetachedOwnerAfterSuccessfulReconciliation(');
 assert.ok(detachedHelperStart >= 0, 'cloud sync must define a guarded detached-marker cleanup helper');
-const detachedHelperEnd = source.indexOf('\\n', detachedHelperStart);
+const detachedHelperEnd = source.indexOf('\n', detachedHelperStart);
 assert.ok(detachedHelperEnd > detachedHelperStart, 'detached-marker cleanup helper must remain independently testable');
 const detachedSandbox = {
   localStorage: new MemoryStorage({ [OWNER]: accountA.id, [queue.DETACHED_OWNER]: accountA.id }),
@@ -455,7 +455,7 @@ const detachedSandbox = {
   ready: false,
   window: { NexusOfflineSyncQueue: queue }
 };
-vm.runInNewContext(source.slice(detachedHelperStart, detachedHelperEnd) + '\\nglobalThis.clearDetachedMarker = clearDetachedOwnerAfterSuccessfulReconciliation;', detachedSandbox);
+vm.runInNewContext(source.slice(detachedHelperStart, detachedHelperEnd) + '\nglobalThis.clearDetachedMarker = clearDetachedOwnerAfterSuccessfulReconciliation;', detachedSandbox);
 assert.equal(detachedSandbox.clearDetachedMarker(accountA.id, true), false,
   'failed or incomplete reconciliation must not clear the detached-owner marker');
 assert.equal(detachedSandbox.localStorage.getItem(queue.DETACHED_OWNER), accountA.id,
