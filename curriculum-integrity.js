@@ -394,6 +394,21 @@
     if (action.scope === 'topic') return target.scope === 'topic' && target.token === action.token;
     return false;
   }
+  function deletionBlocksInstalledMarker(installedMarker, deletedMarkers) {
+    const target = intentMarkerDetails(installedMarker);
+    if (!target || target.verb !== 'installed') return false;
+    const id = target.packId;
+    if (deletedMarkers.has(deletedPack(id))) return true;
+    // A deleted subject removes the full-pack marker; keep it from being restored
+    // just because an older baseline still said the whole pack was installed.
+    if (target.scope === 'pack') {
+      return Array.from(deletedMarkers).some(marker =>
+        marker.startsWith('deleted:subject:' + id + ':'));
+    }
+    if (deletedMarkers.has(deletedSubject(id, target.subjectId))) return true;
+    if (target.scope === 'topic' && deletedMarkers.has('deleted:' + target.token)) return true;
+    return false;
+  }
   function reconcileMergedIntents(baseState, localState, remoteState, mergedState) {
     if (!isRecord(mergedState)) return { changed: false, conflicts: [] };
     if (!isRecord(mergedState.settings)) mergedState.settings = {};
@@ -440,6 +455,17 @@
             });
           }
         }
+      }
+    }
+    // A missing remote install marker is not an uninstall. Explicit user deletions
+    // are represented by tombstones; absent markers alone are ambiguous and can be
+    // caused by an incomplete/older cloud snapshot. Preserve the local installed intent
+    // unless the reconciled state contains a matching explicit deletion tombstone.
+    for (const marker of local.installed) {
+      if (deletionBlocksInstalledMarker(marker, merged.deleted)) continue;
+      if (!merged.installed.has(marker)) {
+        merged.installed.add(marker);
+        changed = true;
       }
     }
     mergedState.settings.installedCurricula = Array.from(merged.installed).filter(marker => {
