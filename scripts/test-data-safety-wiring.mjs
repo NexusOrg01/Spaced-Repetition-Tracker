@@ -28,6 +28,8 @@ const queueAt = index.indexOf(queueTag);
 const appStateAt = index.indexOf('<script src="./app-core.js"></script>');
 assert.ok(helperAt >= 0 && queueAt > helperAt && appStateAt > queueAt, 'load backup and queue safety helpers before the main app script');
 assert.ok(appSource.includes('window.NexusStorageKey = STORAGE_KEY;'), 'expose the primary storage key for shared transactions');
+assert.ok(appCore.includes("const legacy=topic.id.match(/^seed-(bs|acc|econ)-(.+)$/i);") && appCore.includes("topic.id='curr-'+legacy[1].toLowerCase()+'-'+legacy[2];"), 'legacy seed-prefixed Commerce topic IDs must be migrated before normalization so old cleanup cannot delete untouched curriculum topics');
+assert.ok(appCore.includes("legacyTopicIds.get(String(h.topicId||''))||String(h.topicId||'')"), 'review history must follow topic IDs during legacy curriculum migration');
 const mergeTag = '<script src="./workspace-sync-merge.js"></script>';
 const mergeAt = index.indexOf(mergeTag);
 const cloudScriptAt = index.indexOf('<script src="./cloud-sync.js"></script>');
