@@ -60,9 +60,9 @@ export function resolvePreviewConfig(env) {
 }
 
 export function renderConfigScript(config) {
-  return "/* Generated at build time; do not edit or commit project credentials. */\\n" +
+  return "/* Generated at build time; do not edit or commit project credentials. */\n" +
     "(function(){'use strict';const config=" + JSON.stringify(config) +
-    ";if(!config)return;try{localStorage.setItem('nexus.cloud.config.v1',JSON.stringify(config));}catch(_){}})();\\n";
+    ";if(!config)return;try{localStorage.setItem('nexus.cloud.config.v1',JSON.stringify(config));}catch(_){}})();\n";
 }
 
 
@@ -72,7 +72,7 @@ async function verifySafeAuthStorage() {
   const end = source.indexOf('async function ensureClient(){', start);
   assert.ok(start >= 0 && end > start, 'cloud sync must define the safe Supabase auth storage adapter');
   const sandbox = {};
-  vm.runInNewContext(source.slice(start, end) + '\\nglobalThis.factory = createSafeAuthStorage;', sandbox);
+  vm.runInNewContext(source.slice(start, end) + '\nglobalThis.factory = createSafeAuthStorage;', sandbox);
   const values = new Map([
     ['sb-testproject-auth-token', 'undefined'],
     ['nexus.tracker.v3', 'undefined']
