@@ -56,7 +56,7 @@
     for(const row of SEED){const code=row[0],name=row[1],topic=row[2];if(!groups.has(code))groups.set(code,{id:code,name,workspaceId:meta[code].workspaceId,legacyIdPrefix:meta[code].legacyIdPrefix,topics:[]});groups.get(code).topics.push(topic);}
     return [{id:'sl-al-commerce-si',title:'වාණිජ (Commerce)',country:'Sri Lanka',exam:'GCE Advanced Level',language:'Sinhala',streamName:'වාණිජ (Commerce)',streamId:'stream-commerce',description:'Commerce starter curriculum in Sinhala, organised by subject.',keywords:['commerce','වාණිජ','A/L','GCE Advanced Level','Sri Lanka','Sinhala'],subjects:[...groups.values()]}];
   }
-  let CURRICULUM_PACKS=buildFallbackCurriculumPacks();
+  let CURRICULUM_PACKS=buildFallbackCurriculumPacks();window.NexusCurriculumPacks=CURRICULUM_PACKS;
   const LEGACY_SUBJECT_MAP = {
     'Business Studies':'ව්‍යාපාර අධ්‍යයනය','Business Studies (BS)':'ව්‍යාපාර අධ්‍යයනය','BS':'ව්‍යාපාර අධ්‍යය���ය',
     'Accounting':'ගිණුම්කරණය','ACC':'ගිණුම්කරණය',
@@ -316,7 +316,7 @@
     return packs;
   }
   async function loadCurriculumCatalog(){
-    try{const response=await fetch('./curricula/catalog.json');if(!response.ok)throw new Error('Catalogue request returned '+response.status+'.');const loaded=validateCurriculumCatalog(await response.json());CURRICULUM_PACKS=loaded;const before=JSON.stringify(state);state=repairCurriculumState(state);if(JSON.stringify(state)!==before)save();renderAll();renderExplore();}
+    try{const response=await fetch('./curricula/catalog.json');if(!response.ok)throw new Error('Catalogue request returned '+response.status+'.');const loaded=validateCurriculumCatalog(await response.json());CURRICULUM_PACKS=loaded;window.NexusCurriculumPacks=CURRICULUM_PACKS;const before=JSON.stringify(state);state=repairCurriculumState(state);if(JSON.stringify(state)!==before)save();renderAll();renderExplore();}
     catch(error){console.warn('Nexus curriculum catalogue could not be refreshed; using the built-in Commerce fallback.',error);}
   }
   function findPackStream(pack){
