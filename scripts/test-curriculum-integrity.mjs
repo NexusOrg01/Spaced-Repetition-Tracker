@@ -326,6 +326,30 @@ const resetLedgerEntry = integrity.createIntentLedgerEntry(
 assert.deepEqual(JSON.parse(resetLedgerEntry.value).installedCurricula, [selectedTopicMarker],
   'intentional scoped installation can replace old full-pack intent');
 
+// A normal install transition for one pack must not erase install intent for unrelated packs.
+const otherPackMarker = 'installed:pack:another-curriculum';
+const perPackStorage = {
+  values: new Map(),
+  getItem(key) { return this.values.has(key) ? this.values.get(key) : null; },
+  setItem(key, value) { this.values.set(key, String(value)); },
+  removeItem(key) { this.values.delete(key); }
+};
+const localLedgerKey = integrity.intentLedgerKeyPrefix + encodeURIComponent('local');
+perPackStorage.setItem(localLedgerKey, JSON.stringify({
+  schemaVersion: 1, installedCurricula: [packMarker, otherPackMarker]
+}));
+const perPackEntry = integrity.createIntentLedgerEntry(
+  { settings: { installedCurricula: [selectedTopicMarker], curriculumTombstones: [] } },
+  perPackStorage, { replacePackIds: [commerce.id], packs: [commerce] }
+);
+assert.deepEqual(
+  JSON.parse(perPackEntry.value).installedCurricula.sort(),
+  [selectedTopicMarker, otherPackMarker].sort(),
+  'reinstalling or changing scope for one pack must not erase other packs or retain stale markers for the affected pack'
+);
+assert.match(appCoreSource, /function installCurriculum\(packId[\s\S]*?markInstall\(state,pack,scope,subjectId,topicName\);[\s\S]*?save\(\{replaceCurriculumLedgerForPack:pack\.id\}\)/,
+  'curriculum installs must replace only that pack’s ledger intent, never the entire ledger');
+
 // The install-intent ledger is owner-scoped so account A cannot populate account B.
 const accountLedgerStorage = {
   values: new Map([['nexus.cloud.last-user-id','account-A']]),
