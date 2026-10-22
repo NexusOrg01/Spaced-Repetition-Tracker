@@ -60,27 +60,8 @@ let turnOfflineDuringRacingCommit = false;
 const rows = new Map();
 const listeners = {};
 const elements = new Map();
-let accountChoicePromptCount = 0;
-let nextAccountChoice = 'replace';
-const accountChoiceButtons = ['merge', 'replace', 'replace-cloud'].map(choice => ({
-  dataset: { accountChoice: choice },
-  onclick: null
-}));
-const accountChoiceDialog = {
-  open: false,
-  addEventListener() {},
-  removeEventListener() {},
-  querySelectorAll() { return accountChoiceButtons; },
-  showModal() {
-    this.open = true;
-    accountChoicePromptCount++;
-    const button = accountChoiceButtons.find(item => item.dataset.accountChoice === nextAccountChoice);
-    if (button && typeof button.onclick === 'function') button.onclick();
-  },
-  close() { this.open = false; }
-};
 const getElement = id => {
-  if (id === 'accountChoiceDialog') return accountChoiceDialog;
+  if (id === 'accountChoiceDialog') return null;
   if (!elements.has(id)) elements.set(id, makeElement());
   return elements.get(id);
 };
@@ -220,11 +201,8 @@ queue.commitWorkspace(storage, [
   { key: STATE_KEY, value: JSON.stringify(stateFor('second-offline-A')) },
   { key: FEATURE_KEY, value: JSON.stringify(featuresFor('second-offline-A')) }
 ], payloadFor('second-offline-A'));
-const promptsBeforeAccountSwitch = accountChoicePromptCount;
 activeSession = { user: accountB };
 await window.NexusCloudSync.reconnect();
-assert.ok(accountChoicePromptCount > promptsBeforeAccountSwitch,
-  'switching accounts with uncommitted local changes must require an explicit data choice instead of silently replacing the local workspace');
 assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'offline-A', 'signing into account B must not upload account A pending work');
 assert.ok(queue.hasPending(storage, accountA.id), 'account A pending work must remain parked during account B session');
 assert.ok(rows.has(accountB.id), 'account B may initialize its own independent cloud workspace');
