@@ -389,7 +389,7 @@
         const repaired=window.NexusCurriculumIntegrity.repair(candidate,loaded,{today,makeId}).state;
         if(JSON.stringify(repaired)!==JSON.stringify(previousState)){
           state=repaired;
-          if(save())renderAll();
+          if(save()){renderAll();renderSetup();renderExplore();}
           else state=previousState;
         }
       }
