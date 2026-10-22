@@ -77,16 +77,19 @@ function hasLocalWork(s){if(!s)return false;const core=s.state||s||{},f=s.featur
 function chooseLocalData(){return new Promise(resolve=>{const dlg=el('accountChoiceDialog');if(!dlg){resolve('cancel');return;}let done=false;const onCancel=e=>e.preventDefault();const finish=v=>{if(done)return;done=true;dlg.removeEventListener('cancel',onCancel);if(dlg.open)dlg.close();resolve(v);};dlg.addEventListener('cancel',onCancel);dlg.querySelectorAll('[data-account-choice]').forEach(b=>b.onclick=()=>finish(b.dataset.accountChoice));if(!dlg.open)dlg.showModal();});}
 function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
   if(!window.NexusBackupRestoreUtils||!window.NexusStorageKey||!window.NexusFeatureStorageKey||!window.NexusNormalizeFeatureState||!window.NexusSetFeatureState)throw new Error('Safe local workspace storage is unavailable. Cloud data was not applied.');
+  // Every snapshot entry point (cloud restore, account reconciliation, and merge) must
+  // pass through the same curriculum integrity guard before it is persisted locally.
+  const safeState=window.NexusRepairInstalledCurricula?window.NexusRepairInstalledCurricula(nextState):nextState;
   const nextFeatures=window.NexusNormalizeFeatureState(rawFeatures);
   const entries=[
-    {key:window.NexusStorageKey,value:JSON.stringify(nextState)},
+    {key:window.NexusStorageKey,value:JSON.stringify(safeState)},
     {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)}
   ];
   if(ownerId)entries.push({key:OWNER_KEY,value:String(ownerId)});
   // Free redundant snapshot space before applying a cloud workspace to this browser.
   if(window.NexusOfflineSyncQueue&&typeof window.NexusOfflineSyncQueue.compactMetadata==='function')window.NexusOfflineSyncQueue.compactMetadata(localStorage);
   window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,entries);
-  state=nextState;
+  state=safeState;
   window.NexusSetFeatureState(nextFeatures,{persist:false,render:false});
   renderAll();
   if(window.NexusRenderHub)window.NexusRenderHub();
