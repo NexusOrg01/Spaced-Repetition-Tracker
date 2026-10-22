@@ -635,7 +635,7 @@
   window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;$('installBtn').classList.remove('is-installed');$('installBtnLabel').textContent='Install';});
   window.addEventListener('appinstalled',()=>{installPrompt=null;$('installBtn').classList.add('is-installed');$('installBtnLabel').textContent='Installed';notify('Nexus installed on this device.');});
   // On secure hosting, cache the application shell for later offline use.
-  if('serviceWorker' in navigator && (location.protocol==='https:'||location.hostname==='localhost')){window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Offline support could not be registered',err)));}
+  if('serviceWorker' in navigator && (location.protocol==='https:'||location.hostname==='localhost')){window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js',{updateViaCache:'none'}).catch(err=>console.warn('Offline support could not be registered',err)));}
 
   // --- Persistent Undo toast: one source of truth for message, visibility, and timers. ---
   (function(){
