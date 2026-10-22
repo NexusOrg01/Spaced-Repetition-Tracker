@@ -21,7 +21,7 @@ function findSubjectByIdentity(rows,ps){
 }
 function topicIsCatalogueEvidence(topic,ps){
  if(!topic||!ps)return false;
- if(Array.isArray(ps.topics)&&ps.topics.includes(String(topic.name)))return true;
+ if(topic.custom===false&&Array.isArray(ps.topics)&&ps.topics.includes(String(topic.name)))return true;
  const prefix=String(ps.legacyIdPrefix||'').replace(/^seed-/i,'curr-').toLocaleLowerCase();
  const id=String(topic.id||'').replace(/^seed-/i,'curr-').toLocaleLowerCase();
  return !!prefix&&/^(?:curr)-(?:bs|acc|econ)-\d+$/.test(id)&&id.startsWith(prefix+'-');
