@@ -46,9 +46,18 @@
       rows(state.streams).find(stream => normalizeName(stream.name) === normalizeName(pack.streamName)) || null;
   }
   function findSubject(state, pack, definition, stream) {
-    return rows(state.subjects).find(subject => definition.workspaceId && String(subject.id) === String(definition.workspaceId)) ||
-      (stream && rows(state.subjects).find(subject => String(subject.streamId) === String(stream.id) && normalizeName(subject.name) === normalizeName(definition.name))) ||
-      null;
+    const attached = stream && rows(state.subjects).find(subject => String(subject.streamId) === String(stream.id) &&
+      ((definition.workspaceId && String(subject.id) === String(definition.workspaceId)) || normalizeName(subject.name) === normalizeName(definition.name)));
+    if (attached) return attached;
+    const byId = definition.workspaceId && rows(state.subjects).find(subject => String(subject.id) === String(definition.workspaceId));
+    if (!byId) return null;
+    const hasPackTopic = rows(state.topics).some(topic => String(topic.subjectId) === String(byId.id) &&
+      (String(topic.id || '').startsWith(canonicalPrefix(definition) + '-') ||
+       String(topic.id || '').startsWith(legacyPrefix(definition) + '-') || rows(definition.topics).includes(String(topic.name))));
+    // Only reclaim the globally stable subject ID when actual catalogue-topic evidence
+    // shows that a normalization step orphaned it from the Commerce stream. Otherwise a
+    // custom subject that happens to use that ID must remain untouched.
+    return hasPackTopic ? byId : null;
   }
   function topicByCatalogIdentity(state, definition, name, subject) {
     const ids = [topicIdFor(definition, name), oldTopicIdFor(definition, name)].filter(Boolean);
@@ -253,15 +262,14 @@
       if (!definition) return;
       marker.deleted.delete(deletedSubject(id, definition.id));
       if (type === 'subject') {
+        const hadFullPack = marker.installed.has(packMarker(id));
         marker.installed.delete(packMarker(id));
         marker.installed.add(subjectMarker(id, definition.id));
         for (const name of definition.topics) marker.deleted.delete(deletedTopic(id, definition.id, name));
-        // If a full-pack marker existed, materialize intent for all unaffected subjects.
-        for (const other of pack.subjects) {
+        // If a full-pack marker existed, materialize its intent for every unaffected subject.
+        if (hadFullPack) for (const other of pack.subjects) {
           if (String(other.id) !== String(definition.id) && !marker.deleted.has(deletedSubject(id, other.id)) &&
-              !marker.installed.has(subjectMarker(id, other.id))) {
-            marker.installed.add(subjectMarker(id, other.id));
-          }
+              !marker.installed.has(subjectMarker(id, other.id))) marker.installed.add(subjectMarker(id, other.id));
         }
       } else if (type === 'topic' && topicName !== undefined && topicName !== null) {
         marker.installed.add(topicMarker(id, definition.id, topicName));
