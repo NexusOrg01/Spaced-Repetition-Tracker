@@ -12,6 +12,16 @@ const queue = require('../offline-sync-queue.js');
 const recovery = require('../cloud-sync-recovery.js');
 const workspaceMerge = require('../workspace-sync-merge.js');
 const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
+
+// A locally installed Commerce pack must not be silently replaced by another account's
+// queued/cloud snapshot before the user chooses how to reconcile the two workspaces.
+assert.ok(source.includes('function hasCommerceInstallEvidence(payload)'), 'cloud handoff must recognize explicit and legacy Commerce install evidence');
+assert.ok(source.includes('const preserveLocalCurriculumIntent=hasCommerceInstallEvidence(localPayload)'), 'cross-owner handoff must compute whether local Commerce needs protecting');
+assert.ok(source.includes('if(owner&&owner!==newUserId&&!preserveLocalCurriculumIntent){'), 'the silent account-switch path must be bypassed for an unsynced local Commerce install');
+assert.ok(source.includes('if(pendingForUser&&owner!==newUserId&&!detachedWorkspace&&!preserveLocalCurriculumIntent){'), 'a queued target-account snapshot must not overwrite the local install before data choice');
+assert.ok(source.includes('if(pendingForUser&&!detachedWorkspace&&!preserveLocalCurriculumIntent&&window.NexusCloudSyncRecovery'), 'a stale target-account outbox must not auto-upload over a local install that needs a choice');
+assert.ok(readFileSync(resolve(root, 'app-core.js'), 'utf8').includes('if(save()){renderAll();renderSetup();renderExplore();}'),
+  'late catalogue repair must redraw the stream/subject tree even when its tab is not active');
 const OWNER = queue.OWNER;
 const STATE_KEY = 'recall.study.tracker.v1';
 const FEATURE_KEY = 'recall.study.features.v1';
