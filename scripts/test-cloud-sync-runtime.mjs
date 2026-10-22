@@ -10,6 +10,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const backup = require('../backup-restore-utils.js');
 const queue = require('../offline-sync-queue.js');
 const recovery = require('../cloud-sync-recovery.js');
+const curriculumIntegrity = require('../curriculum-integrity.js');
+const commerceCatalogue = JSON.parse(readFileSync(resolve(root, 'curricula/catalog.json'), 'utf8'));
+const commercePack = commerceCatalogue.packs.find(pack => pack.id === 'sl-al-commerce-si');
 const workspaceMerge = require('../workspace-sync-merge.js');
 const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
 const OWNER = queue.OWNER;
@@ -92,6 +95,14 @@ const window = {
   NexusBackupRestoreUtils: backup,
   NexusOfflineSyncQueue: queue,
   NexusCloudSyncRecovery: recovery,
+  NexusCurriculumIntegrity: curriculumIntegrity,
+  NexusRepairCurriculumState: data => {
+    const normalized = context.normalizeState(data);
+    return curriculumIntegrity.repair(normalized, commerceCatalogue.packs, {
+      today: () => '2026-10-22',
+      makeId: prefix => prefix + '-runtime-repair'
+    }).state;
+  },
   NexusWorkspaceSyncMerge: workspaceMerge,
   NexusStorageKey: STATE_KEY,
   NexusFeatureStorageKey: FEATURE_KEY,
@@ -464,4 +475,108 @@ assert.equal(getElement('cloudStatus').textContent, 'Synced',
 assert.ok(!getElement('cloudHelpText').textContent.includes('"undefined" is not valid JSON'),
   'the unsupported undefined JSON value must not escape from the merge helper');
 
-console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, and network-drop recovery.');
+// End-to-end regression for the reported Commerce loss during authenticated reconciliation.
+// The saved baseline and local outbox contain the full pack, while a newer cloud revision
+// has silently omitted untouched catalogue rows and the install marker without a deletion
+// tombstone. The real curriculum-integrity module must restore the pack before the merged
+// workspace is written back to the cloud.
+{
+  assert.ok(commercePack, 'The real Commerce catalogue pack must be available to the cloud runtime test.');
+  const makeCommerceWorkspace = () => {
+    const state = {
+      schema: 3,
+      streams: [{ id: commercePack.streamId, name: commercePack.streamName }],
+      subjects: commercePack.subjects.map((subject, index) => ({
+        id: subject.workspaceId, name: subject.name, streamId: commercePack.streamId, order: index
+      })),
+      topics: [], exams: [], history: [],
+      settings: { theme: 'system', intervalCap: 120, installedCurricula: [], curriculumTombstones: [] }
+    };
+    for (const subject of commercePack.subjects) {
+      subject.topics.forEach((name, index) => state.topics.push({
+        id: subject.legacyIdPrefix + '-' + String(index + 1).padStart(2, '0'),
+        subjectId: subject.workspaceId, name, notes: '', custom: false,
+        createdAt: '2026-10-20', lastReviewed: '', lastRating: null, dueDate: '',
+        intervalDays: 0, reviewCount: 0, streak: 0, lapses: 0, archived: false
+      }));
+    }
+    curriculumIntegrity.markInstalled(state, commercePack, 'pack');
+    return curriculumIntegrity.repair(state, commerceCatalogue.packs, { today: () => '2026-10-22' }).state;
+  };
+  const commerceBase = makeCommerceWorkspace();
+  const commerceLocal = JSON.parse(JSON.stringify(commerceBase));
+  const localEditedTopic = commerceLocal.topics.find(topic => topic.id === 'curr-bs-01');
+  localEditedTopic.name = 'User-edited Commerce topic';
+  localEditedTopic.reviewCount = 2;
+  localEditedTopic.lastReviewed = '2026-10-21';
+  localEditedTopic.lastRating = 4;
+  localEditedTopic.dueDate = '2026-10-28';
+  localEditedTopic.fsrs = { stability: 3.5, difficulty: 4.2, reps: 2 };
+  commerceLocal.streams.push({ id: 'commerce-local-manual-stream', name: 'My manual stream' });
+  commerceLocal.subjects.push({ id: 'commerce-local-manual-subject', name: 'My manual subject', streamId: 'commerce-local-manual-stream', order: 0 });
+  commerceLocal.topics.push({ id: 'commerce-local-manual-topic', subjectId: 'commerce-local-manual-subject', name: 'My manual topic', custom: true, reviewCount: 0 });
+
+  const commerceRemote = {
+    schema: 3,
+    streams: [{ id: 'commerce-cloud-manual-stream', name: 'Cloud manual stream' }],
+    subjects: [{ id: 'commerce-cloud-manual-subject', name: 'Cloud manual subject', streamId: 'commerce-cloud-manual-stream', order: 0 }],
+    topics: [{ id: 'commerce-cloud-manual-topic', subjectId: 'commerce-cloud-manual-subject', name: 'Cloud manual topic', custom: true, reviewCount: 0 }],
+    exams: [], history: [],
+    settings: { theme: 'system', intervalCap: 120, installedCurricula: [], curriculumTombstones: [] }
+  };
+  const commerceFeatures = { version: 1, journal: [], papers: [], goals: [], studyLogs: [], selectedTopicIds: [], settings: {} };
+  const baseStamp = '2026-10-22T20:00:00.000Z';
+  const remoteStamp = '2026-10-22T21:00:00.000Z';
+  const remotePayload = payloadFor(null);
+  remotePayload.state = commerceRemote;
+  remotePayload.featureState = commerceFeatures;
+  rows.set(accountA.id, { user_id: accountA.id, payload: remotePayload, updated_at: remoteStamp });
+  activeSession = { user: accountA };
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(commerceLocal));
+  storage.setItem(FEATURE_KEY, JSON.stringify(commerceFeatures));
+  context.state = commerceLocal;
+  queue.rememberBase(storage, accountA.id, { state: commerceBase, featureState: commerceFeatures }, baseStamp);
+  queue.rememberStamp(storage, accountA.id, remoteStamp);
+  queue.commitWorkspace(storage, [
+    { key: STATE_KEY, value: JSON.stringify(commerceLocal) },
+    { key: FEATURE_KEY, value: JSON.stringify(commerceFeatures) }
+  ], { app: 'Nexus Spaced Repetition Tracker', schema: 4, exportedAt: new Date().toISOString(), state: commerceLocal, featureState: commerceFeatures },
+  { baseServerVersion: baseStamp });
+
+  await window.NexusCloudSync.reconnect();
+  for (let i = 0; i < 300; i++) {
+    const synced = rows.get(accountA.id)?.payload?.state;
+    const count = synced?.topics?.filter(topic => String(topic.id).startsWith('curr-')).length || 0;
+    if (!queue.hasPending(storage, accountA.id) && count === 46 &&
+        synced.topics.some(topic => topic.id === 'commerce-local-manual-topic') &&
+        synced.topics.some(topic => topic.id === 'commerce-cloud-manual-topic')) break;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  const converged = rows.get(accountA.id).payload.state;
+  assert.equal(converged.topics.filter(topic => String(topic.id).startsWith('curr-')).length, 46,
+    'authenticated cloud reconciliation must reconstruct every omitted Commerce topic before verified upload');
+  assert.equal(converged.subjects.filter(subject => ['sub-bs', 'sub-acc', 'sub-econ'].includes(subject.id)).length, 3,
+    'all Commerce subjects must be restored before the cloud write');
+  assert.ok(converged.streams.some(stream => stream.id === commercePack.streamId),
+    'the Commerce stream must be restored before the cloud write');
+  assert.equal(converged.topics.find(topic => topic.id === 'curr-bs-01').name, 'User-edited Commerce topic',
+    'the edited/reviewed Commerce topic must retain its user-edited name');
+  assert.equal(converged.topics.find(topic => topic.id === 'curr-bs-01').reviewCount, 2,
+    'the edited/reviewed topic scheduling progress must survive reconciliation');
+  assert.deepEqual(converged.topics.find(topic => topic.id === 'curr-bs-01').fsrs,
+    { stability: 3.5, difficulty: 4.2, reps: 2 },
+    'the edited/reviewed topic FSRS card must survive reconciliation');
+  assert.ok(converged.streams.some(stream => stream.id === 'commerce-local-manual-stream'),
+    'the local manual stream must survive the full reconciliation');
+  assert.ok(converged.topics.some(topic => topic.id === 'commerce-local-manual-topic'),
+    'the local manual topic must survive the full reconciliation');
+  assert.ok(converged.streams.some(stream => stream.id === 'commerce-cloud-manual-stream'),
+    'unrelated remote manual data must survive the full reconciliation');
+  assert.ok(converged.topics.some(topic => topic.id === 'commerce-cloud-manual-topic'),
+    'unrelated remote manual topics must survive the full reconciliation');
+  assert.ok(!queue.hasPending(storage, accountA.id),
+    'the repaired cloud workspace must be verified before the outbox entry is acknowledged');
+}
+
+console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, and Commerce curriculum reconciliation.');
