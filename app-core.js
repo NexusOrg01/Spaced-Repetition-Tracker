@@ -79,6 +79,10 @@
   }
   function repairInstalledCurricula(data,ownerId){const api=window.NexusCurriculumIntegrity;if(!api||typeof api.repair!=='function')return data;const candidate=typeof api.applyIntentLedger==='function'?api.applyIntentLedger(data,localStorage,ownerId,CURRICULUM_PACKS):data;return api.repair(candidate,CURRICULUM_PACKS,{today,makeId}).state;}
   window.NexusRepairInstalledCurricula=repairInstalledCurricula;
+  // Cloud hydration and merge commits must persist the same owner-scoped install intent
+  // as ordinary UI saves. Keep catalogue ownership inside this module so sync code cannot
+  // accidentally create a ledger with a stale or incomplete fallback catalogue.
+  window.NexusCreateCurriculumIntentLedgerEntry=function(data,ownerId,options={}){const api=window.NexusCurriculumIntegrity;if(!api||typeof api.createIntentLedgerEntry!=='function')return null;return api.createIntentLedgerEntry(data,localStorage,{...options,ownerId,packs:CURRICULUM_PACKS});};
   function safeRead(key){try{const val=localStorage.getItem(key);return val?JSON.parse(val):null;}catch(e){console.warn('Could not read saved data',e);return null;}}
   function normalizeTopic(t, fallbackSub){return {id:String(t.id||makeId('topic')),subjectId:String(t.subjectId||fallbackSub),name:String(t.name||t.topic||'Untitled topic').slice(0,240),notes:String(t.notes||'').slice(0,1000),custom:t.custom!==false,createdAt:validDate(t.createdAt)?t.createdAt:today(),lastReviewed:validDate(t.lastReviewed)?t.lastReviewed:(validDate(t.lastDate)?t.lastDate:''),lastRating:Number(t.lastRating??t.score)>=1&&Number(t.lastRating??t.score)<=5?Number(t.lastRating??t.score):null,dueDate:validDate(t.dueDate)?t.dueDate:(validDate(t.nextDate)?t.nextDate:''),intervalDays:Math.max(0,Math.min(120,Number(t.intervalDays)||0)),reviewCount:Math.max(0,Math.min(100000,Number(t.reviewCount)||0)),streak:Math.max(0,Number(t.streak)||0),lapses:Math.max(0,Number(t.lapses??t.lapseCount)||0),archived:Boolean(t.archived),fsrs:window.NexusBackupRestoreUtils.sanitizeFsrsCard(t.fsrs)};}
   function migrateOld(raw,options={}){
