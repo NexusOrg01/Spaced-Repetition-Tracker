@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = resolve(root, 'dist');
 const LIVE_HOST = 'txugbdavblpettcnhcxl.supabase.co';
-const PREVIEW_BRANCH = 'feat/account-bound-offline-sync';
+const PREVIEW_BRANCHES = new Set(['feat/account-bound-offline-sync', 'ai-dev/rebuild-commerce-sync-integrity']);
 
 function isAllowedAnonKey(key) {
   if (key.startsWith('sb_secret_') || key.length < 20) return false;
@@ -21,7 +21,9 @@ function isAllowedAnonKey(key) {
 }
 
 export function resolvePreviewConfig(env) {
-  if (env.VERCEL_ENV !== 'preview' || env.VERCEL_GIT_COMMIT_REF !== PREVIEW_BRANCH) return null;
+  const allowedVercelPreview = env.VERCEL_ENV === 'preview' && PREVIEW_BRANCHES.has(String(env.VERCEL_GIT_COMMIT_REF || ''));
+  const allowedCloudflarePreview = env.CF_PAGES === '1' && PREVIEW_BRANCHES.has(String(env.CF_PAGES_BRANCH || ''));
+  if (!allowedVercelPreview && !allowedCloudflarePreview) return null;
   const rawUrl = String(env.NEXUS_SUPABASE_URL || '').trim();
   const key = String(env.NEXUS_SUPABASE_ANON_KEY || '').trim();
   if (!rawUrl || !key) throw new Error('Preview branch requires both NEXUS_SUPABASE_URL and NEXUS_SUPABASE_ANON_KEY.');
