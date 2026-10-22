@@ -69,7 +69,7 @@ assert.ok(restore.includes('window.NexusCloudSync.schedule()'), 'schedule cloud 
 assert.ok(appSource.includes("schema:4,exportedAt:new Date().toISOString(),state,featureState:fsState,syncMetadata:syncStatus"), 'full backups must include schema 4, Study Hub state, and account-bound queue metadata without importing the queue itself');
 assert.ok(restore.includes("archivePending:mode==='REPLACE'"), 'replace restore must archive the prior pending snapshot after explicit confirmation');
 
-const cloud = section(cloudSync, 'function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){', 'async function initializeSession(s)', 'cloud workspace hydration');
+const cloud = section(cloudSync, 'function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,options={}){', 'async function initializeSession(s)', 'cloud workspace hydration');
 const cloudCommit = cloud.indexOf('commitLocalStorageAtomically(localStorage,entries)');
 const cloudCompact = cloud.indexOf('window.NexusOfflineSyncQueue.compactMetadata(localStorage)');
 assert.ok(cloudCompact >= 0 && cloudCommit > cloudCompact, 'compact legacy sync snapshots before cloud hydration writes the restored workspace');
