@@ -276,7 +276,7 @@ const ledgerEntry = integrity.createIntentLedgerEntry(fullPackState, ledgerStora
 ledgerStorage.setItem(ledgerEntry.key, ledgerEntry.value);
 const ledgerDamaged = cloneState(staleLocalState);
 ledgerDamaged.settings.installedCurricula = [selectedTopicMarker];
-const ledgerHydrated = integrity.applyIntentLedger(ledgerDamaged, ledgerStorage);
+const ledgerHydrated = integrity.applyIntentLedger(cloneState(ledgerDamaged), ledgerStorage);
 assert.ok(ledgerHydrated.settings.installedCurricula.includes(packMarker),
   'install intent must survive if a workspace snapshot drops the full-pack marker');
 const ledgerRepair = integrity.repair(ledgerHydrated, [commerce], {
