@@ -144,36 +144,20 @@
     const tombstones=new Set(rows(settingsOf(mergedState).curriculumTombstones).map(String));
     const mergedMarkers=new Set(markerValues(mergedState));
     const baseMarkers=markerValues(baseState);
-    const streams=rows(mergedState.streams),subjects=rows(mergedState.subjects),topics=rows(mergedState.topics);
-    const baseStreams=rows(baseState&&baseState.streams),baseSubjects=rows(baseState&&baseState.subjects);
-    const baseTopics=rows(baseState&&baseState.topics);
     for(const marker of baseMarkers){
       if(!marker.startsWith('installed:pack:'))continue;
       const packId=marker.slice('installed:pack:'.length);
       if(!packId||mergedMarkers.has(marker)||tombstones.has('deleted:stream:'+packId))continue;
-      // The last verified base proves that this pack was installed as a whole.
-      // Stale scoped markers must not erase that intent; explicit deletion tombstones
-      // remain authoritative when the reconstructed workspace is repaired.
-      const catalogueTopics=baseTopics.filter(t=>/^(?:curr|seed)-(?:bs|acc|econ)-\d+$/i.test(String(t&&t.id||'')));
-      let survivingFootprint=false;
-      for(const baseSubject of baseSubjects){
-        const names=catalogueTopics.filter(t=>String(t.subjectId)===String(baseSubject.id)).map(t=>String(t.name));
-        if(!names.length)continue;
-        const baseStream=baseStreams.find(s=>String(s.id)===String(baseSubject.streamId));
-        if(!baseStream)continue;
-        const liveStream=streams.find(s=>String(s.id)===String(baseStream.id)||norm(s.name)===norm(baseStream.name));
-        if(!liveStream)continue;
-        const liveSubject=subjects.find(s=>String(s.streamId)===String(liveStream.id)&&
-          (String(s.id)===String(baseSubject.id)||norm(s.name)===norm(baseSubject.name)));
-        if(!liveSubject)continue;
-        if(topics.some(t=>String(t.subjectId)===String(liveSubject.id)&&names.includes(String(t.name)))){
-          survivingFootprint=true;break;
-        }
-      }
-      if(survivingFootprint)mergedMarkers.add(marker);
+      // A full-pack marker in the last verified base is durable install intent. A missing
+      // stream or subject is not proof that the user deleted the pack: the generic
+      // three-way record merge can remove unchanged parent rows when a cloud snapshot is
+      // incomplete. Without an explicit stream-deletion tombstone, restore the marker so
+      // the catalogue repair step can reconstruct the stream, subjects, and untouched topics.
+      mergedMarkers.add(marker);
     }
     mergedState.settings={...settingsOf(mergedState),installedCurricula:Array.from(mergedMarkers)};
   }
+
   function merge(basePayload,localPayload,remotePayload){
     if(!isObject(localPayload)||!isObject(localPayload.state)||!isObject(remotePayload)||!isObject(remotePayload.state))throw new Error('Three-way workspace merge requires valid local and cloud snapshots.');
     const base=isObject(basePayload)?basePayload:{state:{},featureState:{}};
