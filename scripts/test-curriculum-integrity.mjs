@@ -22,7 +22,7 @@ assert.match(appCoreSource, /window\.NexusCreateCurriculumIntentLedgerEntry=func
   'cloud snapshot transactions must have an owner-scoped curriculum ledger writer');
 assert.match(cloudSyncSource, /function curriculumIntentLedgerEntry\(state,ownerId,replace=false\)/,
   'all cloud persistence paths must use one explicit curriculum-ledger transaction helper');
-assert.match(cloudSyncSource, /function resetToEmpty\\(ownerId\\)[\\s\\S]*applyWorkspaceSnapshot\\(emptyState\\(\\),\\{\\},ownerId,\\{replaceCurriculumIntent:true\\}\\)/,
+assert.match(cloudSyncSource, /function resetToEmpty\(ownerId\)[\s\S]*applyWorkspaceSnapshot\(emptyState\(\),\{\},ownerId,\{replaceCurriculumIntent:true\}\)/,
   'an intentional clean reset must explicitly clear only that account’s prior curriculum install intent');
 assert.match(cloudSyncSource, /const intentEntry=curriculumIntentLedgerEntry\(safeState,ownerId,options\.replaceCurriculumIntent===true\);\s*if\(intentEntry\)entries\.push\(intentEntry\)/,
   'cloud hydration and workspace choices must atomically persist repaired workspace plus install intent');
