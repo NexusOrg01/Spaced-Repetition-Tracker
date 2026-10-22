@@ -474,4 +474,49 @@ assert.equal(detachedSandbox.localStorage.getItem(queue.DETACHED_OWNER), '',
 assert.ok(source.includes('if(ready){clearDetachedOwnerAfterSuccessfulReconciliation(newUserId,detachedWorkspace);status(\'Synced\');}'),
   'same-account initialization must clear the marker only in its successful ready path');
 
-console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, and network-drop recovery.');
+
+ // A stale queued snapshot must not erase a curriculum already saved locally when
+ // a concurrent edit arrives in the same account's cloud workspace.
+ const beforeCurriculumRace=rows.get(accountA.id);
+ const curriculumBase=JSON.parse(JSON.stringify(beforeCurriculumRace.payload));
+ const curriculumBaseStamp=beforeCurriculumRace.updated_at;
+ queue.rememberBase(storage,accountA.id,curriculumBase,curriculumBaseStamp);
+ queue.rememberStamp(storage,accountA.id,curriculumBaseStamp);
+ queue.commitWorkspace(storage,[
+  {key:STATE_KEY,value:JSON.stringify(curriculumBase.state)},
+  {key:FEATURE_KEY,value:JSON.stringify(curriculumBase.featureState||{})}
+ ],curriculumBase,{baseServerVersion:curriculumBaseStamp});
+ const installedLocalState=JSON.parse(JSON.stringify(curriculumBase.state));
+ installedLocalState.streams.push({id:'install-commerce-stream',name:'වාණිජ (Commerce)'});
+ installedLocalState.subjects.push({id:'install-commerce-subject',name:'ගිණුම්කරණය',streamId:'install-commerce-stream',order:0});
+ installedLocalState.topics.push({id:'curr-acc-01',subjectId:'install-commerce-subject',name:'1. ගිණුම්කරණය හා එහි අවශ්‍යතාවය',notes:'',custom:false,createdAt:'2026-10-22',lastReviewed:'',lastRating:null,dueDate:'',intervalDays:0,reviewCount:0,streak:0,lapses:0,archived:false});
+ context.state=installedLocalState;
+ storage.setItem(STATE_KEY,JSON.stringify(installedLocalState));
+ storage.setItem(FEATURE_KEY,JSON.stringify(curriculumBase.featureState||{}));
+ const newerConcurrentCloud=JSON.parse(JSON.stringify(curriculumBase));
+ newerConcurrentCloud.state.streams.push({id:'cloud-concurrent-test-stream',name:'Cloud test stream'});
+ newerConcurrentCloud.state.subjects.push({id:'cloud-concurrent-test-subject',name:'Cloud test subject',streamId:'cloud-concurrent-test-stream',order:0});
+ newerConcurrentCloud.state.topics.push({id:'cloud-concurrent-test-topic',subjectId:'cloud-concurrent-test-subject',name:'Concurrent cloud topic',dueDate:'2026-10-30'});
+ const newerConcurrentStamp=new Date(Date.parse(curriculumBaseStamp)+60000).toISOString();
+ rows.set(accountA.id,{...beforeCurriculumRace,payload:newerConcurrentCloud,updated_at:newerConcurrentStamp});
+ await window.NexusCloudSync.reconnect();
+ assert.equal(getElement('cloudStatus').textContent,'Synced','stale queued/local divergence should reconcile and verify without a destructive cloud restore');
+ const curriculumConverged=rows.get(accountA.id).payload;
+ assert.ok(curriculumConverged.state.streams.some(x=>x.id==='install-commerce-stream'),'the installed curriculum stream must survive a stale-queue/cloud-revision race');
+ assert.ok(curriculumConverged.state.subjects.some(x=>x.id==='install-commerce-subject'),'the installed curriculum subject must survive a stale-queue/cloud-revision race');
+ assert.ok(curriculumConverged.state.topics.some(x=>x.id==='curr-acc-01'),'the installed curriculum topic must survive a stale-queue/cloud-revision race');
+ assert.ok(curriculumConverged.state.streams.some(x=>x.id==='cloud-concurrent-test-stream'),'independent cloud changes must survive the same race');
+ assert.ok(curriculumConverged.state.topics.some(x=>x.id==='cloud-concurrent-test-topic'),'independent cloud topics must survive the same race');
+ assert.equal(queue.hasPending(storage,accountA.id),false,'the stale-queue reconciliation must clear only after a verified upload');
+
+ // An older cloud revision must never replace a workspace based on a newer verified revision.
+ const verifiedCurrent=JSON.parse(JSON.stringify(rows.get(accountA.id)));
+ const staleCloudPayload=JSON.parse(JSON.stringify(curriculumBase));
+ rows.set(accountA.id,{...verifiedCurrent,payload:staleCloudPayload,updated_at:curriculumBaseStamp});
+ await window.NexusCloudSync.reconnect();
+ const preservedAfterStaleRead=JSON.parse(storage.getItem(STATE_KEY));
+ assert.ok(preservedAfterStaleRead.topics.some(x=>x.id==='curr-acc-01'),'an older cloud revision must not delete the locally verified curriculum topic');
+ assert.ok(preservedAfterStaleRead.streams.some(x=>x.id==='cloud-concurrent-test-stream'),'an older cloud revision must not delete a newer verified cloud stream');
+ assert.equal(getElement('cloudStatus').textContent,'Automatic merge not verified','a stale cloud response must fail closed instead of claiming a successful sync');
+
+console.log('Cloud sync runtime tests passed: offline recovery, account isolation, stale queue/live workspace alignment, monotonic cloud revision checks, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, and network-drop recovery.');
