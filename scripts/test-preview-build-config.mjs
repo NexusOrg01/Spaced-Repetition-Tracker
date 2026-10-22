@@ -65,5 +65,5 @@ assert.throws(() => resolvePreviewConfig({ ...previewEnv, NEXUS_SUPABASE_ANON_KE
 assert.throws(() => resolvePreviewConfig({ ...previewEnv, NEXUS_SUPABASE_ANON_KEY: '' }),
   /requires both/, 'missing staging variables must fail the legacy designated preview build');
 assert.match(renderConfigScript(null), /const config=null/);
-assert.match(renderConfigScript({ url: previewEnv.NEXUS_SUPABASE_URL, key: previewEnv.NEXUS_SUPABASE_ANON_KEY }), /nexus\\.cloud\\.config\\.v1/);
+assert.match(renderConfigScript({ url: previewEnv.NEXUS_SUPABASE_URL, key: previewEnv.NEXUS_SUPABASE_ANON_KEY }), /nexus\.cloud\.config\.v1/);
 console.log('Preview-only Supabase configuration guard tests passed.');
