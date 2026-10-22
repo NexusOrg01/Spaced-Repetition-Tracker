@@ -182,7 +182,7 @@ context = {
   clone: v => JSON.parse(JSON.stringify(v)),
   normalizeState: v => {
     const normalized = JSON.parse(JSON.stringify(v));
-    if (Array.isArray(normalized.topics)) normalized.topics = normalized.topics.map(topic => ({ ...topic, fsrs: undefined }));
+    if (Array.isArray(normalized.topics)) normalized.topics = normalized.topics.map(topic => ({ ...topic, fsrs: topic.fsrs && typeof topic.fsrs === 'object' ? topic.fsrs : undefined }));
     return normalized;
   },
   renderAll() {},
