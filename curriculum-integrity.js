@@ -93,7 +93,12 @@ function createIntentLedgerEntry(state,storage,options={}){
   const kind=match?match[1]:'',packId=match?match[2]:'';
   if(!packId)continue;
   if(deleted.has(ds(packId))&&!hasStrongPackFootprint(state,packMap.get(packId))){
-   for(const candidate of [...installed])if(candidate===pk(packId)||candidate.startsWith('installed:subject:'+packId+':')||candidate.startsWith('installed:topic:'+packId+':'))installed.delete(candidate);
+   // Keep a historical full-pack intent in the independent ledger while the tombstone
+   // prevents it from being applied to a workspace with no surviving pack records.
+   // If a later snapshot still contains a canonical subject/topic, applyIntentLedger can
+   // recognize the tombstone as stale and recover the whole previously-installed pack.
+   if(kind==='pack')continue;
+   for(const candidate of [...installed])if(candidate!==pk(packId)&&(candidate.startsWith('installed:subject:'+packId+':')||candidate.startsWith('installed:topic:'+packId+':')))installed.delete(candidate);
    continue;
   }
   if(kind==='subject'){
