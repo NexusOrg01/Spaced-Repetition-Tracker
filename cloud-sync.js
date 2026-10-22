@@ -220,6 +220,8 @@ function alignPendingToCurrentWorkspace(userId,localPayload,pending){
   {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)},
   {key:OWNER_KEY,value:String(userId)}
  ];
+ const intentEntry=curriculumIntentLedgerEntry(nextState,userId,true);
+ if(intentEntry)workspaceEntries.push(intentEntry);
  const baseVersion=base&&typeof base.serverVersion==='string'&&base.serverVersion?base.serverVersion:(pending.baseServerVersion||null);
  if(basePayload&&typeof queue.rebaseWithBase==='function'){
   // Queue, local workspace, and recovery alternatives commit atomically.
