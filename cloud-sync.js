@@ -341,7 +341,7 @@ async function upload(){
     // the repair, ledger, and replacement outbox snapshot as a single local transaction.
     entries.push({key:window.NexusStorageKey,value:JSON.stringify(repairedState)});
     entries.push({key:window.NexusFeatureStorageKey,value:JSON.stringify(repairedPayload.featureState||{})});
-    const intentEntry=curriculumIntentLedgerEntry(repairedState,uploadUserId,true);
+    const intentEntry=curriculumIntentLedgerEntry(repairedState,uploadUserId,false);
     if(intentEntry)entries.push(intentEntry);
     if(queue){
      queue.commitWorkspace(localStorage,entries,repairedPayload,{baseServerVersion:pending?pending.baseServerVersion:(priorStamp||null),returnOperationPayload:false});
