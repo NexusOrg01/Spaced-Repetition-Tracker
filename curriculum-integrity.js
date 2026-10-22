@@ -344,8 +344,116 @@
     }
     return results;
   }
+  function intentMarkerDetails(value) {
+    const marker = String(value || '');
+    const match = /^(installed|deleted):(pack|subject|topic):([^:]+)(?::([^:]+)(?::([\\s\\S]*))?)?$/.exec(marker);
+    if (!match) return null;
+    return {
+      verb: match[1],
+      action: match[1] === 'installed' ? 'install' : 'delete',
+      scope: match[2],
+      packId: match[3],
+      subjectId: match[4] || '',
+      topicToken: match[5] || '',
+      token: marker.replace(/^(installed|deleted):/, '')
+    };
+  }
+  function intentState(source) {
+    const settings = isRecord(source && source.settings) ? source.settings : {};
+    const installed = new Set(uniqueStrings(settings.installedCurricula));
+    const deleted = new Set(uniqueStrings(settings.curriculumTombstones));
+    const tokens = new Set();
+    for (const marker of [...installed, ...deleted]) {
+      const parsed = intentMarkerDetails(marker);
+      if (parsed) tokens.add(parsed.token);
+    }
+    return { installed, deleted, tokens };
+  }
+  function intentForToken(map, token) {
+    if (map.deleted.has('deleted:' + token)) return 'delete';
+    if (map.installed.has('installed:' + token)) return 'install';
+    return null;
+  }
+  function markerAffectedByLocalIntent(action, marker) {
+    const target = intentMarkerDetails(marker);
+    if (!target || target.packId !== action.packId) return false;
+    if (action.action === 'install') {
+      if (target.verb !== 'deleted') return false;
+      if (action.scope === 'pack') return true;
+      if (target.scope === 'pack') return true;
+      if (action.scope === 'subject') return target.subjectId === action.subjectId;
+      if (action.scope === 'topic') {
+        if (target.subjectId !== action.subjectId) return false;
+        return target.scope === 'subject' || (target.scope === 'topic' && target.token === action.token);
+      }
+      return false;
+    }
+    if (target.verb !== 'installed') return false;
+    if (action.scope === 'pack') return true;
+    if (action.scope === 'subject') return target.scope === 'pack' || target.subjectId === action.subjectId;
+    if (action.scope === 'topic') return target.scope === 'topic' && target.token === action.token;
+    return false;
+  }
+  function reconcileMergedIntents(baseState, localState, remoteState, mergedState) {
+    if (!isRecord(mergedState)) return { changed: false, conflicts: [] };
+    if (!isRecord(mergedState.settings)) mergedState.settings = {};
+    const base = baseState ? intentState(baseState) : null;
+    const local = intentState(localState);
+    const remote = intentState(remoteState);
+    const merged = intentState(mergedState);
+    const actions = [];
+    const tokens = new Set([...(base ? base.tokens : []), ...local.tokens]);
+    for (const token of tokens) {
+      const localIntent = intentForToken(local, token);
+      const baseIntent = base ? intentForToken(base, token) : null;
+      if (localIntent && (!base || localIntent !== baseIntent)) {
+        const parsed = intentMarkerDetails((localIntent === 'install' ? 'installed:' : 'deleted:') + token);
+        if (parsed) actions.push(parsed);
+      }
+    }
+    const conflicts = [], seenConflicts = new Set();
+    let changed = false;
+    for (const action of actions) {
+      const remoteOpposite = action.action === 'install' ? remote.deleted : remote.installed;
+      const localOpposite = action.action === 'install' ? local.deleted : local.installed;
+      const mergedOpposite = action.action === 'install' ? merged.deleted : merged.installed;
+      const baseOpposite = base ? (action.action === 'install' ? base.deleted : base.installed) : new Set();
+      for (const marker of remoteOpposite) {
+        if (localOpposite.has(marker) || !markerAffectedByLocalIntent(action, marker)) continue;
+        if (!mergedOpposite.delete(marker)) continue;
+        changed = true;
+        const remoteChanged = !base || !baseOpposite.has(marker);
+        if (remoteChanged) {
+          const conflictKey = action.token + '|' + marker;
+          if (!seenConflicts.has(conflictKey)) {
+            seenConflicts.add(conflictKey);
+            conflicts.push({
+              path: 'state.settings.curriculumIntent.' + action.token,
+              base: base ? intentForToken(base, action.token) : null,
+              local: action.action,
+              remote: intentMarkerDetails(marker)?.action || (action.action === 'install' ? 'delete' : 'install'),
+              basePresent: !!base,
+              localPresent: true,
+              remotePresent: true,
+              resolution: 'local',
+              marker
+            });
+          }
+        }
+      }
+    }
+    mergedState.settings.installedCurricula = Array.from(merged.installed).filter(marker => {
+      const parsed = intentMarkerDetails(marker);
+      return !parsed || parsed.verb === 'installed';
+    }).slice(-5000);
+    mergedState.settings.curriculumTombstones = Array.from(merged.deleted).filter(marker => {
+      const parsed = intentMarkerDetails(marker);
+      return !parsed || parsed.verb === 'deleted';
+    }).slice(-5000);
+    return { changed, conflicts };
+  }
   return {
     keys: { pack: packMarker, subject: subjectMarker, topic: topicMarker, deletedPack, deletedSubject, deletedTopic },
-    repair, markInstalled, markDeletedTopic, markDeletedSubject, markDeletedStream, diagnose
+    repair, markInstalled, markDeletedTopic, markDeletedSubject, markDeletedStream, diagnose, reconcileMergedIntents
   };
 });
