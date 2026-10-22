@@ -147,6 +147,10 @@
     const conflicts=[];
     const state=mergeSection(base.state,localPayload.state,remotePayload.state,'state',['streams','subjects','topics','history','exams'],conflicts);
     const featureState=mergeSection(base.featureState,localPayload.featureState||{},remotePayload.featureState||{},'featureState',['journal','papers','goals','studyLogs'],conflicts);
+    if(root&&root.NexusCurriculumIntegrity&&typeof root.NexusCurriculumIntegrity.reconcileMergedIntents==='function'){
+      const intentResult=root.NexusCurriculumIntegrity.reconcileMergedIntents(base.state,localPayload.state,remotePayload.state,state);
+      if(intentResult&&Array.isArray(intentResult.conflicts))conflicts.push(...intentResult.conflicts);
+    }
     const payload={...remotePayload,state,featureState,exportedAt:new Date().toISOString()};
     return {payload,conflicts};
   }
