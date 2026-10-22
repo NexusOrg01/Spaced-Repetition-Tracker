@@ -67,8 +67,24 @@ let turnOfflineDuringRacingCommit = false;
 const rows = new Map();
 const listeners = {};
 const elements = new Map();
+let requestedAccountChoice = null;
+const accountChoiceButtons = ['merge', 'replace', 'replace-cloud'].map(choice => ({
+  dataset: { accountChoice: choice }, onclick: null
+}));
+const accountChoiceDialog = {
+  open: false,
+  addEventListener() {},
+  removeEventListener() {},
+  querySelectorAll() { return accountChoiceButtons; },
+  showModal() {
+    this.open = true;
+    const selected = accountChoiceButtons.find(button => button.dataset.accountChoice === requestedAccountChoice);
+    if (selected && typeof selected.onclick === 'function') selected.onclick();
+  },
+  close() { this.open = false; }
+};
 const getElement = id => {
-  if (id === 'accountChoiceDialog') return null;
+  if (id === 'accountChoiceDialog') return requestedAccountChoice ? accountChoiceDialog : null;
   if (!elements.has(id)) elements.set(id, makeElement());
   return elements.get(id);
 };
@@ -597,4 +613,35 @@ assert.equal(storage.getItem(OWNER), accountA.id,
 assert.equal(getElement('cloudStatus').textContent, 'Data choice required',
   'the existing explicit data-choice flow must be shown instead of silently replacing the workspace');
 
-console.log('Cloud sync runtime tests passed: offline recovery, account isolation, stale queue/live workspace alignment, monotonic cloud revision checks, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, and network-drop recovery.');
+// Now choose "Keep & merge offline data" exactly as the user should after the prompt.
+// Both the local Commerce catalogue and the target account's existing manual stream must
+// reach the same verified cloud snapshot, and survive a fresh initialization/refresh pass.
+requestedAccountChoice = 'merge';
+await window.NexusCloudSync.reconnect();
+requestedAccountChoice = null;
+const mergedHandoff = rows.get(accountB.id).payload.state;
+assert.equal(mergedHandoff.topics.length, 46,
+  'the explicit merge must preserve all 46 installed Commerce topics');
+assert.ok(mergedHandoff.streams.some(stream => stream.id === handoffCatalog.streamId),
+  'the explicit merge must preserve the Commerce stream');
+assert.ok(mergedHandoff.streams.some(stream => stream.id === 'manual-test-stream'),
+  'the explicit merge must preserve the target account manual stream');
+assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics.length, 46,
+  'the merged local workspace must retain the complete Commerce pack');
+assert.equal(storage.getItem(OWNER), accountB.id,
+  'the target account should own the device only after the user explicitly chooses merge');
+
+// Simulate the next page load/refresh using the persisted local workspace and the cloud row.
+context.state = JSON.parse(storage.getItem(STATE_KEY));
+await window.NexusCloudSync.reconnect();
+const refreshedHandoff = rows.get(accountB.id).payload.state;
+assert.equal(refreshedHandoff.topics.length, 46,
+  'all Commerce topics must remain after the post-login refresh');
+assert.ok(refreshedHandoff.streams.some(stream => stream.id === handoffCatalog.streamId),
+  'the Commerce stream must remain after the post-login refresh');
+assert.ok(refreshedHandoff.streams.some(stream => stream.id === 'manual-test-stream'),
+  'the target account manual stream must remain after the post-login refresh');
+assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics.length, 46,
+  'local persistence must remain complete after refresh rehydration');
+
+console.log('Cloud sync runtime tests passed: offline recovery, account isolation, explicit Commerce handoff merge, post-login refresh preservation, stale queue/live workspace alignment, monotonic cloud revision checks, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, and network-drop recovery.');
