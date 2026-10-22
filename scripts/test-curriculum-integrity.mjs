@@ -5,6 +5,15 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const integrity = require('../curriculum-integrity.js');
+const appCoreSource = readFileSync(new URL('../app-core.js', import.meta.url), 'utf8');
+const cloudSyncSource = readFileSync(new URL('../cloud-sync.js', import.meta.url), 'utf8');
+
+// Guard the real lifecycle wiring, not just the pure repair helper: the authoritative
+// catalogue must trigger a second repair, and every cloud/account snapshot must be repaired
+// before it is committed to local storage.
+assert.match(appCoreSource, /CURRICULUM_PACKS=loaded;[\s\S]*NexusCurriculumIntegrity\.repair\(state,loaded/);
+assert.match(appCoreSource, /if\(repair\.changed\)[\s\S]*state=repair\.state;[\s\S]*if\(save\(\)\)renderAll\(\)/);
+assert.match(cloudSyncSource, /function applyWorkspaceSnapshot\(nextState,rawFeatures,ownerId\)[\s\S]*NexusRepairInstalledCurricula\(nextState\)[\s\S]*JSON\.stringify\(safeState\)/);
 
 const pack = {
   id: 'sl-al-commerce-si',
