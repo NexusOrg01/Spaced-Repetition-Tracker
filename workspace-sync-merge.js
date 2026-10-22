@@ -148,8 +148,15 @@
     const state=mergeSection(base.state,localPayload.state,remotePayload.state,'state',['streams','subjects','topics','history','exams'],conflicts);
     const featureState=mergeSection(base.featureState,localPayload.featureState||{},remotePayload.featureState||{},'featureState',['journal','papers','goals','studyLogs'],conflicts);
     if(root&&root.NexusCurriculumIntegrity&&typeof root.NexusCurriculumIntegrity.reconcileMergedIntents==='function'){
-      const intentResult=root.NexusCurriculumIntegrity.reconcileMergedIntents(base.state,localPayload.state,remotePayload.state,state);
+      const integrity=root.NexusCurriculumIntegrity;
+      const intentResult=integrity.reconcileMergedIntents(base.state,localPayload.state,remotePayload.state,state);
       if(intentResult&&Array.isArray(intentResult.conflicts))conflicts.push(...intentResult.conflicts);
+      // A newer cloud snapshot can be internally valid JSON but incomplete. Restore missing
+      // records from this device's known-good synced baseline when install intent still says
+      // the catalogue is present and there is no explicit deletion tombstone.
+      if(typeof integrity.restoreMissingInstalledRows==='function'&&Array.isArray(root.NexusCurriculumPacks)){
+        integrity.restoreMissingInstalledRows(base.state,localPayload.state,remotePayload.state,state,root.NexusCurriculumPacks);
+      }
     }
     const payload={...remotePayload,state,featureState,exportedAt:new Date().toISOString()};
     return {payload,conflicts};
