@@ -534,4 +534,67 @@ assert.ok(source.includes('if(ready){clearDetachedOwnerAfterSuccessfulReconcilia
  assert.equal(queue.getBase(storage,accountA.id).serverVersion,verifiedCurrent.updated_at,'a stale cloud response must not move the verified sync baseline backward');
  assert.equal(getElement('cloudStatus').textContent,'Automatic merge not verified','a stale cloud response must fail closed instead of claiming a successful sync');
 
+// Account-handoff regression: a full Commerce install created on this device must not be
+// silently replaced by another account's older/manual-only snapshot before the user chooses.
+const handoffCatalog = JSON.parse(readFileSync(new URL('../curricula/catalog.json', import.meta.url), 'utf8'))
+  .packs.find(pack => pack.id === 'sl-al-commerce-si');
+assert.ok(handoffCatalog, 'handoff regression requires the real Sinhala Commerce pack');
+const handoffLocalState = {
+  schema: 3,
+  streams: [{ id: handoffCatalog.streamId, name: handoffCatalog.streamName }],
+  subjects: handoffCatalog.subjects.map((subject, order) => ({
+    id: subject.workspaceId, name: subject.name, streamId: handoffCatalog.streamId, order
+  })),
+  topics: handoffCatalog.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+    id: subject.legacyIdPrefix + '-' + String(index + 1).padStart(2, '0'),
+    subjectId: subject.workspaceId, name, custom: false, reviewCount: 0, lastReviewed: '',
+    lastRating: null, dueDate: '', intervalDays: 0, streak: 0, lapses: 0, archived: false
+  }))),
+  exams: [], history: [],
+  settings: {
+    theme: 'system', intervalCap: 120,
+    installedCurricula: ['installed:pack:' + handoffCatalog.id],
+    curriculumTombstones: []
+  }
+};
+const handoffRemoteState = {
+  schema: 3,
+  streams: [{ id: 'manual-test-stream', name: 'My manual test stream' }],
+  subjects: [], topics: [], exams: [], history: [],
+  settings: { theme: 'system', intervalCap: 120, installedCurricula: [], curriculumTombstones: [] }
+};
+const handoffRemotePayload = {
+  app: 'Nexus Spaced Repetition Tracker', schema: 4,
+  exportedAt: '2026-10-22T09:00:00.000Z',
+  state: handoffRemoteState, featureState: featuresFor(null)
+};
+storage.values.clear();
+storage.setItem(OWNER, accountA.id); // stale prior-owner marker; no active account session
+storage.setItem(CONFIG_KEY, JSON.stringify({
+  url: 'https://nexus-staging-test.supabase.co',
+  key: 'sb_publishable_test_key_value_long_enough'
+}));
+storage.setItem(STATE_KEY, JSON.stringify(handoffLocalState));
+storage.setItem(FEATURE_KEY, JSON.stringify(featuresFor(null)));
+rows.clear();
+rows.set(accountB.id, {
+  payload: handoffRemotePayload,
+  updated_at: '2026-10-22T09:00:00.000Z'
+});
+context.state = JSON.parse(JSON.stringify(handoffLocalState));
+activeSession = { user: accountB };
+networkAvailable = true;
+await window.NexusCloudSync.reconnect();
+const handoffSaved = JSON.parse(storage.getItem(STATE_KEY));
+assert.equal(handoffSaved.topics.length, 46,
+  'sign-in must preserve the complete local Commerce pack until an explicit data choice');
+assert.equal(handoffSaved.settings.installedCurricula.includes('installed:pack:sl-al-commerce-si'), true,
+  'the local full-pack install marker must survive the pending account-choice state');
+assert.equal(rows.get(accountB.id).payload.state.topics.length, 0,
+  'the local Commerce pack must not be uploaded to the target account without a choice');
+assert.equal(storage.getItem(OWNER), accountA.id,
+  'the target account must not silently take ownership before the local/cloud data choice');
+assert.equal(getElement('cloudStatus').textContent, 'Data choice required',
+  'the existing explicit data-choice flow must be shown instead of silently replacing the workspace');
+
 console.log('Cloud sync runtime tests passed: offline recovery, account isolation, stale queue/live workspace alignment, monotonic cloud revision checks, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, and network-drop recovery.');
