@@ -202,6 +202,7 @@ queue.commitWorkspace(storage, [
   { key: STATE_KEY, value: JSON.stringify(stateFor('second-offline-A')) },
   { key: FEATURE_KEY, value: JSON.stringify(featuresFor('second-offline-A')) }
 ], payloadFor('second-offline-A'));
+context.state = stateFor('second-offline-A');
 activeSession = { user: accountB };
 await window.NexusCloudSync.reconnect();
 assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'offline-A', 'signing into account B must not upload account A pending work');
