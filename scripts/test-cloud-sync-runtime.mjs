@@ -442,4 +442,36 @@ assert.equal(getElement('cloudStatus').textContent, 'Synced',
 assert.ok(!getElement('cloudHelpText').textContent.includes('"undefined" is not valid JSON'),
   'the unsupported undefined JSON value must not escape from the merge helper');
 
+// A successful same-account re-sign-in must clear a stale detached-owner marker,
+// but only after reconciliation has completed and the local owner is verified.
+const detachedHelperStart = source.indexOf('function clearDetachedOwnerAfterSuccessfulReconciliation(');
+assert.ok(detachedHelperStart >= 0, 'cloud sync must define a guarded detached-marker cleanup helper');
+const detachedHelperEnd = source.indexOf('\\n', detachedHelperStart);
+assert.ok(detachedHelperEnd > detachedHelperStart, 'detached-marker cleanup helper must remain independently testable');
+const detachedSandbox = {
+  localStorage: new MemoryStorage({ [OWNER]: accountA.id, [queue.DETACHED_OWNER]: accountA.id }),
+  OWNER_KEY: OWNER,
+  DETACHED_OWNER_KEY: queue.DETACHED_OWNER,
+  ready: false,
+  window: { NexusOfflineSyncQueue: queue }
+};
+vm.runInNewContext(source.slice(detachedHelperStart, detachedHelperEnd) + '\\nglobalThis.clearDetachedMarker = clearDetachedOwnerAfterSuccessfulReconciliation;', detachedSandbox);
+assert.equal(detachedSandbox.clearDetachedMarker(accountA.id, true), false,
+  'failed or incomplete reconciliation must not clear the detached-owner marker');
+assert.equal(detachedSandbox.localStorage.getItem(queue.DETACHED_OWNER), accountA.id,
+  'the marker must remain available for recovery while sync is not ready');
+detachedSandbox.ready = true;
+detachedSandbox.localStorage.setItem(OWNER, accountB.id);
+assert.equal(detachedSandbox.clearDetachedMarker(accountA.id, true), false,
+  'a mismatched current owner must not clear another account’s detached marker');
+assert.equal(detachedSandbox.localStorage.getItem(queue.DETACHED_OWNER), accountA.id,
+  'the detached marker must survive owner mismatch');
+detachedSandbox.localStorage.setItem(OWNER, accountA.id);
+assert.equal(detachedSandbox.clearDetachedMarker(accountA.id, true), true,
+  'successful reconciliation for the verified owner must clear its stale marker');
+assert.equal(detachedSandbox.localStorage.getItem(queue.DETACHED_OWNER), '',
+  'the detached marker must be empty after successful reconciliation');
+assert.ok(source.includes('if(ready){clearDetachedOwnerAfterSuccessfulReconciliation(newUserId,detachedWorkspace);status(\'Synced\');}'),
+  'same-account initialization must clear the marker only in its successful ready path');
+
 console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, and network-drop recovery.');
