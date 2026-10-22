@@ -179,8 +179,11 @@ async function reconcileConcurrentSnapshot(userId,initialRemote){
   const normalizedBase=savedBase?normalizeWorkspacePayload(savedBase):null;
   const normalizedLocal=normalizeWorkspacePayload(pending.payload);
   const normalizedRemote=normalizeWorkspacePayload(remote.payload);
+  if(window.NexusRecordDataIntegrityDiagnostic){if(normalizedBase)window.NexusRecordDataIntegrityDiagnostic('cloud-merge-base',normalizedBase.state);window.NexusRecordDataIntegrityDiagnostic('cloud-merge-local',normalizedLocal.state);window.NexusRecordDataIntegrityDiagnostic('cloud-merge-remote',normalizedRemote.state);}
   const result=merger.merge(normalizedBase,normalizedLocal,normalizedRemote);
+  if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('cloud-merge-result-before-normalize',result.payload.state);
   const nextState=normalizeState(result.payload.state);
+  if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('cloud-merge-result-after-normalize',nextState);
   const nextFeatures=window.NexusNormalizeFeatureState(result.payload.featureState||{});
   if(!window.NexusBackupRestoreUtils||!window.NexusStorageKey||!window.NexusFeatureStorageKey||!window.NexusSetFeatureState)throw new Error('Atomic workspace reconciliation is unavailable; local changes were preserved.');
   const mergedSnapshot={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:clone(nextState),featureState:clone(nextFeatures)};
