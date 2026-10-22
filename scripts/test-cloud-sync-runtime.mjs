@@ -678,4 +678,80 @@ assert.ok(!getElement('cloudHelpText').textContent.includes('"undefined" is not 
     'the user must see that account setup is paused instead of losing local data');
 }
 
+
+// Regression: a target account can have an older pending snapshot of its own.
+// Do not apply that snapshot over a newly installed, unassigned Commerce workspace
+// before the cross-account safety check has classified the local data.
+{
+  const signedOutCommerceState = {
+    schema: 3,
+    streams: [
+      { id: commercePack.streamId, name: commercePack.streamName },
+      { id: 'stream-commerce-manual-test', name: 'Test' }
+    ],
+    subjects: commercePack.subjects.map((subject, order) => ({
+      id: subject.workspaceId, name: subject.name, streamId: commercePack.streamId, order
+    })),
+    topics: commercePack.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+      id: String(subject.legacyIdPrefix || '').replace(/^seed-/i, 'curr-') + '-' + String(index + 1).padStart(2, '0'),
+      subjectId: subject.workspaceId, name, notes: '', custom: false, createdAt: '2026-10-22',
+      lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, reviewCount: 0, streak: 0, lapses: 0, archived: false
+    }))),
+    exams: [], history: [],
+    settings: { theme: 'system', intervalCap: 120, installedCurricula: ['installed:pack:sl-al-commerce-si'], curriculumTombstones: [] }
+  };
+  const previousOwnerBaseline = { state: stateFor(null), featureState: featuresFor(null) };
+  const previousOwnerStamp = rows.get(accountA.id)?.updated_at || null;
+  const targetBaseStamp = new Date(Math.max(Date.now(), Date.parse(previousOwnerStamp || '') || 0) + 120000).toISOString();
+  const targetRemotePayload = payloadFor(null);
+  rows.set(accountB.id, { user_id: accountB.id, payload: targetRemotePayload, updated_at: targetBaseStamp });
+  queue.rememberBase(storage, accountA.id, previousOwnerBaseline, previousOwnerStamp);
+  queue.rememberStamp(storage, accountA.id, previousOwnerStamp);
+
+  const targetPendingPayload = payloadFor('target-pending-B');
+  targetPendingPayload.state.streams.push({ id: 'stream-target-account-manual', name: 'Target account manual stream' });
+  targetPendingPayload.state.subjects.push({
+    id: 'subject-target-account-manual', name: 'Target account manual subject',
+    streamId: 'stream-target-account-manual', order: 0
+  });
+  targetPendingPayload.state.topics.push({
+    id: 'target-account-manual-topic', name: 'Target account manual topic',
+    subjectId: 'subject-target-account-manual', custom: true
+  });
+  storage.setItem(OWNER, accountB.id);
+  queue.rememberBase(storage, accountB.id, {
+    state: targetRemotePayload.state, featureState: targetRemotePayload.featureState
+  }, targetBaseStamp);
+  queue.rememberStamp(storage, accountB.id, targetBaseStamp);
+  queue.commitWorkspace(storage, [
+    { key: STATE_KEY, value: JSON.stringify(targetPendingPayload.state) },
+    { key: FEATURE_KEY, value: JSON.stringify(targetPendingPayload.featureState) }
+  ], targetPendingPayload);
+
+  // Recreate the real state at the moment the user signs into account B:
+  // the previous account still owns the device, while offline Commerce is newer.
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(signedOutCommerceState));
+  storage.setItem(FEATURE_KEY, JSON.stringify(featuresFor(null)));
+  context.state = signedOutCommerceState;
+  activeSession = { user: accountB };
+  await window.NexusCloudSync.reconnect();
+
+  const preserved = JSON.parse(storage.getItem(STATE_KEY));
+  assert.equal(preserved.topics.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length, 46,
+    'target-account pending adoption must not overwrite the signed-out Commerce install');
+  assert.ok(preserved.settings.installedCurricula.includes('installed:pack:sl-al-commerce-si'),
+    'the Commerce install marker must survive classification of local data before target pending adoption');
+  assert.ok(preserved.streams.some(stream => stream.id === 'stream-commerce-manual-test'),
+    'local manual streams must remain with an unassigned curriculum install');
+  assert.equal(storage.getItem(OWNER), accountA.id,
+    'the previous owner must remain until the unassigned local workspace is explicitly resolved');
+  assert.equal(rows.get(accountB.id).payload.state.topics.length, 0,
+    'the target account cloud must not be overwritten before the user resolves the local workspace');
+  assert.ok(queue.hasPending(storage, accountB.id),
+    'the target account pending snapshot must remain recoverable while local data choice is pending');
+  assert.equal(getElement('cloudStatus').textContent, 'Data choice required',
+    'the sign-in must pause for an explicit data choice instead of silently adopting the target pending snapshot');
+}
+
 console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, and clean-baseline recovery from incomplete cloud snapshots.');
