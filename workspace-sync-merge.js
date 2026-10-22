@@ -137,11 +137,50 @@
     }
     return out;
   }
+
+  function preserveBaselinePackInstallIntent(baseState,localState,remoteState,mergedState){
+    const settingsOf=s=>isObject(s&&s.settings)?s.settings:{};
+    const markerValues=s=>rows(settingsOf(s).installedCurricula).map(String);
+    const tombstones=new Set(rows(settingsOf(mergedState).curriculumTombstones).map(String));
+    const mergedMarkers=new Set(markerValues(mergedState));
+    const snapshots=[baseState,localState,remoteState];
+    const baseMarkers=markerValues(baseState);
+    const streams=rows(mergedState.streams),subjects=rows(mergedState.subjects),topics=rows(mergedState.topics);
+    const baseStreams=rows(baseState&&baseState.streams),baseSubjects=rows(baseState&&baseState.subjects);
+    const baseTopics=rows(baseState&&baseState.topics);
+    for(const marker of baseMarkers){
+      if(!marker.startsWith('installed:pack:'))continue;
+      const packId=marker.slice('installed:pack:'.length);
+      if(!packId||mergedMarkers.has(marker)||tombstones.has('deleted:stream:'+packId))continue;
+      const hasExplicitScope=snapshots.some(s=>markerValues(s).some(value=>
+        value.startsWith('installed:subject:'+packId+':')||value.startsWith('installed:topic:'+packId+':')));
+      if(hasExplicitScope)continue;
+      const catalogueTopics=baseTopics.filter(t=>/^(?:curr|seed)-(?:bs|acc|econ)-\d+$/i.test(String(t&&t.id||'')));
+      let survivingFootprint=false;
+      for(const baseSubject of baseSubjects){
+        const names=catalogueTopics.filter(t=>String(t.subjectId)===String(baseSubject.id)).map(t=>String(t.name));
+        if(!names.length)continue;
+        const baseStream=baseStreams.find(s=>String(s.id)===String(baseSubject.streamId));
+        if(!baseStream)continue;
+        const liveStream=streams.find(s=>String(s.id)===String(baseStream.id)||norm(s.name)===norm(baseStream.name));
+        if(!liveStream)continue;
+        const liveSubject=subjects.find(s=>String(s.streamId)===String(liveStream.id)&&
+          (String(s.id)===String(baseSubject.id)||norm(s.name)===norm(baseSubject.name)));
+        if(!liveSubject)continue;
+        if(topics.some(t=>String(t.subjectId)===String(liveSubject.id)&&names.includes(String(t.name)))){
+          survivingFootprint=true;break;
+        }
+      }
+      if(survivingFootprint)mergedMarkers.add(marker);
+    }
+    mergedState.settings={...settingsOf(mergedState),installedCurricula:Array.from(mergedMarkers)};
+  }
   function merge(basePayload,localPayload,remotePayload){
     if(!isObject(localPayload)||!isObject(localPayload.state)||!isObject(remotePayload)||!isObject(remotePayload.state))throw new Error('Three-way workspace merge requires valid local and cloud snapshots.');
     const base=isObject(basePayload)?basePayload:{state:{},featureState:{}};
     const conflicts=[];
     const state=mergeSection(base.state,localPayload.state,remotePayload.state,'state',['streams','subjects','topics','history','exams'],conflicts);
+    preserveBaselinePackInstallIntent(base.state,localPayload.state,remotePayload.state,state);
     const featureState=mergeSection(base.featureState,localPayload.featureState||{},remotePayload.featureState||{},'featureState',['journal','papers','goals','studyLogs'],conflicts);
     const payload={...remotePayload,state,featureState,exportedAt:new Date().toISOString()};
     return {payload,conflicts};

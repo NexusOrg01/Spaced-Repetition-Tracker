@@ -19,5 +19,38 @@ function contextFor(state,packs,subject){if(!subject)return null;const stream=st
 function markDeletedTopic(state,packs,topic){if(!rec(state)||!topic)return;const sub=state.subjects.find(s=>String(s.id)===String(topic.subjectId)),c=contextFor(state,packs,sub);if(!c||!c.ps.topics.includes(String(topic.name)))return;const m=ensure(state);m.deleted.add(dt(c.pack.id,c.ps.id,topic.name));state.settings.curriculumTombstones=Array.from(m.deleted).slice(-5000);}
 function markDeletedSubject(state,packs,subject){if(!rec(state)||!subject)return;const c=contextFor(state,packs,subject);if(!c)return;const m=ensure(state),id=c.pack.id,sid=c.ps.id;m.deleted.add(dsub(id,sid));for(const name of c.ps.topics)m.deleted.add(dt(id,sid,name));m.installed.delete(sk(id,sid));for(const x of [...m.installed])if(x.startsWith('installed:topic:'+id+':'+sid+':'))m.installed.delete(x);state.settings.installedCurricula=Array.from(m.installed).slice(-5000);state.settings.curriculumTombstones=Array.from(m.deleted).slice(-5000);}
 function markDeletedStream(state,packs,stream){if(!rec(state)||!stream)return;const m=ensure(state);for(const pack of packs||[])if(packStream(stream,pack)){const id=String(pack.id);m.deleted.add(ds(id));for(const x of [...m.installed])if(x===pk(id)||x.startsWith('installed:subject:'+id+':')||x.startsWith('installed:topic:'+id+':'))m.installed.delete(x);}state.settings.installedCurricula=Array.from(m.installed).slice(-5000);state.settings.curriculumTombstones=Array.from(m.deleted).slice(-5000);}
-return{repair,markInstall,markDeletedTopic,markDeletedSubject,markDeletedStream,keys:{pack:pk,subject:sk,topicScope:tk,streamDelete:ds,subjectDelete:dsub,topicDelete:dt}};
+function diagnose(state,packs){
+ if(!rec(state))return[];
+ const settings=rec(state.settings)?state.settings:{};
+ const installed=new Set(Array.isArray(settings.installedCurricula)?settings.installedCurricula.filter(x=>typeof x==='string'):[]);
+ const deleted=new Set(Array.isArray(settings.curriculumTombstones)?settings.curriculumTombstones.filter(x=>typeof x==='string'):[]);
+ const streams=Array.isArray(state.streams)?state.streams:[];
+ const subjects=Array.isArray(state.subjects)?state.subjects:[];
+ const topics=Array.isArray(state.topics)?state.topics:[];
+ return (Array.isArray(packs)?packs:[]).filter(Boolean).map(pack=>{
+  const stream=streams.find(s=>(pack.streamId&&String(s.id)===String(pack.streamId))||norm(s.name)===norm(pack.streamName))||null;
+  const scoped=Array.from(installed).filter(x=>x.startsWith('installed:subject:'+pack.id+':')||x.startsWith('installed:topic:'+pack.id+':'));
+  const missingSubjects=[],missingTopics=[];
+  let presentTopics=0,expectedTopics=0;
+  for(const ps of Array.isArray(pack.subjects)?pack.subjects:[]){
+   const sub=stream&&findSubject(subjects,ps,stream.id);
+   if(!sub)missingSubjects.push({id:ps.id,name:ps.name});
+   for(const name of Array.isArray(ps.topics)?ps.topics:[]){
+    expectedTopics++;
+    if(sub&&topics.some(t=>String(t.subjectId)===String(sub.id)&&String(t.name)===String(name)))presentTopics++;
+    else missingTopics.push({subjectId:ps.id,subjectName:ps.name,name});
+   }
+  }
+  const fullPackMarker=installed.has(pk(pack.id));
+  const streamDeleted=deleted.has(ds(pack.id));
+  let assessment='no-install-evidence';
+  if(streamDeleted)assessment='explicit-stream-deletion';
+  else if(fullPackMarker)assessment=missingTopics.length?'installed-pack-incomplete':'installed-pack-complete';
+  else if(scoped.length)assessment='scoped-install-only';
+  else if(stream&&presentTopics)assessment='legacy-pack-footprint-without-install-marker';
+  else if(stream)assessment='stream-exists-but-install-intent-is-ambiguous';
+  return {packId:pack.id,fullPackMarker,scopedMarkers:scoped,streamFound:!!stream,streamDeleted,expectedSubjectCount:(pack.subjects||[]).length,presentSubjectCount:(pack.subjects||[]).length-missingSubjects.length,expectedTopicCount:expectedTopics,presentTopicCount:presentTopics,missingSubjects,missingTopics,assessment};
+ });
+}
+return{repair,diagnose,markInstall,markDeletedTopic,markDeletedSubject,markDeletedStream,keys:{pack:pk,subject:sk,topicScope:tk,streamDelete:ds,subjectDelete:dsub,topicDelete:dt}};
 });

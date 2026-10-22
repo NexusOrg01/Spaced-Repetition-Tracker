@@ -5,13 +5,14 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const integrity = require('../curriculum-integrity.js');
+const workspaceMerge = require('../workspace-sync-merge.js');
 const appCoreSource = readFileSync(new URL('../app-core.js', import.meta.url), 'utf8');
 const cloudSyncSource = readFileSync(new URL('../cloud-sync.js', import.meta.url), 'utf8');
 
 // Guard the real lifecycle wiring, not just the pure repair helper: the authoritative
 // catalogue must trigger a second repair, and every cloud/account snapshot must be repaired
 // before it is committed to local storage.
-assert.match(appCoreSource, /CURRICULUM_PACKS=loaded;[\s\S]*NexusCurriculumIntegrity\.repair\(state,loaded/);
+assert.match(appCoreSource, /CURRICULUM_PACKS=loaded;[\s\S]*NexusCurriculumIntegrity\.repair\(clone\(state\),loaded/);
 assert.match(appCoreSource, /if\(repair\.changed\)[\s\S]*state=repair\.state;[\s\S]*if\(save\(\)\)renderAll\(\)/);
 assert.match(cloudSyncSource, /function applyWorkspaceSnapshot\(nextState,rawFeatures,ownerId\)[\s\S]*NexusRepairInstalledCurricula\(nextState\)[\s\S]*JSON\.stringify\(safeState\)/);
 
@@ -154,4 +155,102 @@ for (let refresh = 0; refresh < 4; refresh++) {
   if (refresh > 0) assert.equal(result.changed, false, 'subsequent refresh repairs must be idempotent');
 }
 
-console.log('Curriculum integrity tests passed: selective topic-loss repair, full Commerce restoration across repeated refreshes, custom data, review schedules/history, idempotence, and deletion tombstones.');
+// Real Commerce catalogue: exercise a stale client dropping the full-pack marker and
+// untouched rows while a base/remote snapshot still proves the whole pack was installed.
+const cloneState = value => JSON.parse(JSON.stringify(value));
+const packMarker = integrity.keys.pack(commerce.id);
+const fullPackTopics = commerce.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+  id: subject.legacyIdPrefix + '-' + String(index + 1).padStart(2, '0'),
+  subjectId: subject.workspaceId, name, notes: '', custom: false, createdAt: '2026-10-01',
+  lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, reviewCount: 0,
+  streak: 0, lapses: 0, archived: false
+})));
+const fullPackState = {
+  schema: 3,
+  streams: [{ id: commerce.streamId, name: commerce.streamName }],
+  subjects: commerce.subjects.map((subject, order) => ({
+    id: subject.workspaceId, name: subject.name, streamId: commerce.streamId, order
+  })),
+  topics: fullPackTopics, history: [], exams: [],
+  settings: { theme: 'dark', intervalCap: 120, installedCurricula: [packMarker], curriculumTombstones: [] }
+};
+const fullFirst = fullPackState.topics.find(topic=>topic.subjectId===reviewedSubject.workspaceId&&topic.name===reviewedName);
+const locallyReviewed = {
+  ...cloneState(fullFirst), lastReviewed: '2026-10-20', lastRating: 4, dueDate: '2026-10-27',
+  intervalDays: 7, reviewCount: 2, streak: 2
+};
+const historyRecord = {
+  id: 'merge-review-history', topicId: locallyReviewed.id, streamId: commerce.streamId,
+  subjectId: reviewedSubject.workspaceId, streamName: commerce.streamName,
+  subjectName: reviewedSubject.name, topicName: reviewedName, reviewedAt: '2026-10-20',
+  rating: 4, intervalDays: 7, dueDate: '2026-10-27', note: 'review preserved'
+};
+const staleLocalState = {
+  schema: 3,
+  streams: [
+    { id: commerce.streamId, name: commerce.streamName },
+    { id: 'custom-stream-merge', name: 'My sample stream' }
+  ],
+  subjects: [
+    { id: reviewedSubject.workspaceId, name: reviewedSubject.name, streamId: commerce.streamId, order: 0 },
+    { id: 'custom-subject-merge', name: 'My sample subject', streamId: 'custom-stream-merge', order: 0 }
+  ],
+  topics: [
+    locallyReviewed,
+    { id: 'custom-topic-merge', subjectId: 'custom-subject-merge', name: 'My sample topic',
+      custom: true, createdAt: '2026-10-20', lastReviewed: '', lastRating: null, dueDate: '',
+      intervalDays: 0, reviewCount: 0, streak: 0, lapses: 0, archived: false }
+  ],
+  history: [historyRecord], exams: [],
+  settings: { theme: 'dark', intervalCap: 120, installedCurricula: [], curriculumTombstones: [] }
+};
+const makeSnapshot = state => ({ app: 'Nexus Spaced Repetition Tracker', schema: 4, state: cloneState(state), featureState: {} });
+const mergedSnapshot = workspaceMerge.merge(
+  makeSnapshot(fullPackState), makeSnapshot(staleLocalState), makeSnapshot(fullPackState)
+);
+assert.ok(mergedSnapshot.payload.state.settings.installedCurricula.includes(packMarker),
+  'stale-client marker loss must not erase a baseline full-pack intent when curriculum rows survive and no scoped install or stream tombstone exists');
+const diagnosticBeforeRepair = integrity.diagnose(mergedSnapshot.payload.state, [commerce])[0];
+assert.equal(diagnosticBeforeRepair.fullPackMarker, true);
+assert.ok(diagnosticBeforeRepair.missingTopics.length > 0, 'read-only diagnostics must report missing catalogue topics before repair');
+const repairedAfterMerge = integrity.repair(mergedSnapshot.payload.state, [commerce], {
+  today: () => '2026-10-22', makeId: prefix => prefix + '-merged-recovery'
+});
+assert.equal(repairedAfterMerge.restoredTopics, 45,
+  'merge then repair must restore the 45 missing topics without duplicating the reviewed topic');
+assert.equal(repairedAfterMerge.state.topics.filter(t => !t.id.startsWith('custom-')).length, 46,
+  'merge then repair must restore the full 46-topic Commerce pack');
+assert.ok(repairedAfterMerge.state.streams.some(s=>s.id==='custom-stream-merge'));
+assert.ok(repairedAfterMerge.state.topics.some(t=>t.id==='custom-topic-merge'));
+const preservedReviewed = repairedAfterMerge.state.topics.find(t=>t.id===locallyReviewed.id);
+assert.deepEqual({
+  lastReviewed: preservedReviewed.lastReviewed, lastRating: preservedReviewed.lastRating,
+  dueDate: preservedReviewed.dueDate, intervalDays: preservedReviewed.intervalDays,
+  reviewCount: preservedReviewed.reviewCount
+}, {
+  lastReviewed: '2026-10-20', lastRating: 4, dueDate: '2026-10-27',
+  intervalDays: 7, reviewCount: 2
+}, 'the reviewed topic schedule must survive the stale-marker merge path');
+assert.equal(repairedAfterMerge.state.history.length, 1, 'review history must survive the stale-marker merge path');
+assert.ok(repairedAfterMerge.state.settings.installedCurricula.includes(packMarker));
+const repairedSecondPass = integrity.repair(cloneState(repairedAfterMerge.state), [commerce], {
+  today: () => '2026-10-22', makeId: prefix => prefix + '-repeat'
+});
+assert.equal(repairedSecondPass.changed, false, 'post-merge recovery must be idempotent');
+
+// A scoped topic install is intentional and must not be promoted to a whole-pack install.
+const selectedTopicMarker = integrity.keys.topicScope(commerce.id, reviewedSubject.id, reviewedName);
+const scopedLocal = cloneState(staleLocalState);
+scopedLocal.settings.installedCurricula = [selectedTopicMarker];
+const scopedMerge = workspaceMerge.merge(
+  makeSnapshot(fullPackState), makeSnapshot(scopedLocal), makeSnapshot(fullPackState)
+).payload.state;
+assert.ok(!scopedMerge.settings.installedCurricula.includes(packMarker),
+  'explicit scoped-install intent must take precedence over the old full-pack baseline');
+const scopedDiagnostic = integrity.diagnose(scopedMerge, [commerce])[0];
+assert.equal(scopedDiagnostic.assessment, 'scoped-install-only');
+const scopedCopyBefore = JSON.stringify(scopedMerge);
+integrity.diagnose(scopedMerge, [commerce]);
+assert.equal(JSON.stringify(scopedMerge), scopedCopyBefore, 'curriculum diagnostics must be strictly read-only');
+
+console.log('Curriculum integrity tests passed: refresh recovery, three-way merge recovery, scoped installs, custom data, review schedules/history, read-only diagnostics, idempotence, and deletion tombstones.');

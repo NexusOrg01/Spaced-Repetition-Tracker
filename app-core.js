@@ -288,7 +288,7 @@
     const recent=recentHistoryCount(7);
     const average=averageRating();
     const series=dailyReviewSeries(7);
-    $('overviewAnalytics').innerHTML=`<div class="insight-metrics">${metricMarkup(recent.length,'Reviews this week')}${metricMarkup(average?average.toFixed(1)+'/5':'—','Average recall rating')}${metricMarkup(currentStudyStreak()+'d','Current study streak')}</div><div class="chart-heading"><span>Daily reviews</span><small>7-day activity</small></div>${state.history.length?overviewLineChartMarkup(series):'<div class="chart-empty">Your chart will fill in after your first review.</div>'}`;
+    $('overviewAnalytics').innerHTML=`<div class="insight-metrics">${metricMarkup(recent,'Reviews this week')}${metricMarkup(average?average.toFixed(1)+'/5':'—','Average recall rating')}${metricMarkup(currentStudyStreak()+'d','Current study streak')}</div><div class="chart-heading"><span>Daily reviews</span><small>7-day activity</small></div>${state.history.length?overviewLineChartMarkup(series):'<div class="chart-empty">Your chart will fill in after your first review.</div>'}`;
   }
   function renderUpcomingQueue(){
     const limit=plusDays(today(),7);
@@ -300,7 +300,7 @@
     const series=dailyReviewSeries(14),recent=recentHistoryCount(7),average=averageRating();
     const ratingCounts=getHistoryMetrics().ratingCounts;
     const maxRating=Math.max(1,...ratingCounts);
-    $('historyInsights').innerHTML=`<div class="insight-metrics">${metricMarkup(state.history.length,'Total saved reviews')}${metricMarkup(recent.length,'Reviews in last 7 days')}${metricMarkup(average?average.toFixed(1)+'/5':'—','Average recall rating')}</div><div class="chart-heading"><span>Review activity</span><small>Last 14 days</small></div>${state.history.length?barsMarkup(series):'<div class="chart-empty">No review history yet. Complete your first review to start tracking activity.</div>'}<div class="divider"></div><div class="chart-heading"><span>Recall rating distribution</span><small>All saved reviews</small></div><div class="rating-distribution">${ratingCounts.map((count,i)=>`<div class="rating-distribution-row"><span>${i+1} · ${esc(RATING_LABELS[i+1])}</span><div class="progress-track"><div class="progress-fill" style="width:${count?Math.max(2,Math.round(count/maxRating*100)):0}%"></div></div><strong>${count}</strong></div>`).join('')}</div><p class="analytics-subtitle">A higher average rating can indicate stronger recall, but use your actual exam-question performance as the main measure of mastery.</p>`;
+    $('historyInsights').innerHTML=`<div class="insight-metrics">${metricMarkup(state.history.length,'Total saved reviews')}${metricMarkup(recent,'Reviews in last 7 days')}${metricMarkup(average?average.toFixed(1)+'/5':'—','Average recall rating')}</div><div class="chart-heading"><span>Review activity</span><small>Last 14 days</small></div>${state.history.length?barsMarkup(series):'<div class="chart-empty">No review history yet. Complete your first review to start tracking activity.</div>'}<div class="divider"></div><div class="chart-heading"><span>Recall rating distribution</span><small>All saved reviews</small></div><div class="rating-distribution">${ratingCounts.map((count,i)=>`<div class="rating-distribution-row"><span>${i+1} · ${esc(RATING_LABELS[i+1])}</span><div class="progress-track"><div class="progress-fill" style="width:${count?Math.max(2,Math.round(count/maxRating*100)):0}%"></div></div><strong>${count}</strong></div>`).join('')}</div><p class="analytics-subtitle">A higher average rating can indicate stronger recall, but use your actual exam-question performance as the main measure of mastery.</p>`;
   }
   function fillSelect(el,items,selected,allLabel){const prior=selected??el.value;el.innerHTML=(allLabel?`<option value="ALL">${esc(allLabel)}</option>`:'')+items.map(i=>`<option value="${esc(i.value)}">${esc(i.label)}</option>`).join('');if([...el.options].some(o=>o.value===prior))el.value=prior;}
   function refreshFilterOptions(){const streams=state.streams.map(s=>({value:s.id,label:s.name}));const subs=state.subjects.map(s=>({value:s.id,label:s.name}));fillSelect($('topicStreamFilter'),streams,$('topicStreamFilter').value,'All streams');fillSelect($('historyStreamFilter'),streams,$('historyStreamFilter').value,'All streams');fillSelect($('topicSubjectFilter'),subs,$('topicSubjectFilter').value,'All subjects');fillSelect($('historySubjectFilter'),subs,$('historySubjectFilter').value,'All subjects');fillSelect($('topicStreamInput'),streams,$('topicStreamInput').value,null);refreshTopicSubjectInput();fillSelect($('subjectStreamInput'),streams,$('subjectStreamInput').value,null);}
@@ -348,9 +348,9 @@
       // normalizes local data against a lightweight fallback pack; that fallback can lag
       // behind catalogue updates and otherwise leave a partial workspace persisted.
       if(state&&window.NexusCurriculumIntegrity&&typeof window.NexusCurriculumIntegrity.repair==='function'){
-        const repair=window.NexusCurriculumIntegrity.repair(state,loaded,{today,makeId});
+        const previousState=state;
+        const repair=window.NexusCurriculumIntegrity.repair(clone(state),loaded,{today,makeId});
         if(repair.changed){
-          const previousState=state;
           state=repair.state;
           if(save())renderAll();
           else state=previousState;
@@ -689,13 +689,10 @@
     // Patch delete functions with extra protection
     const origDeleteTopic = window.deleteTopic;
     window.deleteTopic = function(id){
-      const t = state.topics.find(x=>x.id===id);
-      if(!t) return;
-      if(!confirm(`Delete topic?\n\nTopic: "${t.name}"\nReviews: ${t.reviewCount||0}\nDue: ${t.dueDate||'—'}\n\nThis will also remove its history.\n\nYou can UNDO with the persistent bar that will appear at bottom.`)) return;
-      startUndo('Topic deleted');
-      state.topics = state.topics.filter(x=>x.id!==id);
-      state.history = state.history.filter(h=>h.topicId!==id);
-      save(); renderAll();
+      // Delegate to the canonical handler so curriculum tombstones, review-history
+      // retention, and the shared Undo/save behavior are not bypassed by this wrapper.
+      if(typeof origDeleteTopic === 'function') return origDeleteTopic(id);
+      console.error('Topic deletion handler is unavailable; no data was changed.');
     };
     
     const origDeleteSubject = window.deleteSubject;
