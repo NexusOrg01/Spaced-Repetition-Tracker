@@ -888,4 +888,94 @@ for (const scenario of [
   }
 }
 
+
+// Regression: first sign-in must merge an unowned guest Commerce install with an
+// existing account outbox. The queued account snapshot must never replace guest data
+// before the runtime has compared/combined both workspaces.
+{
+  const guestCommerceState = {
+    schema: 3,
+    streams: [{ id: commercePack.streamId, name: commercePack.streamName }],
+    subjects: commercePack.subjects.map((subject, order) => ({
+      id: subject.workspaceId, name: subject.name, streamId: commercePack.streamId, order
+    })),
+    topics: commercePack.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+      id: String(subject.legacyIdPrefix || '').replace(/^seed-/i, 'curr-') + '-' + String(index + 1).padStart(2, '0'),
+      subjectId: subject.workspaceId, name, notes: '', custom: false, createdAt: '2026-10-23',
+      lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, reviewCount: 0,
+      streak: 0, lapses: 0, archived: false
+    }))),
+    exams: [], history: [],
+    settings: {
+      theme: 'system', intervalCap: 120,
+      installedCurricula: ['installed:pack:' + commercePack.id],
+      curriculumTombstones: []
+    }
+  };
+  const remotePayload = payloadFor(null);
+  const remoteStamp = new Date(Date.now() - 45000).toISOString();
+  rows.set(accountB.id, {
+    user_id: accountB.id, payload: remotePayload, updated_at: remoteStamp
+  });
+
+  if (queue.hasPending(storage, accountB.id)) {
+    queue.archive(storage, accountB.id, 'guest-first-sign-in-regression-reset');
+  }
+  queue.rememberBase(storage, accountB.id, {
+    state: remotePayload.state, featureState: remotePayload.featureState
+  }, remoteStamp);
+  queue.rememberStamp(storage, accountB.id, remoteStamp);
+
+  const pendingAccountPayload = payloadFor(null);
+  pendingAccountPayload.state.topics.push({
+    id: 'target-account-pending-topic',
+    name: 'Target account pending topic',
+    subjectId: 'subject-general',
+    custom: true,
+    reviewCount: 0
+  });
+  storage.setItem(OWNER, accountB.id);
+  queue.commitWorkspace(storage, [
+    { key: STATE_KEY, value: JSON.stringify(pendingAccountPayload.state) },
+    { key: FEATURE_KEY, value: JSON.stringify(pendingAccountPayload.featureState) }
+  ], pendingAccountPayload, { baseServerVersion: remoteStamp });
+
+  // The browser is currently signed out. Installing the pack updates local storage,
+  // while the target account still has its own pending snapshot from an earlier session.
+  storage.removeItem(OWNER);
+  storage.setItem(STATE_KEY, JSON.stringify(guestCommerceState));
+  storage.setItem(FEATURE_KEY, JSON.stringify(featuresFor(null)));
+  context.state = guestCommerceState;
+  activeSession = { user: accountB };
+  networkAvailable = true;
+
+  await window.NexusCloudSync.reconnect();
+
+  const localAfterSignIn = JSON.parse(storage.getItem(STATE_KEY));
+  const synced = rows.get(accountB.id).payload.state;
+  const packTopicCount = state => state.topics.filter(topic =>
+    /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))
+  ).length;
+  assert.equal(packTopicCount(localAfterSignIn), 46,
+    'Guest Commerce must survive first sign-in even when the account has a pending snapshot');
+  assert.ok(localAfterSignIn.settings.installedCurricula.includes('installed:pack:' + commercePack.id),
+    'Guest Commerce install intent must survive first sign-in');
+  assert.ok(localAfterSignIn.topics.some(topic => topic.id === 'target-account-pending-topic'),
+    'The target account pending topic must be merged, not discarded');
+  assert.equal(packTopicCount(synced), 46,
+    'The merged Commerce pack must be verified in the account cloud row');
+  assert.ok(synced.topics.some(topic => topic.id === 'target-account-pending-topic'),
+    'The target account pending topic must remain in the verified cloud row');
+  assert.equal(storage.getItem(OWNER), accountB.id,
+    'The merged guest workspace must be bound to the signed-in account only after it is persisted');
+  assert.equal(queue.hasPending(storage, accountB.id), false,
+    'The combined guest/account workspace must be verified before clearing its pending queue');
+
+  activeSession = null;
+  await window.NexusCloudSync.reconnect();
+  const afterSignOut = JSON.parse(storage.getItem(STATE_KEY));
+  assert.equal(packTopicCount(afterSignOut), 46,
+    'Signing out after initial account binding must not remove the installed Commerce pack');
+}
+
 console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, and target-account pending-snapshot isolation.');
