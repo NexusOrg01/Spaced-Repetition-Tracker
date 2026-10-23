@@ -11,6 +11,9 @@ const backup = require('../backup-restore-utils.js');
 const queue = require('../offline-sync-queue.js');
 const recovery = require('../cloud-sync-recovery.js');
 const curriculumIntegrity = require('../curriculum-integrity.js');
+// workspace-sync-merge.js captures the browser global at module load. Mirror the
+// browser's window.NexusCurriculumIntegrity on Node's globalThis for runtime tests.
+globalThis.NexusCurriculumIntegrity = curriculumIntegrity;
 const commerceCatalogue = JSON.parse(readFileSync(resolve(root, 'curricula/catalog.json'), 'utf8'));
 globalThis.NexusCurriculumPacks = commerceCatalogue.packs;
 const commercePack = commerceCatalogue.packs.find(pack => pack.id === 'sl-al-commerce-si');
