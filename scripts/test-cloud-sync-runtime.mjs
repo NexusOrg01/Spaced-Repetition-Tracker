@@ -674,8 +674,8 @@ assert.ok(!getElement('cloudHelpText').textContent.includes('"undefined" is not 
     'the Commerce install marker must remain when account setup needs an explicit data choice');
   assert.equal(storage.getItem(OWNER), accountA.id,
     'the new account must not claim ownership until the data choice is completed');
-  assert.equal(rows.get(accountB.id).payload.state.topics.length, 0,
-    'local Commerce data must not be uploaded to the new account before explicit consent');
+  assert.equal(rows.has(accountB.id), false,
+    'local Commerce data must not be uploaded or replaced before explicit consent');
   assert.equal(getElement('cloudStatus').textContent, 'Data choice required',
     'the user must see that account setup is paused instead of losing local data');
 }
