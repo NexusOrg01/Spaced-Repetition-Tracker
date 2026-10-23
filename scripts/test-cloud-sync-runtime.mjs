@@ -207,8 +207,10 @@ activeSession = { user: accountB };
 await window.NexusCloudSync.reconnect();
 assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'offline-A', 'signing into account B must not upload account A pending work');
 assert.ok(queue.hasPending(storage, accountA.id), 'account A pending work must remain parked during account B session');
-assert.ok(rows.has(accountB.id), 'account B may initialize its own independent cloud workspace');
-assert.equal(rows.get(accountB.id).payload.state.topics.length, 0, 'account B must not receive account A study data');
+assert.equal(rows.has(accountB.id), false, 'account B must not initialize by discarding account A changes newer than its verified baseline');
+assert.equal(getElement('cloudStatus').textContent, 'Data choice required', 'account switching must pause for an explicit choice when the previous account has unsynced local work');
+assert.ok(queue.hasPending(storage, accountA.id), 'account A pending work must remain parked during the account B session');
+assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'offline-A', 'account B login must not overwrite account A cloud data');
 activeSession = { user: accountA };
 await window.NexusCloudSync.reconnect();
 for (let i = 0; i < 100 && queue.hasPending(storage, accountA.id); i++) {
