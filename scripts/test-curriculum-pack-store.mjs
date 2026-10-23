@@ -71,6 +71,30 @@ const afterDeleteHydrate=store.hydrateState(deleted,storage,null,[pack]);
 const afterDelete=integrity.repair(afterDeleteHydrate.state,afterDeleteHydrate.packs,{today:()=> '2026-10-23',makeId}).state;
 assert.equal(afterDelete.streams.length,0,'a deleted curriculum stream must not be resurrected from the stored JSON');
 
+// Partial installs persist the whole definition JSON but restore only the selected scope.
+const scopedStorage=new MemoryStorage();
+const scopedInstall=emptyState();
+store.recordInstall(scopedInstall,pack,'subject','B',null,scopedStorage);
+integrity.markInstall(scopedInstall,pack,'subject','B',null);
+const scopedEntry=store.createStorageEntry(scopedInstall,scopedStorage,null);
+scopedStorage.setItem(scopedEntry.key,scopedEntry.value);
+const scopedReload=store.hydrateState(emptyState(),scopedStorage,null,[pack]);
+const scopedRestored=integrity.repair(scopedReload.state,scopedReload.packs,{today:()=> '2026-10-23',makeId}).state;
+assert.equal(scopedRestored.subjects.length,1,'a subject-only install must not install the other subjects');
+assert.equal(scopedRestored.subjects[0].id,'test-subject-b');
+assert.equal(scopedRestored.topics.length,1,'a subject-only install must install only that subject topics');
+assert.equal(scopedRestored.topics[0].name,'Topic B1');
+assert.equal(scopedRestored.settings.installedCurriculumPacks[0].pack.subjects.length,2,'the full source JSON remains available even when only one subject is installed');
+
+// Removing a subject must update the persistent selection, not retain a full-pack install scope.
+integrity.markDeletedSubject(scopedRestored,scopedReload.packs,scopedRestored.subjects[0]);
+scopedRestored.subjects=[];
+scopedRestored.topics=[];
+scopedRestored.settings.installedCurricula=scopedRestored.settings.installedCurricula.filter(marker=>!marker.includes(':B'));
+const deletedSubjectEntry=store.createStorageEntry(scopedRestored,scopedStorage,null);
+scopedStorage.setItem(deletedSubjectEntry.key,deletedSubjectEntry.value);
+assert.equal(store.readStore(scopedStorage,null)[0].selections.length,0,'an explicit subject deletion must persist an empty install scope for that subject');
+
 // Pack documents are owner-scoped and cannot bleed across accounts.
 const accountA=store.createStorageEntry(repaired,storage,'user-a');
 storage.setItem(accountA.key,accountA.value);
