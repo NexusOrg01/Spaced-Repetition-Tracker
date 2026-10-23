@@ -117,13 +117,16 @@ function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,options={}){
   // Every snapshot entry point (cloud restore, account reconciliation, and merge) must
   // pass through the same curriculum integrity guard before it is persisted locally.
   if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('cloud-before-local-apply',nextState);
-  const safeState=window.NexusRepairInstalledCurricula?window.NexusRepairInstalledCurricula(nextState,ownerId):nextState;
+  const replaceCurriculumPacks=options.replaceCurriculumPacks===true||options.replaceCurriculumIntent===true;
+  const safeState=window.NexusRepairInstalledCurricula?window.NexusRepairInstalledCurricula(nextState,ownerId,{skipIntentLedger:options.replaceCurriculumIntent===true,skipPackStore:replaceCurriculumPacks}):nextState;
   if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('cloud-after-local-repair',safeState);
   const nextFeatures=window.NexusNormalizeFeatureState(rawFeatures);
+  const packEntry=window.NexusCreateCurriculumPackStoreEntry?window.NexusCreateCurriculumPackStoreEntry(safeState,ownerId,{replace:replaceCurriculumPacks}):null;
   const entries=[
     {key:window.NexusStorageKey,value:JSON.stringify(safeState)},
     {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)}
   ];
+  if(packEntry)entries.push(packEntry);
   // Persist the repair evidence atomically with the repaired workspace. Otherwise a
   // successful cloud hydration/merge can repair the visible rows but leave the independent
   // ledger stale, allowing a later incomplete cloud snapshot to erase that recovery.
@@ -163,7 +166,7 @@ function resetToEmpty(ownerId){
   ready=false;
   applyWorkspaceSnapshot(emptyState(),{},ownerId,{replaceCurriculumIntent:true});
 }
-function enqueueInitialSnapshot(ownerId){const queue=window.NexusOfflineSyncQueue;if(!queue||!window.NexusStorageKey||!window.NexusFeatureStorageKey)throw new Error('Safe offline snapshot queue is unavailable.');if(localStorage.getItem(OWNER_KEY)!==ownerId)throw new Error('The initial snapshot owner could not be verified.');if(queue.hasPending(localStorage,ownerId))return;const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():{};const entries=[{key:window.NexusStorageKey,value:JSON.stringify(state)},{key:window.NexusFeatureStorageKey,value:JSON.stringify(featureState)}];const intentEntry=curriculumIntentLedgerEntry(state,ownerId,true);if(intentEntry)entries.push(intentEntry);queue.commitWorkspace(localStorage,entries,snapshot(),{baseServerVersion:null});}
+function enqueueInitialSnapshot(ownerId){const queue=window.NexusOfflineSyncQueue;if(!queue||!window.NexusStorageKey||!window.NexusFeatureStorageKey)throw new Error('Safe offline snapshot queue is unavailable.');if(localStorage.getItem(OWNER_KEY)!==ownerId)throw new Error('The initial snapshot owner could not be verified.');if(queue.hasPending(localStorage,ownerId))return;const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():{};const packEntry=window.NexusCreateCurriculumPackStoreEntry?window.NexusCreateCurriculumPackStoreEntry(state,ownerId):null;const entries=[{key:window.NexusStorageKey,value:JSON.stringify(state)},{key:window.NexusFeatureStorageKey,value:JSON.stringify(featureState)}];if(packEntry)entries.push(packEntry);const intentEntry=curriculumIntentLedgerEntry(state,ownerId,true);if(intentEntry)entries.push(intentEntry);queue.commitWorkspace(localStorage,entries,snapshot(),{baseServerVersion:null});}
 async function reconcileConcurrentSnapshot(userId,initialRemote){
  const queue=window.NexusOfflineSyncQueue,merger=window.NexusWorkspaceSyncMerge;
  if(!queue||!merger||!userId)return {ok:false,conflicts:0,reason:'Automatic merge helpers are unavailable.'};
