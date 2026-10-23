@@ -552,8 +552,7 @@ assert.ok(source.includes('if(ready){clearDetachedOwnerAfterSuccessfulReconcilia
 
 // Account-handoff regression: a full Commerce install created on this device must not be
 // silently replaced by another account's older/manual-only snapshot before the user chooses.
-const handoffCatalog = JSON.parse(readFileSync(new URL('../curricula/catalog.json', import.meta.url), 'utf8'))
-  .packs.find(pack => pack.id === 'sl-al-commerce-si');
+const handoffCatalog = JSON.parse(readFileSync(new URL('../curricula/packs/sl-al-commerce-si.json', import.meta.url), 'utf8'));
 assert.ok(handoffCatalog, 'handoff regression requires the real Sinhala Commerce pack');
 const handoffLocalState = {
   schema: 3,
