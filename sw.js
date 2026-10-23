@@ -1,7 +1,7 @@
 const CACHE_PREFIX='nexus-rating-analytics-';
-const CACHE_NAME=CACHE_PREFIX+'v34';
-const CORE_APP_SHELL=['./','./index.html','./app-core.js','./study-hub.js','./fsrs-bundle.js','./backup-restore-utils.js','./offline-sync-queue.js','./curriculum-integrity.js','./workspace-isolation-guard.js','./nexus-build-config.js','./cloud-sync-recovery.js','./workspace-sync-merge.js','./cloud-sync.js','./manifest.webmanifest'];
-const OPTIONAL_APP_SHELL=['./curricula/catalog.json','./icon.svg','./icon-192.png','./icon-512.png'];
+const CACHE_NAME=CACHE_PREFIX+'v35';
+const CORE_APP_SHELL=['./','./index.html','./app-core.js','./study-hub.js','./fsrs-bundle.js','./backup-restore-utils.js','./offline-sync-queue.js','./curriculum-integrity.js','./curriculum-pack-store.js','./workspace-isolation-guard.js','./nexus-build-config.js','./cloud-sync-recovery.js','./workspace-sync-merge.js','./cloud-sync.js','./manifest.webmanifest'];
+const OPTIONAL_APP_SHELL=['./curricula/catalog.json','./curricula/packs/sl-al-commerce-si.json','./icon.svg','./icon-192.png','./icon-512.png'];
 self.addEventListener('install',event=>{event.waitUntil(caches.open(CACHE_NAME).then(async cache=>{
   await cache.addAll(CORE_APP_SHELL.map(u=>new Request(u,{cache:'reload'})));
   await Promise.all(OPTIONAL_APP_SHELL.map(u=>cache.add(new Request(u,{cache:'reload'})).catch(()=>{})));
