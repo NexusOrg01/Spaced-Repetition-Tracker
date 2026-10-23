@@ -109,7 +109,7 @@ assert.equal(packFile.id,'sl-al-commerce-si');
 assert.equal(packFile.subjects.reduce((total,subject)=>total+subject.topics.length,0),46);
 assert.match(appCore,/validateCurriculumCatalog\(await response\.json\(\)\)/);
 assert.match(appCore,/fetch\('\.\/curricula\/'\+metadata\.file\.replace/);
-assert.match(appCore,/NexusCurriculumJsonTransfer\.createPacket\(pack,scope,subjectId,topicName\)/);
+assert.match(appCore,/transfer\.createPacket\(pack,scope,subjectId,topicName\)/);
 assert.match(appCore,/manualCurriculumImportPackId/);
 assert.match(cloudSync,/NexusCreateCurriculumPackStoreEntry\(safeState,ownerId/);
 assert.match(index,/curriculum-pack-store\.js/);
