@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 const require=createRequire(import.meta.url),store=require('../curriculum-pack-store.js');
 globalThis.NexusCurriculumPackStore=store;
-const transfer=require('../curriculum-json-transfer.js'),integrity=require('../curriculum-integrity.js');
+const transfer=require('../curriculum-json-transfer.js'),integrity=require('../curriculum-integrity.js'),workspaceMerge=require('../workspace-sync-merge.js');
 class MemoryStorage{constructor(){this.values=new Map();}getItem(k){return this.values.has(k)?this.values.get(k):null;}setItem(k,v){this.values.set(k,String(v));}removeItem(k){this.values.delete(k);}}
 const pack={id:'test-course-json',title:'Test course',country:'Test country',exam:'Test exam',language:'English',streamName:'Test stream',streamId:'stream-test-course',description:'Test JSON transfer.',keywords:['test'],subjects:[{id:'A',name:'Subject A',workspaceId:'test-subject-a',legacyIdPrefix:'curr-bs',topics:['Topic A1','Topic A2']},{id:'B',name:'Subject B',workspaceId:'test-subject-b',legacyIdPrefix:'curr-acc',topics:['Topic B1']}]};
 const makeId=prefix=>prefix+'-random-'+Math.random().toString(36).slice(2,8),today=()=> '2026-10-23';
@@ -15,4 +15,11 @@ const restored=integrity.repair(old,[pack],{today,makeId}).state,reviewed=restor
 const converted=transfer.importSelection(restored,transfer.createPacket(pack,'pack'),{makeId,today});assert.equal(converted.addedTopics,0);assert.equal(restored.topics.length,3);assert.ok(restored.topics.every(t=>t.custom===true));assert.equal(reviewed.reviewCount,7);assert.equal(reviewed.dueDate,'2026-10-29');assert.equal(restored.history.length,1);assert.deepEqual(restored.settings.installedCurricula,[]);assert.deepEqual(restored.settings.curriculumTombstones,[]);assert.deepEqual(restored.settings.installedCurriculumPacks,[]);assert.deepEqual(restored.settings.personalCurriculumPacks,['test-course-json']);
 registered=store.createStorageEntry(restored,storage,null,{excludePackIds:[pack.id]});storage.setItem(registered.key,registered.value);assert.equal(store.readStore(storage,null).some(r=>r.id===pack.id),false,'old pack recovery JSON must be evicted');
 const reloaded=store.hydrateState(JSON.parse(JSON.stringify(restored)),storage,null,[pack],{excludePackIds:[pack.id]});const repaired=integrity.repair(reloaded.state,reloaded.packs,{today,makeId});assert.equal(repaired.state.topics.length,3,'refresh should preserve personal topics without reinstating the pack');assert.ok(repaired.state.topics.every(t=>t.custom===true));assert.deepEqual(repaired.state.settings.installedCurricula,[]);assert.equal(repaired.state.topics.find(t=>t.name==='Topic A1').dueDate,'2026-10-29');assert.equal(repaired.state.history.length,1);assert.deepEqual(repaired.state.settings.personalCurriculumPacks,['test-course-json']);
+
+const staleBaseline={state:{streams:[],subjects:[],topics:[],history:[],exams:[],settings:{installedCurricula:['installed:pack:test-course-json'],curriculumTombstones:[],personalCurriculumPacks:[]}},featureState:{}};
+const localPersonal={state:JSON.parse(JSON.stringify(restored)),featureState:{}};
+const remotePersonal={state:JSON.parse(JSON.stringify(restored)),featureState:{}};
+const mergedPersonal=workspaceMerge.merge(staleBaseline,localPersonal,remotePersonal).payload.state;
+assert.ok(!mergedPersonal.settings.installedCurricula.includes('installed:pack:test-course-json'),'cloud merge must not resurrect managed-install intent after explicit manual JSON import');
+assert.deepEqual(mergedPersonal.settings.personalCurriculumPacks,['test-course-json'],'cloud merge must preserve the imported-as-personal marker');
 console.log('Curriculum JSON download/import lifecycle tests passed.');

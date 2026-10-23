@@ -20,7 +20,7 @@
     conflicts.push({path,base:shown(base),local:shown(local),remote:shown(remote),basePresent:base!==ABSENT,localPresent:local!==ABSENT,remotePresent:remote!==ABSENT,resolution:resolution||'local'});
   }
   function mergeValue(base,local,remote,path,conflicts){
-    if(/[.]settings[.](installedCurricula|curriculumTombstones)$/.test(path)&&[base,local,remote].some(Array.isArray))return mergeSet(base,local,remote);
+    if(/[.]settings[.](installedCurricula|curriculumTombstones|personalCurriculumPacks)$/.test(path)&&[base,local,remote].some(Array.isArray))return mergeSet(base,local,remote);
     if(same(local,remote))return copy(local);
     if(same(local,base))return copy(remote);
     if(same(remote,base))return copy(local);
@@ -142,12 +142,13 @@
     const settingsOf=s=>isObject(s&&s.settings)?s.settings:{};
     const markerValues=s=>rows(settingsOf(s).installedCurricula).map(String);
     const tombstones=new Set(rows(settingsOf(mergedState).curriculumTombstones).map(String));
+    const personal=new Set(rows(settingsOf(mergedState).personalCurriculumPacks).map(String));
     const mergedMarkers=new Set(markerValues(mergedState));
     const baseMarkers=markerValues(baseState);
     for(const marker of baseMarkers){
       if(!marker.startsWith('installed:pack:'))continue;
       const packId=marker.slice('installed:pack:'.length);
-      if(!packId||mergedMarkers.has(marker)||tombstones.has('deleted:stream:'+packId))continue;
+      if(!packId||personal.has(packId)||mergedMarkers.has(marker)||tombstones.has('deleted:stream:'+packId))continue;
       // A full-pack marker in the last verified base is durable install intent. A missing
       // stream or subject is not proof that the user deleted the pack: the generic
       // three-way record merge can remove unchanged parent rows when a cloud snapshot is

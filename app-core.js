@@ -76,7 +76,7 @@
   function fmtDate(s){if(!validDate(s))return '—';return new Date(s+'T12:00:00').toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'});}
   function baseState(){
     // New workspaces start empty. Starter curricula are installed explicitly from Explore.
-    return {schema:3,streams:[],subjects:[],topics:[],exams:[],history:[],settings:{theme:'system',intervalCap:120,installedCurricula:[],curriculumTombstones:[],installedCurriculumPacks:[]}};
+    return {schema:3,streams:[],subjects:[],topics:[],exams:[],history:[],settings:{theme:'system',intervalCap:120,installedCurricula:[],curriculumTombstones:[],installedCurriculumPacks:[],personalCurriculumPacks:[]}};
   }
   function repairInstalledCurricula(data,ownerId,options={}){
     const api=window.NexusCurriculumIntegrity;if(!api||typeof api.repair!=='function')return data;
@@ -136,7 +136,7 @@
       const s=findSubject(h.subject)||ensureSubject(h.subject);const targetSub=s.id;const top=fresh.topics.find(t=>t.subjectId===targetSub&&t.name===(h.topic||h.topicName));const rating=Math.min(5,Math.max(1,Number(h.rating??h.score)||3));const reviewed=validDate(h.reviewedAt||h.reviewedDate)?(h.reviewedAt||h.reviewedDate):today();const due=validDate(h.dueDate||h.nextDate)?(h.dueDate||h.nextDate):plusDays(reviewed,({1:1,2:2,3:4,4:7,5:12})[rating]);
       return {id:String(h.id||makeId('history')+i),topicId:top?.id||'',streamId:s?.streamId||'',subjectId:s?.id||'',streamName:s?fresh.streams.find(x=>x.id===s.streamId)?.name:'',subjectName:s?.name||String(h.subject||'Imported'),topicName:String(h.topic||h.topicName||'Untitled topic'),reviewedAt:reviewed,rating,intervalDays:Math.max(1,Math.min(120,Number(h.intervalDays)||dayDiff(reviewed,due)||1)),dueDate:due,note:String(h.note||'')};
     });
-    const settings=raw.settings||{}; fresh.settings.theme=['system','light','dark'].includes(settings.theme)?settings.theme:'system'; fresh.settings.installedCurricula=Array.isArray(settings.installedCurricula)?Array.from(new Set(settings.installedCurricula.filter(x=>typeof x==='string'&&x.length>0))).slice(0,5000):[]; fresh.settings.curriculumTombstones=Array.isArray(settings.curriculumTombstones)?Array.from(new Set(settings.curriculumTombstones.filter(x=>typeof x==='string'&&x.length>0))).slice(0,5000):[];
+    const settings=raw.settings||{}; fresh.settings.theme=['system','light','dark'].includes(settings.theme)?settings.theme:'system'; fresh.settings.installedCurricula=Array.isArray(settings.installedCurricula)?Array.from(new Set(settings.installedCurricula.filter(x=>typeof x==='string'&&x.length>0))).slice(0,5000):[]; fresh.settings.curriculumTombstones=Array.isArray(settings.curriculumTombstones)?Array.from(new Set(settings.curriculumTombstones.filter(x=>typeof x==='string'&&x.length>0))).slice(0,5000):[]; fresh.settings.personalCurriculumPacks=Array.isArray(settings.personalCurriculumPacks)?Array.from(new Set(settings.personalCurriculumPacks.filter(x=>typeof x==='string'&&x.length>0))).slice(0,5000):[];
     if(validDate(settings.examDate)){fresh.exams.push({id:'exam-legacy-migrated',name:'GCE Advanced Level',date:settings.examDate,type:'Academic exam',notes:''});}
     if(Array.isArray(settings.exams))fresh.exams=settings.exams.map(ex=>sanitizeExam(ex));
     return options.skipCurriculumRepair?fresh:repairInstalledCurricula(fresh);
@@ -182,7 +182,7 @@
     const theme=['system','light','dark'].includes(raw.settings?.theme)?raw.settings.theme:'system';
     const strings=value=>Array.isArray(value)?Array.from(new Set(value.filter(x=>typeof x==='string'&&x.length>0))).slice(0,5000):[];
     const installedCurriculumPacks=window.NexusCurriculumPackStore?window.NexusCurriculumPackStore.cleanDocuments(raw.settings?.installedCurriculumPacks):[];
-    const normalized={schema:3,streams,subjects,topics,history:cleanHistory,exams,settings:{theme,intervalCap:120,installedCurricula:strings(raw.settings?.installedCurricula),curriculumTombstones:strings(raw.settings?.curriculumTombstones),installedCurriculumPacks}};
+    const normalized={schema:3,streams,subjects,topics,history:cleanHistory,exams,settings:{theme,intervalCap:120,installedCurricula:strings(raw.settings?.installedCurricula),curriculumTombstones:strings(raw.settings?.curriculumTombstones),installedCurriculumPacks,personalCurriculumPacks:strings(raw.settings?.personalCurriculumPacks)}};
     return options.skipCurriculumRepair?normalized:repairInstalledCurricula(normalized);
   }
   window.NexusNormalizeState=normalizeState;
