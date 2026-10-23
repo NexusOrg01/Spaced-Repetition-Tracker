@@ -217,8 +217,10 @@ activeSession = { user: accountB };
 await window.NexusCloudSync.reconnect();
 assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'offline-A', 'signing into account B must not upload account A pending work');
 assert.ok(queue.hasPending(storage, accountA.id), 'account A pending work must remain parked during account B session');
-assert.equal(rows.has(accountB.id), false, 'account B must not initialize by discarding account A changes newer than its verified baseline');
-assert.equal(getElement('cloudStatus').textContent, 'Data choice required', 'account switching must pause for an explicit choice when the previous account has unsynced local work');
+assert.equal(rows.has(accountB.id), true, 'account B should initialize its own workspace without uploading account A changes');
+assert.equal(rows.get(accountB.id).payload.state.topics.length, 0, 'account B must receive a clean workspace rather than account A data');
+assert.equal(storage.getItem(OWNER), accountB.id, 'the active workspace owner must switch to account B after its workspace is committed');
+assert.equal(getElement('cloudStatus').textContent, 'Synced', 'a safe account switch should complete without the generic data-choice prompt');
 assert.ok(queue.hasPending(storage, accountA.id), 'account A pending work must remain parked during the account B session');
 assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'offline-A', 'account B login must not overwrite account A cloud data');
 activeSession = { user: accountA };
@@ -645,8 +647,8 @@ assert.ok(!getElement('cloudHelpText').textContent.includes('"undefined" is not 
 
 
 // Critical account-handoff regression: Commerce is installed while signed out after a
-// previous account's clean baseline was saved. Signing into another account must pause
-// for an explicit data choice, not silently reset the populated local workspace.
+// previous account's clean baseline was saved. Signing into another account must
+// checkpoint Commerce to the previous owner's queue and load only the target workspace.
 {
   const signedOutCommerceState = {
     schema: 3,
@@ -677,23 +679,27 @@ assert.ok(!getElement('cloudHelpText').textContent.includes('"undefined" is not 
     'the signed-out pack-install reproduction starts without an old-account pending snapshot');
   activeSession = { user: accountB };
   await window.NexusCloudSync.reconnect();
-  const preserved = JSON.parse(storage.getItem(STATE_KEY));
-  assert.equal(preserved.topics.length, 46,
-    'signing into a different account must not silently erase a signed-out Commerce install');
-  assert.ok(preserved.settings.installedCurricula.includes('installed:pack:sl-al-commerce-si'),
-    'the Commerce install marker must remain when account setup needs an explicit data choice');
-  assert.equal(storage.getItem(OWNER), accountA.id,
-    'the new account must not claim ownership until the data choice is completed');
-  assert.equal(rows.has(accountB.id), false,
-    'local Commerce data must not be uploaded or replaced before explicit consent');
-  assert.equal(getElement('cloudStatus').textContent, 'Data choice required',
-    'the user must see that account setup is paused instead of losing local data');
+  const activeTarget = JSON.parse(storage.getItem(STATE_KEY));
+  const parkedPrevious = queue.getPending(storage, accountA.id);
+  assert.equal(activeTarget.topics.length, 0,
+    'account B must load its own empty workspace instead of displaying account A Commerce data');
+  assert.ok(parkedPrevious && parkedPrevious.payload.state.topics.length === 46,
+    'all signed-out Commerce topics must be checkpointed to account A before switching');
+  assert.ok(parkedPrevious.payload.state.settings.installedCurricula.includes('installed:pack:sl-al-commerce-si'),
+    'the previous account queue must retain the Commerce install marker');
+  assert.equal(storage.getItem(OWNER), accountB.id,
+    'the workspace owner must switch to B only after B data is committed');
+  assert.equal(rows.has(accountB.id), true,
+    'account B should initialize its own clean cloud workspace');
+  assert.equal(rows.get(accountB.id).payload.state.topics.length, 0,
+    'account A Commerce data must never be uploaded to account B');
+  assert.equal(getElement('cloudStatus').textContent, 'Synced',
+    'a safe account switch should complete without a cross-account choice dialog');
 }
 
 
-// Regression: a target account can have an older pending snapshot of its own.
-// Do not apply that snapshot over a newly installed, unassigned Commerce workspace
-// before the cross-account safety check has classified the local data.
+// Regression: a target account can have its own pending snapshot. Account switching
+// must checkpoint A independently, then restore/reconcile B without mixing their data.
 {
   const signedOutCommerceState = {
     schema: 3,
@@ -749,21 +755,24 @@ assert.ok(!getElement('cloudHelpText').textContent.includes('"undefined" is not 
   activeSession = { user: accountB };
   await window.NexusCloudSync.reconnect();
 
-  const preserved = JSON.parse(storage.getItem(STATE_KEY));
-  assert.equal(preserved.topics.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length, 46,
-    'target-account pending adoption must not overwrite the signed-out Commerce install');
-  assert.ok(preserved.settings.installedCurricula.includes('installed:pack:sl-al-commerce-si'),
-    'the Commerce install marker must survive classification of local data before target pending adoption');
-  assert.ok(preserved.streams.some(stream => stream.id === 'stream-commerce-manual-test'),
-    'local manual streams must remain with an unassigned curriculum install');
-  assert.equal(storage.getItem(OWNER), accountA.id,
-    'the previous owner must remain until the unassigned local workspace is explicitly resolved');
-  assert.equal(rows.get(accountB.id).payload.state.topics.length, 0,
-    'the target account cloud must not be overwritten before the user resolves the local workspace');
-  assert.ok(queue.hasPending(storage, accountB.id),
-    'the target account pending snapshot must remain recoverable while local data choice is pending');
-  assert.equal(getElement('cloudStatus').textContent, 'Data choice required',
-    'the sign-in must pause for an explicit data choice instead of silently adopting the target pending snapshot');
+  const activeTarget = JSON.parse(storage.getItem(STATE_KEY));
+  const parkedPrevious = queue.getPending(storage, accountA.id);
+  assert.equal(activeTarget.topics.some(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))), false,
+    'B workspace must not contain A Commerce topics after switching');
+  assert.ok(activeTarget.topics.some(topic => topic.id === 'target-pending-B'),
+    'B workspace must restore its own pending topic');
+  assert.ok(activeTarget.topics.some(topic => topic.id === 'target-account-manual-topic'),
+    'B workspace must restore its own pending manual topic');
+  assert.equal(storage.getItem(OWNER), accountB.id,
+    'the active workspace owner must switch to B');
+  assert.equal(rows.get(accountB.id).payload.state.topics.some(topic => topic.id === 'target-account-manual-topic'), true,
+    'B pending data must be reconciled to B cloud');
+  assert.ok(parkedPrevious && parkedPrevious.payload.state.topics.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length === 46,
+    'A Commerce work must remain in A’s queue after B is restored');
+  assert.equal(queue.hasPending(storage, accountB.id), false,
+    'B pending work should clear only after cloud verification');
+  assert.equal(getElement('cloudStatus').textContent, 'Synced',
+    'the account switch should complete without prompting to merge A into B');
 }
 
 
@@ -857,45 +866,43 @@ for (const scenario of [
   await window.NexusCloudSync.reconnect();
 
   const preserved = JSON.parse(storage.getItem(STATE_KEY));
-  assert.equal(preserved.topics.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length, 46,
-    scenario.name + ': all 46 Commerce topics must survive target-account sign-in');
-  assert.ok(preserved.settings.installedCurricula.includes('installed:pack:sl-al-commerce-si'),
-    scenario.name + ': the Commerce install marker must survive target-account sign-in');
-  assert.equal(storage.getItem(OWNER), accountA.id,
-    scenario.name + ': the previous owner must remain until the data choice is resolved');
-  assert.equal(rows.get(accountB.id).payload.state.topics.length, 0,
-    scenario.name + ': target-account cloud data must not be overwritten before consent');
-  assert.ok(queue.hasPending(storage, accountB.id),
-    scenario.name + ': target-account pending snapshot must remain recoverable');
-  assert.equal(getElement('cloudStatus').textContent, 'Data choice required',
-    scenario.name + ': account setup must stop at an explicit data choice');
+  assert.equal(preserved.topics.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length, 0,
+    scenario.name + ': Account B must not show Account A Commerce data after switching');
+  assert.ok(preserved.topics.some(topic => topic.id === 'target-account-manual-topic'),
+    scenario.name + ': the target account pending snapshot must be restored');
+  assert.equal(storage.getItem(OWNER), accountB.id,
+    scenario.name + ': B must own the active workspace after safe handoff');
+  assert.ok(rows.get(accountB.id).payload.state.topics.some(topic => topic.id === 'target-account-manual-topic'),
+    scenario.name + ': B pending changes must be verified in B cloud');
+  const parkedA = queue.getPending(storage, accountA.id);
+  assert.ok(parkedA && parkedA.payload.state.topics.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length === 46,
+    scenario.name + ': A Commerce data must stay queued for A');
+  assert.equal(queue.hasPending(storage, accountB.id), false,
+    scenario.name + ': B queue must clear after verified synchronization');
+  assert.equal(getElement('cloudStatus').textContent, 'Synced',
+    scenario.name + ': account handoff should complete without a generic choice prompt');
   if (scenario.editTopic) {
-    assert.equal(preserved.topics.find(topic => topic.id === 'curr-bs-01').name, 'User-edited Commerce topic',
-      'the edited Commerce topic name must survive account handoff');
-    assert.deepEqual(preserved.topics.find(topic => topic.id === 'curr-bs-01').fsrs,
+    assert.equal(parkedA.payload.state.topics.find(topic => topic.id === 'curr-bs-01').name, 'User-edited Commerce topic',
+      'A’s edited Commerce topic must survive in A’s queue');
+    assert.deepEqual(parkedA.payload.state.topics.find(topic => topic.id === 'curr-bs-01').fsrs,
       { stability: 2.2, difficulty: 4.5, reps: 1 },
-      'the edited Commerce FSRS state must survive account handoff');
+      'A’s edited Commerce FSRS state must survive in A’s queue');
   }
   if (scenario.addManualStream) {
-    assert.ok(preserved.streams.some(stream => stream.id === 'manual-stream-' + scenario.name),
-      'an existing manually-created stream must survive account handoff');
-    assert.ok(preserved.topics.some(topic => topic.id === 'manual-stream-' + scenario.name + '-topic'),
-      'the manual stream topic must survive account handoff');
+    assert.ok(parkedA.payload.state.streams.some(stream => stream.id === 'manual-stream-' + scenario.name),
+      'A’s manually-created stream must survive in A’s queue');
+    assert.ok(parkedA.payload.state.topics.some(topic => topic.id === 'manual-stream-' + scenario.name + '-topic'),
+      'A’s manual stream topic must survive in A’s queue');
   }
 
-  // Signing out and then re-running curriculum hydration must retain the same local rows.
+  // Signing out must leave B’s own active workspace visible; A remains separately queued.
   activeSession = null;
   await window.NexusCloudSync.reconnect();
-  const afterRefresh = curriculumIntegrity.repair(
-    JSON.parse(storage.getItem(STATE_KEY)), commerceCatalogue.packs,
-    { today: () => '2026-10-22', makeId: prefix => prefix + '-refresh-repair' }
-  ).state;
-  assert.equal(afterRefresh.topics.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length, 46,
-    scenario.name + ': full Commerce pack must remain after sign-out and refresh');
-  if (scenario.addManualStream) {
-    assert.ok(afterRefresh.streams.some(stream => stream.id === 'manual-stream-' + scenario.name),
-      'manual stream must also survive sign-out and refresh');
-  }
+  const afterSignOut = JSON.parse(storage.getItem(STATE_KEY));
+  assert.ok(afterSignOut.topics.some(topic => topic.id === 'target-account-manual-topic'),
+    scenario.name + ': signing out must not swap B’s local workspace back to A');
+  assert.ok(queue.hasPending(storage, accountA.id),
+    scenario.name + ': A’s offline changes must remain pending after signing out of B');
 }
 
 
