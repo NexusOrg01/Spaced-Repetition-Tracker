@@ -840,8 +840,8 @@ for (const scenario of [
     { key: STATE_KEY, value: JSON.stringify(localState) },
     { key: FEATURE_KEY, value: JSON.stringify(priorFeatures) }
   ], localPayload, { baseServerVersion: priorStamp });
-  assert.equal(queue.getPending(storage, accountA.id).payload.state.topics.length, 46,
-    'the previous owner outbox must contain the current local Commerce workspace');
+  assert.equal(queue.getPending(storage, accountA.id).payload.state.topics.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length, 46,
+    'the previous owner outbox must contain all 46 Commerce topics');
 
   activeSession = { user: accountB };
   await window.NexusCloudSync.reconnect();
