@@ -14,6 +14,7 @@ const backupUtils = readFileSync(resolve(root, 'backup-restore-utils.js'), 'utf8
 const serviceWorker = readFileSync(resolve(root, 'sw.js'), 'utf8');
 const manifest = JSON.parse(readFileSync(resolve(root, 'manifest.webmanifest'), 'utf8'));
 const curriculumCatalog = JSON.parse(readFileSync(resolve(root, 'curricula/catalog.json'), 'utf8'));
+const commercePackJson = JSON.parse(readFileSync(resolve(root, 'curricula/packs/sl-al-commerce-si.json'), 'utf8'));
 
 const integrationAt = bundle.indexOf('nexus-fsrs.js — glue between Nexus topics');
 const coreEnd = integrationAt > 0 ? bundle.lastIndexOf('/*!', integrationAt) : -1;
@@ -129,21 +130,21 @@ const cleanupFactory = vm.runInNewContext(
   '(function(){' + appCore.slice(seedStart, seedEndAt + '\n  ];'.length) + '\n' +
     appCore.slice(cleanupStart, cleanupEnd) + '\nreturn detachPristineStarterContent;})()'
 );
-const validatorStart=appCore.indexOf('function validateCurriculumCatalog(raw){');
-const validatorEnd=appCore.indexOf('\n  async function loadCurriculumCatalog()',validatorStart);
-assert.ok(validatorStart>=0&&validatorEnd>validatorStart,'the catalogue validator must remain independently testable');
-const validatorFactory=vm.runInNewContext('(function(){\n'+appCore.slice(validatorStart,validatorEnd)+'\nreturn validateCurriculumCatalog;\n})()',vm.createContext({}));
-const staleCatalogue=JSON.parse(JSON.stringify(curriculumCatalog));
-for(const pack of staleCatalogue.packs)for(const subject of pack.subjects){
+const validatorStart=appCore.indexOf('function validatePackDefinition(entry){');
+const validatorEnd=appCore.indexOf('\n  function validateCurriculumCatalog(raw){',validatorStart);
+assert.ok(validatorStart>=0&&validatorEnd>validatorStart,'standalone pack validation must remain independently testable');
+const validatorFactory=vm.runInNewContext('(function(){\n'+appCore.slice(validatorStart,validatorEnd)+'\nreturn validatePackDefinition;\n})()',vm.createContext({}));
+const staleCommerce=JSON.parse(JSON.stringify(commercePackJson));
+for(const subject of staleCommerce.subjects){
   if(subject.legacyIdPrefix==='curr-bs')subject.legacyIdPrefix='seed-bs';
   if(subject.legacyIdPrefix==='curr-acc')subject.legacyIdPrefix='seed-acc';
   if(subject.legacyIdPrefix==='curr-econ')subject.legacyIdPrefix='seed-econ';
 }
-const normalizedStaleCatalogue=validatorFactory(staleCatalogue);
-const normalizedCommerce=normalizedStaleCatalogue.find(pack=>pack.id==='sl-al-commerce-si');
+const normalizedCommerce=validatorFactory(staleCommerce);
 assert.deepEqual(Array.from(normalizedCommerce.subjects,subject=>subject.legacyIdPrefix),['curr-bs','curr-acc','curr-econ'],
-  'stale seed-prefixed catalogues must be upgraded before they can create IDs removed by older startup cleanup');
-const commercePack = curriculumCatalog.packs.find(pack => pack.id === 'sl-al-commerce-si');
+  'stale seed-prefixed standalone packs must be upgraded before creating IDs reserved for disposable legacy starter data');
+const commercePack = commercePackJson;
+
 assert.ok(commercePack, 'the built-in Sinhala Commerce pack must remain in the catalogue');
 const installedStreams = [{ id: commercePack.streamId, name: commercePack.streamName }];
 const installedSubjects = commercePack.subjects.map((subject, order) => ({
