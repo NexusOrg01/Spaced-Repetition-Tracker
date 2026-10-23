@@ -101,13 +101,12 @@ function hasLocalWork(s){if(!s)return false;const core=s.state||s||{},f=s.featur
 function hasUnassignedWorkspaceChanges(owner,newUserId,localPayload){
  const queue=window.NexusOfflineSyncQueue;
  if(!owner||owner===newUserId)return hasLocalWork(localPayload);
- const priorPending=queue?queue.getPending(localStorage,owner):null;
  const priorBase=queue?queue.getBase(localStorage,owner):null;
- const priorOwnedSnapshot=priorPending&&priorPending.payload?priorPending.payload:priorBase;
- const localInstalled=localPayload&&localPayload.state&&localPayload.state.settings&&Array.isArray(localPayload.state.settings.installedCurricula)?localPayload.state.settings.installedCurricula:[];
- const baseInstalled=priorBase&&priorBase.state&&priorBase.state.settings&&Array.isArray(priorBase.state.settings.installedCurricula)?priorBase.state.settings.installedCurricula:[];
- const hasNewPackIntent=localInstalled.some(marker=>String(marker).startsWith('installed:pack:')&&!baseInstalled.includes(marker));
- return priorPending?(!sameWorkspace(localPayload,priorPending.payload)||hasNewPackIntent):(priorOwnedSnapshot?!sameWorkspace(localPayload,priorOwnedSnapshot):hasLocalWork(localPayload));
+ // The outbox is mutable: saves made while signed out can update the previous owner's
+ // pending snapshot. It is therefore not a trustworthy ownership baseline. Compare the
+ // current device workspace with the last verified cloud baseline instead. If no verified
+ // baseline exists, conservatively require an explicit choice whenever local work exists.
+ return priorBase?!sameWorkspace(localPayload,priorBase):hasLocalWork(localPayload);
 }
 function chooseLocalData(){return new Promise(resolve=>{const dlg=el('accountChoiceDialog');if(!dlg){resolve('cancel');return;}let done=false;const onCancel=e=>e.preventDefault();const finish=v=>{if(done)return;done=true;dlg.removeEventListener('cancel',onCancel);if(dlg.open)dlg.close();resolve(v);};dlg.addEventListener('cancel',onCancel);dlg.querySelectorAll('[data-account-choice]').forEach(b=>b.onclick=()=>finish(b.dataset.accountChoice));if(!dlg.open)dlg.showModal();});}
 function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){

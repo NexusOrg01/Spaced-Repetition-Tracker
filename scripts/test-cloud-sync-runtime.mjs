@@ -754,4 +754,136 @@ assert.ok(!getElement('cloudHelpText').textContent.includes('"undefined" is not 
     'the sign-in must pause for an explicit data choice instead of silently adopting the target pending snapshot');
 }
 
+
+ 
+// Reused-owner baseline regression: the Commerce marker already exists in the prior owner's
+// verified baseline, while a signed-out edit updates that owner's mutable outbox. Comparing
+// local state to the outbox hides the edit and lets the target account's pending snapshot win.
+for (const scenario of [
+  { name: 'untouched-pack-with-manual-stream', editTopic: false, addManualStream: true },
+  { name: 'edited-pack-without-manual-stream', editTopic: true, addManualStream: false }
+]) {
+  const baselineState = {
+    schema: 3,
+    streams: [{ id: commercePack.streamId, name: commercePack.streamName }],
+    subjects: commercePack.subjects.map((subject, order) => ({
+      id: subject.workspaceId, name: subject.name, streamId: commercePack.streamId, order
+    })),
+    topics: commercePack.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+      id: String(subject.legacyIdPrefix || '').replace(/^seed-/i, 'curr-') + '-' + String(index + 1).padStart(2, '0'),
+      subjectId: subject.workspaceId, name, notes: '', custom: false, createdAt: '2026-10-22',
+      lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, reviewCount: 0, streak: 0, lapses: 0, archived: false
+    }))),
+    exams: [], history: [],
+    settings: { theme: 'system', intervalCap: 120, installedCurricula: ['installed:pack:sl-al-commerce-si'], curriculumTombstones: [] }
+  };
+  const localState = JSON.parse(JSON.stringify(baselineState));
+  if (scenario.editTopic) {
+    const edited = localState.topics.find(topic => topic.id === 'curr-bs-01');
+    assert.ok(edited, 'the test fixture must include the first Commerce Business Studies topic');
+    edited.name = 'User-edited Commerce topic';
+    edited.reviewCount = 1;
+    edited.lastReviewed = '2026-10-21';
+    edited.dueDate = '2026-10-28';
+    edited.fsrs = { stability: 2.2, difficulty: 4.5, reps: 1 };
+  }
+  if (scenario.addManualStream) {
+    const id = 'manual-stream-' + scenario.name;
+    localState.streams.push({ id, name: 'My manually-created stream' });
+    localState.subjects.push({ id: id + '-subject', name: 'My manual subject', streamId: id, order: 0 });
+    localState.topics.push({ id: id + '-topic', name: 'My manual topic', subjectId: id + '-subject', custom: true, reviewCount: 0 });
+  }
+
+  const priorStamp = new Date(Date.now() - 60000).toISOString();
+  const targetStamp = new Date(Date.now() + 60000).toISOString();
+  const priorFeatures = featuresFor(null);
+  const targetRemotePayload = payloadFor(null);
+  rows.set(accountA.id, { user_id: accountA.id, payload: { state: baselineState, featureState: priorFeatures }, updated_at: priorStamp });
+  rows.set(accountB.id, { user_id: accountB.id, payload: targetRemotePayload, updated_at: targetStamp });
+
+  if (queue.hasPending(storage, accountA.id)) queue.archive(storage, accountA.id, 'reused-baseline-test-reset');
+  if (queue.hasPending(storage, accountB.id)) queue.archive(storage, accountB.id, 'reused-baseline-test-reset');
+  queue.rememberBase(storage, accountA.id, { state: baselineState, featureState: priorFeatures }, priorStamp);
+  queue.rememberStamp(storage, accountA.id, priorStamp);
+
+  const targetPendingPayload = payloadFor('target-pending-' + scenario.name);
+  targetPendingPayload.state.streams.push({ id: 'stream-target-account-manual', name: 'Target account manual stream' });
+  targetPendingPayload.state.subjects.push({
+    id: 'subject-target-account-manual', name: 'Target account manual subject',
+    streamId: 'stream-target-account-manual', order: 0
+  });
+  targetPendingPayload.state.topics.push({
+    id: 'target-account-manual-topic', name: 'Target account manual topic',
+    subjectId: 'subject-target-account-manual', custom: true
+  });
+  storage.setItem(OWNER, accountB.id);
+  queue.rememberBase(storage, accountB.id, {
+    state: targetRemotePayload.state, featureState: targetRemotePayload.featureState
+  }, targetStamp);
+  queue.rememberStamp(storage, accountB.id, targetStamp);
+  queue.commitWorkspace(storage, [
+    { key: STATE_KEY, value: JSON.stringify(targetPendingPayload.state) },
+    { key: FEATURE_KEY, value: JSON.stringify(targetPendingPayload.featureState) }
+  ], targetPendingPayload, { baseServerVersion: targetStamp });
+
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(localState));
+  storage.setItem(FEATURE_KEY, JSON.stringify(priorFeatures));
+  context.state = localState;
+  const localPayload = {
+    app: 'Nexus Spaced Repetition Tracker', schema: 4, exportedAt: new Date().toISOString(),
+    state: localState, featureState: priorFeatures
+  };
+  queue.commitWorkspace(storage, [
+    { key: STATE_KEY, value: JSON.stringify(localState) },
+    { key: FEATURE_KEY, value: JSON.stringify(priorFeatures) }
+  ], localPayload, { baseServerVersion: priorStamp });
+  assert.equal(queue.getPending(storage, accountA.id).payload.state.topics.length, 46,
+    'the previous owner outbox must contain the current local Commerce workspace');
+
+  activeSession = { user: accountB };
+  await window.NexusCloudSync.reconnect();
+
+  const preserved = JSON.parse(storage.getItem(STATE_KEY));
+  assert.equal(preserved.topics.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length, 46,
+    scenario.name + ': all 46 Commerce topics must survive target-account sign-in');
+  assert.ok(preserved.settings.installedCurricula.includes('installed:pack:sl-al-commerce-si'),
+    scenario.name + ': the Commerce install marker must survive target-account sign-in');
+  assert.equal(storage.getItem(OWNER), accountA.id,
+    scenario.name + ': the previous owner must remain until the data choice is resolved');
+  assert.equal(rows.get(accountB.id).payload.state.topics.length, 0,
+    scenario.name + ': target-account cloud data must not be overwritten before consent');
+  assert.ok(queue.hasPending(storage, accountB.id),
+    scenario.name + ': target-account pending snapshot must remain recoverable');
+  assert.equal(getElement('cloudStatus').textContent, 'Data choice required',
+    scenario.name + ': account setup must stop at an explicit data choice');
+  if (scenario.editTopic) {
+    assert.equal(preserved.topics.find(topic => topic.id === 'curr-bs-01').name, 'User-edited Commerce topic',
+      'the edited Commerce topic name must survive account handoff');
+    assert.deepEqual(preserved.topics.find(topic => topic.id === 'curr-bs-01').fsrs,
+      { stability: 2.2, difficulty: 4.5, reps: 1 },
+      'the edited Commerce FSRS state must survive account handoff');
+  }
+  if (scenario.addManualStream) {
+    assert.ok(preserved.streams.some(stream => stream.id === 'manual-stream-' + scenario.name),
+      'an existing manually-created stream must survive account handoff');
+    assert.ok(preserved.topics.some(topic => topic.id === 'manual-stream-' + scenario.name + '-topic'),
+      'the manual stream topic must survive account handoff');
+  }
+
+  // Signing out and then re-running curriculum hydration must retain the same local rows.
+  activeSession = null;
+  await window.NexusCloudSync.reconnect();
+  const afterRefresh = curriculumIntegrity.repair(
+    JSON.parse(storage.getItem(STATE_KEY)), commerceCatalogue.packs,
+    { today: () => '2026-10-22', makeId: prefix => prefix + '-refresh-repair' }
+  ).state;
+  assert.equal(afterRefresh.topics.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length, 46,
+    scenario.name + ': full Commerce pack must remain after sign-out and refresh');
+  if (scenario.addManualStream) {
+    assert.ok(afterRefresh.streams.some(stream => stream.id === 'manual-stream-' + scenario.name),
+      'manual stream must also survive sign-out and refresh');
+  }
+}
+
 console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, and target-account pending-snapshot isolation.');
