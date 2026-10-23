@@ -303,92 +303,43 @@
   const naturalCollator = new Intl.Collator(undefined, {numeric:true, sensitivity:'base'});
   function naturalCompare(a,b){ return naturalCollator.compare(a,b); }
 
-  function validateCurriculumCatalog(raw){
-    if(!raw||raw.version!==1||!Array.isArray(raw.packs)||!raw.packs.length)throw new Error('Catalogue must contain a version 1 packs array.');
-    const packIds=new Set();
-    const packs=raw.packs.map((entry,packIndex)=>{
-      if(!entry||typeof entry!=='object')throw new Error('Invalid pack at position '+(packIndex+1)+'.');
-      const id=String(entry.id||'').trim(),title=String(entry.title||'').trim(),country=String(entry.country||'').trim(),exam=String(entry.exam||'').trim(),language=String(entry.language||'').trim(),streamName=String(entry.streamName||'').trim();
-      if(!/^[a-z0-9][a-z0-9-]{1,79}$/i.test(id)||!title||!country||!exam||!language||!streamName)throw new Error('Pack metadata is incomplete or has an invalid id: '+(id||'unnamed pack'));
-      if(packIds.has(id))throw new Error('Duplicate pack id: '+id);packIds.add(id);
-      if(!Array.isArray(entry.subjects)||!entry.subjects.length)throw new Error('Pack '+id+' must contain subjects.');
-      const subjectIds=new Set();
-      const cleanSubjects=entry.subjects.map((subject,subjectIndex)=>{
-        if(!subject||typeof subject!=='object')throw new Error('Invalid subject in pack '+id+'.');
-        const sid=String(subject.id||'').trim(),name=String(subject.name||'').trim();
-        if(!/^[a-z0-9][a-z0-9-]{0,79}$/i.test(sid)||!name)throw new Error('Subject metadata is incomplete in pack '+id+', position '+(subjectIndex+1)+'.');
-        if(subjectIds.has(sid))throw new Error('Duplicate subject id '+sid+' in pack '+id+'.');subjectIds.add(sid);
-        if(!Array.isArray(subject.topics)||!subject.topics.length)throw new Error('Subject '+name+' in pack '+id+' must contain topics.');
-        const topicNames=new Set();
-        const topics=subject.topics.map(value=>{if(typeof value!=='string')throw new Error('Topics must be plain strings in '+id+'/'+sid+'.');const topic=value.trim();if(!topic||topic.length>240)throw new Error('A topic in '+id+'/'+sid+' is empty or exceeds 240 characters.');const key=topic.toLocaleLowerCase();if(topicNames.has(key))throw new Error('Duplicate topic '+topic+' in '+id+'/'+sid+'.');topicNames.add(key);return topic;});
-        const workspaceId=typeof subject.workspaceId==='string'&&subject.workspaceId.trim()?subject.workspaceId.trim():'';
-        const legacyIdPrefix=typeof subject.legacyIdPrefix==='string'&&/^[a-z0-9-]+$/i.test(subject.legacyIdPrefix)?subject.legacyIdPrefix:'';
-        return {id:sid,name,workspaceId,legacyIdPrefix,topics};
-      });
-      const keywords=Array.isArray(entry.keywords)?entry.keywords.filter(x=>typeof x==='string'&&x.trim()).map(x=>x.trim()):[];
-      return {id,title,country,exam,language,streamName,streamId:typeof entry.streamId==='string'?entry.streamId.trim():'',description:String(entry.description||'').trim(),keywords,subjects:cleanSubjects};
+  let exploreCurriculumController=null;
+  function initExploreCurriculum(){
+    if(exploreCurriculumController)return exploreCurriculumController;
+    const api=window.NexusExploreCurriculum;
+    if(!api||typeof api.create!=='function')return null;
+    exploreCurriculumController=api.create({
+      document,
+      fetch:(...args)=>fetch(...args),
+      getState:()=>state,
+      setState:next=>{state=next;},
+      getPacks:()=>CURRICULUM_PACKS,
+      setPacks:packs=>{CURRICULUM_PACKS=packs;window.NexusCurriculumPacks=CURRICULUM_PACKS;},
+      esc,makeId,today,save,renderAll,notify,
+      getIntegrity:()=>window.NexusCurriculumIntegrity,
+      onCatalogLoaded:()=>{
+        const before=JSON.stringify(state);
+        state=repairCurriculumState(state);
+        if(JSON.stringify(state)!==before)save();
+        renderAll();
+      },
+      onCatalogError:error=>console.warn('Nexus curriculum catalogue could not be refreshed; using the built-in Commerce fallback.',error)
     });
-    if(!packs.some(pack=>pack.id==='sl-al-commerce-si'))throw new Error('The existing Commerce starter pack must remain in the catalogue.');
-    return packs;
+    return exploreCurriculumController;
   }
   async function loadCurriculumCatalog(){
-    try{const response=await fetch('./curricula/catalog.json');if(!response.ok)throw new Error('Catalogue request returned '+response.status+'.');const loaded=validateCurriculumCatalog(await response.json());CURRICULUM_PACKS=loaded;window.NexusCurriculumPacks=CURRICULUM_PACKS;const before=JSON.stringify(state);state=repairCurriculumState(state);if(JSON.stringify(state)!==before)save();renderAll();renderExplore();}
-    catch(error){console.warn('Nexus curriculum catalogue could not be refreshed; using the built-in Commerce fallback.',error);}
-  }
-  function findPackStream(pack){
-    // Prefer the stable pack stream ID even if a user has renamed the workspace label.
-    return (pack.streamId?state.streams.find(stream=>stream.id===pack.streamId):null)||state.streams.find(stream=>stream.name.trim().toLocaleLowerCase()===pack.streamName.trim().toLocaleLowerCase())||null;
-  }
-  function findPackSubject(pack,subject,stream){
-    if(!stream)return null;
-    // A stable subject ID keeps a user's renamed subject and its review history attached.
-    return (subject.workspaceId?state.subjects.find(item=>item.streamId===stream.id&&item.id===subject.workspaceId):null)||state.subjects.find(item=>item.streamId===stream.id&&item.name.trim().toLocaleLowerCase()===subject.name.trim().toLocaleLowerCase())||null;
-  }
-  function installedTopicCount(pack,subject){
-    const stream=findPackStream(pack);const installedSubject=findPackSubject(pack,subject,stream);
-    return installedSubject?state.topics.filter(topic=>topic.subjectId===installedSubject.id&&subject.topics.includes(topic.name)).length:0;
+    const controller=initExploreCurriculum();
+    if(!controller){console.warn('Nexus Explore Curriculum module is unavailable.');return;}
+    await controller.loadCatalog();
   }
   function renderExplore(){
-    const host=$('exploreGrid');if(!host)return;
-    const q=String($('exploreSearch')?.value||'').trim().toLocaleLowerCase();
-    const packs=CURRICULUM_PACKS.map(pack=>{
-      const packText=[pack.title,pack.country,pack.exam,pack.language,pack.streamName,pack.description,...pack.keywords].join(' ').toLocaleLowerCase();
-      const packMatches=!q||packText.includes(q);
-      const visibleSubjects=pack.subjects.map(subject=>({...subject,visibleTopics:subject.topics.filter(topic=>!q||packMatches||subject.name.toLocaleLowerCase().includes(q)||topic.toLocaleLowerCase().includes(q))})).filter(subject=>!q||packMatches||subject.visibleTopics.length>0||subject.name.toLocaleLowerCase().includes(q));
-      return {...pack,visibleSubjects,packMatches,totalTopics:pack.subjects.reduce((n,subject)=>n+subject.topics.length,0)};
-    }).filter(pack=>!q||pack.packMatches||pack.visibleSubjects.length);
-    $('exploreCatalogCount').textContent=CURRICULUM_PACKS.reduce((n,pack)=>n+pack.subjects.reduce((m,subject)=>m+subject.topics.length,0),0);
-    $('exploreResultCount').textContent=packs.reduce((n,pack)=>n+pack.visibleSubjects.reduce((m,subject)=>m+subject.visibleTopics.length,0),0)+' topics shown';
-    host.innerHTML=packs.map(pack=>{
-      const stream=findPackStream(pack);
-      const installed=pack.subjects.reduce((n,subject)=>n+installedTopicCount(pack,subject),0);
-      const courseAction=installed?'Add missing topics':'Install full pack';
-      const cards=pack.visibleSubjects.map(subject=>{
-        const count=installedTopicCount(pack,subject);
-        return '<section class="explore-subject-card"><div class="explore-subject-head"><div><h4>'+esc(subject.name)+'</h4><p>'+subject.visibleTopics.length+' matching of '+subject.topics.length+' topics</p></div><span class="explore-count-pill">'+count+'/'+subject.topics.length+' added</span></div><details class="explore-topic-details"><summary>Preview topic list</summary><ol>'+subject.visibleTopics.map(topic=>'<li class="explore-topic-row"><span>'+esc(topic)+'</span><button type="button" class="btn btn-sm" data-explore-action="install-topic" data-pack-id="'+esc(pack.id)+'" data-subject-id="'+esc(subject.id)+'" data-topic-name="'+esc(topic)+'">Add topic</button></li>').join('')+'</ol></details><button type="button" class="btn btn-sm" data-explore-action="install-subject" data-pack-id="'+esc(pack.id)+'" data-subject-id="'+esc(subject.id)+'">'+(count===subject.topics.length?'Check for updates':'Add subject')+'</button></section>';
-      }).join('');
-      return '<article class="explore-course-card panel"><div class="explore-course-top"><div><span class="explore-course-kicker">'+esc(pack.country)+' · '+esc(pack.exam)+' · '+esc(pack.language)+'</span><h3>'+esc(pack.title)+'</h3><p>'+esc(pack.description)+'</p></div><span class="explore-count-pill">'+pack.totalTopics+' topics</span></div><div class="explore-course-actions"><button type="button" class="btn btn-primary" data-explore-action="install-pack" data-pack-id="'+esc(pack.id)+'">'+courseAction+' <svg class="nexus-action-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></button><span class="muted small">Install a whole pack, an individual subject, or individual topics. Existing topics and review schedules are preserved.</span></div><div class="explore-subject-grid">'+(cards||'<div class="empty">No matching subjects or topics.</div>')+'</div></article>';
-    }).join('')||'<div class="empty"><strong>No matching curricula</strong>Try another search term.</div>';
+    const controller=initExploreCurriculum();
+    if(controller)controller.render();
   }
   function installCurriculum(packId,subjectId=null,topicName=null){
-    const pack=CURRICULUM_PACKS.find(item=>item.id===packId);if(!pack)return;
-    const selectedSubjects=pack.subjects.filter(subject=>!subjectId||subject.id===subjectId);if(!selectedSubjects.length)return;
-    let stream=findPackStream(pack);
-    if(!stream){let streamId=pack.streamId||makeId('stream');if(state.streams.some(item=>item.id===streamId))streamId=makeId('stream');stream={id:streamId,name:pack.streamName};state.streams.push(stream);}
-    let added=0;
-    for(const subject of selectedSubjects){
-      const selectedTopics=subject.topics.filter(topic=>topicName===null||topic===topicName);if(!selectedTopics.length)continue;
-      let installedSubject=findPackSubject(pack,subject,stream);
-      if(!installedSubject){let id=subject.workspaceId||makeId('subject');if(state.subjects.some(item=>item.id===id))id=makeId('subject');installedSubject={id,name:subject.name,streamId:stream.id,order:state.subjects.filter(item=>item.streamId===stream.id).length};state.subjects.push(installedSubject);}
-      for(const name of selectedTopics){
-        if(state.topics.some(topic=>topic.subjectId===installedSubject.id&&topic.name===name))continue;
-        const topicIndex=subject.topics.indexOf(name)+1;let id=subject.legacyIdPrefix?subject.legacyIdPrefix+'-'+String(topicIndex).padStart(2,'0'):makeId('topic');if(state.topics.some(topic=>topic.id===id))id=makeId('topic');
-        state.topics.push({id,subjectId:installedSubject.id,name,notes:'',custom:false,createdAt:today(),lastReviewed:'',lastRating:null,dueDate:'',intervalDays:0,reviewCount:0,streak:0,lapses:0,archived:false});added++;
-      }
-    }
-    if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markInstalled(state,pack,topicName!==null?'topic':subjectId?'subject':'pack',subjectId,topicName);
-    save();renderAll();renderExplore();
-    notify(added?'Added '+added+' curriculum topic'+(added===1?'':'s')+' to your Library.':'Everything in this selection is already installed.');
+    const controller=initExploreCurriculum();
+    if(controller)return controller.install(packId,subjectId,topicName);
+    return false;
   }
   function renderTopics(){
     // Render the Library's stream/subject tree together with its topic cards.
