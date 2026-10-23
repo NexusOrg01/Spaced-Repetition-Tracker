@@ -225,6 +225,7 @@
         render();
         return false;
       }
+      if (typeof window !== 'undefined' && window.NexusCloudSync && typeof window.NexusCloudSync.recordInstall === 'function') window.NexusCloudSync.recordInstall(d.getState());
       d.renderAll();
       render();
       if (typeof d.notify === 'function') {
