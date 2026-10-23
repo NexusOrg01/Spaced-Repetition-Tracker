@@ -250,6 +250,12 @@ assert.ok(settingsRenderer.includes('renderStructureList();'),
 assert.ok(!appCore.includes('detachPristineStarterContent'),
   'startup must not infer user data ownership from unreviewed seed IDs and delete it');
 assert.ok(appCore.includes('window.NexusRepairCurriculumState'), 'cloud sync needs the shared repair boundary');
+const startupRepairSource = appCore.slice(appCore.indexOf('function persistLoadedRepair'), appCore.indexOf('function save()'));
+assert.ok(startupRepairSource.includes('function persistLoadedRepair(data)'), 'startup repair persistence must be explicit and auditable');
+assert.ok(startupRepairSource.includes('queue.commitWorkspace(localStorage,[{key:STORAGE_KEY,value:JSON.stringify(data)}],{state:data,featureState},{returnOperationPayload:false})'),
+  'a repaired startup workspace must be committed atomically with the matching offline outbox payload');
+assert.ok(startupRepairSource.includes('if(JSON.stringify(repaired)!==JSON.stringify(normalized))'),
+  'startup must persist only when curriculum repair changes the normalized workspace');
 assert.ok(appCore.includes('markInstalled(state,pack'), 'pack installs must persist explicit intent');
 assert.ok(appCore.includes('markDeletedTopic(state,CURRICULUM_PACKS,t)'), 'deletions must create a topic tombstone');
 assert.ok(html.indexOf('<script src="./curriculum-integrity.js"></script>') < html.indexOf('<script src="./app-core.js"></script>'),
