@@ -23,7 +23,7 @@
           "id": "BS",
           "name": "ව්‍යාපාර අධ්‍යයනය",
           "workspaceId": "sub-bs",
-          "legacyIdPrefix": "seed-bs",
+          "legacyIdPrefix": "curr-bs",
           "topics": [
             "1. ව්‍යාපාර පදනම හා ව්‍යාපාර පරිසරය",
             "2. සමාජ වගකීම හා ව්‍යාපාර ආචාරධර්ම",
@@ -49,7 +49,7 @@
           "id": "ACC",
           "name": "ගිණුම්කරණය",
           "workspaceId": "sub-acc",
-          "legacyIdPrefix": "seed-acc",
+          "legacyIdPrefix": "curr-acc",
           "topics": [
             "1. ගිණුම්කරණය හා එහි අවශ්‍යතාවය",
             "2. ගිණුම්කරණ සමීකරණ",
@@ -73,7 +73,7 @@
           "id": "ECON",
           "name": "ආර්ථික විද්‍යාව",
           "workspaceId": "sub-econ",
-          "legacyIdPrefix": "seed-econ",
+          "legacyIdPrefix": "curr-econ",
           "topics": [
             "1. ආර්ථික විද්‍යාව හැඳින්වීම",
             "2. ඉල්ලුම හා සැපයුම",
