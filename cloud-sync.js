@@ -25,8 +25,9 @@ function downloadSyncDiagnostics(){
 }
 function installSyncDiagnosticsButton(){
  if(!SYNC_DIAG_ENABLED||el('nexusSyncDiagnosticsDownload'))return;
- const help=el('cloudHelpText');if(!help||!help.parentNode)return;
- const button=document.createElement('button');button.id='nexusSyncDiagnosticsDownload';button.type='button';button.className='btn btn-sm';button.style.marginTop='8px';button.textContent='Download sync diagnostics (safe summary)';button.addEventListener('click',downloadSyncDiagnostics);help.insertAdjacentElement('afterend',button);
+ const help=el('cloudHelpText'),anchor=help&&help.parentNode?help:null;
+ const button=document.createElement('button');button.id='nexusSyncDiagnosticsDownload';button.type='button';button.className='btn btn-sm';button.textContent='Download sync diagnostics (safe summary)';button.addEventListener('click',downloadSyncDiagnostics);
+ if(anchor){button.style.marginTop='8px';anchor.insertAdjacentElement('afterend',button);}else if(document.body){button.style.position='fixed';button.style.zIndex='99999';button.style.right='12px';button.style.bottom='12px';button.style.maxWidth='calc(100vw - 24px)';button.style.boxShadow='0 2px 12px rgba(0,0,0,.25)';document.body.appendChild(button);}else return;
  syncDiag('diagnostics-enabled');
 }
 
