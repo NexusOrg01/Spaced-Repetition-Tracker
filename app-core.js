@@ -439,7 +439,7 @@
       if(catalog.version===2){
         const fallbackPacks=new Map(CURRICULUM_PACKS.map(pack=>[pack.id,pack]));
         if(window.NexusCurriculumPackStore){
-          for(const pack of window.NexusCurriculumPackStore.storedPacks(state,localStorage,undefined))if(!fallbackPacks.has(pack.id))fallbackPacks.set(pack.id,pack);
+          for(const pack of window.NexusCurriculumPackStore.storedPacks(state,localStorage,undefined))if(!fallbackPacks.has(pack.id)||!curriculumCatalogLoaded)fallbackPacks.set(pack.id,pack);
         }
         const outcomes=await Promise.all(catalog.packs.map(async metadata=>{
           try{
