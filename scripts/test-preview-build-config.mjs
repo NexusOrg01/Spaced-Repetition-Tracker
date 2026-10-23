@@ -15,6 +15,28 @@ assert.equal(resolvePreviewConfig({ ...previewEnv, VERCEL_ENV: 'production' }), 
   'production must never inject staging environment values');
 assert.equal(resolvePreviewConfig({ ...previewEnv, VERCEL_GIT_COMMIT_REF: 'main' }), null,
   'other preview branches must not inject staging values');
+assert.deepEqual(resolvePreviewConfig({ ...previewEnv, VERCEL_GIT_COMMIT_REF: 'ai-dev/rebuild-explore-curriculum-lifecycle' }), {
+  url: previewEnv.NEXUS_SUPABASE_URL,
+  key: previewEnv.NEXUS_SUPABASE_ANON_KEY
+}, 'the Explore lifecycle preview may enable sign-in only with an isolated staging project');
+assert.deepEqual(resolvePreviewConfig({
+  CF_PAGES: '1',
+  CF_PAGES_BRANCH: 'ai-dev/rebuild-explore-curriculum-lifecycle',
+  NEXUS_SUPABASE_URL: previewEnv.NEXUS_SUPABASE_URL,
+  NEXUS_SUPABASE_ANON_KEY: previewEnv.NEXUS_SUPABASE_ANON_KEY
+}), {
+  url: previewEnv.NEXUS_SUPABASE_URL,
+  key: previewEnv.NEXUS_SUPABASE_ANON_KEY
+}, 'the Explore lifecycle Cloudflare preview may enable sign-in only with an isolated staging project');
+assert.equal(resolvePreviewConfig({
+  VERCEL_ENV: 'preview',
+  VERCEL_GIT_COMMIT_REF: 'ai-dev/rebuild-explore-curriculum-lifecycle'
+}), null, 'the Explore lifecycle preview must remain offline-safe until isolated staging credentials are configured');
+assert.equal(resolvePreviewConfig({
+  CF_PAGES: '1',
+  CF_PAGES_BRANCH: 'ai-dev/rebuild-explore-curriculum-lifecycle'
+}), null, 'the Explore lifecycle Cloudflare preview must remain offline-safe until isolated staging credentials are configured');
+
 assert.deepEqual(resolvePreviewConfig({ ...previewEnv, VERCEL_GIT_COMMIT_REF: 'ai-dev/rebuild-commerce-sync-integrity' }), {
   url: 'https://nexus-staging-test.supabase.co',
   key: 'sb_publishable_test_key_value_long_enough'
