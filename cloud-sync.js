@@ -299,12 +299,83 @@ async function reconcileOwnedWorkspace(userId,localPayload,remote){
  queue.rebase(localStorage,userId,localPayload,baseVersion,'automatic-reconciliation-of-cloud-differences');
  return reconcileConcurrentSnapshot(userId,remote);
 }
+function checkpointPreviousAccountWorkspace(ownerId,targetUserId,payload){
+ if(!ownerId||ownerId===targetUserId)return false;
+ const storage=localStorage,queue=window.NexusOfflineSyncQueue;
+ if(storage.getItem(OWNER_KEY)!==ownerId)throw new Error('The previous workspace owner changed during account handoff. No workspace was switched.');
+ if(!queue||typeof queue.commitWorkspace!=='function'||typeof queue.getPending!=='function'||typeof queue.getBase!=='function'||!window.NexusStorageKey||!window.NexusFeatureStorageKey)throw new Error('Safe per-account offline recovery is unavailable. The previous workspace remains active.');
+ if(!payload||!payload.state||!payload.featureState)throw new Error('The previous account snapshot is incomplete. No workspace was switched.');
+ const existingPending=queue.getPending(storage,ownerId),verifiedBase=queue.getBase(storage,ownerId);
+ const baseVersion=existingPending?existingPending.baseServerVersion:(verifiedBase&&typeof verifiedBase.serverVersion==='string'?verifiedBase.serverVersion:queue.getStamp(storage,ownerId));
+ const checkpoint={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:clone(payload.state),featureState:clone(payload.featureState)};
+ queue.commitWorkspace(storage,[
+  {key:window.NexusStorageKey,value:JSON.stringify(checkpoint.state)},
+  {key:window.NexusFeatureStorageKey,value:JSON.stringify(checkpoint.featureState)}
+ ],checkpoint,{baseServerVersion:baseVersion,returnOperationPayload:false});
+ const verified=queue.getPending(storage,ownerId);
+ if(!verified||verified.ownerUserId!==ownerId||!sameWorkspace(verified.payload,checkpoint))throw new Error('The previous account’s pending snapshot could not be verified. The account switch was stopped.');
+ return true;
+}
 async function initializeSession(s){syncDiag('initialize-start',snapshot(),{hasSession:!!(s&&s.user),ownerPresent:!!localStorage.getItem(OWNER_KEY)});const requestedSession=s||null,requestedUserId=requestedSession&&requestedSession.user?requestedSession.user.id:null;if(initializing){if(requestedUserId!==initializingUserId){queuedSession=requestedSession;hasQueuedSession=true;}return;}initializing=true;initializingUserId=requestedUserId;try{const newSession=requestedSession,newUserId=requestedUserId;session=newSession;ready=false;lastRemoteStamp=null;clearTimeout(timer);setControls();if(!session){status(client?'Not signed in · offline ready':'Offline ready');say('You can continue studying offline. Your local data remains on this device when you sign out.');return;}status('Loading account…');await assertActiveUser(newUserId);let owner=localStorage.getItem(OWNER_KEY)||'',localPayload=snapshot();const remote=await fetchRemote(newUserId);syncDiag('initialize-after-cloud-read',remote&&remote.payload,{remoteHasPayload:!!(remote&&remote.payload)});await assertActiveUser(newUserId);
 // The cloud read is asynchronous: the user may save a local change while it is in flight.
 // Re-snapshot before making any account-choice or overwrite decision so a newer offline
 // Commerce install (or other study work) cannot be replaced by this stale pre-request copy.
 const latestLocalPayload=snapshot();if(!sameWorkspace(localPayload,latestLocalPayload))localPayload=latestLocalPayload;owner=localStorage.getItem(OWNER_KEY)||'';
-if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,remote&&remote.updated_at||null);let pendingForUser=window.NexusOfflineSyncQueue?window.NexusOfflineSyncQueue.getPending(localStorage,newUserId):null;let adoptedUnassignedLocalWorkspace=false;if(!owner&&hasLocalWork(localPayload)){const accountPayload=pendingForUser&&pendingForUser.payload&&pendingForUser.payload.state?pendingForUser.payload:(remote&&remote.payload&&remote.payload.state?remote.payload:{state:emptyState(),featureState:{}});const mergedState=mergeState(localPayload.state,accountPayload.state);const mergedFeatures=window.NexusMergeFeatureState(localPayload.featureState||{},accountPayload.featureState||{},{});applyWorkspaceSnapshot(mergedState,mergedFeatures,newUserId);const baseVersion=pendingForUser?(pendingForUser.baseServerVersion||null):(remote&&remote.updated_at||null);if(!window.NexusOfflineSyncQueue||typeof window.NexusOfflineSyncQueue.rebase!=='function')throw new Error('Safe account-bound offline sync queue is unavailable. The guest workspace remains saved locally.');window.NexusOfflineSyncQueue.rebase(localStorage,newUserId,snapshot(),baseVersion,'merge-unassigned-local-workspace');pendingForUser=window.NexusOfflineSyncQueue.getPending(localStorage,newUserId);owner=newUserId;localPayload=snapshot();adoptedUnassignedLocalWorkspace=true;}if(pendingForUser&&owner!==newUserId&&!hasUnassignedWorkspaceChanges(owner,newUserId,localPayload)){applyWorkspaceSnapshot(normalizeState(pendingForUser.payload.state),window.NexusNormalizeFeatureState(pendingForUser.payload.featureState||{}),newUserId);owner=newUserId;localPayload=snapshot();}if(pendingForUser&&remote&&remote.payload&&sameWorkspace(remote.payload,pendingForUser.payload)&&!hasMissingBaselineCurriculumIntent(newUserId,pendingForUser.payload,remote.payload)){window.NexusOfflineSyncQueue.rememberBase(localStorage,newUserId,remote.payload,remote.updated_at||null);window.NexusOfflineSyncQueue.acknowledge(localStorage,newUserId,pendingForUser.operationId,pendingForUser.baseServerVersion,remote.updated_at);pendingForUser=null;}if(owner&&owner!==newUserId){const hasUnassignedChanges=hasUnassignedWorkspaceChanges(owner,newUserId,localPayload);if(!hasUnassignedChanges){if(remote&&remote.payload){applyRemote(remote.payload,newUserId,remote.updated_at||null);lastRemoteStamp=remote.updated_at;say('Loaded this account’s own cloud data. Offline data from the previous account was not merged or uploaded.');}else{resetToEmpty(newUserId);ready=true;enqueueInitialSnapshot(newUserId);const uploaded=await upload();if(!uploaded){ready=false;throw new Error('A clean workspace was created for this account, but its initial cloud state could not be verified. Previous-account data was not uploaded.');}say('A clean workspace was created for this account. Previous-account data was not merged or uploaded.');}localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;if(ready){status('Synced');}return;}}const localData={state:localPayload.state,featureState:localPayload.featureState||{}},remoteData=remote&&remote.payload?{state:remote.payload.state,featureState:remote.payload.featureState||{}}:null;let localHasWork=(pendingForUser?(!remoteData||stableJson(localData)!==stableJson(remoteData)):(remoteData?stableJson(localData)!==stableJson(remoteData):hasLocalWork(localPayload)));let pendingAutomaticallySynced=false,cloudWorkspaceAutoLoaded=false;if(adoptedUnassignedLocalWorkspace){
+if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,remote&&remote.updated_at||null);let pendingForUser=window.NexusOfflineSyncQueue?window.NexusOfflineSyncQueue.getPending(localStorage,newUserId):null;let adoptedUnassignedLocalWorkspace=false;if(!owner&&hasLocalWork(localPayload)){const accountPayload=pendingForUser&&pendingForUser.payload&&pendingForUser.payload.state?pendingForUser.payload:(remote&&remote.payload&&remote.payload.state?remote.payload:{state:emptyState(),featureState:{}});const mergedState=mergeState(localPayload.state,accountPayload.state);const mergedFeatures=window.NexusMergeFeatureState(localPayload.featureState||{},accountPayload.featureState||{},{});applyWorkspaceSnapshot(mergedState,mergedFeatures,newUserId);const baseVersion=pendingForUser?(pendingForUser.baseServerVersion||null):(remote&&remote.updated_at||null);if(!window.NexusOfflineSyncQueue||typeof window.NexusOfflineSyncQueue.rebase!=='function')throw new Error('Safe account-bound offline sync queue is unavailable. The guest workspace remains saved locally.');window.NexusOfflineSyncQueue.rebase(localStorage,newUserId,snapshot(),baseVersion,'merge-unassigned-local-workspace');pendingForUser=window.NexusOfflineSyncQueue.getPending(localStorage,newUserId);owner=newUserId;localPayload=snapshot();adoptedUnassignedLocalWorkspace=true;}if(pendingForUser&&owner!==newUserId&&!hasUnassignedWorkspaceChanges(owner,newUserId,localPayload)){applyWorkspaceSnapshot(normalizeState(pendingForUser.payload.state),window.NexusNormalizeFeatureState(pendingForUser.payload.featureState||{}),newUserId);owner=newUserId;localPayload=snapshot();}if(pendingForUser&&remote&&remote.payload&&sameWorkspace(remote.payload,pendingForUser.payload)&&!hasMissingBaselineCurriculumIntent(newUserId,pendingForUser.payload,remote.payload)){window.NexusOfflineSyncQueue.rememberBase(localStorage,newUserId,remote.payload,remote.updated_at||null);window.NexusOfflineSyncQueue.acknowledge(localStorage,newUserId,pendingForUser.operationId,pendingForUser.baseServerVersion,remote.updated_at);pendingForUser=null;}if(owner&&owner!==newUserId){
+ // Account handoff: checkpoint the previous owner's latest local workspace before
+ // loading the target account. The checkpoint stays bound to the previous owner and
+ // must never be uploaded through the new session.
+ const previousOwner=owner;
+ const previousAccountHasChanges=hasUnassignedWorkspaceChanges(previousOwner,newUserId,localPayload);
+ if(previousAccountHasChanges)checkpointPreviousAccountWorkspace(previousOwner,newUserId,localPayload);
+ if(pendingForUser){
+  // Restore only the target account's own pending snapshot, then reconcile it against
+  // that account's current cloud revision. Do not run the generic cross-account choice.
+  applyWorkspaceSnapshot(normalizeState(pendingForUser.payload.state),window.NexusNormalizeFeatureState(pendingForUser.payload.featureState||{}),newUserId);
+  owner=newUserId;localPayload=snapshot();
+  const handoffReconciliation=await reconcileConcurrentSnapshot(newUserId,remote);
+  if(!handoffReconciliation.ok){
+   ready=false;status('Automatic merge not verified');
+   say((handoffReconciliation.reason||'This account workspace could not be reconciled safely.')+' The previous account’s offline changes remain separately queued. The target account’s local snapshot is preserved; sync is paused.');
+   localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;return;
+  }
+  ready=true;lastUserId=newUserId;localStorage.setItem(OWNER_KEY,newUserId);
+  say('Loaded this account’s workspace. Any pending changes from the previous account remain isolated and will sync when that account is active again.');
+  status('Synced');return;
+ }
+ const targetBase=window.NexusOfflineSyncQueue?window.NexusOfflineSyncQueue.getBase(localStorage,newUserId):null;
+ if(targetBase){
+  // The target account has no outbox entry, but this device remembers its last
+  // verified snapshot. Use it as the local side of a three-way recovery in case the
+  // cloud snapshot is newer or incomplete, rather than throwing that baseline away.
+  applyWorkspaceSnapshot(normalizeState(targetBase.state),window.NexusNormalizeFeatureState(targetBase.featureState||{}),newUserId);
+  window.NexusOfflineSyncQueue.rebase(localStorage,newUserId,snapshot(),targetBase.serverVersion||null,'account-switch-baseline-reconciliation');
+  const handoffReconciliation=await reconcileConcurrentSnapshot(newUserId,remote);
+  if(!handoffReconciliation.ok){
+   ready=false;status('Automatic merge not verified');
+   say((handoffReconciliation.reason||'This account workspace could not be reconciled safely.')+' The previous account’s offline changes remain separately queued. The target account’s local snapshot is preserved; sync is paused.');
+   localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;return;
+  }
+  ready=true;lastUserId=newUserId;localStorage.setItem(OWNER_KEY,newUserId);
+  say('Restored this account’s last verified workspace and reconciled it with the latest cloud data. Previous-account changes remain isolated.');
+  status('Synced');return;
+ }
+ if(remote&&remote.payload){
+  applyRemote(remote.payload,newUserId,remote.updated_at||null);lastRemoteStamp=remote.updated_at||null;
+  if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,lastRemoteStamp);
+  ready=true;say('Loaded this account’s cloud workspace. Offline changes belonging to the previous account remain saved separately.');
+ }else{
+  resetToEmpty(newUserId);if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,null);
+  ready=true;enqueueInitialSnapshot(newUserId);
+  const firstUpload=await upload();
+  if(!firstUpload){ready=false;status('Sync not verified');say('This account’s empty workspace is saved locally but its cloud state is not verified. Previous-account changes remain preserved; reconnect to retry.');localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;return;}
+  say('Created a new workspace for this account. Previous-account changes remain saved separately and were not uploaded.');
+ }
+ localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;
+ if(ready)status('Synced');
+ return;
+}
+const localData={state:localPayload.state,featureState:localPayload.featureState||{}},remoteData=remote&&remote.payload?{state:remote.payload.state,featureState:remote.payload.featureState||{}}:null;let localHasWork=(pendingForUser?(!remoteData||stableJson(localData)!==stableJson(remoteData)):(remoteData?stableJson(localData)!==stableJson(remoteData):hasLocalWork(localPayload)));let pendingAutomaticallySynced=false,cloudWorkspaceAutoLoaded=false;if(adoptedUnassignedLocalWorkspace){
 // The guest workspace has already been explicitly classified as this first account's
 // local workspace above. Do not send it through the generic local-vs-cloud choice dialog
 // a second time: that dialog can restore an empty cloud and discard the curriculum on refresh.
