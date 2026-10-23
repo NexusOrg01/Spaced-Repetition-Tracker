@@ -200,6 +200,7 @@
       const manualPackId=String(options.manualCurriculumImportPackId||'');
       const excludePackIds=manualPackId?[manualPackId]:[];
       if(manualPackId){
+        state.settings.personalCurriculumPacks=Array.from(new Set([...(Array.isArray(state.settings.personalCurriculumPacks)?state.settings.personalCurriculumPacks:[]).map(String),manualPackId])).slice(-5000);
         const belongsToPack=marker=>typeof marker==='string'&&(marker==='installed:pack:'+manualPackId||marker.startsWith('installed:subject:'+manualPackId+':')||marker.startsWith('installed:topic:'+manualPackId+':'));
         state.settings.installedCurricula=(Array.isArray(state.settings.installedCurricula)?state.settings.installedCurricula:[]).filter(marker=>!belongsToPack(marker));
         state.settings.curriculumTombstones=(Array.isArray(state.settings.curriculumTombstones)?state.settings.curriculumTombstones:[]).filter(marker=>marker!=='deleted:stream:'+manualPackId&&!String(marker).startsWith('deleted:subject:'+manualPackId+':')&&!String(marker).startsWith('deleted:topic:'+manualPackId+':'));

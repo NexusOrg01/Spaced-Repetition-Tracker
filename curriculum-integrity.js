@@ -42,19 +42,19 @@ function hasStrongPackFootprint(state,pack){
 }
 function applyIntentLedger(state,storage,ownerId,packs){
  if(!rec(state))return state;
- const ledger=readIntentLedger(storage,ownerId);if(!ledger.length)return state;
  if(!rec(state.settings))state.settings={};
- const installed=new Set(unique(state.settings.installedCurricula));
+ const personal=new Set(unique(state.settings.personalCurriculumPacks));
+ const isPersonalMarker=marker=>{const match=String(marker||'').match(/^installed:(?:pack|subject|topic):([^:]+)(?::|$)/);return !!(match&&personal.has(match[1]));};
+ const installed=new Set(unique(state.settings.installedCurricula).filter(marker=>!isPersonalMarker(marker)));
+ const ledger=readIntentLedger(storage,ownerId);
  const deleted=new Set(unique(state.settings.curriculumTombstones));
  const packMap=new Map((Array.isArray(packs)?packs:[]).filter(Boolean).map(p=>[String(p.id),p]));
  for(const marker of ledger){
   const match=marker.match(/^installed:(pack|subject|topic):([^:]+)(?::|$)/);
   const kind=match?match[1]:'',packId=match?match[2]:'';
-  if(!packId)continue;
+  if(!packId||personal.has(packId))continue;
   if(deleted.has(ds(packId))){
    if(!hasStrongPackFootprint(state,packMap.get(packId))){
-    // A tombstone must also remove any stale in-snapshot marker, not merely prevent
-    // a new marker from the ledger being added.
     for(const candidate of [...installed])if(candidate===pk(packId)||candidate.startsWith('installed:subject:'+packId+':')||candidate.startsWith('installed:topic:'+packId+':'))installed.delete(candidate);
     continue;
    }
@@ -71,6 +71,7 @@ function applyIntentLedger(state,storage,ownerId,packs){
   }
   installed.add(marker);
  }
+ state.settings.personalCurriculumPacks=Array.from(personal).slice(-5000);
  state.settings.installedCurricula=Array.from(installed).slice(-5000);
  state.settings.curriculumTombstones=Array.from(deleted).slice(-5000);
  return state;
@@ -79,13 +80,12 @@ function markerPackId(marker){const match=String(marker||'').match(/^installed:(
 function createIntentLedgerEntry(state,storage,options={}){
  if(!storage||typeof storage.getItem!=='function')return null;
  const ownerId=Object.prototype.hasOwnProperty.call(options,'ownerId')?options.ownerId:undefined;
- // A normal install may revise one pack's scope; replace only that pack's historical
- // markers rather than erasing intent for every curriculum in the independent ledger.
  const replacePackIds=new Set((Array.isArray(options.replacePackIds)?options.replacePackIds:[]).map(String));
- const previous=options.replace===true?[]:readIntentLedger(storage,ownerId).filter(marker=>!replacePackIds.has(markerPackId(marker)));
+ const personal=new Set(rec(state)&&rec(state.settings)?unique(state.settings.personalCurriculumPacks):[]);
+ const previous=options.replace===true?[]:readIntentLedger(storage,ownerId).filter(marker=>!replacePackIds.has(markerPackId(marker))&&!personal.has(markerPackId(marker)));
  const installed=new Set(previous);
  const current=rec(state)&&rec(state.settings)&&Array.isArray(state.settings.installedCurricula)?state.settings.installedCurricula:[];
- for(const marker of current)if(typeof marker==='string'&&marker)installed.add(marker);
+ for(const marker of current)if(typeof marker==='string'&&marker&&!personal.has(markerPackId(marker)))installed.add(marker);
  const deleted=new Set(rec(state)&&rec(state.settings)&&Array.isArray(state.settings.curriculumTombstones)?state.settings.curriculumTombstones:[]);
  const packMap=new Map((Array.isArray(options.packs)?options.packs:[]).filter(Boolean).map(p=>[String(p.id),p]));
  for(const marker of [...installed]){
@@ -111,12 +111,12 @@ function createIntentLedgerEntry(state,storage,options={}){
  }
  return {key:ledgerStorageKey(storage,ownerId),value:JSON.stringify({schemaVersion:1,installedCurricula:Array.from(installed).slice(-5000)})};
 }
-function ensure(s){if(!rec(s.settings))s.settings={};s.settings.installedCurricula=unique(s.settings.installedCurricula);s.settings.curriculumTombstones=unique(s.settings.curriculumTombstones);if(!Array.isArray(s.streams))s.streams=[];if(!Array.isArray(s.subjects))s.subjects=[];if(!Array.isArray(s.topics))s.topics=[];return{installed:new Set(s.settings.installedCurricula),deleted:new Set(s.settings.curriculumTombstones)};}
+function ensure(s){if(!rec(s.settings))s.settings={};s.settings.installedCurricula=unique(s.settings.installedCurricula);s.settings.curriculumTombstones=unique(s.settings.curriculumTombstones);s.settings.personalCurriculumPacks=unique(s.settings.personalCurriculumPacks);if(!Array.isArray(s.streams))s.streams=[];if(!Array.isArray(s.subjects))s.subjects=[];if(!Array.isArray(s.topics))s.topics=[];return{installed:new Set(s.settings.installedCurricula),deleted:new Set(s.settings.curriculumTombstones)};}
 const packStream=(stream,pack)=>!!stream&&((pack.streamId&&String(stream.id)===String(pack.streamId))||norm(stream.name)===norm(pack.streamName)),findSubject=(rows,ps,streamId)=>(rows||[]).find(s=>String(s.streamId)===String(streamId)&&((ps.workspaceId&&String(s.id)===String(ps.workspaceId))||norm(s.name)===norm(ps.name)))||null,safePrefix=ps=>({'seed-bs':'curr-bs','seed-acc':'curr-acc','seed-econ':'curr-econ'})[String(ps.legacyIdPrefix||'').toLocaleLowerCase()]||String(ps.legacyIdPrefix||''),makeId=(fn,p)=>typeof fn==='function'?fn(p):p+'-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8);
-function repair(state,packs,options={}){if(!rec(state)||!Array.isArray(packs))return{state,changed:false,restoredStreams:0,restoredSubjects:0,restoredTopics:0};const m=ensure(state),before=JSON.stringify({settings:state.settings,streams:state.streams,subjects:state.subjects,topics:state.topics}),now=typeof options.today==='function'?options.today:()=>new Date().toISOString().slice(0,10);let restoredStreams=0,restoredSubjects=0,restoredTopics=0;
-for(const pack of packs){if(!pack||!pack.id||!Array.isArray(pack.subjects))continue;let stream=state.streams.find(s=>pack.streamId&&String(s.id)===String(pack.streamId))||state.streams.find(s=>norm(s.name)===norm(pack.streamName))||null;if(m.deleted.has(ds(pack.id))){if(hasStrongPackFootprint(state,pack))m.deleted.delete(ds(pack.id));else continue;}const scoped=[...m.installed].some(x=>x===pk(pack.id)||x.startsWith('installed:subject:'+pack.id+':')||x.startsWith('installed:topic:'+pack.id+':')),hits=pack.subjects.map(ps=>({ps,sub:stream&&findSubject(state.subjects,ps,stream.id)})).filter(x=>x.sub),identityHits=pack.subjects.map(ps=>{const attached=stream&&findSubject(state.subjects,ps,stream.id);const sub=attached||findSubjectByIdentity(state.subjects,ps);const evidence=!!sub&&state.topics.some(t=>String(t.subjectId)===String(sub.id)&&topicIsCatalogueEvidence(t,ps));return{ps,sub,evidence,attached:!!attached};}).filter(x=>x.sub&&x.evidence),oldTopicCount=identityHits.length,legacyIdentity=identityHits.some(x=>x.evidence&&x.ps.workspaceId&&String(x.sub.id)===String(x.ps.workspaceId))||state.topics.some(t=>t.custom===false&&/^(seed|curr)-(bs|acc|econ)-\d+$/i.test(String(t.id||''))&&pack.subjects.some(ps=>{const sub=(stream&&findSubject(state.subjects,ps,stream.id))||findSubjectByIdentity(state.subjects,ps);return sub&&String(t.subjectId)===String(sub.id);}));
+function repair(state,packs,options={}){if(!rec(state)||!Array.isArray(packs))return{state,changed:false,restoredStreams:0,restoredSubjects:0,restoredTopics:0};const m=ensure(state),personal=new Set(unique(state.settings.personalCurriculumPacks)),before=JSON.stringify({settings:state.settings,streams:state.streams,subjects:state.subjects,topics:state.topics}),now=typeof options.today==='function'?options.today:()=>new Date().toISOString().slice(0,10);let restoredStreams=0,restoredSubjects=0,restoredTopics=0;
+for(const pack of packs){if(!pack||!pack.id||!Array.isArray(pack.subjects)||personal.has(String(pack.id)))continue;let stream=state.streams.find(s=>pack.streamId&&String(s.id)===String(pack.streamId))||state.streams.find(s=>norm(s.name)===norm(pack.streamName))||null;if(m.deleted.has(ds(pack.id))){if(hasStrongPackFootprint(state,pack))m.deleted.delete(ds(pack.id));else continue;}const scoped=[...m.installed].some(x=>x===pk(pack.id)||x.startsWith('installed:subject:'+pack.id+':')||x.startsWith('installed:topic:'+pack.id+':')),hits=pack.subjects.map(ps=>({ps,sub:stream&&findSubject(state.subjects,ps,stream.id)})).filter(x=>x.sub),identityHits=pack.subjects.map(ps=>{const attached=stream&&findSubject(state.subjects,ps,stream.id);const sub=attached||findSubjectByIdentity(state.subjects,ps);const evidence=!!sub&&state.topics.some(t=>String(t.subjectId)===String(sub.id)&&topicIsCatalogueEvidence(t,ps));return{ps,sub,evidence,attached:!!attached};}).filter(x=>x.sub&&x.evidence),oldTopicCount=identityHits.length,legacyIdentity=identityHits.some(x=>x.evidence&&x.ps.workspaceId&&String(x.sub.id)===String(x.ps.workspaceId))||state.topics.some(t=>t.custom===false&&/^(seed|curr)-(bs|acc|econ)-\d+$/i.test(String(t.id||''))&&pack.subjects.some(ps=>{const sub=(stream&&findSubject(state.subjects,ps,stream.id))||findSubjectByIdentity(state.subjects,ps);return sub&&String(t.subjectId)===String(sub.id);}));
  // Catalogue identity plus a surviving canonical topic is enough to recover if normalization orphaned the stream and reattached the subject elsewhere.
-const canonicalStreamEvidence=!!(stream&&pack.streamId&&String(stream.id)===String(pack.streamId));if(!scoped&&(oldTopicCount>0||legacyIdentity))m.installed.add(pk(pack.id));const full=m.installed.has(pk(pack.id)),wanted=pack.subjects.map(ps=>({ps,whole:full||m.installed.has(sk(pack.id,ps.id)),selected:ps.topics.filter(n=>m.installed.has(tk(pack.id,ps.id,n)))})).filter(x=>x.whole||x.selected.length);if(!wanted.length)continue;
+const canonicalStreamEvidence=!!(stream&&pack.streamId&&String(stream.id)===String(pack.streamId));if(!scoped&&(canonicalStreamEvidence||hits.length>1||oldTopicCount>0||legacyIdentity))m.installed.add(pk(pack.id));const full=m.installed.has(pk(pack.id)),wanted=pack.subjects.map(ps=>({ps,whole:full||m.installed.has(sk(pack.id,ps.id)),selected:ps.topics.filter(n=>m.installed.has(tk(pack.id,ps.id,n)))})).filter(x=>x.whole||x.selected.length);if(!wanted.length)continue;
 if(!stream){let id=String(pack.streamId||makeId(options.makeId,'stream'));if(state.streams.some(s=>String(s.id)===id))id=makeId(options.makeId,'stream');stream={id,name:String(pack.streamName||'Curriculum')};state.streams.push(stream);restoredStreams++;}
 for(const e of wanted){const ps=e.ps;if(m.deleted.has(dsub(pack.id,ps.id)))continue;let sub=findSubject(state.subjects,ps,stream.id);if(!sub){const orphan=findSubjectByIdentity(state.subjects,ps);const orphanHasEvidence=!!orphan&&state.topics.some(t=>String(t.subjectId)===String(orphan.id)&&(topicIsCatalogueEvidence(t,ps)||e.selected.includes(String(t.name))));if(orphan&&(e.whole||orphanHasEvidence||e.selected.length>0)){sub=orphan;if(String(sub.streamId)!==String(stream.id)){sub.streamId=stream.id;sub.order=state.subjects.filter(s=>String(s.streamId)===String(stream.id)&&String(s.id)!==String(sub.id)).length;}}else{let id=String(ps.workspaceId||makeId(options.makeId,'subject'));if(state.subjects.some(s=>String(s.id)===id))id=makeId(options.makeId,'subject');sub={id,name:String(ps.name),streamId:stream.id,order:state.subjects.filter(s=>String(s.streamId)===String(stream.id)).length};state.subjects.push(sub);restoredSubjects++;}}const names=e.whole?ps.topics:e.selected,prefix=safePrefix(ps);
 for(const value of names){const name=String(value);const n=ps.topics.indexOf(name)+1;const canonicalId=prefix?prefix+'-'+String(n).padStart(2,'0'):'';const legacyId=canonicalId.replace(/^curr-/,'seed-');const identityTopic=canonicalId?state.topics.find(t=>String(t.id)===canonicalId||String(t.id)===legacyId):null;if(identityTopic)continue;if(m.deleted.has(dt(pack.id,ps.id,name))||state.topics.some(t=>String(t.subjectId)===String(sub.id)&&String(t.name)===name))continue;let id=canonicalId||makeId(options.makeId,'topic');if(state.topics.some(t=>String(t.id)===id))id=makeId(options.makeId,'topic');state.topics.push({id,subjectId:sub.id,name,notes:'',custom:false,createdAt:now(),lastReviewed:'',lastRating:null,dueDate:'',intervalDays:0,reviewCount:0,streak:0,lapses:0,archived:false});restoredTopics++;}}
