@@ -335,6 +335,7 @@ async function upload(){
    const before=await fetchRemote(uploadUserId);
    await assertUploadOwner();
    if(before&&before.payload&&sameWorkspace(before.payload,payload)){
+     syncDiag('upload-skipped-cloud-already-matches',before.payload,{matchesAttempted:true});
     lastRemoteStamp=before.updated_at||null;
     queue.rememberBase(localStorage,uploadUserId,before.payload,lastRemoteStamp);
     queue.acknowledge(localStorage,uploadUserId,pending.operationId,pending.baseServerVersion,lastRemoteStamp);
