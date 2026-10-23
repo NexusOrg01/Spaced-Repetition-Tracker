@@ -1154,4 +1154,31 @@ for (const scenario of [
     'successful guest adoption should end in a verified synced state');
 }
 
+
+/* Regression: a new local save must replace an older queued payload before upload.
+   Otherwise a pending clean snapshot can be uploaded after a Commerce install and
+   the next refresh restores the incomplete cloud state. */
+{
+  if (queue.hasPending(storage, accountB.id)) queue.archive(storage, accountB.id, 'local-save-queue-regression-reset');
+  const cloudStamp = rows.get(accountB.id)?.updated_at || null;
+  const currentState = JSON.parse(storage.getItem(STATE_KEY));
+  const currentFeatures = JSON.parse(storage.getItem(FEATURE_KEY) || '{}');
+  const stalePayload = { app: 'Nexus Spaced Repetition Tracker', schema: 4, exportedAt: new Date().toISOString(), state: currentState, featureState: currentFeatures };
+  queue.rebase(storage, accountB.id, stalePayload, cloudStamp, 'test-stale-snapshot');
+  const changedState = JSON.parse(JSON.stringify(currentState));
+  changedState.topics.push({
+    id: 'local-save-after-pending', name: 'Local save after queue creation',
+    subjectId: changedState.subjects[0].id, custom: true, dueDate: '', intervalDays: 0,
+    reviewCount: 0, streak: 0, lapses: 0, archived: false
+  });
+  storage.setItem(STATE_KEY, JSON.stringify(changedState));
+  context.state = JSON.parse(JSON.stringify(changedState));
+  window.NexusCloudSync.recordLocalSave({ state: changedState, featureState: currentFeatures });
+  const refreshedPending = queue.getPending(storage, accountB.id);
+  assert.ok(refreshedPending.payload.state.topics.some(topic => topic.id === 'local-save-after-pending'),
+    'a local save must update the queued payload rather than allowing an older snapshot to overwrite it');
+  assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics.length, changedState.topics.length,
+    'queueing a local save must not remove or alter the locally persisted workspace');
+}
+
 console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, and target-account pending-snapshot isolation.');
