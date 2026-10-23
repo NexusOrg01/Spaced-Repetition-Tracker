@@ -20,6 +20,7 @@
     conflicts.push({path,base:shown(base),local:shown(local),remote:shown(remote),basePresent:base!==ABSENT,localPresent:local!==ABSENT,remotePresent:remote!==ABSENT,resolution:resolution||'local'});
   }
   function mergeValue(base,local,remote,path,conflicts){
+    if(/[.]settings[.](installedCurricula|curriculumTombstones|personalCurriculumPacks)$/.test(path)&&[base,local,remote].some(Array.isArray))return mergeSet(base,local,remote);
     if(same(local,remote))return copy(local);
     if(same(local,base))return copy(remote);
     if(same(remote,base))return copy(local);
@@ -136,11 +137,34 @@
     }
     return out;
   }
+
+  function preserveBaselinePackInstallIntent(baseState,localState,remoteState,mergedState){
+    const settingsOf=s=>isObject(s&&s.settings)?s.settings:{};
+    const markerValues=s=>rows(settingsOf(s).installedCurricula).map(String);
+    const tombstones=new Set(rows(settingsOf(mergedState).curriculumTombstones).map(String));
+    const personal=new Set(rows(settingsOf(mergedState).personalCurriculumPacks).map(String));
+    const mergedMarkers=new Set(markerValues(mergedState));
+    const baseMarkers=markerValues(baseState);
+    for(const marker of baseMarkers){
+      if(!marker.startsWith('installed:pack:'))continue;
+      const packId=marker.slice('installed:pack:'.length);
+      if(!packId||personal.has(packId)||mergedMarkers.has(marker)||tombstones.has('deleted:stream:'+packId))continue;
+      // A full-pack marker in the last verified base is durable install intent. A missing
+      // stream or subject is not proof that the user deleted the pack: the generic
+      // three-way record merge can remove unchanged parent rows when a cloud snapshot is
+      // incomplete. Without an explicit stream-deletion tombstone, restore the marker so
+      // the catalogue repair step can reconstruct the stream, subjects, and untouched topics.
+      mergedMarkers.add(marker);
+    }
+    mergedState.settings={...settingsOf(mergedState),installedCurricula:Array.from(mergedMarkers)};
+  }
+
   function merge(basePayload,localPayload,remotePayload){
     if(!isObject(localPayload)||!isObject(localPayload.state)||!isObject(remotePayload)||!isObject(remotePayload.state))throw new Error('Three-way workspace merge requires valid local and cloud snapshots.');
     const base=isObject(basePayload)?basePayload:{state:{},featureState:{}};
     const conflicts=[];
     const state=mergeSection(base.state,localPayload.state,remotePayload.state,'state',['streams','subjects','topics','history','exams'],conflicts);
+    preserveBaselinePackInstallIntent(base.state,localPayload.state,remotePayload.state,state);
     const featureState=mergeSection(base.featureState,localPayload.featureState||{},remotePayload.featureState||{},'featureState',['journal','papers','goals','studyLogs'],conflicts);
     const payload={...remotePayload,state,featureState,exportedAt:new Date().toISOString()};
     return {payload,conflicts};

@@ -13,6 +13,8 @@ const bundle = readFileSync(resolve(root, 'fsrs-bundle.js'), 'utf8');
 const backupUtils = readFileSync(resolve(root, 'backup-restore-utils.js'), 'utf8');
 const serviceWorker = readFileSync(resolve(root, 'sw.js'), 'utf8');
 const manifest = JSON.parse(readFileSync(resolve(root, 'manifest.webmanifest'), 'utf8'));
+const curriculumCatalog = JSON.parse(readFileSync(resolve(root, 'curricula/catalog.json'), 'utf8'));
+const commercePackJson = JSON.parse(readFileSync(resolve(root, 'curricula/packs/sl-al-commerce-si.json'), 'utf8'));
 
 const integrationAt = bundle.indexOf('nexus-fsrs.js — glue between Nexus topics');
 const coreEnd = integrationAt > 0 ? bundle.lastIndexOf('/*!', integrationAt) : -1;
@@ -87,11 +89,11 @@ assert.ok(backupUtils.includes('focusActualStartedAt: actualStarted || started')
 assert.ok(appSource.includes('if(focusStart&&!focusTimer)focusTimer=setInterval(refreshLiveFocusUi,1000);'), 'an active focus timer must restart its refresh interval after a normal page reload');
 assert.ok(appSource.includes("const restoreFocusUi=()=>{if(focusStart)openFocusMode();else refreshLiveFocusUi();};") && appSource.includes("document.addEventListener('DOMContentLoaded',restoreFocusUi,{once:true})"), 'an active focus session must reopen the focus clock after the dialog is present in the DOM');
 assert.ok(appSource.includes('focusStart=Date.now();focusPausedAt=null;fsState.focusStartedAt=new Date(focusStart).toISOString();fsState.focusActualStartedAt=new Date(focusStart).toISOString();fsState.focusPausedAt=null;saveFs();'), 'starting a new focus session must clear stale pause state and initialize the original wall-clock start before persisting');
-assert.ok(serviceWorker.includes("'./fsrs-bundle.js'") && serviceWorker.includes("'./backup-restore-utils.js'") && serviceWorker.includes("'./offline-sync-queue.js'") && serviceWorker.includes("'./workspace-isolation-guard.js'") && serviceWorker.includes("'./nexus-build-config.js'") && serviceWorker.includes("'./cloud-sync-recovery.js'") && serviceWorker.includes("'./workspace-sync-merge.js'") && serviceWorker.includes("'./cloud-sync.js'"),
+assert.ok(serviceWorker.includes("'./fsrs-bundle.js'") && serviceWorker.includes("'./backup-restore-utils.js'") && serviceWorker.includes("'./offline-sync-queue.js'") && serviceWorker.includes("'./curriculum-pack-store.js'") && serviceWorker.includes("'./curriculum-json-transfer.js'") && serviceWorker.includes("'./workspace-isolation-guard.js'") && serviceWorker.includes("'./nexus-build-config.js'") && serviceWorker.includes("'./cloud-sync-recovery.js'") && serviceWorker.includes("'./workspace-sync-merge.js'") && serviceWorker.includes("'./cloud-sync.js'"),
   'offline app shell must cache the scheduler and backup safety helpers');
-assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v24';"), 'the service-worker cache must be versioned and scoped to Nexus-owned caches');
+assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v36';"), 'the service-worker cache must be versioned and scoped to Nexus-owned caches');
 const networkFirstSources = serviceWorker.split('const networkFirst=')[1]?.split(';')[0] || '';
-assert.ok(networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/offline-sync-queue.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-isolation-guard.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-build-config.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync-recovery.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-sync-merge.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync.js')"), 'online loads must refresh the coupled FSRS and backup helpers while preserving offline cache fallback');
+assert.ok(networkFirstSources.includes("url.pathname.endsWith('/app-core.js')") && networkFirstSources.includes("url.pathname.endsWith('/study-hub.js')") && networkFirstSources.includes("url.pathname.endsWith('/curricula/catalog.json')") && networkFirstSources.includes("url.pathname.endsWith('/curriculum-pack-store.js')") && networkFirstSources.includes("url.pathname.endsWith('/curriculum-json-transfer.js')") && networkFirstSources.includes("url.pathname.includes('/curricula/packs/')") && networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/offline-sync-queue.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-isolation-guard.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-build-config.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync-recovery.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-sync-merge.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync.js')"), 'online loads must refresh the coupled FSRS and backup helpers while preserving offline cache fallback');
 assert.equal(manifest.theme_color, '#6C8AFF', 'installed app chrome should use the Nexus brand color');
 assert.equal(manifest.display, 'standalone', 'the PWA must remain installable in standalone mode');
 assert.ok(serviceWorker.includes('if(url.search||!response||response.status!==200||response.type!==\'basic\')return Promise.resolve(response)'), 'OAuth callback and other query-bearing URLs must not be cached');
@@ -105,6 +107,7 @@ assert.ok(offlineQueueSource.includes('wordCode*256+next') && offlineQueueSource
   'large snapshot compression must avoid per-byte phrase strings and callers must be able to skip unused full-payload clones');
 assert.ok(appCore.includes('function getHistoryMetrics()') && appCore.includes('const reviewedToday=getHistoryMetrics().byDate.get(today())||0;'),
   'overview history totals must reuse indexed history metrics instead of rescanning the entire history per render');
+assert.ok(appCore.includes("metricMarkup(recent,'Reviews this week')") && appCore.includes("metricMarkup(recent,'Reviews in last 7 days')") && !appCore.includes('recent.length'), 'weekly analytics must render the numeric cached count rather than reading a nonexistent length property');
 assert.ok(appCore.includes('const orderedHistory=getSortedHistory();') && appCore.includes("const activeView=document.querySelector('.view.active')?.id||'view-overview';"),
   'tracker rendering must reuse the sorted history cache and refresh only the visible view');
 assert.ok(studyHub.includes('function getTopicHistoryStats()') && studyHub.includes('const stats=getTopicHistoryStats().get(String(t.id))'),
@@ -115,4 +118,63 @@ assert.ok(bundle.includes('const candidates = state.topics.filter((t) => !t.fsrs
   'normal render/save cycles must skip FSRS migration history scans after every reviewed topic has a scheduler card');
 assert.ok(appSource.includes('id="nexus-mobile-render-performance"') && appSource.includes('@media (hover: none) and (pointer: coarse)') && appSource.includes('backdrop-filter: none !important') && appSource.includes('animation: none !important'),
   'touch-first layouts must reduce sticky-tab blur and per-item entrance animations without changing native scrolling behavior');
+
+// Curriculum-installed topics must not reuse IDs that the legacy-starter cleanup deliberately removes.
+const seedStart = appCore.indexOf('const SEED = [');
+const seedEndAt = appCore.indexOf('\n  ];', seedStart);
+const cleanupStart = appCore.indexOf('function detachPristineStarterContent(data){');
+const cleanupEnd = appCore.indexOf('\n  function loadState(){', cleanupStart);
+assert.ok(seedStart >= 0 && seedEndAt > seedStart && cleanupStart > seedEndAt && cleanupEnd > cleanupStart,
+  'the legacy starter cleanup and source seed catalogue must remain available to the regression test');
+const cleanupFactory = vm.runInNewContext(
+  '(function(){' + appCore.slice(seedStart, seedEndAt + '\n  ];'.length) + '\n' +
+    appCore.slice(cleanupStart, cleanupEnd) + '\nreturn detachPristineStarterContent;})()'
+);
+const validatorStart=appCore.indexOf('function validatePackDefinition(entry){');
+const validatorEnd=appCore.indexOf('\n  function validateCurriculumCatalog(raw){',validatorStart);
+assert.ok(validatorStart>=0&&validatorEnd>validatorStart,'standalone pack validation must remain independently testable');
+const validatorFactory=vm.runInNewContext('(function(){\n'+appCore.slice(validatorStart,validatorEnd)+'\nreturn validatePackDefinition;\n})()',vm.createContext({}));
+const staleCommerce=JSON.parse(JSON.stringify(commercePackJson));
+for(const subject of staleCommerce.subjects){
+  if(subject.legacyIdPrefix==='curr-bs')subject.legacyIdPrefix='seed-bs';
+  if(subject.legacyIdPrefix==='curr-acc')subject.legacyIdPrefix='seed-acc';
+  if(subject.legacyIdPrefix==='curr-econ')subject.legacyIdPrefix='seed-econ';
+}
+const normalizedCommerce=validatorFactory(staleCommerce);
+assert.deepEqual(Array.from(normalizedCommerce.subjects,subject=>subject.legacyIdPrefix),['curr-bs','curr-acc','curr-econ'],
+  'stale seed-prefixed standalone packs must be upgraded before creating IDs reserved for disposable legacy starter data');
+const commercePack = commercePackJson;
+
+assert.ok(commercePack, 'the built-in Sinhala Commerce pack must remain in the catalogue');
+const installedStreams = [{ id: commercePack.streamId, name: commercePack.streamName }];
+const installedSubjects = commercePack.subjects.map((subject, order) => ({
+  id: subject.workspaceId, name: subject.name, streamId: commercePack.streamId, order
+}));
+const installedTopics = commercePack.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+  id: subject.legacyIdPrefix + '-' + String(index + 1).padStart(2, '0'),
+  subjectId: subject.workspaceId, name, notes: '', custom: false, archived: false,
+  reviewCount: 0, lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, streak: 0, lapses: 0
+})));
+const cleanedInstalled = cleanupFactory({
+  streams: installedStreams, subjects: installedSubjects, topics: installedTopics, history: [], exams: []
+});
+assert.equal(cleanedInstalled.topics.length, installedTopics.length,
+  'an untouched curriculum installed from the current catalogue must survive startup cleanup');
+assert.equal(cleanedInstalled.subjects.length, installedSubjects.length,
+  'installed Commerce subjects must survive startup cleanup when their topics are unreviewed');
+assert.equal(cleanedInstalled.streams.length, 1,
+  'the installed Commerce stream must survive startup cleanup when its topics are unreviewed');
+assert.ok(commercePack.subjects.every(subject => !String(subject.legacyIdPrefix || '').startsWith('seed-')),
+  'new curriculum IDs must not collide with identifiers reserved for disposable legacy starter data');
+const cleanedLegacy = cleanupFactory({
+  streams: [{ id: 'stream-commerce', name: 'වාණිජ (Commerce)' }],
+  subjects: [{ id: 'sub-acc', name: 'ගිණුම්කරණය', streamId: 'stream-commerce', order: 0 }],
+  topics: [{ id: 'seed-acc-01', subjectId: 'sub-acc', name: '1. ගිණුම්කරණය හා එහි අවශ්‍යතාවය',
+    custom: false, notes: '', archived: false, reviewCount: 0, lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, streak: 0, lapses: 0 }],
+  history: [], exams: []
+});
+assert.equal(cleanedLegacy.topics.length, 1, 'legacy seed-prefixed records must be preserved because they may be an explicitly installed curriculum');
+assert.equal(cleanedLegacy.subjects.length, 1, 'subjects containing ambiguous legacy curriculum records must not be deleted');
+assert.equal(cleanedLegacy.streams.length, 1, 'the parent stream for ambiguous legacy curriculum records must be preserved');
+
 console.log('FSRS and core feature regression tests passed.');

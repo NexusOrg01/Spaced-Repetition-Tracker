@@ -12,6 +12,16 @@ const queue = require('../offline-sync-queue.js');
 const recovery = require('../cloud-sync-recovery.js');
 const workspaceMerge = require('../workspace-sync-merge.js');
 const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
+
+// A locally installed Commerce pack must not be silently replaced by another account's
+// queued/cloud snapshot before the user chooses how to reconcile the two workspaces.
+assert.ok(source.includes('function hasCommerceInstallEvidence(payload)'), 'cloud handoff must recognize explicit and legacy Commerce install evidence');
+assert.ok(source.includes('const preserveLocalCurriculumIntent=hasCommerceInstallEvidence(localPayload)'), 'cross-owner handoff must compute whether local Commerce needs protecting');
+assert.ok(source.includes('if(owner&&owner!==newUserId&&!preserveLocalCurriculumIntent){'), 'the silent account-switch path must be bypassed for an unsynced local Commerce install');
+assert.ok(source.includes('if(pendingForUser&&owner!==newUserId&&!detachedWorkspace&&!preserveLocalCurriculumIntent){'), 'a queued target-account snapshot must not overwrite the local install before data choice');
+assert.ok(source.includes('if(pendingForUser&&!detachedWorkspace&&!preserveLocalCurriculumIntent&&window.NexusCloudSyncRecovery'), 'a stale target-account outbox must not auto-upload over a local install that needs a choice');
+assert.ok(readFileSync(resolve(root, 'app-core.js'), 'utf8').includes('if(save()){renderAll();renderSetup();renderExplore();}'),
+  'late catalogue repair must redraw the stream/subject tree even when its tab is not active');
 const OWNER = queue.OWNER;
 const STATE_KEY = 'recall.study.tracker.v1';
 const FEATURE_KEY = 'recall.study.features.v1';
@@ -57,8 +67,24 @@ let turnOfflineDuringRacingCommit = false;
 const rows = new Map();
 const listeners = {};
 const elements = new Map();
+let requestedAccountChoice = null;
+const accountChoiceButtons = ['merge', 'replace', 'replace-cloud'].map(choice => ({
+  dataset: { accountChoice: choice }, onclick: null
+}));
+const accountChoiceDialog = {
+  open: false,
+  addEventListener() {},
+  removeEventListener() {},
+  querySelectorAll() { return accountChoiceButtons; },
+  showModal() {
+    this.open = true;
+    const selected = accountChoiceButtons.find(button => button.dataset.accountChoice === requestedAccountChoice);
+    if (selected && typeof selected.onclick === 'function') selected.onclick();
+  },
+  close() { this.open = false; }
+};
 const getElement = id => {
-  if (id === 'accountChoiceDialog') return null;
+  if (id === 'accountChoiceDialog') return requestedAccountChoice ? accountChoiceDialog : null;
   if (!elements.has(id)) elements.set(id, makeElement());
   return elements.get(id);
 };
@@ -196,6 +222,10 @@ assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'offline-A', 'sig
 assert.ok(queue.hasPending(storage, accountA.id), 'account A pending work must remain parked during account B session');
 assert.ok(rows.has(accountB.id), 'account B may initialize its own independent cloud workspace');
 assert.equal(rows.get(accountB.id).payload.state.topics.length, 0, 'account B must not receive account A study data');
+assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics.length, 0,
+  'switching directly from account A to account B must replace the local workspace with B data, not leave A records on screen');
+assert.equal(context.state.topics.length, 0,
+  'the in-memory workspace must also be isolated immediately after switching accounts');
 activeSession = { user: accountA };
 await window.NexusCloudSync.reconnect();
 for (let i = 0; i < 100 && queue.hasPending(storage, accountA.id); i++) {
@@ -442,4 +472,175 @@ assert.equal(getElement('cloudStatus').textContent, 'Synced',
 assert.ok(!getElement('cloudHelpText').textContent.includes('"undefined" is not valid JSON'),
   'the unsupported undefined JSON value must not escape from the merge helper');
 
-console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, and network-drop recovery.');
+// A successful same-account re-sign-in must clear a stale detached-owner marker,
+// but only after reconciliation has completed and the local owner is verified.
+const detachedHelperStart = source.indexOf('function clearDetachedOwnerAfterSuccessfulReconciliation(');
+assert.ok(detachedHelperStart >= 0, 'cloud sync must define a guarded detached-marker cleanup helper');
+const detachedHelperEnd = source.indexOf('\n', detachedHelperStart);
+assert.ok(detachedHelperEnd > detachedHelperStart, 'detached-marker cleanup helper must remain independently testable');
+const detachedSandbox = {
+  localStorage: new MemoryStorage({ [OWNER]: accountA.id, [queue.DETACHED_OWNER]: accountA.id }),
+  OWNER_KEY: OWNER,
+  DETACHED_OWNER_KEY: queue.DETACHED_OWNER,
+  ready: false,
+  window: { NexusOfflineSyncQueue: queue }
+};
+vm.runInNewContext(source.slice(detachedHelperStart, detachedHelperEnd) + '\nglobalThis.clearDetachedMarker = clearDetachedOwnerAfterSuccessfulReconciliation;', detachedSandbox);
+assert.equal(detachedSandbox.clearDetachedMarker(accountA.id, true), false,
+  'failed or incomplete reconciliation must not clear the detached-owner marker');
+assert.equal(detachedSandbox.localStorage.getItem(queue.DETACHED_OWNER), accountA.id,
+  'the marker must remain available for recovery while sync is not ready');
+detachedSandbox.ready = true;
+detachedSandbox.localStorage.setItem(OWNER, accountB.id);
+assert.equal(detachedSandbox.clearDetachedMarker(accountA.id, true), false,
+  'a mismatched current owner must not clear another account’s detached marker');
+assert.equal(detachedSandbox.localStorage.getItem(queue.DETACHED_OWNER), accountA.id,
+  'the detached marker must survive owner mismatch');
+detachedSandbox.localStorage.setItem(OWNER, accountA.id);
+assert.equal(detachedSandbox.clearDetachedMarker(accountA.id, true), true,
+  'successful reconciliation for the verified owner must clear its stale marker');
+assert.equal(detachedSandbox.localStorage.getItem(queue.DETACHED_OWNER), '',
+  'the detached marker must be empty after successful reconciliation');
+assert.ok(source.includes('if(ready){clearDetachedOwnerAfterSuccessfulReconciliation(newUserId,detachedWorkspace);status(\'Synced\');}'),
+  'same-account initialization must clear the marker only in its successful ready path');
+
+
+ // A stale queued snapshot must not erase a curriculum already saved locally when
+ // a concurrent edit arrives in the same account's cloud workspace.
+ const beforeCurriculumRace=rows.get(accountA.id);
+ const curriculumBase=JSON.parse(JSON.stringify(beforeCurriculumRace.payload));
+ const curriculumBaseStamp=beforeCurriculumRace.updated_at;
+ queue.rememberBase(storage,accountA.id,curriculumBase,curriculumBaseStamp);
+ queue.rememberStamp(storage,accountA.id,curriculumBaseStamp);
+ queue.commitWorkspace(storage,[
+  {key:STATE_KEY,value:JSON.stringify(curriculumBase.state)},
+  {key:FEATURE_KEY,value:JSON.stringify(curriculumBase.featureState||{})}
+ ],curriculumBase,{baseServerVersion:curriculumBaseStamp});
+ const installedLocalState=JSON.parse(JSON.stringify(curriculumBase.state));
+ installedLocalState.streams.push({id:'install-commerce-stream',name:'වාණිජ (Commerce)'});
+ installedLocalState.subjects.push({id:'install-commerce-subject',name:'ගිණුම්කරණය',streamId:'install-commerce-stream',order:0});
+ installedLocalState.topics.push({id:'curr-acc-01',subjectId:'install-commerce-subject',name:'1. ගිණුම්කරණය හා එහි අවශ්‍යතාවය',notes:'',custom:false,createdAt:'2026-10-22',lastReviewed:'',lastRating:null,dueDate:'',intervalDays:0,reviewCount:0,streak:0,lapses:0,archived:false});
+ context.state=installedLocalState;
+ storage.setItem(STATE_KEY,JSON.stringify(installedLocalState));
+ storage.setItem(FEATURE_KEY,JSON.stringify(curriculumBase.featureState||{}));
+ const newerConcurrentCloud=JSON.parse(JSON.stringify(curriculumBase));
+ newerConcurrentCloud.state.streams.push({id:'cloud-concurrent-test-stream',name:'Cloud test stream'});
+ newerConcurrentCloud.state.subjects.push({id:'cloud-concurrent-test-subject',name:'Cloud test subject',streamId:'cloud-concurrent-test-stream',order:0});
+ newerConcurrentCloud.state.topics.push({id:'cloud-concurrent-test-topic',subjectId:'cloud-concurrent-test-subject',name:'Concurrent cloud topic',dueDate:'2026-10-30'});
+ const newerConcurrentStamp=new Date(Date.parse(curriculumBaseStamp)+60000).toISOString();
+ rows.set(accountA.id,{...beforeCurriculumRace,payload:newerConcurrentCloud,updated_at:newerConcurrentStamp});
+ await window.NexusCloudSync.reconnect();
+ assert.equal(getElement('cloudStatus').textContent,'Synced','stale queued/local divergence should reconcile and verify without a destructive cloud restore');
+ const curriculumConverged=rows.get(accountA.id).payload;
+ assert.ok(curriculumConverged.state.streams.some(x=>x.id==='install-commerce-stream'),'the installed curriculum stream must survive a stale-queue/cloud-revision race');
+ assert.ok(curriculumConverged.state.subjects.some(x=>x.id==='install-commerce-subject'),'the installed curriculum subject must survive a stale-queue/cloud-revision race');
+ assert.ok(curriculumConverged.state.topics.some(x=>x.id==='curr-acc-01'),'the installed curriculum topic must survive a stale-queue/cloud-revision race');
+ assert.ok(curriculumConverged.state.streams.some(x=>x.id==='cloud-concurrent-test-stream'),'independent cloud changes must survive the same race');
+ assert.ok(curriculumConverged.state.topics.some(x=>x.id==='cloud-concurrent-test-topic'),'independent cloud topics must survive the same race');
+ assert.equal(queue.hasPending(storage,accountA.id),false,'the stale-queue reconciliation must clear only after a verified upload');
+
+ // An older cloud revision must never replace a workspace based on a newer verified revision.
+ const verifiedCurrent=JSON.parse(JSON.stringify(rows.get(accountA.id)));
+ const staleCloudPayload=JSON.parse(JSON.stringify(curriculumBase));
+ rows.set(accountA.id,{...verifiedCurrent,payload:staleCloudPayload,updated_at:curriculumBaseStamp});
+ await window.NexusCloudSync.reconnect();
+ const preservedAfterStaleRead=JSON.parse(storage.getItem(STATE_KEY));
+ assert.ok(preservedAfterStaleRead.topics.some(x=>x.id==='curr-acc-01'),'an older cloud revision must not delete the locally verified curriculum topic');
+ assert.ok(preservedAfterStaleRead.streams.some(x=>x.id==='cloud-concurrent-test-stream'),'an older cloud revision must not delete a newer verified cloud stream');
+ assert.equal(queue.getBase(storage,accountA.id).serverVersion,verifiedCurrent.updated_at,'a stale cloud response must not move the verified sync baseline backward');
+ assert.equal(getElement('cloudStatus').textContent,'Automatic merge not verified','a stale cloud response must fail closed instead of claiming a successful sync');
+
+// Account-handoff regression: a full Commerce install created on this device must not be
+// silently replaced by another account's older/manual-only snapshot before the user chooses.
+const handoffCatalog = JSON.parse(readFileSync(new URL('../curricula/packs/sl-al-commerce-si.json', import.meta.url), 'utf8'));
+assert.ok(handoffCatalog, 'handoff regression requires the real Sinhala Commerce pack');
+const handoffLocalState = {
+  schema: 3,
+  streams: [{ id: handoffCatalog.streamId, name: handoffCatalog.streamName }],
+  subjects: handoffCatalog.subjects.map((subject, order) => ({
+    id: subject.workspaceId, name: subject.name, streamId: handoffCatalog.streamId, order
+  })),
+  topics: handoffCatalog.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+    id: subject.legacyIdPrefix + '-' + String(index + 1).padStart(2, '0'),
+    subjectId: subject.workspaceId, name, custom: false, reviewCount: 0, lastReviewed: '',
+    lastRating: null, dueDate: '', intervalDays: 0, streak: 0, lapses: 0, archived: false
+  }))),
+  exams: [], history: [],
+  settings: {
+    theme: 'system', intervalCap: 120,
+    installedCurricula: ['installed:pack:' + handoffCatalog.id],
+    curriculumTombstones: []
+  }
+};
+const handoffRemoteState = {
+  schema: 3,
+  streams: [{ id: 'manual-test-stream', name: 'My manual test stream' }],
+  subjects: [], topics: [], exams: [], history: [],
+  settings: { theme: 'system', intervalCap: 120, installedCurricula: [], curriculumTombstones: [] }
+};
+const handoffRemotePayload = {
+  app: 'Nexus Spaced Repetition Tracker', schema: 4,
+  exportedAt: '2026-10-22T09:00:00.000Z',
+  state: handoffRemoteState, featureState: featuresFor(null)
+};
+storage.values.clear();
+storage.setItem(OWNER, accountA.id); // stale prior-owner marker; no active account session
+storage.setItem(CONFIG_KEY, JSON.stringify({
+  url: 'https://nexus-staging-test.supabase.co',
+  key: 'sb_publishable_test_key_value_long_enough'
+}));
+storage.setItem(STATE_KEY, JSON.stringify(handoffLocalState));
+storage.setItem(FEATURE_KEY, JSON.stringify(featuresFor(null)));
+rows.clear();
+rows.set(accountB.id, {
+  payload: handoffRemotePayload,
+  updated_at: '2026-10-22T09:00:00.000Z'
+});
+context.state = JSON.parse(JSON.stringify(handoffLocalState));
+activeSession = { user: accountB };
+networkAvailable = true;
+await window.NexusCloudSync.reconnect();
+const handoffSaved = JSON.parse(storage.getItem(STATE_KEY));
+assert.equal(handoffSaved.topics.length, 46,
+  'sign-in must preserve the complete local Commerce pack until an explicit data choice');
+assert.equal(handoffSaved.settings.installedCurricula.includes('installed:pack:sl-al-commerce-si'), true,
+  'the local full-pack install marker must survive the pending account-choice state');
+assert.equal(rows.get(accountB.id).payload.state.topics.length, 0,
+  'the local Commerce pack must not be uploaded to the target account without a choice');
+assert.equal(storage.getItem(OWNER), accountA.id,
+  'the target account must not silently take ownership before the local/cloud data choice');
+assert.equal(getElement('cloudStatus').textContent, 'Data choice required',
+  'the existing explicit data-choice flow must be shown instead of silently replacing the workspace');
+
+// Now choose "Keep & merge offline data" exactly as the user should after the prompt.
+// Both the local Commerce catalogue and the target account's existing manual stream must
+// reach the same verified cloud snapshot, and survive a fresh initialization/refresh pass.
+requestedAccountChoice = 'merge';
+await window.NexusCloudSync.reconnect();
+requestedAccountChoice = null;
+const mergedHandoff = rows.get(accountB.id).payload.state;
+assert.equal(mergedHandoff.topics.length, 46,
+  'the explicit merge must preserve all 46 installed Commerce topics');
+assert.ok(mergedHandoff.streams.some(stream => stream.id === handoffCatalog.streamId),
+  'the explicit merge must preserve the Commerce stream');
+assert.ok(mergedHandoff.streams.some(stream => stream.id === 'manual-test-stream'),
+  'the explicit merge must preserve the target account manual stream');
+assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics.length, 46,
+  'the merged local workspace must retain the complete Commerce pack');
+assert.equal(storage.getItem(OWNER), accountB.id,
+  'the target account should own the device only after the user explicitly chooses merge');
+
+// Simulate the next page load/refresh using the persisted local workspace and the cloud row.
+context.state = JSON.parse(storage.getItem(STATE_KEY));
+await window.NexusCloudSync.reconnect();
+const refreshedHandoff = rows.get(accountB.id).payload.state;
+assert.equal(refreshedHandoff.topics.length, 46,
+  'all Commerce topics must remain after the post-login refresh');
+assert.ok(refreshedHandoff.streams.some(stream => stream.id === handoffCatalog.streamId),
+  'the Commerce stream must remain after the post-login refresh');
+assert.ok(refreshedHandoff.streams.some(stream => stream.id === 'manual-test-stream'),
+  'the target account manual stream must remain after the post-login refresh');
+assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics.length, 46,
+  'local persistence must remain complete after refresh rehydration');
+
+console.log('Cloud sync runtime tests passed: offline recovery, account isolation, explicit Commerce handoff merge, post-login refresh preservation, stale queue/live workspace alignment, monotonic cloud revision checks, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, and network-drop recovery.');

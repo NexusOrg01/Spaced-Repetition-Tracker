@@ -49,11 +49,16 @@ assert.ok(cloud.includes('function enqueueInitialSnapshot(ownerId)') && (cloud.m
   'every first/clean cloud workspace must create a durable queued snapshot before insert');
 assert.ok(cloud.includes('The cloud backup was not rewritten.'),
   'choosing to use an existing cloud workspace should hydrate it without rewriting the remote snapshot');
+const initializeStart=cloud.indexOf('async function initializeSession(s){');
+const remoteReadAt=cloud.indexOf('const remote=await fetchRemote(newUserId);',initializeStart);
+const freshLocalSnapshotAt=cloud.indexOf('localPayload=snapshot();',remoteReadAt);
+assert.ok(initializeStart>=0&&remoteReadAt>initializeStart&&freshLocalSnapshotAt>remoteReadAt, 'account hydration must snapshot the latest local workspace after the async cloud read so edits made while connecting are included in reconciliation');
+
 assert.ok(cloud.includes('canAutoResumePending(pendingForUser,remote&&remote.updated_at||null)') &&
   cloud.includes('const autoUploaded=await upload()') &&
   cloud.includes('pendingAutomaticallySynced'),
   'unchanged remote revisions should automatically upload the durable pending snapshot');
-assert.ok(cloud.includes('if(pendingForUser&&window.NexusCloudSyncRecovery&&window.NexusCloudSyncRecovery.canAutoResumePending(') &&
+assert.ok(cloud.includes('if(pendingForUser&&!detachedWorkspace&&!preserveLocalCurriculumIntent&&window.NexusCloudSyncRecovery&&window.NexusCloudSyncRecovery.canAutoResumePending(') &&
   !cloud.includes('if(localHasWork&&pendingForUser&&window.NexusCloudSyncRecovery'),
   'a durable pending snapshot must be drained even when state comparison alone misses metadata-only differences');
 assert.ok(cloud.includes("else if(pendingAutomaticallySynced){say('Offline work was uploaded and verified for this account.');}") &&

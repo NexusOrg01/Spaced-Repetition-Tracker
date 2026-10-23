@@ -37,6 +37,7 @@ The repository still contains legacy Netlify configuration and may be deployable
 ## Data, sync, and notification limits
 
 - Data is stored locally in the browser profile on each device. Export full JSON backups regularly and store a copy somewhere safe.
+- Signing out detaches the device's workspace from the previous cloud account. Changes made while signed out remain local and are not queued for that account. On the next sign-in, Nexus requires an explicit reconciliation choice when the local workspace differs from the account's cloud backup; keep a separate backup before choosing a replacement.
 - Cloud sync is preconfigured to use the Nexus Supabase project and its public publishable key. Email magic-link sign-in and Google sign-in require the deployed Vercel production URL to be allowed in Supabase Auth. Never put a service_role/secret key in the app.
 - In Supabase → Authentication → URL Configuration, add your deployed app URL to the allowed redirect URLs. In Authentication → Providers, enable Google and configure its OAuth client. Email sign-in uses a magic link.
 - Browser notifications can be checked while the app is open and permission is granted. Reliable scheduled push notifications while the browser is fully closed require push infrastructure and a server.

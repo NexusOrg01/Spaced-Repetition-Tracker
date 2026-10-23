@@ -6,8 +6,9 @@ import vm from 'node:vm';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const source = readFileSync(resolve(root, 'sw.js'), 'utf8');
+const appCoreSource = readFileSync(resolve(root, 'app-core.js'), 'utf8');
 const ORIGIN = 'https://nexus.test/';
-const CACHE_NAME = 'nexus-rating-analytics-v24';
+const CACHE_NAME = 'nexus-rating-analytics-v36';
 const CACHE_PREFIX = 'nexus-rating-analytics-';
 
 function response(status = 200, type = 'basic', label = '') {
@@ -119,7 +120,7 @@ async function settle(event) {
 {
   const h = createHarness(async () => response(200, 'basic', 'fresh-network'));
   const cache = await h.caches.open(CACHE_NAME);
-  for (const asset of ['./app-core.js', './study-hub.js', './fsrs-bundle.js', './backup-restore-utils.js', './offline-sync-queue.js', './workspace-isolation-guard.js', './nexus-build-config.js', './cloud-sync-recovery.js', './workspace-sync-merge.js', './cloud-sync.js']) {
+  for (const asset of ['./app-core.js', './study-hub.js', './fsrs-bundle.js', './backup-restore-utils.js', './offline-sync-queue.js', './curriculum-pack-store.js', './curriculum-json-transfer.js', './curricula/catalog.json', './curricula/packs/sl-al-commerce-si.json', './workspace-isolation-guard.js', './nexus-build-config.js', './cloud-sync-recovery.js', './workspace-sync-merge.js', './cloud-sync.js']) {
     const request = new h.RequestStub(asset);
     await cache.put(request, response(200, 'basic', 'stale-cache'));
     h.resetNetworkCalls();
@@ -136,7 +137,7 @@ async function settle(event) {
 {
   const h = createHarness(async () => { throw new Error('offline'); });
   const cache = await h.caches.open(CACHE_NAME);
-  for (const asset of ['./app-core.js', './study-hub.js', './backup-restore-utils.js', './offline-sync-queue.js', './nexus-build-config.js', './cloud-sync-recovery.js', './workspace-sync-merge.js', './cloud-sync.js']) {
+  for (const asset of ['./app-core.js', './study-hub.js', './backup-restore-utils.js', './offline-sync-queue.js', './curriculum-pack-store.js', './curriculum-json-transfer.js', './nexus-build-config.js', './cloud-sync-recovery.js', './workspace-sync-merge.js', './cloud-sync.js']) {
     const request = new h.RequestStub(asset);
     await cache.put(request, response(200, 'basic', 'offline-cache'));
     const event = eventFor(request);
@@ -199,6 +200,8 @@ async function settle(event) {
 
 assert.ok(source.includes('keys.filter(k=>k.startsWith(CACHE_PREFIX)&&k!==CACHE_NAME)'),
   'the activation handler must scope cache cleanup to Nexus-owned cache names');
-assert.ok(source.includes('const CACHE_NAME=CACHE_PREFIX+\'v24\';'),
+assert.ok(source.includes('const CACHE_NAME=CACHE_PREFIX+\'v36\';'),
   'the app-shell cache version must advance after service-worker behavior changes');
+assert.ok(appCoreSource.includes("navigator.serviceWorker.register('./sw.js',{updateViaCache:'none'})"),
+  'service-worker checks must bypass HTTP caching so offline clients can receive the repaired app shell');
 console.log('Service-worker reliability tests passed.');

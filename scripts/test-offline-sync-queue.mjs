@@ -196,4 +196,31 @@ const stateKey='recall.study.tracker.v1';
  assert.deepEqual(queue.getBase(hydrationStorage,'large-account'),{state:quotaState,featureState:quotaFeatures,serverVersion:'rev-base'},'preflight compaction must preserve the common merge base exactly');
 }
 
+
+{
+  const owner='detachment-account';
+  const detachedStorage=new MemoryStorage({[queue.OWNER]:owner});
+  const beforeSignOut=payload('before-sign-out');
+  queue.commitWorkspace(detachedStorage,[{key:stateKey,value:JSON.stringify(beforeSignOut.state)}],beforeSignOut);
+  const queuedBefore=queue.getPending(detachedStorage,owner);
+  assert.ok(queuedBefore,'the signed-in workspace should have a durable pending snapshot before sign-out');
+  assert.equal(queue.detachOwner(detachedStorage,owner),true,'sign-out should atomically detach the workspace owner');
+  assert.equal(detachedStorage.getItem(queue.OWNER),'','signed-out local edits must not inherit the previous account owner');
+  assert.equal(queue.getDetachedOwner(detachedStorage),owner,'the detached owner marker should preserve reconciliation context');
+  const signedOutEdit=payload('after-signout-delete');
+  queue.commitWorkspace(detachedStorage,[{key:stateKey,value:JSON.stringify(signedOutEdit.state)}],signedOutEdit);
+  assert.equal(JSON.parse(detachedStorage.getItem(stateKey)).topics[0].id,'after-signout-delete','signed-out local edits should still persist on the device');
+  const parked=queue.getPending(detachedStorage,owner);
+  assert.equal(parked.operationId,queuedBefore.operationId,'signed-out edits must not silently replace the previous account queue snapshot');
+  assert.equal(parked.payload.state.topics[0].id,'before-sign-out','the prior account snapshot must remain unchanged until reconciliation');
+  assert.equal(queue.archive(detachedStorage,owner,'signed-out-workspace-detached'),true,'the old pending snapshot should be archived before explicit re-sign-in reconciliation');
+  assert.equal(queue.getPending(detachedStorage,owner),null,'an archived signed-out snapshot must no longer auto-upload');
+  assert.equal(queue.attachOwner(detachedStorage,owner),true,'ownership must be reattached only after an explicit reconciliation path');
+  assert.equal(detachedStorage.getItem(queue.OWNER),owner);
+  assert.equal(queue.getDetachedOwner(detachedStorage),'');
+  const chosenWorkspace=payload('explicitly-reconciled');
+  queue.commitWorkspace(detachedStorage,[{key:stateKey,value:JSON.stringify(chosenWorkspace.state)}],chosenWorkspace);
+  assert.equal(queue.getPending(detachedStorage,owner).payload.state.topics[0].id,'explicitly-reconciled','only the explicitly reconciled workspace may be queued for upload');
+}
+
 console.log('Account-bound offline sync queue tests passed.');

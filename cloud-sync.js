@@ -1,13 +1,33 @@
 (function(){'use strict';
-const CFG_KEY='nexus.cloud.config.v1',OWNER_KEY='nexus.cloud.last-user-id',DEFAULT_CONFIG={url:'https://txugbdavblpettcnhcxl.supabase.co',key:'sb_publishable_sQkKOf-CfHlG7mvA2sFjIg_qcezI2Fa'};
+const CFG_KEY='nexus.cloud.config.v1',OWNER_KEY='nexus.cloud.last-user-id',DETACHED_OWNER_KEY='nexus.cloud.detached-workspace-owner.v1',DEFAULT_CONFIG={url:'https://txugbdavblpettcnhcxl.supabase.co',key:'sb_publishable_sQkKOf-CfHlG7mvA2sFjIg_qcezI2Fa'};
 const LIVE_SUPABASE_URL='https://txugbdavblpettcnhcxl.supabase.co';
 function isUnsafeCloudOrigin(){const host=location.hostname.toLowerCase(),url=String(config().url||'').trim();let cloudHost='';try{cloudHost=new URL(url).hostname.toLowerCase();}catch(_){}return cloudHost===new URL(LIVE_SUPABASE_URL).hostname&&host!=='spaced-repetition-tracker-delta.vercel.app'&&host!=='kkmalithmalshan2000-png.github.io';}
 function previewCloudBlockedMessage(){status('Preview · cloud sync disabled');say('Cloud sync is disabled on this preview/local copy to protect real cloud data. Nexus still works offline. To test cloud sync, configure a separate Supabase test project on this device.');}
 let client=null,session=null,syncing=false,ready=false,timer=null,retryTimer=null,retryAttempt=0,lastRemoteStamp=null,supabaseLoadPromise=null,pendingSync=false,lastUserId=null,initializing=false,initializingUserId=null,queuedSession=null,hasQueuedSession=false;
 const el=id=>document.getElementById(id),status=m=>{if(el('cloudStatus'))el('cloudStatus').textContent=m;if(m==='Synced')clearRetry();},say=m=>{if(el('cloudHelpText'))el('cloudHelpText').textContent=m;updateConflictRecoveryButton();},config=()=>{try{return {...DEFAULT_CONFIG,...JSON.parse(localStorage.getItem(CFG_KEY)||'{}')}}catch(_){return {...DEFAULT_CONFIG}}};
 function conflictRecoveryOwner(){return session&&session.user&&session.user.id||localStorage.getItem(OWNER_KEY)||'';}
+
+function installIntegrityDiagnosticsButton(){
+ if(!location.hostname.includes('git-fix-curriculum-'))return;
+ const help=el('cloudHelpText');if(!help||!help.insertAdjacentElement)return;
+ let button=el('nexusDataIntegrityDiagnosticsDownload');
+ if(!button){
+  button=document.createElement('button');button.id='nexusDataIntegrityDiagnosticsDownload';button.type='button';button.className='btn btn-sm';button.style.marginTop='8px';button.textContent='Download data-integrity diagnostics';
+  button.title='Downloads stage-by-stage Commerce catalogue counts, installed markers and deletion tombstones. It excludes authentication tokens and Study Hub content.';
+  button.addEventListener('click',()=>{
+   let stages=[];try{stages=typeof window.NexusGetDataIntegrityDiagnostics==='function'?window.NexusGetDataIntegrityDiagnostics():[];}catch(_){}
+   const queue=window.NexusOfflineSyncQueue,owner=localStorage.getItem(OWNER_KEY)||'';
+   let pendingSummary=null;
+   try{const pending=queue&&owner?queue.getPending(localStorage,owner):null;if(pending&&pending.payload&&pending.payload.state&&window.NexusRecordDataIntegrityDiagnostic){pendingSummary=window.NexusRecordDataIntegrityDiagnostic('download-current-pending-outbox',pending.payload.state);stages=window.NexusGetDataIntegrityDiagnostics();}}catch(error){pendingSummary={error:String(error&&error.message||error)};}
+   const report={app:'Nexus Spaced Repetition Tracker',type:'data-integrity-diagnostics',schema:1,exportedAt:new Date().toISOString(),note:'Counts and catalogue topic names only; no auth tokens or Study Hub content.',stages,currentLocal:window.NexusRecordDataIntegrityDiagnostic?window.NexusRecordDataIntegrityDiagnostic('download-current-local-workspace'):null,pendingOutbox:pendingSummary};
+   try{const blob=new Blob([JSON.stringify(report,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='nexus-data-integrity-diagnostics-'+new Date().toISOString().replace(/[:.]/g,'-')+'.json';document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(error){say('Could not download diagnostics: '+String(error&&error.message||error));}
+  });
+  help.insertAdjacentElement('afterend',button);
+ }
+}
 function updateConflictRecoveryButton(){
  const help=el('cloudHelpText'),queue=window.NexusOfflineSyncQueue;
+ installIntegrityDiagnosticsButton();
  if(!help||!queue||typeof help.insertAdjacentElement!=='function')return;
  let button=el('nexusConflictRecoveryDownload');
  if(!button){
@@ -42,7 +62,21 @@ function scheduleRetry(){if(retryTimer||isUnsafeCloudOrigin()||(typeof navigator
 function resumeAfterConnectivity(){if(isUnsafeCloudOrigin()||(typeof navigator!=='undefined'&&!navigator.onLine))return;const text=el('cloudStatus')?el('cloudStatus').textContent:'';const policy=window.NexusCloudSyncRecovery;if(policy&&!policy.shouldRetry(text))return;if(syncing){pendingSync=true;return;}if(initializing)return;if(session&&ready){let pending=false;try{pending=!!(window.NexusOfflineSyncQueue&&window.NexusOfflineSyncQueue.hasPending(localStorage,session.user.id));}catch(e){status('Sync error');say('The local sync queue could not be read. Local data is preserved; Nexus will retry safely.');scheduleRetry();return;}if(pending)schedule();else status('Synced');}else connect();}
 function loadSupabaseLibrary(){if(window.supabase&&window.supabase.createClient)return Promise.resolve();if(supabaseLoadPromise)return supabaseLoadPromise;supabaseLoadPromise=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3';script.async=true;script.onload=()=>window.supabase&&window.supabase.createClient?resolve():reject(new Error('Supabase client did not initialize.'));script.onerror=()=>reject(new Error('Could not load Supabase client. Check internet access.'));document.head.appendChild(script);});return supabaseLoadPromise;}
 function setControls(){const previewBlocked=isUnsafeCloudOrigin(),logged=!!session,connected=logged&&ready&&!initializing,busy=logged&&!connected;const google=el('cloudGoogleSignInBtn'),email=el('cloudEmailSignInBtn'),out=el('cloudSignOutBtn');if(out){out.disabled=!logged;out.setAttribute('aria-disabled',String(!logged));}if(google){google.hidden=false;google.disabled=logged||previewBlocked;google.classList.toggle('auth-signin-busy',logged);google.setAttribute('aria-disabled',String(logged||previewBlocked));google.setAttribute('aria-label','Sign in with Google');const label=google.querySelector('span');if(label)label.textContent='Sign in with Google';}if(email){email.hidden=false;email.disabled=logged||previewBlocked;email.classList.toggle('auth-signin-busy',logged);email.setAttribute('aria-disabled',String(logged||previewBlocked));email.setAttribute('aria-label','Sign in with email');const label=email.querySelector('span');if(label)label.textContent='Sign in with email';}if(el('cloudAccount'))el('cloudAccount').textContent=previewBlocked?'Preview/local copy — cloud sync disabled':logged?(session.user.email||'Signed-in account'):'Not signed in — offline mode is available';if(el('cloudAccount'))el('cloudAccount').title=previewBlocked?'Use a separate Supabase test project to test cloud sync here.':logged?'Account ID: '+session.user.id:'Your data stays on this device while signed out.';if(previewBlocked)previewCloudBlockedMessage();updateConflictRecoveryButton();}
+function clearDetachedOwnerAfterSuccessfulReconciliation(ownerId,wasDetached){if(!wasDetached||!ownerId||!ready||localStorage.getItem(OWNER_KEY)!==ownerId)return false;const queue=window.NexusOfflineSyncQueue;if(!queue||typeof queue.getDetachedOwner!=='function'||!queue.getDetachedOwner(localStorage))return false;localStorage.setItem(DETACHED_OWNER_KEY,'');return true;}
 function snapshot(){return {app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:clone(state),featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}};}
+function hasCommerceInstallEvidence(payload){
+ const data=payload&&payload.state?payload.state:payload;
+ if(!data||typeof data!=='object')return false;
+ const settings=data.settings&&typeof data.settings==='object'?data.settings:{};
+ const markers=Array.isArray(settings.installedCurricula)?settings.installedCurricula.map(String):[];
+ const tombstones=Array.isArray(settings.curriculumTombstones)?settings.curriculumTombstones.map(String):[];
+ if(tombstones.includes('deleted:stream:sl-al-commerce-si'))return false;
+ if(markers.some(marker=>marker==='installed:pack:sl-al-commerce-si'||marker.startsWith('installed:subject:sl-al-commerce-si:')||marker.startsWith('installed:topic:sl-al-commerce-si:')))return true;
+ const streams=Array.isArray(data.streams)?data.streams:[];
+ const topics=Array.isArray(data.topics)?data.topics:[];
+ return streams.some(stream=>String(stream&&stream.id||'')==='stream-commerce')||
+  topics.some(topic=>/^(?:curr|seed)-(?:bs|acc|econ)-\d+$/i.test(String(topic&&topic.id||'')));
+}
 function assertStableRecordIds(payload){
  const validate=(section,fields,label)=>{
   if(!section||typeof section!=='object')return;
@@ -60,7 +94,7 @@ function assertStableRecordIds(payload){
 function normalizeWorkspacePayload(payload){
  if(!payload||!payload.state||!Array.isArray(payload.state.streams))throw new Error('A valid workspace snapshot is required for automatic reconciliation.');
  assertStableRecordIds(payload);
- return {...payload,state:normalizeState(payload.state),featureState:window.NexusNormalizeFeatureState(Object.prototype.hasOwnProperty.call(payload,'featureState')?payload.featureState:undefined)};
+ return {...payload,state:(window.NexusNormalizeState?window.NexusNormalizeState(payload.state):normalizeState(payload.state)),featureState:window.NexusNormalizeFeatureState(Object.prototype.hasOwnProperty.call(payload,'featureState')?payload.featureState:undefined)};
 }
 function nextCloudStamp(previous){
  const policy=window.NexusCloudSyncRecovery;
@@ -74,18 +108,35 @@ function emptyState(){return {schema:3,streams:[{id:'stream-general',name:'Gener
 function mergeState(local,remote){const l=normalizeState(local),r=normalizeState(remote),union=(a,b)=>{const m=new Map();for(const x of b||[])m.set(String(x.id),clone(x));for(const x of a||[])m.set(String(x.id),clone(x));return Array.from(m.values());};const streams=union(l.streams,r.streams),subjects=union(l.subjects,r.subjects),topics=union(l.topics,r.topics),exams=union(l.exams,r.exams),history=union(l.history,r.history);if(!streams.length)streams.push({id:'stream-general',name:'General'});const streamIds=new Set(streams.map(x=>x.id));for(const sub of subjects)if(!streamIds.has(sub.streamId))sub.streamId=streams[0].id;const subjectIds=new Set(subjects.map(x=>x.id));for(const t of topics)if(!subjectIds.has(t.subjectId)){const fallback=subjects[0]||{id:'subject-general',name:'General',streamId:streams[0].id,order:0};if(!subjectIds.has(fallback.id))subjects.push(fallback);t.subjectId=fallback.id;}return normalizeState({...r,streams,subjects,topics,exams,history,settings:{...r.settings,...l.settings}});}
 function hasLocalWork(s){if(!s)return false;const core=s.state||s||{},f=s.featureState||{};const coreWork=!!(core.topics?.length||core.history?.length||core.exams?.length||core.streams?.length>1||core.subjects?.length>1);const featureWork=['journal','papers','goals','studyLogs','selectedTopicIds'].some(k=>Array.isArray(f[k])&&f[k].length>0)||Object.keys(f.syllabusTargets||{}).length>0||Object.keys(f.taskChecks||{}).length>0||!!(f.lastBackupAt||f.lastReminderAt||f.focusStartedAt||f.focusPausedAt||f.focusTopicId||f.focusSubjectId);const defaults={dailyMinutes:90,sessionMinutes:25,scheduler:'classic',weeklyReviewGoal:100,backlogDays:7,reminders:false,reminderTime:'08:00',maxInterval:120,finalRevision:false,workloadDays:7};const settings=f.settings||{};const settingsWork=Object.keys(defaults).some(k=>settings[k]!==undefined&&settings[k]!==defaults[k]);return coreWork||featureWork||settingsWork;}
 function chooseLocalData(){return new Promise(resolve=>{const dlg=el('accountChoiceDialog');if(!dlg){resolve('cancel');return;}let done=false;const onCancel=e=>e.preventDefault();const finish=v=>{if(done)return;done=true;dlg.removeEventListener('cancel',onCancel);if(dlg.open)dlg.close();resolve(v);};dlg.addEventListener('cancel',onCancel);dlg.querySelectorAll('[data-account-choice]').forEach(b=>b.onclick=()=>finish(b.dataset.accountChoice));if(!dlg.open)dlg.showModal();});}
-function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
+function curriculumIntentLedgerEntry(state,ownerId,replace=false){
+  const create=window.NexusCreateCurriculumIntentLedgerEntry;
+  return typeof create==='function'?create(state,ownerId,{replace}):null;
+}
+function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,options={}){
   if(!window.NexusBackupRestoreUtils||!window.NexusStorageKey||!window.NexusFeatureStorageKey||!window.NexusNormalizeFeatureState||!window.NexusSetFeatureState)throw new Error('Safe local workspace storage is unavailable. Cloud data was not applied.');
+  // Every snapshot entry point (cloud restore, account reconciliation, and merge) must
+  // pass through the same curriculum integrity guard before it is persisted locally.
+  if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('cloud-before-local-apply',nextState);
+  const replaceCurriculumPacks=options.replaceCurriculumPacks===true||options.replaceCurriculumIntent===true;
+  const safeState=window.NexusRepairInstalledCurricula?window.NexusRepairInstalledCurricula(nextState,ownerId,{skipIntentLedger:options.replaceCurriculumIntent===true,skipPackStore:replaceCurriculumPacks}):nextState;
+  if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('cloud-after-local-repair',safeState);
   const nextFeatures=window.NexusNormalizeFeatureState(rawFeatures);
+  const packEntry=window.NexusCreateCurriculumPackStoreEntry?window.NexusCreateCurriculumPackStoreEntry(safeState,ownerId,{replace:replaceCurriculumPacks}):null;
   const entries=[
-    {key:window.NexusStorageKey,value:JSON.stringify(nextState)},
+    {key:window.NexusStorageKey,value:JSON.stringify(safeState)},
     {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)}
   ];
+  if(packEntry)entries.push(packEntry);
+  // Persist the repair evidence atomically with the repaired workspace. Otherwise a
+  // successful cloud hydration/merge can repair the visible rows but leave the independent
+  // ledger stale, allowing a later incomplete cloud snapshot to erase that recovery.
+  const intentEntry=curriculumIntentLedgerEntry(safeState,ownerId,options.replaceCurriculumIntent===true);
+  if(intentEntry)entries.push(intentEntry);
   if(ownerId)entries.push({key:OWNER_KEY,value:String(ownerId)});
   // Free redundant snapshot space before applying a cloud workspace to this browser.
   if(window.NexusOfflineSyncQueue&&typeof window.NexusOfflineSyncQueue.compactMetadata==='function')window.NexusOfflineSyncQueue.compactMetadata(localStorage);
   window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,entries);
-  state=nextState;
+  state=safeState;
   window.NexusSetFeatureState(nextFeatures,{persist:false,render:false});
   renderAll();
   if(window.NexusRenderHub)window.NexusRenderHub();
@@ -93,13 +144,14 @@ function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
 }
 function applyRemote(payload,ownerId,serverVersion){
   if(!payload||!payload.state||!Array.isArray(payload.state.streams))throw new Error('Cloud backup format is invalid.');
-  const nextState=normalizeState(payload.state);
-  const hasFeatures=Object.prototype.hasOwnProperty.call(payload,'featureState');
-  const nextFeatures=window.NexusNormalizeFeatureState(hasFeatures?payload.featureState:undefined);
-  ready=false;
-  applyWorkspaceSnapshot(nextState,nextFeatures,ownerId);
-  if(ownerId&&window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberBase(localStorage,ownerId,{state:nextState,featureState:nextFeatures},serverVersion||null);
-  ready=true;
+  const rawNormalize=window.NexusNormalizeStateWithoutCurriculumRepair;
+  if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('cloud-remote-before-normalize',payload.state);
+  const incomingState=rawNormalize?rawNormalize(payload.state):normalizeState(payload.state);
+  const nextState=window.NexusRepairInstalledCurricula?window.NexusRepairInstalledCurricula(clone(incomingState),ownerId):normalizeState(payload.state);
+  const hasFeatures=Object.prototype.hasOwnProperty.call(payload,'featureState'),nextFeatures=window.NexusNormalizeFeatureState(hasFeatures?payload.featureState:undefined),repaired=stableJson(incomingState)!==stableJson(nextState);
+  ready=false;applyWorkspaceSnapshot(nextState,nextFeatures,ownerId);
+  if(ownerId&&window.NexusOfflineSyncQueue){window.NexusOfflineSyncQueue.rememberBase(localStorage,ownerId,{state:incomingState,featureState:nextFeatures},serverVersion||null);if(repaired){const repairPayload={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:clone(nextState),featureState:clone(nextFeatures)};window.NexusOfflineSyncQueue.rebase(localStorage,ownerId,repairPayload,serverVersion||null,'repair-incomplete-installed-curriculum');window.NexusOfflineSyncQueue.rememberStamp(localStorage,ownerId,serverVersion||null);}}
+  ready=true;if(repaired&&ownerId)schedule();
 }
 function applyLocalMerged(localPayload,remotePayload){
   const nextState=mergeState(localPayload.state,remotePayload?.state||emptyState());
@@ -112,9 +164,9 @@ function applyLocalMerged(localPayload,remotePayload){
 }
 function resetToEmpty(ownerId){
   ready=false;
-  applyWorkspaceSnapshot(emptyState(),{},ownerId);
+  applyWorkspaceSnapshot(emptyState(),{},ownerId,{replaceCurriculumIntent:true});
 }
-function enqueueInitialSnapshot(ownerId){const queue=window.NexusOfflineSyncQueue;if(!queue||!window.NexusStorageKey||!window.NexusFeatureStorageKey)throw new Error('Safe offline snapshot queue is unavailable.');if(localStorage.getItem(OWNER_KEY)!==ownerId)throw new Error('The initial snapshot owner could not be verified.');if(queue.hasPending(localStorage,ownerId))return;const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():{};queue.commitWorkspace(localStorage,[{key:window.NexusStorageKey,value:JSON.stringify(state)},{key:window.NexusFeatureStorageKey,value:JSON.stringify(featureState)}],snapshot(),{baseServerVersion:null});}
+function enqueueInitialSnapshot(ownerId){const queue=window.NexusOfflineSyncQueue;if(!queue||!window.NexusStorageKey||!window.NexusFeatureStorageKey)throw new Error('Safe offline snapshot queue is unavailable.');if(localStorage.getItem(OWNER_KEY)!==ownerId)throw new Error('The initial snapshot owner could not be verified.');if(queue.hasPending(localStorage,ownerId))return;const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():{};const packEntry=window.NexusCreateCurriculumPackStoreEntry?window.NexusCreateCurriculumPackStoreEntry(state,ownerId):null;const entries=[{key:window.NexusStorageKey,value:JSON.stringify(state)},{key:window.NexusFeatureStorageKey,value:JSON.stringify(featureState)}];if(packEntry)entries.push(packEntry);const intentEntry=curriculumIntentLedgerEntry(state,ownerId,true);if(intentEntry)entries.push(intentEntry);queue.commitWorkspace(localStorage,entries,snapshot(),{baseServerVersion:null});}
 async function reconcileConcurrentSnapshot(userId,initialRemote){
  const queue=window.NexusOfflineSyncQueue,merger=window.NexusWorkspaceSyncMerge;
  if(!queue||!merger||!userId)return {ok:false,conflicts:0,reason:'Automatic merge helpers are unavailable.'};
@@ -143,18 +195,24 @@ async function reconcileConcurrentSnapshot(userId,initialRemote){
   const normalizedBase=savedBase?normalizeWorkspacePayload(savedBase):null;
   const normalizedLocal=normalizeWorkspacePayload(pending.payload);
   const normalizedRemote=normalizeWorkspacePayload(remote.payload);
+  if(window.NexusRecordDataIntegrityDiagnostic){if(normalizedBase)window.NexusRecordDataIntegrityDiagnostic('cloud-merge-base',normalizedBase.state);window.NexusRecordDataIntegrityDiagnostic('cloud-merge-local',normalizedLocal.state);window.NexusRecordDataIntegrityDiagnostic('cloud-merge-remote',normalizedRemote.state);}
   const result=merger.merge(normalizedBase,normalizedLocal,normalizedRemote);
+  if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('cloud-merge-result-before-normalize',result.payload.state);
   const nextState=normalizeState(result.payload.state);
+  if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('cloud-merge-result-after-normalize',nextState);
   const nextFeatures=window.NexusNormalizeFeatureState(result.payload.featureState||{});
   if(!window.NexusBackupRestoreUtils||!window.NexusStorageKey||!window.NexusFeatureStorageKey||!window.NexusSetFeatureState)throw new Error('Atomic workspace reconciliation is unavailable; local changes were preserved.');
   const mergedSnapshot={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:clone(nextState),featureState:clone(nextFeatures)};
+  const workspaceEntries=[
+    {key:window.NexusStorageKey,value:JSON.stringify(nextState)},
+    {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)},
+    {key:OWNER_KEY,value:String(userId)}
+   ];
+  const intentEntry=curriculumIntentLedgerEntry(nextState,userId,false);
+  if(intentEntry)workspaceEntries.push(intentEntry);
   const rebased=queue.rebaseWithBase(localStorage,userId,mergedSnapshot,remoteStamp,'automatic-three-way-merge',
    {state:normalizedRemote.state,featureState:normalizedRemote.featureState},
-   {workspaceEntries:[
-     {key:window.NexusStorageKey,value:JSON.stringify(nextState)},
-     {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)},
-     {key:OWNER_KEY,value:String(userId)}
-    ],
+   {workspaceEntries,
     conflicts:result.conflicts,
     conflictMetadata:{baseServerVersion:pending.baseServerVersion,remoteServerVersion:remoteStamp}
    });
@@ -173,21 +231,95 @@ async function reconcileConcurrentSnapshot(userId,initialRemote){
  }
  return {ok:false,conflicts:totalConflicts,reason:'The cloud changed repeatedly during merge. Local edits remain queued and are preserved.'};
 }
+function alignPendingToCurrentWorkspace(userId,localPayload,pending){
+ const queue=window.NexusOfflineSyncQueue;
+ if(!queue||!pending||!localPayload||sameWorkspace(localPayload,pending.payload))return {localPayload,pending};
+ const base=queue.getBase(localStorage,userId);
+ const basePayload=base&&base.state&&base.featureState?{state:base.state,featureState:base.featureState}:null;
+ let mergedPayload,conflicts=[];
+ if(basePayload&&window.NexusWorkspaceSyncMerge&&typeof window.NexusWorkspaceSyncMerge.merge==='function'){
+  // Reconcile the saved workspace and queued snapshot against the same verified baseline.
+  // This preserves live installs/edits that occurred after an older queue operation was created.
+  const result=window.NexusWorkspaceSyncMerge.merge(
+   normalizeWorkspacePayload(basePayload),
+   normalizeWorkspacePayload(localPayload),
+   normalizeWorkspacePayload(pending.payload)
+  );
+  mergedPayload=normalizeWorkspacePayload(result.payload);
+  conflicts=Array.isArray(result.conflicts)?result.conflicts:[];
+ }else{
+  // Without a known baseline, preserve content from both same-account snapshots rather than guessing which is disposable.
+  mergedPayload={
+   state:mergeState(localPayload.state,pending.payload.state),
+   featureState:window.NexusMergeFeatureState(localPayload.featureState||{},pending.payload.featureState||{}, {})
+  };
+ }
+ const nextState=normalizeState(mergedPayload.state);
+ const nextFeatures=window.NexusNormalizeFeatureState(mergedPayload.featureState||{});
+ const alignedSnapshot={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:clone(nextState),featureState:clone(nextFeatures)};
+ const workspaceEntries=[
+  {key:window.NexusStorageKey,value:JSON.stringify(nextState)},
+  {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)},
+  {key:OWNER_KEY,value:String(userId)}
+ ];
+ const intentEntry=curriculumIntentLedgerEntry(nextState,userId,false);
+ if(intentEntry)workspaceEntries.push(intentEntry);
+ const baseVersion=base&&typeof base.serverVersion==='string'&&base.serverVersion?base.serverVersion:(pending.baseServerVersion||null);
+ if(basePayload&&typeof queue.rebaseWithBase==='function'){
+  // Queue, local workspace, and recovery alternatives commit atomically.
+  queue.rebaseWithBase(localStorage,userId,alignedSnapshot,baseVersion,'align-live-workspace-with-pending',basePayload,{
+   workspaceEntries,conflicts,
+   conflictMetadata:{baseServerVersion:pending.baseServerVersion||null,remoteServerVersion:baseVersion}
+  });
+ }else{
+  queue.commitWorkspace(localStorage,workspaceEntries,alignedSnapshot,{baseServerVersion:baseVersion});
+ }
+ state=nextState;
+ window.NexusSetFeatureState(nextFeatures,{persist:false,render:false});
+ renderAll();
+ if(window.NexusRenderHub)window.NexusRenderHub();
+ const alignedPending=queue.getPending(localStorage,userId);
+ if(!alignedPending)throw new Error('The local workspace and offline queue could not be aligned safely. Local data is preserved.');
+ return {localPayload:snapshot(),pending:alignedPending};
+}
+function cloudRevisionGuardMessage(userId,remote){
+ const queue=window.NexusOfflineSyncQueue;
+ if(!queue||!userId||!remote||!remote.payload||typeof remote.updated_at!=='string')return '';
+ const base=queue.getBase(localStorage,userId);
+ if(!base||typeof base.serverVersion!=='string'||!base.serverVersion)return '';
+ const baseTime=Date.parse(base.serverVersion),remoteTime=Date.parse(remote.updated_at);
+ if(!Number.isFinite(baseTime)||!Number.isFinite(remoteTime))return '';
+ if(remoteTime<baseTime)return 'The cloud returned a revision older than this device’s last verified baseline.';
+ if(remoteTime===baseTime&&!sameWorkspace(remote.payload,base))return 'The cloud payload differs from the last verified baseline without a newer revision.';
+ return '';
+}
 async function reconcileOwnedWorkspace(userId,localPayload,remote){
  const queue=window.NexusOfflineSyncQueue;
  if(!queue||!userId||!localPayload||!remote)return {ok:false,conflicts:0,reason:'Safe same-account reconciliation is unavailable.'};
  const base=queue.getBase(localStorage,userId);
  if(base&&sameWorkspace(localPayload,base)){
-  applyRemote(remote.payload,userId,remote.updated_at||null);
-  queue.rememberStamp(localStorage,userId,remote.updated_at||null);
-  lastRemoteStamp=remote.updated_at||null;
-  return {ok:true,conflicts:0,cloudLoaded:true};
+  const baseVersion=typeof base.serverVersion==='string'?base.serverVersion:'';
+  const remoteVersion=typeof remote.updated_at==='string'?remote.updated_at:'';
+  if(baseVersion&&remoteVersion){
+   const baseTime=Date.parse(baseVersion),remoteTime=Date.parse(remoteVersion);
+   if(Number.isFinite(baseTime)&&Number.isFinite(remoteTime)&&remoteTime>baseTime){
+    applyRemote(remote.payload,userId,remoteVersion);
+    queue.rememberStamp(localStorage,userId,remoteVersion);
+    lastRemoteStamp=remoteVersion;
+    return {ok:true,conflicts:0,cloudLoaded:true};
+   }
+   if(Number.isFinite(baseTime)&&Number.isFinite(remoteTime)){
+    return {ok:false,conflicts:0,reason:remoteTime<baseTime
+     ?'The cloud returned a revision older than this device’s last verified baseline. No local data was replaced.'
+     :'The cloud revision is not newer than the last verified baseline but contains different data. No local data was replaced.'};
+   }
+  }
  }
  const baseVersion=base&&typeof base.serverVersion==='string'?base.serverVersion:null;
  queue.rebase(localStorage,userId,localPayload,baseVersion,'automatic-recovery-of-local-edits');
  return reconcileConcurrentSnapshot(userId,remote);
 }
-async function initializeSession(s){const requestedSession=s||null,requestedUserId=requestedSession&&requestedSession.user?requestedSession.user.id:null;if(initializing){if(requestedUserId!==initializingUserId){queuedSession=requestedSession;hasQueuedSession=true;}return;}initializing=true;initializingUserId=requestedUserId;try{const newSession=requestedSession,newUserId=requestedUserId;session=newSession;ready=false;lastRemoteStamp=null;clearTimeout(timer);setControls();if(!session){status(client?'Not signed in · offline ready':'Offline ready');say('You can continue studying offline. Your local data remains on this device when you sign out.');return;}status('Loading account…');await assertActiveUser(newUserId);let owner=localStorage.getItem(OWNER_KEY)||'',localPayload=snapshot();const remote=await fetchRemote(newUserId);await assertActiveUser(newUserId);if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,remote&&remote.updated_at||null);let pendingForUser=window.NexusOfflineSyncQueue?window.NexusOfflineSyncQueue.getPending(localStorage,newUserId):null;if(pendingForUser&&owner!==newUserId){applyWorkspaceSnapshot(normalizeState(pendingForUser.payload.state),window.NexusNormalizeFeatureState(pendingForUser.payload.featureState||{}),newUserId);owner=newUserId;localPayload=snapshot();}if(pendingForUser&&remote&&remote.payload&&sameWorkspace(remote.payload,pendingForUser.payload)){window.NexusOfflineSyncQueue.rememberBase(localStorage,newUserId,remote.payload,remote.updated_at||null);window.NexusOfflineSyncQueue.acknowledge(localStorage,newUserId,pendingForUser.operationId,pendingForUser.baseServerVersion,remote.updated_at);pendingForUser=null;}if(owner&&owner!==newUserId){if(remote&&remote.payload){applyRemote(remote.payload,newUserId,remote.updated_at||null);lastRemoteStamp=remote.updated_at;say('Loaded this account’s own cloud data. Offline data from the previous account was not merged or uploaded.');}else{resetToEmpty(newUserId);ready=true;enqueueInitialSnapshot(newUserId);const uploaded=await upload();if(!uploaded){ready=false;throw new Error('A clean workspace was created for this account, but its initial cloud state could not be verified. Previous-account data was not uploaded.');}say('A clean workspace was created for this account. Previous-account data was not merged or uploaded.');}localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;if(ready){status('Synced');}return;}const localData={state:localPayload.state,featureState:localPayload.featureState||{}},remoteData=remote&&remote.payload?{state:remote.payload.state,featureState:remote.payload.featureState||{}}:null;let localHasWork=pendingForUser?(!remoteData||stableJson(localData)!==stableJson(remoteData)):(remoteData?stableJson(localData)!==stableJson(remoteData):hasLocalWork(localPayload));let pendingAutomaticallySynced=false,cloudWorkspaceAutoLoaded=false;if(!pendingForUser&&owner===newUserId&&remoteData&&!sameWorkspace(localData,remoteData)){const reconciliation=await reconcileOwnedWorkspace(newUserId,localPayload,remote);if(!reconciliation.ok){ready=false;status('Automatic merge not verified');say((reconciliation.reason||'The same-account workspace could not be reconciled safely.')+' Local data is preserved; do not clear this browser’s data.');if(/cloud changed repeatedly|upload could not be verified|verification did not finish/i.test(reconciliation.reason||''))scheduleRetry();localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;return;}localHasWork=false;pendingAutomaticallySynced=!reconciliation.cloudLoaded;cloudWorkspaceAutoLoaded=!!reconciliation.cloudLoaded;if(reconciliation.conflicts){say('This account’s offline and cloud changes were automatically merged. '+reconciliation.conflicts+' overlapping edit(s) were archived for recovery.');}else if(reconciliation.cloudLoaded){say('Loaded this account’s newer cloud workspace automatically. This device had no unsynced local changes.');}else{say('This account’s local and cloud changes were automatically merged and verified.');}}if(pendingForUser&&owner===newUserId&&remoteData&&(pendingForUser.baseServerVersion||null)!==(remote.updated_at||null)&&!sameWorkspace(remoteData,pendingForUser.payload)){const reconciliation=await reconcileConcurrentSnapshot(newUserId,remote);if(!reconciliation.ok){ready=false;status('Automatic merge not verified');say((reconciliation.reason||'The local changes are preserved, but the merged cloud state is not verified.')+' Your offline work remains queued; do not clear this browser’s data.');if(/cloud changed repeatedly|upload could not be verified|verification did not finish/i.test(reconciliation.reason||''))scheduleRetry();localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;return;}pendingForUser=null;localHasWork=false;pendingAutomaticallySynced=true;if(reconciliation.conflicts){say('Offline and cloud changes were automatically merged. '+reconciliation.conflicts+' overlapping field edit(s) used local-device precedence; alternate values were saved in this device’s conflict recovery archive.');}else{say('Offline and cloud changes were automatically merged and verified. Independent edits were combined without a workspace-choice dialog.');}}if(pendingForUser&&window.NexusCloudSyncRecovery&&window.NexusCloudSyncRecovery.canAutoResumePending(pendingForUser,remote&&remote.updated_at||null)){lastRemoteStamp=remote&&remote.updated_at||null;ready=true;const autoUploaded=await upload();if(!autoUploaded){ready=false;return;}pendingForUser=null;localHasWork=false;pendingAutomaticallySynced=true;say('Offline changes were automatically uploaded and verified for this account.');}if(localHasWork){let choice=await chooseLocalData();if(choice==='cancel'){ready=false;status('Data choice required');say('Your offline data is preserved. Choose one of the available data options before cloud sync can continue.');return;}while(choice==='replace-cloud'||choice==='replace'){const confirmed=choice==='replace-cloud'?confirm('FINAL CONFIRMATION: overwrite this account’s entire cloud backup with the offline data on this device? Download a backup first if needed.'):remote&&remote.payload?confirm('FINAL CONFIRMATION: replace this device’s offline workspace with this account’s cloud backup? Unsynced local changes that are not in the cloud will be lost. Download a backup first if needed.'):confirm('FINAL CONFIRMATION: start this account with a clean workspace? This will replace the offline data on this device, and no cloud backup is available to restore it. Download a backup first if needed.');if(confirmed)break;ready=false;status('Data choice required');say('Cancelled. Your offline data has not been changed. Choose an option below to continue.');choice=await chooseLocalData();if(choice==='cancel'){ready=false;status('Data choice required');say('Your offline data is preserved. Choose one of the available data options before cloud sync can continue.');return;}}applyWorkspaceSnapshot(normalizeState(localPayload.state),window.NexusNormalizeFeatureState(localPayload.featureState||{}),newUserId);owner=newUserId;localPayload=snapshot();if(choice==='merge'){lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;applyLocalMerged(localPayload,remote&&remote.payload?remote.payload:null);if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rebase(localStorage,newUserId,snapshot(),lastRemoteStamp,'user-merge');ready=true;const uploaded=await upload();if(uploaded){say(remote&&remote.payload?'Offline work was merged with this account’s cloud data.':'Offline work was kept and uploaded as this account’s first backup.');}else{ready=false;status('Sync not verified');say('The merge is saved locally, but cloud sync was not verified. Your local data is preserved; reconnect and retry before assuming the cloud has it.');}}else if(choice==='replace-cloud'){lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rebase(localStorage,newUserId,snapshot(),lastRemoteStamp,'user-confirmed-cloud-replace');ready=true;const uploaded=await upload();if(uploaded){say('Verified: the cloud backup now matches this device’s offline data.');}else{ready=false;status('Cloud replacement not verified');say('The cloud replacement was NOT confirmed. Your offline data remains on this device. Reconnect and retry the data choice; do not assume the cloud was updated.');}}else{if(pendingForUser&&window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.archive(localStorage,newUserId,'user-selected-cloud-restore');if(remote&&remote.payload){applyRemote(remote.payload,newUserId,remote.updated_at||null);lastRemoteStamp=remote.updated_at;if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,lastRemoteStamp);ready=true;say('This device now contains the verified cloud workspace. The cloud backup was not rewritten.');}else{resetToEmpty(newUserId);if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,null);ready=true;enqueueInitialSnapshot(newUserId);const uploaded=await upload();if(!uploaded)say('A clean workspace was saved locally, but its cloud state is not yet verified. Nexus will retry automatically.');else say('Started this account with a clean workspace; offline work was not uploaded.');}}}else if(cloudWorkspaceAutoLoaded){say('Loaded this account’s newer cloud workspace automatically.');}else if(pendingAutomaticallySynced){say('Offline work was uploaded and verified for this account.');}else if(remote&&remote.payload){applyRemote(remote.payload,newUserId,remote.updated_at||null);lastRemoteStamp=remote.updated_at;if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,lastRemoteStamp);say('Loaded this account’s cloud data. Future changes sync automatically.');}else{resetToEmpty(newUserId);ready=true;enqueueInitialSnapshot(newUserId);const uploaded=await upload();if(!uploaded)say('A clean workspace was saved locally, but its cloud state is not yet verified. Nexus will retry automatically.');else say('A clean workspace was created for this account.');}localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;if(ready){status('Synced');}}catch(e){ready=false;status('Sync unavailable');say('Cloud sync error: '+((e&&e.message)||'unknown error')+'. Local changes are preserved and sync is paused. Reconnect to sync again.');console.error('Nexus account initialization failed',e);scheduleRetry();}finally{initializing=false;initializingUserId=null;setControls();if(hasQueuedSession){const nextSession=queuedSession;queuedSession=null;hasQueuedSession=false;setTimeout(()=>initializeSession(nextSession),0);}}}
+async function initializeSession(s){const requestedSession=s||null,requestedUserId=requestedSession&&requestedSession.user?requestedSession.user.id:null;if(initializing){if(requestedUserId!==initializingUserId){queuedSession=requestedSession;hasQueuedSession=true;}return;}initializing=true;initializingUserId=requestedUserId;try{const newSession=requestedSession,newUserId=requestedUserId;session=newSession;ready=false;lastRemoteStamp=null;clearTimeout(timer);setControls();if(!session){status(client?'Not signed in · offline ready':'Offline ready');say('You can continue studying offline. Your local data remains on this device when you sign out.');return;}status('Loading account…');await assertActiveUser(newUserId);const remote=await fetchRemote(newUserId);await assertActiveUser(newUserId);const staleRevisionMessage=cloudRevisionGuardMessage(newUserId,remote);if(staleRevisionMessage){status('Automatic merge not verified');say(staleRevisionMessage+' Local data was not replaced and the last verified sync baseline was kept. Verify or restore the cloud backup before reconnecting.');lastUserId=newUserId;return;}if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,remote&&remote.updated_at||null);let owner=localStorage.getItem(OWNER_KEY)||'',localPayload=snapshot();const detachedWorkspace=!owner&&!!(window.NexusOfflineSyncQueue&&window.NexusOfflineSyncQueue.getDetachedOwner(localStorage));let pendingForUser=window.NexusOfflineSyncQueue?window.NexusOfflineSyncQueue.getPending(localStorage,newUserId):null;if(pendingForUser&&owner===newUserId&&!detachedWorkspace&&!sameWorkspace(localPayload,pendingForUser.payload)){const aligned=alignPendingToCurrentWorkspace(newUserId,localPayload,pendingForUser);localPayload=aligned.localPayload;pendingForUser=aligned.pending;}const preserveLocalCurriculumIntent=hasCommerceInstallEvidence(localPayload)&&(owner!==newUserId||detachedWorkspace)&&(!remote||!remote.payload||!sameWorkspace(localPayload,remote.payload));if(pendingForUser&&owner!==newUserId&&!detachedWorkspace&&!preserveLocalCurriculumIntent){applyWorkspaceSnapshot(window.NexusNormalizeStateWithoutCurriculumRepair?window.NexusNormalizeStateWithoutCurriculumRepair(pendingForUser.payload.state):normalizeState(pendingForUser.payload.state,{skipCurriculumRepair:true}),window.NexusNormalizeFeatureState(pendingForUser.payload.featureState||{}),newUserId);owner=newUserId;localPayload=snapshot();}if(pendingForUser&&remote&&remote.payload&&sameWorkspace(remote.payload,pendingForUser.payload)){window.NexusOfflineSyncQueue.rememberBase(localStorage,newUserId,remote.payload,remote.updated_at||null);window.NexusOfflineSyncQueue.acknowledge(localStorage,newUserId,pendingForUser.operationId,pendingForUser.baseServerVersion,remote.updated_at);pendingForUser=null;}if(detachedWorkspace&&pendingForUser){if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.archive(localStorage,newUserId,'signed-out-workspace-detached');pendingForUser=null;say('A previous queued snapshot for this account was preserved in local recovery history instead of replacing your signed-out workspace. Choose how to reconcile local and cloud data below.');}if(owner&&owner!==newUserId&&!preserveLocalCurriculumIntent){if(remote&&remote.payload){applyRemote(remote.payload,newUserId,remote.updated_at||null);lastRemoteStamp=remote.updated_at;say('Loaded this account’s own cloud data. Offline data from the previous account was not merged or uploaded.');}else{resetToEmpty(newUserId);ready=true;enqueueInitialSnapshot(newUserId);const uploaded=await upload();if(!uploaded){ready=false;throw new Error('A clean workspace was created for this account, but its initial cloud state could not be verified. Previous-account data was not uploaded.');}say('A clean workspace was created for this account. Previous-account data was not merged or uploaded.');}localStorage.setItem(OWNER_KEY,newUserId);if(detachedWorkspace)localStorage.setItem(DETACHED_OWNER_KEY,'');lastUserId=newUserId;if(ready){status('Synced');}return;}const localData={state:localPayload.state,featureState:localPayload.featureState||{}},remoteData=remote&&remote.payload?{state:remote.payload.state,featureState:remote.payload.featureState||{}}:null;let localHasWork=pendingForUser?(!remoteData||stableJson(localData)!==stableJson(remoteData)):(remoteData?stableJson(localData)!==stableJson(remoteData):hasLocalWork(localPayload));let pendingAutomaticallySynced=false,cloudWorkspaceAutoLoaded=false;if(!pendingForUser&&owner===newUserId&&remoteData&&!sameWorkspace(localData,remoteData)){const reconciliation=await reconcileOwnedWorkspace(newUserId,localPayload,remote);if(!reconciliation.ok){ready=false;status('Automatic merge not verified');say((reconciliation.reason||'The same-account workspace could not be reconciled safely.')+' Local data is preserved; do not clear this browser’s data.');if(/cloud changed repeatedly|upload could not be verified|verification did not finish/i.test(reconciliation.reason||''))scheduleRetry();localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;return;}localHasWork=false;pendingAutomaticallySynced=!reconciliation.cloudLoaded;cloudWorkspaceAutoLoaded=!!reconciliation.cloudLoaded;if(reconciliation.conflicts){say('This account’s offline and cloud changes were automatically merged. '+reconciliation.conflicts+' overlapping edit(s) were archived for recovery.');}else if(reconciliation.cloudLoaded){say('Loaded this account’s newer cloud workspace automatically. This device had no unsynced local changes.');}else{say('This account’s local and cloud changes were automatically merged and verified.');}}if(pendingForUser&&owner===newUserId&&remoteData&&(pendingForUser.baseServerVersion||null)!==(remote.updated_at||null)&&!sameWorkspace(remoteData,pendingForUser.payload)){const reconciliation=await reconcileConcurrentSnapshot(newUserId,remote);if(!reconciliation.ok){ready=false;status('Automatic merge not verified');say((reconciliation.reason||'The local changes are preserved, but the merged cloud state is not verified.')+' Your offline work remains queued; do not clear this browser’s data.');if(/cloud changed repeatedly|upload could not be verified|verification did not finish/i.test(reconciliation.reason||''))scheduleRetry();localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;return;}pendingForUser=null;localHasWork=false;pendingAutomaticallySynced=true;if(reconciliation.conflicts){say('Offline and cloud changes were automatically merged. '+reconciliation.conflicts+' overlapping field edit(s) used local-device precedence; alternate values were saved in this device’s conflict recovery archive.');}else{say('Offline and cloud changes were automatically merged and verified. Independent edits were combined without a workspace-choice dialog.');}}if(pendingForUser&&!detachedWorkspace&&!preserveLocalCurriculumIntent&&window.NexusCloudSyncRecovery&&window.NexusCloudSyncRecovery.canAutoResumePending(pendingForUser,remote&&remote.updated_at||null)){lastRemoteStamp=remote&&remote.updated_at||null;ready=true;const autoUploaded=await upload();if(!autoUploaded){ready=false;return;}pendingForUser=null;localHasWork=false;pendingAutomaticallySynced=true;say('Offline changes were automatically uploaded and verified for this account.');}if(localHasWork){let choice=await chooseLocalData();if(choice==='cancel'){ready=false;status('Data choice required');say('Your offline data is preserved. Choose one of the available data options before cloud sync can continue.');return;}while(choice==='replace-cloud'||choice==='replace'){const confirmed=choice==='replace-cloud'?confirm('FINAL CONFIRMATION: overwrite this account’s entire cloud backup with the offline data on this device? Download a backup first if needed.'):remote&&remote.payload?confirm('FINAL CONFIRMATION: replace this device’s offline workspace with this account’s cloud backup? Unsynced local changes that are not in the cloud will be lost. Download a backup first if needed.'):confirm('FINAL CONFIRMATION: start this account with a clean workspace? This will replace the offline data on this device, and no cloud backup is available to restore it. Download a backup first if needed.');if(confirmed)break;ready=false;status('Data choice required');say('Cancelled. Your offline data has not been changed. Choose an option below to continue.');choice=await chooseLocalData();if(choice==='cancel'){ready=false;status('Data choice required');say('Your offline data is preserved. Choose one of the available data options before cloud sync can continue.');return;}}applyWorkspaceSnapshot(window.NexusNormalizeStateWithoutCurriculumRepair?window.NexusNormalizeStateWithoutCurriculumRepair(localPayload.state):normalizeState(localPayload.state,{skipCurriculumRepair:true}),window.NexusNormalizeFeatureState(localPayload.featureState||{}),newUserId);owner=newUserId;localPayload=snapshot();if(choice==='merge'){lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;applyLocalMerged(localPayload,remote&&remote.payload?remote.payload:null);if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rebase(localStorage,newUserId,snapshot(),lastRemoteStamp,'user-merge');ready=true;const uploaded=await upload();if(uploaded){say(remote&&remote.payload?'Offline work was merged with this account’s cloud data.':'Offline work was kept and uploaded as this account’s first backup.');}else{ready=false;status('Sync not verified');say('The merge is saved locally, but cloud sync was not verified. Your local data is preserved; reconnect and retry before assuming the cloud has it.');}}else if(choice==='replace-cloud'){lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rebase(localStorage,newUserId,snapshot(),lastRemoteStamp,'user-confirmed-cloud-replace');ready=true;const uploaded=await upload();if(uploaded){say('Verified: the cloud backup now matches this device’s offline data.');}else{ready=false;status('Cloud replacement not verified');say('The cloud replacement was NOT confirmed. Your offline data remains on this device. Reconnect and retry the data choice; do not assume the cloud was updated.');}}else{if(pendingForUser&&window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.archive(localStorage,newUserId,'user-selected-cloud-restore');if(remote&&remote.payload){applyRemote(remote.payload,newUserId,remote.updated_at||null);lastRemoteStamp=remote.updated_at;if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,lastRemoteStamp);ready=true;say('This device now contains the verified cloud workspace. The cloud backup was not rewritten.');}else{resetToEmpty(newUserId);if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,null);ready=true;enqueueInitialSnapshot(newUserId);const uploaded=await upload();if(!uploaded)say('A clean workspace was saved locally, but its cloud state is not yet verified. Nexus will retry automatically.');else say('Started this account with a clean workspace; offline work was not uploaded.');}}}else if(cloudWorkspaceAutoLoaded){say('Loaded this account’s newer cloud workspace automatically.');}else if(pendingAutomaticallySynced){say('Offline work was uploaded and verified for this account.');}else if(remote&&remote.payload){applyRemote(remote.payload,newUserId,remote.updated_at||null);lastRemoteStamp=remote.updated_at;if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,lastRemoteStamp);say('Loaded this account’s cloud data. Future changes sync automatically.');}else{resetToEmpty(newUserId);ready=true;enqueueInitialSnapshot(newUserId);const uploaded=await upload();if(!uploaded)say('A clean workspace was saved locally, but its cloud state is not yet verified. Nexus will retry automatically.');else say('A clean workspace was created for this account.');}localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;if(ready){clearDetachedOwnerAfterSuccessfulReconciliation(newUserId,detachedWorkspace);status('Synced');}}catch(e){ready=false;status('Sync unavailable');say('Cloud sync error: '+((e&&e.message)||'unknown error')+'. Local changes are preserved and sync is paused. Reconnect to sync again.');console.error('Nexus account initialization failed',e);scheduleRetry();}finally{initializing=false;initializingUserId=null;setControls();if(hasQueuedSession){const nextSession=queuedSession;queuedSession=null;hasQueuedSession=false;setTimeout(()=>initializeSession(nextSession),0);}}}
 function stableJson(v){if(Array.isArray(v))return '['+v.map(stableJson).join(',')+']';if(v&&typeof v==='object')return '{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+stableJson(v[k])).join(',')+'}';return JSON.stringify(v);}
 function sameWorkspace(a,b){return !!a&&!!b&&stableJson({state:a.state||{},featureState:a.featureState||{}})===stableJson({state:b.state||{},featureState:b.featureState||{}});}
 async function upload(){
@@ -202,9 +334,44 @@ async function upload(){
   const {data:authData,error:authError}=await client.auth.getUser();
   if(authError)throw new Error('Supabase could not verify the active login before cloud write: '+authError.message);
   if(!authData.user||authData.user.id!==uploadUserId||!session||session.user.id!==uploadUserId)throw new Error('The active Google/account session changed or could not be verified. Cloud write paused to protect the other account. Sign in again and retry.');
-  const pending=queue?queue.getPending(localStorage,uploadUserId):null;
+  let pending=queue?queue.getPending(localStorage,uploadUserId):null;
+  // Before a write, never trust a stale outbox copy over the live same-account workspace.
+  // Reconcile it against the saved base first, then run curriculum integrity on the exact
+  // payload that is about to leave this device.
+  if(pending){
+   const livePayload=snapshot();
+   if(!sameWorkspace(livePayload,pending.payload)){
+    const aligned=alignPendingToCurrentWorkspace(uploadUserId,livePayload,pending);
+    pending=aligned.pending;
+   }
+  }
   const priorStamp=lastRemoteStamp;attemptedPriorStamp=priorStamp;
-  const payload=pending?pending.payload:snapshot();attemptedPayload=payload;attemptedOperationId=pending?pending.operationId:null;attemptedBase=pending?pending.baseServerVersion:(priorStamp||null);
+  let payload=pending?clone(pending.payload):snapshot();
+  if(window.NexusRecordDataIntegrityDiagnostic&&payload&&payload.state)window.NexusRecordDataIntegrityDiagnostic('cloud-before-upload-repair',payload.state);
+  if(payload&&payload.state&&typeof window.NexusRepairInstalledCurricula==='function'){
+   const repairedState=window.NexusRepairInstalledCurricula(clone(payload.state),uploadUserId);
+   if(stableJson(repairedState)!==stableJson(payload.state)){
+    const repairedPayload={...payload,exportedAt:new Date().toISOString(),state:repairedState};
+    const entries=[];
+    // The previous alignment has established that this pending payload is current. Persist
+    // the repair, ledger, and replacement outbox snapshot as a single local transaction.
+    entries.push({key:window.NexusStorageKey,value:JSON.stringify(repairedState)});
+    entries.push({key:window.NexusFeatureStorageKey,value:JSON.stringify(repairedPayload.featureState||{})});
+    const intentEntry=curriculumIntentLedgerEntry(repairedState,uploadUserId,false);
+    if(intentEntry)entries.push(intentEntry);
+    if(queue){
+     queue.commitWorkspace(localStorage,entries,repairedPayload,{baseServerVersion:pending?pending.baseServerVersion:(priorStamp||null),returnOperationPayload:false});
+     pending=queue.getPending(localStorage,uploadUserId);
+     if(!pending)throw new Error('The repaired workspace could not be queued safely; cloud write was skipped.');
+     payload=clone(pending.payload);
+    }else payload=repairedPayload;
+    state=clone(repairedState);
+    renderAll();
+    if(window.NexusRenderHub)window.NexusRenderHub();
+   }
+  }
+  if(window.NexusRecordDataIntegrityDiagnostic&&payload&&payload.state)window.NexusRecordDataIntegrityDiagnostic('cloud-upload-payload-after-repair',payload.state);
+  attemptedPayload=payload;attemptedOperationId=pending?pending.operationId:null;attemptedBase=pending?pending.baseServerVersion:(priorStamp||null);
   if(pending){
    const before=await fetchRemote(uploadUserId);
    await assertUploadOwner();
@@ -295,10 +462,29 @@ function createSafeAuthStorage(storage){
    removeItem(key){return storage.removeItem(key);}
   };
 }
-async function ensureClient(){if(isUnsafeCloudOrigin())throw new Error('Cloud sync is disabled on this preview/local copy to protect real cloud data.');if(client)return client;const c=config();if(!window.supabase||!window.supabase.createClient)await loadSupabaseLibrary();if(!client){client=window.supabase.createClient(c.url,c.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,storage:createSafeAuthStorage(localStorage)}});client.auth.onAuthStateChange((event,newSession)=>{session=newSession||null;if(event==='TOKEN_REFRESHED'||event==='USER_UPDATED'){session=newSession;setControls();return;}if(event==='SIGNED_OUT'){session=null;ready=false;clearTimeout(timer);clearRetry();if(initializing&&initializingUserId){queuedSession=null;hasQueuedSession=true;}status('Not signed in · offline ready');say('You can continue using your local data offline. Signing out does not erase it.');setControls();return;}if(event==='SIGNED_IN'||event==='INITIAL_SESSION'){const uid=newSession&&newSession.user?newSession.user.id:null;if(uid!==lastUserId||!ready)setTimeout(()=>initializeSession(newSession),0);else{session=newSession;setControls();}}});}return client;}
+async function ensureClient(){if(isUnsafeCloudOrigin())throw new Error('Cloud sync is disabled on this preview/local copy to protect real cloud data.');if(client)return client;const c=config();if(!window.supabase||!window.supabase.createClient)await loadSupabaseLibrary();if(!client){client=window.supabase.createClient(c.url,c.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,storage:createSafeAuthStorage(localStorage)}});client.auth.onAuthStateChange((event,newSession)=>{const previousUserId=session&&session.user?session.user.id:(localStorage.getItem(OWNER_KEY)||'');session=newSession||null;if(event==='TOKEN_REFRESHED'||event==='USER_UPDATED'){session=newSession;setControls();return;}if(event==='SIGNED_OUT'){session=null;ready=false;clearTimeout(timer);clearRetry();if(initializing&&initializingUserId){queuedSession=null;hasQueuedSession=true;}let externalDetachFailed=false;if(previousUserId&&(localStorage.getItem(OWNER_KEY)||'')===previousUserId){try{window.NexusOfflineSyncQueue.detachOwner(localStorage,previousUserId);}catch(detachError){externalDetachFailed=true;console.error('Could not detach the workspace after an external sign-out.',detachError);}}status('Not signed in · offline ready');say(externalDetachFailed?'You are signed out, but Nexus could not safely detach this device from the previous account. Do not make further changes until you reconnect and resolve the workspace ownership warning.':'You can continue studying offline. Changes made while signed out stay on this device and are not uploaded to the previous account. On your next sign-in, Nexus will ask you to reconcile local and cloud data if they differ.');setControls();return;}if(event==='SIGNED_IN'||event==='INITIAL_SESSION'){const uid=newSession&&newSession.user?newSession.user.id:null;if(uid!==lastUserId||!ready)setTimeout(()=>initializeSession(newSession),0);else{session=newSession;setControls();}}});}return client;}
 let connectPromise=null;function connect(){if(isUnsafeCloudOrigin()){previewCloudBlockedMessage();setControls();return Promise.resolve();}if(connectPromise)return connectPromise;connectPromise=(async()=>{try{await ensureClient();const {data:{session:s},error}=await client.auth.getSession();if(error)throw error;await initializeSession(s);}catch(e){status('Connection error');say('Connection error: '+((e&&e.message)||'unknown error')+'. You can still use Nexus offline; reconnect to sign in and sync.');console.error('Nexus connection failed',e);scheduleRetry();}finally{connectPromise=null;}})();return connectPromise;}
 async function googleSignIn(){try{if(isUnsafeCloudOrigin()){previewCloudBlockedMessage();setControls();return;}if(session){say('You are already signed in. Sign out before connecting a different account.');return;}if(!confirm("IMPORTANT: If you sign in with a different account from the one you used last time, your unsynced offline data on this device will be deleted. To preserve it, sign in with your previous account so you can merge it with that account’s cloud data. If you continue with a different account, your unsynced offline data will be discarded. The previous account’s cloud data will remain unchanged. Continue?")){status('Sign-in cancelled');return;}status('Opening Google sign-in…');await ensureClient();const {data,error}=await client.auth.signInWithOAuth({provider:'google',options:{redirectTo:location.origin+location.pathname,queryParams:{prompt:'select_account'}}});if(error)throw error;if(data&&data.url)location.assign(data.url);}catch(e){status('Google sign-in failed');say((e&&e.message)||'Could not start Google sign-in. Check your connection and try again.');console.error('Nexus Google sign-in failed',e);}}
 async function emailSignIn(){try{if(isUnsafeCloudOrigin()){previewCloudBlockedMessage();setControls();return;}if(session){say('You are already signed in. Sign out before connecting a different account.');return;}if(!confirm("IMPORTANT: If you sign in with a different account from the one you used last time, your unsynced offline data on this device will be deleted. To preserve it, sign in with your previous account so you can merge it with that account’s cloud data. If you continue with a different account, your unsynced offline data will be discarded. The previous account’s cloud data will remain unchanged. Continue?")){status('Sign-in cancelled');return;}status('Preparing email sign-in…');await ensureClient();const email=prompt('Enter your email address to receive a sign-in link:');if(!email){status(session&&ready?'Synced':'Not signed in · offline ready');return;}const {error}=await client.auth.signInWithOtp({email,options:{emailRedirectTo:location.origin+location.pathname}});if(error)throw error;say('Check your email for the sign-in link.');status('Email sign-in link sent');}catch(e){status('Email sign-in failed');say((e&&e.message)||'Could not send the sign-in link. Check your connection and try again.');console.error('Nexus email sign-in failed',e);}}
-async function signOut(){if(client)await client.auth.signOut();session=null;ready=false;clearTimeout(timer);clearRetry();status('Not signed in · offline ready');say('You are signed out. Continue using this device offline; data remains local.');setControls();}
+async function signOut(){
+ const owner=session&&session.user?session.user.id:(localStorage.getItem(OWNER_KEY)||'');
+ ready=false;clearTimeout(timer);clearRetry();
+ let detached=false;
+ try{
+  if(owner){if(!window.NexusOfflineSyncQueue||typeof window.NexusOfflineSyncQueue.detachOwner!=='function')throw new Error('Safe workspace detachment is unavailable; sign-out was paused to protect cloud data.');detached=window.NexusOfflineSyncQueue.detachOwner(localStorage,owner);}
+  if(client){const result=await client.auth.signOut();if(result&&result.error)throw result.error;}
+  session=null;ready=false;clearTimeout(timer);clearRetry();status('Not signed in · offline ready');
+  say('You are signed out. Your workspace remains on this device. Changes made while signed out stay local and are not uploaded to the previous account. On your next sign-in, Nexus will ask you to reconcile the local workspace with that account’s cloud backup if they differ.');
+  setControls();
+ }catch(error){
+  if(detached&&owner&&session&&session.user&&session.user.id===owner){
+   try{window.NexusOfflineSyncQueue.attachOwner(localStorage,owner);}catch(reattachError){console.error('Could not reattach workspace after sign-out failed.',reattachError);}
+  }
+  ready=!!(session&&session.user&&session.user.id===owner);
+  status('Sign-out not verified');
+  say(ready?'Sign-out did not complete; you remain signed in to the current account. Your workspace ownership was restored where possible. '+String(error&&error.message||''):'Sign-out could not be verified. Nexus preserved local data and paused cloud writes; check the active account before continuing. '+String(error&&error.message||''));
+  setControls();console.error('Nexus sign-out failed.',error);
+ }
+}
 window.NexusCloudSync={schedule,upload,reconnect:connect};window.addEventListener('online',resumeAfterConnectivity);window.addEventListener('offline',()=>{if(session){status('Offline · changes saved locally');say('You can continue studying. Local changes are queued for this account and will sync when the connection returns.');}});document.addEventListener('visibilitychange',()=>{if(!document.hidden)resumeAfterConnectivity();});window.addEventListener('pageshow',resumeAfterConnectivity);document.addEventListener('DOMContentLoaded',()=>{el('cloudGoogleSignInBtn')?.addEventListener('click',googleSignIn);el('cloudEmailSignInBtn')?.addEventListener('click',emailSignIn);el('cloudSignOutBtn')?.addEventListener('click',signOut);connect();});
 })();

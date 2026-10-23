@@ -3,14 +3,14 @@ import { resolvePreviewConfig, renderConfigScript } from './build.mjs';
 
 const previewEnv = {
   VERCEL_ENV: 'preview',
-  VERCEL_GIT_COMMIT_REF: 'feat/account-bound-offline-sync',
+  VERCEL_GIT_COMMIT_REF: 'fix/curriculum-cloud-data-integrity',
   NEXUS_SUPABASE_URL: 'https://nexus-staging-test.supabase.co',
   NEXUS_SUPABASE_ANON_KEY: 'sb_publishable_test_key_value_long_enough'
 };
 assert.deepEqual(resolvePreviewConfig(previewEnv), {
   url: 'https://nexus-staging-test.supabase.co',
   key: 'sb_publishable_test_key_value_long_enough'
-}, 'the designated preview branch should use the isolated staging project');
+}, 'the data-integrity preview branch should use the isolated staging project');
 assert.equal(resolvePreviewConfig({ ...previewEnv, VERCEL_ENV: 'production' }), null,
   'production must never inject staging environment values');
 assert.equal(resolvePreviewConfig({ ...previewEnv, VERCEL_GIT_COMMIT_REF: 'main' }), null,

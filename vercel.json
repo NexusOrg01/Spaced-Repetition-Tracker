@@ -10,6 +10,15 @@
       ]
     },
     {
+      "source": "/(app-core.js|study-hub.js|fsrs-bundle.js|backup-restore-utils.js|offline-sync-queue.js|workspace-isolation-guard.js|nexus-build-config.js|cloud-sync-recovery.js|workspace-sync-merge.js|cloud-sync.js|curriculum-integrity.js|curricula/catalog.json)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        }
+      ]
+    },
+    {
       "source": "/sw.js",
       "headers": [
         {

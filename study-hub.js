@@ -813,7 +813,17 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
   const baseExportBackup=exportBackup;
   exportBackup=function(){fullBackup();};
   const baseImportBackup=importBackup;
-  importBackup=function(file){if(file)restoreOrMerge(file);};
+  // Curriculum downloads use the core importer; the Study Hub restore handler accepts only backups.
+  // Keep this dispatch ahead of restoreOrMerge so a curriculum packet is never sent to the backup validator.
+  importBackup=async function(file){
+    if(!file)return;
+    try{
+      const data=JSON.parse(await file.text());
+      const transfer=window.NexusCurriculumJsonTransfer;
+      if(transfer&&data&&typeof data==='object'&&!Array.isArray(data)&&data.type===transfer.type)return baseImportBackup(file);
+    }catch(_){}
+    return restoreOrMerge(file);
+  };
   const baseResetAll=resetAll;
   resetAll=function(){baseResetAll();};
   // Add Study Hub to navigation and hook controls.

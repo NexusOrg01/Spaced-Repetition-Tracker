@@ -1,6 +1,6 @@
 (function(root,factory){const api=factory();if(typeof module==='object'&&module.exports)module.exports=api;if(root)root.NexusOfflineSyncQueue=api;})(typeof window!=='undefined'?window:globalThis,function(){
 'use strict';
-const KEY='nexus.cloud.offline-outbox.v1',OWNER='nexus.cloud.last-user-id',STAMP='nexus.cloud.remote-stamps.v1',BASE='nexus.cloud.sync-base.v1',CONFLICTS='nexus.cloud.conflict-recovery.v1',QUARANTINE='nexus.cloud.offline-outbox.corrupt.v1',SCHEMA=1;
+const KEY='nexus.cloud.offline-outbox.v1',OWNER='nexus.cloud.last-user-id',DETACHED_OWNER='nexus.cloud.detached-workspace-owner.v1',STAMP='nexus.cloud.remote-stamps.v1',BASE='nexus.cloud.sync-base.v1',CONFLICTS='nexus.cloud.conflict-recovery.v1',QUARANTINE='nexus.cloud.offline-outbox.corrupt.v1',SCHEMA=1;
 
 const COMPACT_PREFIX='NEXUS_LZW_UTF8_V1:',MAX_COMPACT_CODE=0xF7FF;
 const COMPACT_KEYS=new Set([KEY,BASE,CONFLICTS]);
@@ -86,6 +86,26 @@ function rebaseWithBase(s,owner,payload,base,reason,basePayload,transaction={}){
  return {operation:copy(x),archivedConflicts};
 }
 function archive(s,owner,reason){if(!owner)return false;const q=read(s),key=String(owner),old=getPending(s,key);if(!old)return false;const item={...old,status:'archived',archivedAt:now(),archiveReason:String(reason||'user-selected-cloud-restore')};q.archived.push(item);q.pending[key]=item;write(s,[{key:KEY,value:JSON.stringify(q)}]);return true;}
+function detachOwner(s,owner){
+ if(!s||!owner)throw fail('An account owner is required to detach the local workspace.');
+ const id=String(owner),current=s.getItem(OWNER)||'',detached=s.getItem(DETACHED_OWNER)||'';
+ if(current&&current!==id)throw fail('The local workspace belongs to a different account; it was not detached.');
+ if(!current){if(detached===id)return false;if(detached)throw fail('A different account is already recorded as detached.');return false;}
+ if(detached&&detached!==id)throw fail('A different detached workspace marker already exists.');
+ write(s,[{key:DETACHED_OWNER,value:id},{key:OWNER,value:''}]);
+ return true;
+}
+function attachOwner(s,owner){
+ if(!s||!owner)throw fail('An account owner is required to reattach the local workspace.');
+ const id=String(owner),current=s.getItem(OWNER)||'',detached=s.getItem(DETACHED_OWNER)||'';
+ if(current&&current!==id)throw fail('The local workspace belongs to a different account; it was not reattached.');
+ if(detached&&detached!==id)throw fail('The detached workspace belongs to a different account; it was not reattached.');
+ if(current===id&&!detached)return false;
+ write(s,[{key:OWNER,value:id},{key:DETACHED_OWNER,value:''}]);
+ return true;
+}
+function getDetachedOwner(s){return s&&s.getItem(DETACHED_OWNER)||'';}
+
 function acknowledge(s,owner,operationId,base,stamp){if(!owner||!operationId)throw new Error('Verified account owner and operation ID required.');const q=read(s),key=String(owner),x=q.pending[key],sm=stamps(s);sm[key]=typeof stamp==='string'&&stamp?stamp:null;let acknowledged=false,rebased=false;if(x&&x.status==='pending'&&x.operationId===operationId){delete q.pending[key];acknowledged=true;}else if(x&&x.status==='pending'&&x.baseServerVersion===(base||null)){q.pending[key]={...x,baseServerVersion:sm[key],updatedAt:now()};rebased=true;}write(s,[{key:KEY,value:JSON.stringify(q)},{key:STAMP,value:JSON.stringify(sm)}]);return {acknowledged,rebased};}
 function rememberStamp(s,owner,stamp){if(!owner)return;const sm=stamps(s);sm[String(owner)]=typeof stamp==='string'&&stamp?stamp:null;write(s,[{key:STAMP,value:JSON.stringify(sm)}]);}
 function getStamp(s,owner){if(!owner)return null;const sm=stamps(s);return sm[String(owner)]||null;}
@@ -142,5 +162,5 @@ function compactMetadata(s){
 }
 function summary(s,owner){const q=read(s),x=owner?q.pending[String(owner)]:null;return {schemaVersion:SCHEMA,pendingForOwner:!!(x&&x.status==='pending'),localSequence:x&&x.status==='pending'?x.localSequence:null,archivedForOwner:q.archived.filter(a=>a&&a.ownerUserId===String(owner)).length};}
 function allPending(s){const q=read(s);return Object.keys(q.pending).map(k=>q.pending[k]).filter(x=>x&&x.status==='pending').map(copy);}
-return {KEY,OWNER,STAMP,BASE,CONFLICTS,SCHEMA,commitWorkspace,compactMetadata,getPending,hasPending:(s,o)=>!!getPending(s,o),getAllPending:allPending,rebase,rebaseWithBase,archive,acknowledge,rememberStamp,getStamp,getBase,rememberBase,archiveConflicts,getConflictHistory,summary};
+return {KEY,OWNER,DETACHED_OWNER,STAMP,BASE,CONFLICTS,SCHEMA,commitWorkspace,compactMetadata,getPending,hasPending:(s,o)=>!!getPending(s,o),getAllPending:allPending,rebase,rebaseWithBase,archive,detachOwner,attachOwner,getDetachedOwner,acknowledge,rememberStamp,getStamp,getBase,rememberBase,archiveConflicts,getConflictHistory,summary};
 });
