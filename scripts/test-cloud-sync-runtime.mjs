@@ -1104,4 +1104,54 @@ for (const scenario of [
     'the recovered Commerce pack must be verified in the cloud row');
 }
 
+
+/* Regression: first sign-in after a guest Commerce install must adopt and verify
+   that local workspace directly. It must not re-open the generic restore/replace
+   choice after already rebasing the guest workspace into the new account queue. */
+{
+  const guestCommerceState = {
+    schema: 3,
+    streams: [{ id: commercePack.streamId, name: commercePack.streamName }],
+    subjects: commercePack.subjects.map((subject, order) => ({
+      id: subject.workspaceId, name: subject.name, streamId: commercePack.streamId, order
+    })),
+    topics: commercePack.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+      id: String(subject.legacyIdPrefix || '').replace(/^seed-/i, 'curr-') + '-' + String(index + 1).padStart(2, '0'),
+      subjectId: subject.workspaceId, name, notes: '', custom: false, createdAt: '2026-10-23',
+      lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, reviewCount: 0,
+      streak: 0, lapses: 0, archived: false
+    }))),
+    exams: [], history: [],
+    settings: { theme: 'system', intervalCap: 120, installedCurricula: ['installed:pack:' + commercePack.id], curriculumTombstones: [] }
+  };
+  if (queue.hasPending(storage, accountB.id)) queue.archive(storage, accountB.id, 'guest-adoption-regression-reset');
+  rows.delete(accountB.id);
+  storage.removeItem(OWNER);
+  storage.setItem(STATE_KEY, JSON.stringify(guestCommerceState));
+  storage.setItem(FEATURE_KEY, JSON.stringify(featuresFor(null)));
+  queue.rememberStamp(storage, accountB.id, null);
+  context.state = JSON.parse(JSON.stringify(guestCommerceState));
+  activeSession = { user: accountB };
+  networkAvailable = true;
+
+  await window.NexusCloudSync.reconnect();
+
+  const adoptedLocal = JSON.parse(storage.getItem(STATE_KEY));
+  const adoptedCloud = rows.get(accountB.id)?.payload?.state;
+  assert.equal(storage.getItem(OWNER), accountB.id,
+    'the new account should own the guest workspace after safe adoption');
+  assert.equal(adoptedLocal.topics.length, 46,
+    'first sign-in must preserve all 46 local Commerce topics');
+  assert.ok(adoptedLocal.settings.installedCurricula.includes('installed:pack:' + commercePack.id),
+    'first sign-in must preserve the Commerce install marker locally');
+  assert.equal(adoptedCloud?.topics?.length, 46,
+    'first sign-in must upload and verify the adopted Commerce workspace');
+  assert.ok(adoptedCloud.settings.installedCurricula.includes('installed:pack:' + commercePack.id),
+    'first sign-in must persist the Commerce install marker to the cloud');
+  assert.equal(queue.hasPending(storage, accountB.id), false,
+    'the guest adoption queue should clear only after the cloud snapshot is verified');
+  assert.equal(getElement('cloudStatus').textContent, 'Synced',
+    'successful guest adoption should end in a verified synced state');
+}
+
 console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, and target-account pending-snapshot isolation.');
