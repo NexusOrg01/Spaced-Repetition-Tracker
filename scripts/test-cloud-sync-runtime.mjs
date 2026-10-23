@@ -55,6 +55,8 @@ const storage = new MemoryStorage({
 const localState = stateFor('offline-A');
 let activeSession = { user: accountA };
 let networkAvailable = false;
+let deferNextRemoteRead = false;
+let releaseDeferredRemoteRead = null;
 let simulateAmbiguousCommittedWrite = false;
 let simulatedRacingCloudRow = null;
 let turnOfflineDuringRacingCommit = false;
@@ -104,6 +106,11 @@ function makeQuery(table) {
     update(v) { operation = 'update'; values = v; return builder; },
     insert(v) { operation = 'insert'; values = v; return builder; },
     async maybeSingle() {
+      if (!networkAvailable) throw new Error('simulated offline network');
+      if (deferNextRemoteRead) {
+        deferNextRemoteRead = false;
+        await new Promise(resolve => { releaseDeferredRemoteRead = resolve; });
+      }
       if (!networkAvailable) throw new Error('simulated offline network');
       if (table !== 'nexus_user_data' || !activeSession || userId !== activeSession.user.id) return { data: null, error: null };
       return { data: rows.get(userId) || null, error: null };
@@ -976,6 +983,67 @@ for (const scenario of [
   const afterSignOut = JSON.parse(storage.getItem(STATE_KEY));
   assert.equal(packTopicCount(afterSignOut), 46,
     'Signing out after initial account binding must not remove the installed Commerce pack');
+}
+
+
+ 
+// Regression: a cloud read can be slow while the user finishes an offline edit/install.
+// Initialization must re-read the local workspace after the await instead of applying
+// the stale pre-request snapshot over the newer local Commerce pack.
+{
+  const baseline = payloadFor(null);
+  const baselineStamp = new Date(Date.now() - 90000).toISOString();
+  if (queue.hasPending(storage, accountA.id)) queue.archive(storage, accountA.id, 'hydration-race-regression-reset');
+  if (queue.hasPending(storage, accountB.id)) queue.archive(storage, accountB.id, 'hydration-race-regression-reset');
+  rows.set(accountA.id, { user_id: accountA.id, payload: baseline, updated_at: baselineStamp });
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(baseline.state));
+  storage.setItem(FEATURE_KEY, JSON.stringify(baseline.featureState));
+  context.state = JSON.parse(JSON.stringify(baseline.state));
+  queue.rememberBase(storage, accountA.id, { state: baseline.state, featureState: baseline.featureState }, baselineStamp);
+  queue.rememberStamp(storage, accountA.id, baselineStamp);
+  activeSession = { user: accountA };
+  networkAvailable = true;
+  deferNextRemoteRead = true;
+  releaseDeferredRemoteRead = null;
+
+  const initializing = window.NexusCloudSync.reconnect();
+  for (let i = 0; i < 100 && !releaseDeferredRemoteRead; i++) {
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+  assert.equal(typeof releaseDeferredRemoteRead, 'function',
+    'the test must pause account initialization in the remote read');
+
+  const installedDuringRead = {
+    ...JSON.parse(JSON.stringify(baseline.state)),
+    streams: [{ id: commercePack.streamId, name: commercePack.streamName }],
+    subjects: commercePack.subjects.map((subject, order) => ({
+      id: subject.workspaceId, name: subject.name, streamId: commercePack.streamId, order
+    })),
+    topics: commercePack.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+      id: String(subject.legacyIdPrefix || '').replace(/^seed-/i, 'curr-') + '-' + String(index + 1).padStart(2, '0'),
+      subjectId: subject.workspaceId, name, notes: '', custom: false, createdAt: '2026-10-23',
+      lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, reviewCount: 0,
+      streak: 0, lapses: 0, archived: false
+    }))),
+    settings: {
+      ...baseline.state.settings,
+      installedCurricula: ['installed:pack:' + commercePack.id],
+      curriculumTombstones: []
+    }
+  };
+  context.state = installedDuringRead;
+  storage.setItem(STATE_KEY, JSON.stringify(installedDuringRead));
+  releaseDeferredRemoteRead();
+  await initializing;
+
+  const preserved = JSON.parse(storage.getItem(STATE_KEY));
+  assert.equal(preserved.topics.length, 46,
+    'a newer offline Commerce install must survive a cloud read that started before the install');
+  assert.ok(preserved.settings.installedCurricula.includes('installed:pack:' + commercePack.id),
+    'the Commerce install intent must survive the account hydration race');
+  assert.equal(getElement('cloudStatus').textContent, 'Data choice required',
+    'sync must pause for a data choice instead of applying a stale snapshot over the newer local workspace');
 }
 
 console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, and target-account pending-snapshot isolation.');
