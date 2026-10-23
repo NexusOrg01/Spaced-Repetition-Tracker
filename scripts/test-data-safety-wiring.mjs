@@ -59,12 +59,17 @@ assert.ok(appSource.includes('window.NexusMergeFeatureState=(current,imported,ra
 
 const restore = section(studyHub, 'async function restoreOrMerge(file){', 'function formatElapsed(ms)', 'JSON restore');
 const restoreCommit = restore.indexOf('NexusOfflineSyncQueue.commitWorkspace(localStorage,');
+const repairImportedState = restore.indexOf('window.NexusRepairCurriculumState(nextState)');
+const serializeImportedState = restore.indexOf('const serializedState=JSON.stringify(nextState);');
 const restoreAssignment = restore.indexOf('state=nextState;');
 assert.ok(restore.includes('window.NexusBackupRestoreUtils.validateBackupState(raw)'), 'validate backup records before normalization can silently discard malformed entries');
 assert.ok(appSource.includes('const csvCell=v=>window.NexusBackupRestoreUtils.csvCell(v);') && appSource.includes('function csvCellHub(v){return window.NexusBackupRestoreUtils.csvCell(v);}') && appSource.includes('row.map(value=>window.NexusBackupRestoreUtils.csvCell(value))'), 'all tracker, Study Hub, and analytics CSV exports must share formula-safe cell encoding');
 assert.ok(restoreCommit >= 0 && restoreAssignment > restoreCommit, 'persist both backup sections before replacing in-memory app state');
+assert.ok(repairImportedState >= 0 && serializeImportedState > repairImportedState && restoreCommit > serializeImportedState, 'repair inferred curriculum install intent before serializing and queueing a restored workspace');
 assert.ok(restore.includes('window.NexusCloudSync.schedule()'), 'schedule cloud sync only after a successful restore commit');
-assert.ok(appSource.includes("schema:4,exportedAt:new Date().toISOString(),state,featureState:fsState,syncMetadata:syncStatus"), 'full backups must include schema 4, Study Hub state, and account-bound queue metadata without importing the queue itself');
+const backupPayloadSource = section(studyHub, 'function backupPayload(){', 'function fullBackup()', 'schema 4 full backup export');
+assert.ok(backupPayloadSource.includes("schema:4,exportedAt:new Date().toISOString(),state:backupState,featureState:fsState,syncMetadata:syncStatus"), 'full backups must include schema 4, Study Hub state, and account-bound queue metadata without importing the queue itself');
+assert.ok(backupPayloadSource.includes('window.NexusRepairCurriculumState(JSON.parse(JSON.stringify(state)))'), 'full backups must export inferred curriculum install intent without mutating the live workspace');
 assert.ok(restore.includes("archivePending:mode==='REPLACE'"), 'replace restore must archive the prior pending snapshot after explicit confirmation');
 
 const cloud = section(cloudSync, 'function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){', 'async function initializeSession(s)', 'cloud workspace hydration');

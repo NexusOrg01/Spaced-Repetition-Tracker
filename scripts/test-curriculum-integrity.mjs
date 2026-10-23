@@ -96,6 +96,33 @@ for (let refresh = 0; refresh < 4; refresh++) {
 assert.ok(current.settings.installedCurricula.includes(integrity.keys.pack(pack.id)),
   'legacy pack evidence must be upgraded into durable workspace install intent');
 
+// Reproduce the uploaded schema-4 backup shape: all 46 legacy seed rows are present,
+// but the state has no durable install/tombstone metadata. Import/refresh must infer the
+// pack marker once and then remain idempotent without replacing record IDs or progress.
+{
+  const legacyBackup = {
+    schema: 3,
+    streams: [{ id: pack.streamId, name: pack.streamName }],
+    subjects: pack.subjects.map((subject, order) => ({ id: subject.workspaceId, name: subject.name, streamId: pack.streamId, order })),
+    topics: pack.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+      id: String(subject.legacyIdPrefix).replace(/^curr-/i, 'seed-') + '-' + String(index + 1).padStart(2, '0'),
+      subjectId: subject.workspaceId, name, notes: '', custom: false, createdAt: '2026-10-23',
+      lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, reviewCount: 0,
+      streak: 0, lapses: 0, archived: false
+    }))),
+    history: [], exams: [], settings: { theme: 'system', intervalCap: 120 }
+  };
+  assert.equal(legacyBackup.topics.length, 46);
+  assert.equal(Object.hasOwn(legacyBackup.settings, 'installedCurricula'), false);
+  const firstPass = integrity.repair(legacyBackup, catalogue.packs, { today, makeId });
+  assert.equal(legacyBackup.topics.length, 46, 'legacy import must keep all original Commerce rows without duplication');
+  assert.ok(legacyBackup.settings.installedCurricula.includes(integrity.keys.pack(pack.id)),
+    'legacy full backup must upgrade to durable pack install intent before it is queued for sync');
+  assert.equal(firstPass.changed, true, 'adding missing install metadata must be persisted');
+  assert.equal(integrity.repair(copy(legacyBackup), catalogue.packs, { today, makeId }).changed, false,
+    'refresh repair must be idempotent after legacy backup migration');
+}
+
 // New installs write their intent into the same workspace snapshot as the records.
 const fresh = emptyState();
 integrity.markInstalled(fresh, pack, 'pack');
