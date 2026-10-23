@@ -84,7 +84,7 @@
     if(!options.skipIntentLedger&&typeof api.applyIntentLedger==='function')candidate=api.applyIntentLedger(candidate,localStorage,ownerId,packs);
     const store=window.NexusCurriculumPackStore;
     if(store&&!options.skipPackStore){
-      const hydrated=store.hydrateState(candidate,localStorage,ownerId,packs);
+      const hydrated=store.hydrateState(candidate,localStorage,ownerId,packs,{excludePackIds:Array.isArray(options.excludePackIds)?options.excludePackIds:[]});
       candidate=hydrated.state;
       const byId=new Map(packs.map(pack=>[String(pack.id),pack]));
       for(const storedPack of hydrated.packs||[])if(!byId.has(String(storedPack.id))||!curriculumCatalogLoaded)byId.set(String(storedPack.id),storedPack);
@@ -97,7 +97,7 @@
   // Cloud hydration and merge commits persist the selected JSON syllabus alongside data.
   window.NexusCreateCurriculumPackStoreEntry=function(data,ownerId,options={}){
     const store=window.NexusCurriculumPackStore;
-    return store&&typeof store.createStorageEntry==='function'?store.createStorageEntry(data,localStorage,ownerId,{replace:options.replace===true}):null;
+    return store&&typeof store.createStorageEntry==='function'?store.createStorageEntry(data,localStorage,ownerId,{replace:options.replace===true,excludePackIds:Array.isArray(options.excludePackIds)?options.excludePackIds:[]}):null;
   };
   window.NexusCreateCurriculumIntentLedgerEntry=function(data,ownerId,options={}){
     const api=window.NexusCurriculumIntegrity;
@@ -197,12 +197,20 @@
   function save(options={}){
     try{
       const resetting=options.replaceCurriculumLedger===true||options.replaceCurriculumPacks===true;
-      state=repairInstalledCurricula(state,undefined,{skipIntentLedger:options.replaceCurriculumLedger===true,skipPackStore:resetting});
-      const packEntry=window.NexusCurriculumPackStore?window.NexusCurriculumPackStore.createStorageEntry(state,localStorage,undefined,{replace:resetting}):null;
+      const manualPackId=String(options.manualCurriculumImportPackId||'');
+      const excludePackIds=manualPackId?[manualPackId]:[];
+      if(manualPackId){
+        const belongsToPack=marker=>typeof marker==='string'&&(marker==='installed:pack:'+manualPackId||marker.startsWith('installed:subject:'+manualPackId+':')||marker.startsWith('installed:topic:'+manualPackId+':'));
+        state.settings.installedCurricula=(Array.isArray(state.settings.installedCurricula)?state.settings.installedCurricula:[]).filter(marker=>!belongsToPack(marker));
+        state.settings.curriculumTombstones=(Array.isArray(state.settings.curriculumTombstones)?state.settings.curriculumTombstones:[]).filter(marker=>marker!=='deleted:stream:'+manualPackId&&!String(marker).startsWith('deleted:subject:'+manualPackId+':')&&!String(marker).startsWith('deleted:topic:'+manualPackId+':'));
+        state.settings.installedCurriculumPacks=(Array.isArray(state.settings.installedCurriculumPacks)?state.settings.installedCurriculumPacks:[]).filter(record=>String(record&&record.id)!==manualPackId);
+      }
+      state=repairInstalledCurricula(state,undefined,{skipIntentLedger:options.replaceCurriculumLedger===true||!!manualPackId,skipPackStore:resetting,excludePackIds});
+      const packEntry=window.NexusCurriculumPackStore?window.NexusCurriculumPackStore.createStorageEntry(state,localStorage,undefined,{replace:resetting,excludePackIds}):null;
       const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():(()=>{try{const x=JSON.parse(localStorage.getItem('recall.study.features.v1')||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{}}catch(_){return {}}})();
       if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');
       const entries=[{key:STORAGE_KEY,value:JSON.stringify(state)}];
-      const ledgerEntry=window.NexusCurriculumIntegrity&&window.NexusCurriculumIntegrity.createIntentLedgerEntry?window.NexusCurriculumIntegrity.createIntentLedgerEntry(state,localStorage,{replace:options.replaceCurriculumLedger===true,replacePackIds:options.replaceCurriculumLedgerForPack?[String(options.replaceCurriculumLedgerForPack)]:[],packs:CURRICULUM_PACKS}):null;
+      const ledgerEntry=window.NexusCurriculumIntegrity&&window.NexusCurriculumIntegrity.createIntentLedgerEntry?window.NexusCurriculumIntegrity.createIntentLedgerEntry(state,localStorage,{replace:options.replaceCurriculumLedger===true,replacePackIds:[...(options.replaceCurriculumLedgerForPack?[String(options.replaceCurriculumLedgerForPack)]:[]),...(manualPackId?[manualPackId]:[])],packs:CURRICULUM_PACKS}):null;
       if(ledgerEntry)entries.push(ledgerEntry);
       if(packEntry)entries.push(packEntry);
       window.NexusOfflineSyncQueue.commitWorkspace(localStorage,entries,{state,featureState},{returnOperationPayload:false});
@@ -510,48 +518,18 @@
         const count=installedTopicCount(pack,subject);
         return '<section class="explore-subject-card"><div class="explore-subject-head"><div><h4>'+esc(subject.name)+'</h4><p>'+subject.visibleTopics.length+' matching of '+subject.topics.length+' topics</p></div><span class="explore-count-pill">'+count+'/'+subject.topics.length+' added</span></div><details class="explore-topic-details"><summary>Preview topic list</summary><ol>'+subject.visibleTopics.map(topic=>'<li class="explore-topic-row"><span>'+esc(topic)+'</span><button type="button" class="btn btn-sm" data-explore-action="install-topic" data-pack-id="'+esc(pack.id)+'" data-subject-id="'+esc(subject.id)+'" data-topic-name="'+esc(topic)+'">Add topic</button></li>').join('')+'</ol></details><button type="button" class="btn btn-sm" data-explore-action="install-subject" data-pack-id="'+esc(pack.id)+'" data-subject-id="'+esc(subject.id)+'">'+(count===subject.topics.length?'Check for updates':'Add subject')+'</button></section>';
       }).join('');
-      return '<article class="explore-course-card panel"><div class="explore-course-top"><div><span class="explore-course-kicker">'+esc(pack.country)+' · '+esc(pack.exam)+' · '+esc(pack.language)+'</span><h3>'+esc(pack.title)+'</h3><p>'+esc(pack.description)+'</p></div><span class="explore-count-pill">'+pack.totalTopics+' topics</span></div><div class="explore-course-actions"><button type="button" class="btn btn-primary" data-explore-action="install-pack" data-pack-id="'+esc(pack.id)+'">'+courseAction+' <svg class="nexus-action-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></button><span class="muted small">Install a whole pack, an individual subject, or individual topics. Existing topics and review schedules are preserved.</span></div><div class="explore-subject-grid">'+(cards||'<div class="empty">No matching subjects or topics.</div>')+'</div></article>';
+      return '<article class="explore-course-card panel"><div class="explore-course-top"><div><span class="explore-course-kicker">'+esc(pack.country)+' · '+esc(pack.exam)+' · '+esc(pack.language)+'</span><h3>'+esc(pack.title)+'</h3><p>'+esc(pack.description)+'</p></div><span class="explore-count-pill">'+pack.totalTopics+' topics</span></div><div class="explore-course-actions"><button type="button" class="btn btn-primary" data-explore-action="install-pack" data-pack-id="'+esc(pack.id)+'">'+courseAction+' <svg class="nexus-action-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></button><span class="muted small">Install a whole pack, an individual subject, or individual topics. Choose Install to download a JSON file, then import it from Sync & backup. Existing topics and review schedules are preserved.</span></div><div class="explore-subject-grid">'+(cards||'<div class="empty">No matching subjects or topics.</div>')+'</div></article>';
     }).join('')||'<div class="empty"><strong>No matching curricula</strong>Try another search term.</div>';
   }
   function installCurriculum(packId,subjectId=null,topicName=null){
     const pack=CURRICULUM_PACKS.find(item=>item.id===packId);if(!pack)return;
-    // Resolve the actual selection before changing the hierarchy. An invalid topic must not create an empty stream/subject.
     const selectedSubjects=pack.subjects.map(subject=>({subject,selectedTopics:subject.topics.filter(topic=>topicName===null||topic===topicName)})).filter(entry=>(!subjectId||entry.subject.id===subjectId)&&entry.selectedTopics.length);
-    if(!selectedSubjects.length){notify('Nothing was installed. The selected curriculum item could not be found.');return;}
-    const previousState=state;
-    try{
-      // Stage the entire change on a detached copy so a failed localStorage transaction can restore the prior in-memory state too.
-      state=clone(state);
-      let stream=findPackStream(pack);
-      if(!stream){let streamId=pack.streamId||makeId('stream');if(state.streams.some(item=>item.id===streamId))streamId=makeId('stream');stream={id:streamId,name:pack.streamName};state.streams.push(stream);}
-      let added=0;
-      for(const entry of selectedSubjects){
-        const subject=entry.subject;
-        let installedSubject=findPackSubject(pack,subject,stream);
-        if(!installedSubject){let id=subject.workspaceId||makeId('subject');if(state.subjects.some(item=>item.id===id))id=makeId('subject');installedSubject={id,name:subject.name,streamId:stream.id,order:state.subjects.filter(item=>item.streamId===stream.id).length};state.subjects.push(installedSubject);}
-        for(const name of entry.selectedTopics){
-          if(state.topics.some(topic=>topic.subjectId===installedSubject.id&&topic.name===name))continue;
-          const topicIndex=subject.topics.indexOf(name)+1;let id=subject.legacyIdPrefix?subject.legacyIdPrefix+'-'+String(topicIndex).padStart(2,'0'):makeId('topic');if(state.topics.some(topic=>topic.id===id))id=makeId('topic');
-          state.topics.push({id,subjectId:installedSubject.id,name,notes:'',custom:false,createdAt:today(),lastReviewed:'',lastRating:null,dueDate:'',intervalDays:0,reviewCount:0,streak:0,lapses:0,archived:false});added++;
-        }
-      }
-      const scope=subjectId?(topicName!==null?'topic':'subject'):'pack';
-      if(window.NexusCurriculumPackStore)window.NexusCurriculumPackStore.recordInstall(state,pack,scope,subjectId,topicName,localStorage);
-      if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markInstall(state,pack,scope,subjectId,topicName);
-      if(!save({replaceCurriculumLedgerForPack:pack.id})){
-        state=previousState;renderAll();renderSetup();renderExplore();
-        notify('Installation was not saved. Your previous workspace is unchanged; check browser storage and try again.');
-        return;
-      }
-      // Setup renders the actual Stream/Subject tree, which renderAll() intentionally skips while Explore is active.
-      renderAll();renderSetup();renderExplore();
-      notify(added?'Added '+added+' curriculum topic'+(added===1?'':'s')+' to your Library.':'Everything in this selection is already installed.');
-    }catch(error){
-      state=previousState;
-      try{renderAll();renderSetup();renderExplore();}catch(renderError){console.error('Could not redraw the previous workspace after curriculum install failed.',renderError);}
-      console.error('Nexus curriculum installation failed; prior workspace restored.',error);
-      notify('Installation failed. Your previous workspace was restored; no install was confirmed.');
-    }
+    if(!selectedSubjects.length){notify('Nothing was downloaded. The selected curriculum item could not be found.');return;}
+    const scope=subjectId?(topicName!==null?'topic':'subject'):'pack',topicCount=selectedSubjects.reduce((total,entry)=>total+entry.selectedTopics.length,0);
+    const selectionLabel=scope==='pack'?'the full syllabus pack':scope==='subject'?'the selected subject':'the selected topic';
+    if(!confirm('Download a JSON file for '+selectionLabel+'?\\n\\nAfter downloading, open Sync & backup → Import JSON and select that file. Import adds the selected syllabus items as personal topics; it does not replace your workspace. Existing review schedules and history are preserved.'))return;
+    try{const transfer=window.NexusCurriculumJsonTransfer;if(!transfer||typeof transfer.createPacket!=='function')throw new Error('Curriculum JSON transfer support is unavailable. Refresh Nexus and try again.');const packet=transfer.createPacket(pack,scope,subjectId,topicName);downloadFile(transfer.fileName(packet),JSON.stringify(packet,null,2),'application/json;charset=utf-8');notify('Curriculum JSON downloaded. Import that file from Sync & backup → Import JSON to add '+topicCount+' syllabus topic'+(topicCount===1?'':'s')+'.');}
+    catch(error){console.error('Could not prepare curriculum JSON download.',error);notify('The syllabus file could not be prepared. No workspace data was changed.');}
   }
   function renderTopics(){
     const q=$('topicSearch').value.trim().toLocaleLowerCase(),streamId=$('topicStreamFilter').value,subjectId=$('topicSubjectFilter').value,stat=$('topicStatusFilter').value,sort=$('topicSort').value;
@@ -674,7 +652,29 @@
   const csvCell=v=>window.NexusBackupRestoreUtils.csvCell(v);
   function exportHistory(){const rows=[['Review date','Stream','Subject','Topic','Rating','Rating meaning','Interval days','Next due','Note'],...state.history.map(h=>[h.reviewedAt,h.streamName,h.subjectName,h.topicName,h.rating,RATING_LABELS[h.rating],h.intervalDays,h.dueDate,h.note])];downloadFile(`nexus-history-${today()}.csv`,'\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('History CSV exported.');}
   function exportTopics(){const rows=[['Stream','Subject','Topic','Notes','Last reviewed','Last rating','Next due','Interval days','Review count','Streak','Lapses','Status'],...state.topics.map(t=>{const d=subjectDisplay(t);return[d.stream,d.subject,t.name,t.notes,t.lastReviewed,t.lastRating,t.dueDate,t.intervalDays,t.reviewCount,t.streak,t.lapses,status(t)];})];downloadFile(`nexus-topics-${today()}.csv`,'\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('Topics CSV exported.');}
-  async function importBackup(file){if(!file)return;const previousState=state;try{const parsed=JSON.parse(await file.text()),raw=parsed?.state||parsed;const rawState=normalizeState(raw,{skipCurriculumRepair:true});const restored=window.NexusCurriculumIntegrity?window.NexusCurriculumIntegrity.repair(rawState,CURRICULUM_PACKS,{today,makeId}).state:rawState;if(!restored.topics||!restored.history||!restored.subjects)throw new Error('Required backup sections are missing.');if(!confirm(`Import ${restored.topics.length} topics, ${restored.history.length} history records, and ${restored.exams.length} exams? This replaces current local data.`))return;startUndo('Backup imported.');state=restored;if(!save({replaceCurriculumLedger:true})){state=previousState;renderAll();return;}renderAll();switchView('overview');notify('Backup restored.',true);}catch(err){alert(`Could not import this backup. ${err.message||'Check the file format.'}`);}finally{$('importFile').value='';}}
+  async function importBackup(file){
+    if(!file)return;const previousState=state;
+    try{
+      const parsed=JSON.parse(await file.text()),transfer=window.NexusCurriculumJsonTransfer;
+      const curriculumPacket=transfer&&typeof transfer.parsePacket==='function'?transfer.parsePacket(parsed):null;
+      if(curriculumPacket){
+        const details=transfer.describe(curriculumPacket);
+        if(!confirm('Add '+details.topicCount+' topic(s) from '+details.title+' to the current workspace?\\n\\nThis imports only the selected curriculum items as personal topics. It will not replace your workspace. Existing topics, review schedules, notes, and history are preserved.'))return;
+        startUndo('Curriculum JSON imported.');state=clone(previousState);
+        let result;try{result=transfer.importSelection(state,curriculumPacket,{today,makeId});}catch(importError){state=previousState;throw importError;}
+        if(!save({manualCurriculumImportPackId:curriculumPacket.pack.id})){state=previousState;renderAll();renderSetup();renderExplore();return;}
+        renderAll();renderSetup();renderExplore();switchView('topics');
+        notify('Curriculum added as personal data: '+result.addedTopics+' new topic(s), '+result.addedSubjects+' subject(s), and '+result.addedStreams+' stream(s). Existing topics and review schedules were preserved.',true);return;
+      }
+      const raw=parsed?.state||parsed,rawState=normalizeState(raw,{skipCurriculumRepair:true});
+      const restored=window.NexusCurriculumIntegrity?window.NexusCurriculumIntegrity.repair(rawState,CURRICULUM_PACKS,{today,makeId}).state:rawState;
+      if(!restored.topics||!restored.history||!restored.subjects)throw new Error('Required backup sections are missing.');
+      if(!confirm(`Import ${restored.topics.length} topics, ${restored.history.length} history records, and ${restored.exams.length} exams? This replaces current local data.`))return;
+      startUndo('Backup imported.');state=restored;if(!save({replaceCurriculumLedger:true})){state=previousState;renderAll();return;}
+      renderAll();switchView('overview');notify('Backup restored.',true);
+    }catch(err){state=previousState;alert(`Could not import this JSON file. ${err.message||'Check the file format.'}`);}
+    finally{$('importFile').value='';}
+  }
   function clearHistory(){if(!state.history.length){notify('History is already empty.');return;}if(!confirm('DANGER ZONE — Clear every saved review-history entry?\n\nAll rating analytics, review-history exports and historical counts based on these records will be lost. Topic schedules may remain unchanged. Use Undo immediately or restore a backup if this was accidental. Continue?'))return;startUndo('History cleared.');state.history=[];save();renderAll();notify('History cleared; schedules remain unchanged.',true);}
   function resetAll(){if(!confirm('Reset all local data, including topics, custom streams, subjects, exams, settings and history? Download a backup first if you may need it.'))return;startUndo('Tracker reset.');state=baseState();save({replaceCurriculumLedger:true});renderAll();switchView('overview');notify('Tracker reset.',true);}
   function applyTheme(){document.documentElement.dataset.theme=state.settings.theme;$('themeSelect').value=state.settings.theme;$('themeBtn').textContent=state.settings.theme==='light'?'☀':state.settings.theme==='dark'?'☾':'◐';$('themeBtn').title=`Theme: ${state.settings.theme}. Click to cycle.`;}

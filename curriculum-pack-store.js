@@ -132,14 +132,17 @@ function normalizeSelectionsFromMarkers(state,documents){
  }
  return documents;
 }
-function hydrateState(input,storage,ownerId,availablePacks){
+function markerExcluded(marker,excluded){if(!excluded||!excluded.size)return false;const value=String(marker||'');for(const id of excluded)if(value==='installed:pack:'+id||value.startsWith('installed:subject:'+id+':')||value.startsWith('installed:topic:'+id+':'))return true;return false;}
+function excludedDocuments(rows,excluded){return(Array.isArray(rows)?rows:[]).filter(item=>item&&!excluded.has(String(item.id)));}
+function hydrateState(input,storage,ownerId,availablePacks,options={}){
  if(!rec(input))return {state:input,packs:[]};
  const state=input;ensureSettings(state);
+ const excluded=new Set((Array.isArray(options.excludePackIds)?options.excludePackIds:[]).map(String));
  const packMap=new Map();
  for(const raw of Array.isArray(availablePacks)?availablePacks:[]){const pack=cleanPack(raw);if(pack)packMap.set(pack.id,pack);}
- let documents=mergeDocuments(state.settings.installedCurriculumPacks,readStore(storage,ownerId));
+ let documents=mergeDocuments(excludedDocuments(state.settings.installedCurriculumPacks,excluded),excludedDocuments(readStore(storage,ownerId),excluded));
  // Old installs can have markers without a JSON snapshot. Backfill from the matching catalogue JSON.
- const currentMarkers=state.settings.installedCurricula.filter(value=>typeof value==='string');
+ const currentMarkers=state.settings.installedCurricula.filter(value=>typeof value==='string'&&!markerExcluded(value,excluded));
  for(const marker of currentMarkers){
   const match=marker.match(/^installed:(?:pack|subject|topic):([^:]+)(?::|$)/);
   if(!match||documents.some(item=>item.id===match[1]))continue;
@@ -187,8 +190,9 @@ function createStorageEntry(state,storage,ownerId,options){
  options=options||{};
  if(!rec(state))throw new Error('Cannot persist curriculum packs without a valid workspace.');
  ensureSettings(state);
- const existing=options.replace===true?[]:readStore(storage,ownerId);
- let documents=mergeDocuments(state.settings.installedCurriculumPacks,existing);
+ const excluded=new Set((Array.isArray(options.excludePackIds)?options.excludePackIds:[]).map(String));
+ const existing=options.replace===true?[]:excludedDocuments(readStore(storage,ownerId),excluded);
+ let documents=mergeDocuments(excludedDocuments(state.settings.installedCurriculumPacks,excluded),existing);
  normalizeSelectionsFromMarkers(state,documents);
  state.settings.installedCurriculumPacks=documents;
  const payload={schemaVersion:1,packs:documents};

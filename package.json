@@ -6,7 +6,7 @@
     "node": "22.x"
   },
   "scripts": {
-    "build": "node scripts/build.mjs && node --check app-core.js && node --check curriculum-pack-store.js && node --check cloud-sync.js && node scripts/test-curriculum-integrity.mjs && node scripts/test-curriculum-pack-store.mjs",
-    "test": "node scripts/test-curriculum-integrity.mjs && node scripts/test-curriculum-pack-store.mjs"
+    "build": "node scripts/build.mjs && node --check app-core.js && node --check curriculum-pack-store.js && node --check curriculum-json-transfer.js && node --check cloud-sync.js && node scripts/test-curriculum-integrity.mjs && node scripts/test-curriculum-pack-store.mjs && node scripts/test-curriculum-json-transfer.mjs",
+    "test": "node scripts/test-curriculum-integrity.mjs && node scripts/test-curriculum-pack-store.mjs && node scripts/test-curriculum-json-transfer.mjs"
   }
 }

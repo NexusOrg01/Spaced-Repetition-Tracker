@@ -525,8 +525,10 @@ assert.deepEqual(
   [selectedTopicMarker, otherPackMarker].sort(),
   'reinstalling or changing scope for one pack must not erase other packs or retain stale markers for the affected pack'
 );
-assert.match(appCoreSource, /function installCurriculum\(packId[\s\S]*?markInstall\(state,pack,scope,subjectId,topicName\);[\s\S]*?save\(\{replaceCurriculumLedgerForPack:pack\.id\}\)/,
-  'curriculum installs must replace only that pack’s ledger intent, never the entire ledger');
+assert.match(appCoreSource, /NexusCurriculumJsonTransfer\.createPacket\(pack,scope,subjectId,topicName\)/,
+  'Explore should create a downloadable JSON packet instead of directly mutating curriculum-managed rows');
+assert.match(appCoreSource, /save\(\{manualCurriculumImportPackId:curriculumPacket\.pack\.id\}\)/,
+  'curriculum JSON imports must be committed as personal data while removing only that pack’s recovery intent');
 
 // The install-intent ledger is owner-scoped so account A cannot populate account B.
 const accountLedgerStorage = {
