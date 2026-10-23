@@ -9,6 +9,7 @@ const appCore = readFileSync(resolve(root, 'app-core.js'), 'utf8');
 const studyHub = readFileSync(resolve(root, 'study-hub.js'), 'utf8');
 const appSource = index + '\n' + appCore + '\n' + studyHub;
 const cloudSync = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
+const workspaceMerge = readFileSync(resolve(root, 'workspace-sync-merge.js'), 'utf8');
 const serviceWorker = readFileSync(resolve(root, 'sw.js'), 'utf8');
 const workflow = readFileSync(resolve(root, '.github/workflows/validate-curricula.yml'), 'utf8');
 const guard = readFileSync(resolve(root, 'workspace-isolation-guard.js'), 'utf8');
