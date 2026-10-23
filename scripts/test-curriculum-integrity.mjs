@@ -12,11 +12,11 @@ const cloudSyncSource = readFileSync(new URL('../cloud-sync.js', import.meta.url
 // Guard the real lifecycle wiring, not just the pure repair helper: the authoritative
 // catalogue must trigger a second repair, and every cloud/account snapshot must be repaired
 // before it is committed to local storage.
-assert.match(appCoreSource, /CURRICULUM_PACKS=loaded;[\s\S]*NexusCurriculumIntegrity\.applyIntentLedger\(clone\(state\),localStorage,undefined,loaded\)[\s\S]*NexusCurriculumIntegrity\.repair\(candidate,loaded/);
+assert.match(appCoreSource, /CURRICULUM_PACKS=loaded;curriculumCatalogLoaded=true;[\s\S]*repairInstalledCurricula\(clone\(state\)\)/);
 assert.match(appCoreSource, /if\(JSON\.stringify\(repaired\)!==JSON\.stringify\(previousState\)\)[\s\S]*state=repaired;[\s\S]*if\(save\(\)\)\{renderAll\(\);renderSetup\(\);renderExplore\(\);\}/);
-assert.match(appCoreSource, /function save\(options=\{\}\)\{try\{[\s\S]*NexusCurriculumIntegrity\.applyIntentLedger\(state,localStorage,undefined,CURRICULUM_PACKS\)[\s\S]*NexusCurriculumIntegrity\.repair\(state,CURRICULUM_PACKS/,
+assert.match(appCoreSource, /function save\(options=\{\}\)\{[\s\S]*repairInstalledCurricula\(state,undefined,[\s\S]*NexusCurriculumPackStore\.createStorageEntry\(state,localStorage,undefined,[\s\S]*commitWorkspace\(localStorage,entries/ ,
   'each local persistence transaction must rehydrate durable install intent and repair catalogue rows before writing');
-assert.match(cloudSyncSource, /function applyWorkspaceSnapshot\(nextState,rawFeatures,ownerId,options=\{\}\)[\s\S]*NexusRepairInstalledCurricula\(nextState,ownerId\)[\s\S]*JSON\.stringify\(safeState\)/);
+assert.match(cloudSyncSource, /function applyWorkspaceSnapshot\(nextState,rawFeatures,ownerId,options=\{\}\)[\s\S]*NexusRepairInstalledCurricula\(nextState,ownerId,\{skipIntentLedger:options\.replaceCurriculumIntent===true,skipPackStore:replaceCurriculumPacks\}\)[\s\S]*JSON\.stringify\(safeState\)/);
 assert.match(cloudSyncSource, /NexusRepairInstalledCurricula\(clone\(incomingState\),ownerId\)/);
 assert.match(appCoreSource, /window\.NexusCreateCurriculumIntentLedgerEntry=function\(data,ownerId,options=\{\}\)/,
   'cloud snapshot transactions must have an owner-scoped curriculum ledger writer');
