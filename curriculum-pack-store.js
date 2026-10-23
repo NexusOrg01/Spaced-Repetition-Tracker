@@ -125,8 +125,10 @@ function normalizeSelectionsFromMarkers(state,documents){
    const subjects=new Set(selections.filter(item=>item.scope==='subject').map(item=>item.subjectId));
    selections=selections.filter(item=>item.scope==='subject'||(item.scope==='topic'&&!subjects.has(item.subjectId)));
   }
+  const currentKeys=record.selections.map(selectionKey).sort();
+  const nextKeys=selections.map(selectionKey).sort();
+  if(currentKeys.length!==nextKeys.length||currentKeys.some((key,index)=>key!==nextKeys[index]))record.updatedAt=new Date().toISOString();
   record.selections=selections;
-  record.updatedAt=new Date().toISOString();
  }
  return documents;
 }
