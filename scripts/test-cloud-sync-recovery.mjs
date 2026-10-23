@@ -53,9 +53,9 @@ assert.ok(cloud.includes('canAutoResumePending(pendingForUser,remote&&remote.upd
   cloud.includes('const autoUploaded=await upload()') &&
   cloud.includes('pendingAutomaticallySynced'),
   'unchanged remote revisions should automatically upload the durable pending snapshot');
-assert.ok(cloud.includes('if(pendingForUser&&window.NexusCloudSyncRecovery&&window.NexusCloudSyncRecovery.canAutoResumePending(') &&
+assert.ok(cloud.includes('if(pendingForUser&&owner===newUserId&&window.NexusCloudSyncRecovery&&window.NexusCloudSyncRecovery.canAutoResumePending(') &&
   !cloud.includes('if(localHasWork&&pendingForUser&&window.NexusCloudSyncRecovery'),
-  'a durable pending snapshot must be drained even when state comparison alone misses metadata-only differences');
+  'a durable pending snapshot must auto-resume when the observed revision is unchanged only after local workspace ownership is established');
 assert.ok(cloud.includes("else if(pendingAutomaticallySynced){say('Offline work was uploaded and verified for this account.');}") &&
   !cloud.includes("else if(pendingAutomaticallySynced){lastRemoteStamp=remote&&remote.updated_at||null;"),
   'automatic recovery must retain the verified post-upload revision for the next conditional write');

@@ -710,7 +710,7 @@
       alert('CSV data was saved, but the screen did not refresh cleanly. Reload Nexus to view the imported topics.');
     }
   }
-  function backupPayload(){let syncStatus={schemaVersion:1,accountBoundQueueExcluded:true,queueStatus:'unavailable'};try{if(window.NexusOfflineSyncQueue)syncStatus={...syncStatus,...window.NexusOfflineSyncQueue.summary(localStorage,localStorage.getItem('nexus.cloud.last-user-id')),queueStatus:'local-only-metadata'};}catch(_){}return {app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state,featureState:fsState,syncMetadata:syncStatus};}
+  function backupPayload(){let backupState=state;try{if(window.NexusRepairCurriculumState)backupState=window.NexusRepairCurriculumState(JSON.parse(JSON.stringify(state)));}catch(error){console.warn('Could not normalize curriculum metadata for the backup; original workspace data will still be exported.',error);}let syncStatus={schemaVersion:1,accountBoundQueueExcluded:true,queueStatus:'unavailable'};try{if(window.NexusOfflineSyncQueue)syncStatus={...syncStatus,...window.NexusOfflineSyncQueue.summary(localStorage,localStorage.getItem('nexus.cloud.last-user-id')),queueStatus:'local-only-metadata'};}catch(_){}return {app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:backupState,featureState:fsState,syncMetadata:syncStatus};}
   function fullBackup(){fsState.lastBackupAt=today();saveFs();downloadBlob(`nexus-full-backup-${today()}.json`,JSON.stringify(backupPayload(),null,2),'application/json;charset=utf-8');notify('Full backup downloaded. Keep an extra copy outside the browser.');renderHub();}
   async function restoreOrMerge(file){
     if(!file)return;
@@ -747,6 +747,9 @@
           ? window.NexusBackupRestoreUtils.mergeFeatureState(fsState,importedFeatures,defaults,data.featureState)
           : window.NexusBackupRestoreUtils.normalizeFeatureState(fsState,defaults);
       }
+      // Full-backup imports can predate durable curriculum markers. Repair before
+      // writing the local workspace or queuing the cloud snapshot so the two stay aligned.
+      if(typeof window.NexusRepairCurriculumState==='function')nextState=window.NexusRepairCurriculumState(nextState);
       const serializedState=JSON.stringify(nextState);
       const serializedFeatures=JSON.stringify(nextFeatures);
       if(mode==='REPLACE'&&window.NexusOfflineSyncQueue.hasPending(localStorage,localStorage.getItem('nexus.cloud.last-user-id'))&&!confirm('This account has an unsynced local snapshot. Continue with REPLACE? The pending snapshot will be preserved in local recovery metadata, and only the restored workspace will be queued for upload.'))return;

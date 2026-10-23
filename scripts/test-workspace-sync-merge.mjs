@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 const require=createRequire(import.meta.url);
+require('../curriculum-integrity.js');
 const merge=require('../workspace-sync-merge.js');
 const snap=(state,featureState={})=>({app:'Nexus',schema:4,exportedAt:'2026-10-20T00:00:00.000Z',state:{schema:3,streams:[{id:'s',name:'General'}],subjects:[{id:'sub',name:'Commerce',streamId:'s',order:0}],topics:[],history:[],exams:[],settings:{theme:'system',intervalCap:120},...state},featureState:{journal:[],papers:[],goals:[],studyLogs:[],selectedTopicIds:[],settings:{dailyMinutes:90},...featureState}});
 {
@@ -99,5 +100,37 @@ const snap=(state,featureState={})=>({app:'Nexus',schema:4,exportedAt:'2026-10-2
  assert.equal(topic.name,'Offline topic rename','a local topic-name edit must survive an independent cloud edit when the normalized optional FSRS field is undefined');
  assert.equal(topic.notes,'Cloud notes edit','an independent cloud notes edit must survive a local name edit');
  assert.equal(result.conflicts.length,0,'independent fields on the same topic are not conflicts');
+}
+{
+ const packId='sl-al-commerce-si';
+ const packMarker='installed:pack:'+packId;
+ const deletedMarker='deleted:pack:'+packId;
+ const markers=(installedCurricula=[],curriculumTombstones=[])=>({theme:'system',intervalCap:120,installedCurricula,curriculumTombstones});
+ const base=snap({settings:markers()});
+ const local=snap({settings:markers([packMarker],[])});
+ const remote=snap({settings:markers([],[deletedMarker])});
+ const result=merge.merge(base,local,remote);
+ assert.ok(result.payload.state.settings.installedCurricula.includes(packMarker),
+  'a fresh local Commerce install marker must survive a conflicting stale cloud deletion');
+ assert.ok(!result.payload.state.settings.curriculumTombstones.includes(deletedMarker),
+  'a fresh local Commerce install must remove the stale cloud pack-deletion tombstone');
+ assert.ok(result.conflicts.some(c=>c.path.includes('curriculumIntent')&&c.resolution==='local'),
+  'the opposing install/delete intent must be reported as a locally resolved conflict');
+}
+{
+ const packId='sl-al-commerce-si';
+ const packMarker='installed:pack:'+packId;
+ const deletedMarker='deleted:pack:'+packId;
+ const markers=(installedCurricula=[],curriculumTombstones=[])=>({theme:'system',intervalCap:120,installedCurricula,curriculumTombstones});
+ const base=snap({settings:markers()});
+ const local=snap({settings:markers([],[deletedMarker])});
+ const remote=snap({settings:markers([packMarker],[])});
+ const result=merge.merge(base,local,remote);
+ assert.ok(result.payload.state.settings.curriculumTombstones.includes(deletedMarker),
+  'a deliberate local Commerce removal must retain its deletion tombstone');
+ assert.ok(!result.payload.state.settings.installedCurricula.includes(packMarker),
+  'a deliberate local Commerce removal must defeat a stale remote install marker');
+ assert.ok(result.conflicts.some(c=>c.path.includes('curriculumIntent')&&c.resolution==='local'),
+  'the opposing deletion/install intent must be reported as a locally resolved conflict');
 }
 console.log('Automatic three-way workspace merge tests passed.');

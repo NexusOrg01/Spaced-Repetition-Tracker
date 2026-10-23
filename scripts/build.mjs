@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = resolve(root, 'dist');
 const LIVE_HOST = 'txugbdavblpettcnhcxl.supabase.co';
-const PREVIEW_BRANCH = 'feat/account-bound-offline-sync';
+const PREVIEW_BRANCHES = new Set(['feat/account-bound-offline-sync', 'ai-dev/rebuild-commerce-sync-integrity', 'ai-dev/fix-signin-preserve-offline-workspace', 'ai-dev/fix-commerce-pending-overwrite', 'ai-dev/rebuild-explore-curriculum-lifecycle', 'ai-dev/fresh-curriculum-sync-rebuild']);
 
 function isAllowedAnonKey(key) {
   if (key.startsWith('sb_secret_') || key.length < 20) return false;
@@ -21,9 +21,25 @@ function isAllowedAnonKey(key) {
 }
 
 export function resolvePreviewConfig(env) {
-  if (env.VERCEL_ENV !== 'preview' || env.VERCEL_GIT_COMMIT_REF !== PREVIEW_BRANCH) return null;
+  const allowedVercelPreview = env.VERCEL_ENV === 'preview' && PREVIEW_BRANCHES.has(String(env.VERCEL_GIT_COMMIT_REF || ''));
+  // CF_PAGES is normally set by Pages, but some build wrappers omit it. The exact
+  // allowlisted Pages branch plus strict separate-project URL/key validation below
+  // is the gate; never rely on the provider flag alone to decide cloud eligibility.
+  const cloudflareBranch = String(env.CF_PAGES_BRANCH || '').trim();
+  const allowedCloudflarePreview = PREVIEW_BRANCHES.has(cloudflareBranch);
+  if (!allowedVercelPreview && !allowedCloudflarePreview) return null;
   const rawUrl = String(env.NEXUS_SUPABASE_URL || '').trim();
   const key = String(env.NEXUS_SUPABASE_ANON_KEY || '').trim();
+  const usesLegacyRequiredStaging = env.VERCEL_ENV === 'preview' &&
+    env.VERCEL_GIT_COMMIT_REF === 'feat/account-bound-offline-sync';
+  // The Commerce-fix preview stays offline-safe until both values from a separate test project reach the build.
+  // A partially configured preview must never receive half a cloud configuration or fail its static build.
+  if ((!rawUrl || !key) && !usesLegacyRequiredStaging) {
+    if (PREVIEW_BRANCHES.has(cloudflareBranch)) {
+      console.log('Cloudflare preview config diagnostics: branch=allowlisted; CF_PAGES=' + (env.CF_PAGES || 'unset') + '; URL configured=' + Boolean(rawUrl) + '; anon key configured=' + Boolean(key) + '. Values are intentionally not logged.');
+    }
+    return null;
+  }
   if (!rawUrl || !key) throw new Error('Preview branch requires both NEXUS_SUPABASE_URL and NEXUS_SUPABASE_ANON_KEY.');
   let url;
   try { url = new URL(rawUrl); } catch { throw new Error('NEXUS_SUPABASE_URL must be a valid HTTPS Supabase project URL.'); }
@@ -79,7 +95,14 @@ async function copySiteFiles() {
   const config = resolvePreviewConfig(process.env);
   await writeFile(join(output, 'nexus-build-config.js'), renderConfigScript(config), 'utf8');
   assert.ok(await readdir(output).then(items => items.includes('index.html')), 'static build must include index.html');
-  console.log(config ? 'Built isolated Supabase staging config for the designated Preview branch.' : 'Built static Nexus output without injecting staging credentials.');
+  if (config) {
+    console.log('Built isolated Supabase staging config for the designated Preview branch.');
+  } else {
+    console.log('Built static Nexus output without injecting staging credentials.');
+    if (PREVIEW_BRANCHES.has(String(process.env.CF_PAGES_BRANCH || '').trim())) {
+      console.log('Cloudflare preview config diagnostics: CF_PAGES=' + (process.env.CF_PAGES || 'unset') + '; branch=allowlisted; URL configured=' + Boolean(String(process.env.NEXUS_SUPABASE_URL || '').trim()) + '; anon key configured=' + Boolean(String(process.env.NEXUS_SUPABASE_ANON_KEY || '').trim()) + '. Values are intentionally not logged.');
+    }
+  }
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : '';
