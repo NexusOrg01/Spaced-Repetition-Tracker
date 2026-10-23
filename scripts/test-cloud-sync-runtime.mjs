@@ -1048,4 +1048,53 @@ for (const scenario of [
     'the newer Commerce install must either be verified in cloud or remain queued for recovery');
 }
 
+// Regression: both the current local workspace and cloud row can share an incomplete
+// snapshot after an earlier bad write. In that case ordinary local-vs-cloud comparison
+// says "equal"; the last verified base must still recover Commerce install intent and rows.
+{
+  const makeInstalledCommerce = () => {
+    const state = stateFor(null);
+    state.streams = [{ id: commercePack.streamId, name: commercePack.streamName }];
+    state.subjects = commercePack.subjects.map((subject, order) => ({
+      id: subject.workspaceId, name: subject.name, streamId: commercePack.streamId, order
+    }));
+    state.topics = commercePack.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+      id: String(subject.legacyIdPrefix || '').replace(/^seed-/i, 'curr-') + '-' + String(index + 1).padStart(2, '0'),
+      subjectId: subject.workspaceId, name, notes: '', custom: false, createdAt: '2026-10-23',
+      lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, reviewCount: 0,
+      streak: 0, lapses: 0, archived: false
+    })));
+    state.settings.installedCurricula = ['installed:pack:' + commercePack.id];
+    state.settings.curriculumTombstones = [];
+    return { app: 'Nexus Spaced Repetition Tracker', schema: 4, exportedAt: new Date().toISOString(), state, featureState: featuresFor(null) };
+  };
+  const verifiedBase = makeInstalledCommerce();
+  const incomplete = payloadFor(null);
+  const baseStamp = new Date(Date.now() - 5000).toISOString();
+  const remoteStamp = new Date(Date.now() - 1000).toISOString();
+  if (queue.hasPending(storage, accountA.id)) queue.archive(storage, accountA.id, 'same-incomplete-state-recovery-reset');
+  if (queue.hasPending(storage, accountB.id)) queue.archive(storage, accountB.id, 'same-incomplete-state-recovery-reset');
+  rows.set(accountA.id, { user_id: accountA.id, payload: JSON.parse(JSON.stringify(incomplete)), updated_at: remoteStamp });
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(incomplete.state));
+  storage.setItem(FEATURE_KEY, JSON.stringify(incomplete.featureState));
+  context.state = JSON.parse(JSON.stringify(incomplete.state));
+  queue.rememberBase(storage, accountA.id, { state: verifiedBase.state, featureState: verifiedBase.featureState }, baseStamp);
+  queue.rememberStamp(storage, accountA.id, remoteStamp);
+  activeSession = { user: accountA };
+  networkAvailable = true;
+
+  await window.NexusCloudSync.reconnect();
+
+  const repairedLocal = JSON.parse(storage.getItem(STATE_KEY));
+  const repairedRemote = rows.get(accountA.id)?.payload?.state;
+  const countCommerce = state => (state?.topics || []).filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length;
+  assert.equal(countCommerce(repairedLocal), 46,
+    'refresh must recover Commerce when local and cloud match an incomplete snapshot but the verified base contains the installed pack');
+  assert.ok(repairedLocal.settings.installedCurricula.includes('installed:pack:' + commercePack.id),
+    'refresh must recover the missing Commerce install marker from the verified base');
+  assert.equal(countCommerce(repairedRemote), 46,
+    'the recovered Commerce pack must be verified in the cloud row');
+}
+
 console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, and target-account pending-snapshot isolation.');
