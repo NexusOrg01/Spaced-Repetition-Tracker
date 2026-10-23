@@ -1,8 +1,8 @@
 (function(root,factory){
-  const api=factory();
+  const api=factory(root);
   if(typeof module==='object'&&module.exports)module.exports=api;
   if(root)root.NexusWorkspaceSyncMerge=api;
-})(typeof window!=='undefined'?window:(typeof globalThis!=='undefined'?globalThis:null),function(){
+})(typeof window!=='undefined'?window:(typeof globalThis!=='undefined'?globalThis:null),function(root){
   'use strict';
   const ABSENT=Symbol('absent');
   const isObject=x=>!!x&&typeof x==='object'&&!Array.isArray(x);
@@ -20,6 +20,11 @@
     conflicts.push({path,base:shown(base),local:shown(local),remote:shown(remote),basePresent:base!==ABSENT,localPresent:local!==ABSENT,remotePresent:remote!==ABSENT,resolution:resolution||'local'});
   }
   function mergeValue(base,local,remote,path,conflicts){
+    // Curriculum install intent and deletion tombstones are sets, not opaque settings
+    // blobs. Merge membership against the same base so a one-sided install or delete
+    // survives a three-way cloud reconciliation without clobbering unrelated markers.
+    if(/(?:^|\.)settings\.(installedCurricula|curriculumTombstones)$/.test(path)&&
+      (Array.isArray(base)||Array.isArray(local)||Array.isArray(remote)))return mergeSet(base,local,remote);
     if(same(local,remote))return copy(local);
     if(same(local,base))return copy(remote);
     if(same(remote,base))return copy(local);
@@ -142,6 +147,17 @@
     const conflicts=[];
     const state=mergeSection(base.state,localPayload.state,remotePayload.state,'state',['streams','subjects','topics','history','exams'],conflicts);
     const featureState=mergeSection(base.featureState,localPayload.featureState||{},remotePayload.featureState||{},'featureState',['journal','papers','goals','studyLogs'],conflicts);
+    if(root&&root.NexusCurriculumIntegrity&&typeof root.NexusCurriculumIntegrity.reconcileMergedIntents==='function'){
+      const integrity=root.NexusCurriculumIntegrity;
+      const intentResult=integrity.reconcileMergedIntents(base.state,localPayload.state,remotePayload.state,state);
+      if(intentResult&&Array.isArray(intentResult.conflicts))conflicts.push(...intentResult.conflicts);
+      // A newer cloud snapshot can be internally valid JSON but incomplete. Restore missing
+      // records from this device's known-good synced baseline when install intent still says
+      // the catalogue is present and there is no explicit deletion tombstone.
+      if(typeof integrity.restoreMissingInstalledRows==='function'&&Array.isArray(root.NexusCurriculumPacks)){
+        integrity.restoreMissingInstalledRows(base.state,localPayload.state,remotePayload.state,state,root.NexusCurriculumPacks);
+      }
+    }
     const payload={...remotePayload,state,featureState,exportedAt:new Date().toISOString()};
     return {payload,conflicts};
   }

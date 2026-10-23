@@ -59,12 +59,17 @@ assert.ok(appSource.includes('window.NexusMergeFeatureState=(current,imported,ra
 
 const restore = section(studyHub, 'async function restoreOrMerge(file){', 'function formatElapsed(ms)', 'JSON restore');
 const restoreCommit = restore.indexOf('NexusOfflineSyncQueue.commitWorkspace(localStorage,');
+const repairImportedState = restore.indexOf('window.NexusRepairCurriculumState(nextState)');
+const serializeImportedState = restore.indexOf('const serializedState=JSON.stringify(nextState);');
 const restoreAssignment = restore.indexOf('state=nextState;');
 assert.ok(restore.includes('window.NexusBackupRestoreUtils.validateBackupState(raw)'), 'validate backup records before normalization can silently discard malformed entries');
 assert.ok(appSource.includes('const csvCell=v=>window.NexusBackupRestoreUtils.csvCell(v);') && appSource.includes('function csvCellHub(v){return window.NexusBackupRestoreUtils.csvCell(v);}') && appSource.includes('row.map(value=>window.NexusBackupRestoreUtils.csvCell(value))'), 'all tracker, Study Hub, and analytics CSV exports must share formula-safe cell encoding');
 assert.ok(restoreCommit >= 0 && restoreAssignment > restoreCommit, 'persist both backup sections before replacing in-memory app state');
+assert.ok(repairImportedState >= 0 && serializeImportedState > repairImportedState && restoreCommit > serializeImportedState, 'repair inferred curriculum install intent before serializing and queueing a restored workspace');
 assert.ok(restore.includes('window.NexusCloudSync.schedule()'), 'schedule cloud sync only after a successful restore commit');
-assert.ok(appSource.includes("schema:4,exportedAt:new Date().toISOString(),state,featureState:fsState,syncMetadata:syncStatus"), 'full backups must include schema 4, Study Hub state, and account-bound queue metadata without importing the queue itself');
+const backupPayloadSource = section(studyHub, 'function backupPayload(){', 'function fullBackup()', 'schema 4 full backup export');
+assert.ok(backupPayloadSource.includes("schema:4,exportedAt:new Date().toISOString(),state:backupState,featureState:fsState,syncMetadata:syncStatus"), 'full backups must include schema 4, Study Hub state, and account-bound queue metadata without importing the queue itself');
+assert.ok(backupPayloadSource.includes('window.NexusRepairCurriculumState(JSON.parse(JSON.stringify(state)))'), 'full backups must export inferred curriculum install intent without mutating the live workspace');
 assert.ok(restore.includes("archivePending:mode==='REPLACE'"), 'replace restore must archive the prior pending snapshot after explicit confirmation');
 
 const cloud = section(cloudSync, 'function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){', 'async function initializeSession(s)', 'cloud workspace hydration');
@@ -72,7 +77,7 @@ const cloudCommit = cloud.indexOf('commitLocalStorageAtomically(localStorage,ent
 const cloudCompact = cloud.indexOf('window.NexusOfflineSyncQueue.compactMetadata(localStorage)');
 assert.ok(cloudCompact >= 0 && cloudCommit > cloudCompact, 'compact legacy sync snapshots before cloud hydration writes the restored workspace');
 
-const cloudAssignment = cloud.indexOf('state=nextState;');
+const cloudAssignment = cloud.indexOf('state=safeState;');
 assert.ok(cloudCommit >= 0 && cloudAssignment > cloudCommit, 'persist cloud workspace before replacing in-memory state');
 assert.ok(cloud.includes('entries.push({key:OWNER_KEY,value:String(ownerId)})'), 'account owner marker shares the workspace transaction');
 assert.ok(cloud.includes('function applyRemote(payload,ownerId,serverVersion)'), 'cloud hydration accepts an account owner and the matching cloud revision to commit atomically');
@@ -111,10 +116,10 @@ assert.ok(!accountChoice.includes('Cloud replacement cancelled; the account clou
 assert.ok(accountChoice.includes('lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;'), 'confirmed cloud replacement must retain the observed revision for conditional writes');
 assert.ok(accountChoice.includes("if(choice==='merge'){lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;applyLocalMerged("), 'merging with an existing cloud backup must use the fetched revision for a conditional write');
 
-assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v24';"), 'cache version must advance after adding the workspace merge engine');
-assert.ok(serviceWorker.includes("'./app-core.js'") && serviceWorker.includes("'./study-hub.js'") && serviceWorker.includes("'./backup-restore-utils.js'") && serviceWorker.includes("'./offline-sync-queue.js'") && serviceWorker.includes("'./workspace-isolation-guard.js'") && serviceWorker.includes("'./nexus-build-config.js'") && serviceWorker.includes("'./cloud-sync-recovery.js'") && serviceWorker.includes("'./cloud-sync.js'"), 'offline app shell must cache both safety helpers');
+assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v27';"), 'cache version must advance after adding the workspace merge engine');
+assert.ok(serviceWorker.includes("'./app-core.js'") && serviceWorker.includes("'./study-hub.js'") && serviceWorker.includes("'./explore-curriculum.js'") && serviceWorker.includes("'./backup-restore-utils.js'") && serviceWorker.includes("'./offline-sync-queue.js'") && serviceWorker.includes("'./workspace-isolation-guard.js'") && serviceWorker.includes("'./nexus-build-config.js'") && serviceWorker.includes("'./cloud-sync-recovery.js'") && serviceWorker.includes("'./cloud-sync.js'"), 'offline app shell must cache both safety helpers');
 const networkFirstSources = serviceWorker.split('const networkFirst=')[1]?.split(';')[0] || '';
-assert.ok(networkFirstSources.includes("url.pathname.endsWith('/app-core.js')") && networkFirstSources.includes("url.pathname.endsWith('/study-hub.js')") && networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/offline-sync-queue.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-isolation-guard.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-build-config.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync-recovery.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync.js')"), 'critical helpers and FSRS scripts must revalidate online and fall back to cache offline');
+assert.ok(networkFirstSources.includes("url.pathname.endsWith('/app-core.js')") && networkFirstSources.includes("url.pathname.endsWith('/study-hub.js')") && networkFirstSources.includes("url.pathname.endsWith('/explore-curriculum.js')") && networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/offline-sync-queue.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-isolation-guard.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-build-config.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync-recovery.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync.js')"), 'critical helpers and FSRS scripts must revalidate online and fall back to cache offline');
 assert.ok(workflow.includes('node scripts/test-offline-sync-queue.mjs') && workflow.includes('node scripts/test-cloud-sync-recovery.mjs') && workflow.includes('node scripts/test-workspace-isolation-guard.mjs') && workflow.includes('node scripts/test-data-safety-wiring.mjs'), 'CI must run the queue and integration-wiring checks');
 
 

@@ -10,6 +10,13 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const backup = require('../backup-restore-utils.js');
 const queue = require('../offline-sync-queue.js');
 const recovery = require('../cloud-sync-recovery.js');
+const curriculumIntegrity = require('../curriculum-integrity.js');
+// workspace-sync-merge.js captures the browser global at module load. Mirror the
+// browser's window.NexusCurriculumIntegrity on Node's globalThis for runtime tests.
+globalThis.NexusCurriculumIntegrity = curriculumIntegrity;
+const commerceCatalogue = JSON.parse(readFileSync(resolve(root, 'curricula/catalog.json'), 'utf8'));
+globalThis.NexusCurriculumPacks = commerceCatalogue.packs;
+const commercePack = commerceCatalogue.packs.find(pack => pack.id === 'sl-al-commerce-si');
 const workspaceMerge = require('../workspace-sync-merge.js');
 const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
 const OWNER = queue.OWNER;
@@ -51,6 +58,8 @@ const storage = new MemoryStorage({
 const localState = stateFor('offline-A');
 let activeSession = { user: accountA };
 let networkAvailable = false;
+let deferNextRemoteRead = false;
+let releaseDeferredRemoteRead = null;
 let simulateAmbiguousCommittedWrite = false;
 let simulatedRacingCloudRow = null;
 let turnOfflineDuringRacingCommit = false;
@@ -73,6 +82,14 @@ const window = {
   NexusBackupRestoreUtils: backup,
   NexusOfflineSyncQueue: queue,
   NexusCloudSyncRecovery: recovery,
+  NexusCurriculumIntegrity: curriculumIntegrity,
+  NexusRepairCurriculumState: data => {
+    const normalized = context.normalizeState(data);
+    return curriculumIntegrity.repair(normalized, commerceCatalogue.packs, {
+      today: () => '2026-10-22',
+      makeId: prefix => prefix + '-runtime-repair'
+    }).state;
+  },
   NexusWorkspaceSyncMerge: workspaceMerge,
   NexusStorageKey: STATE_KEY,
   NexusFeatureStorageKey: FEATURE_KEY,
@@ -92,6 +109,11 @@ function makeQuery(table) {
     update(v) { operation = 'update'; values = v; return builder; },
     insert(v) { operation = 'insert'; values = v; return builder; },
     async maybeSingle() {
+      if (!networkAvailable) throw new Error('simulated offline network');
+      if (deferNextRemoteRead) {
+        deferNextRemoteRead = false;
+        await new Promise(resolve => { releaseDeferredRemoteRead = resolve; });
+      }
       if (!networkAvailable) throw new Error('simulated offline network');
       if (table !== 'nexus_user_data' || !activeSession || userId !== activeSession.user.id) return { data: null, error: null };
       return { data: rows.get(userId) || null, error: null };
@@ -152,7 +174,7 @@ context = {
   clone: v => JSON.parse(JSON.stringify(v)),
   normalizeState: v => {
     const normalized = JSON.parse(JSON.stringify(v));
-    if (Array.isArray(normalized.topics)) normalized.topics = normalized.topics.map(topic => ({ ...topic, fsrs: undefined }));
+    if (Array.isArray(normalized.topics)) normalized.topics = normalized.topics.map(topic => ({ ...topic, fsrs: topic.fsrs && typeof topic.fsrs === 'object' ? topic.fsrs : undefined }));
     return normalized;
   },
   renderAll() {},
@@ -190,19 +212,22 @@ queue.commitWorkspace(storage, [
   { key: STATE_KEY, value: JSON.stringify(stateFor('second-offline-A')) },
   { key: FEATURE_KEY, value: JSON.stringify(featuresFor('second-offline-A')) }
 ], payloadFor('second-offline-A'));
+context.state = stateFor('second-offline-A');
 activeSession = { user: accountB };
 await window.NexusCloudSync.reconnect();
 assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'offline-A', 'signing into account B must not upload account A pending work');
 assert.ok(queue.hasPending(storage, accountA.id), 'account A pending work must remain parked during account B session');
-assert.ok(rows.has(accountB.id), 'account B may initialize its own independent cloud workspace');
-assert.equal(rows.get(accountB.id).payload.state.topics.length, 0, 'account B must not receive account A study data');
+assert.equal(rows.has(accountB.id), false, 'account B must not initialize by discarding account A changes newer than its verified baseline');
+assert.equal(getElement('cloudStatus').textContent, 'Data choice required', 'account switching must pause for an explicit choice when the previous account has unsynced local work');
+assert.ok(queue.hasPending(storage, accountA.id), 'account A pending work must remain parked during the account B session');
+assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'offline-A', 'account B login must not overwrite account A cloud data');
 activeSession = { user: accountA };
 await window.NexusCloudSync.reconnect();
 for (let i = 0; i < 100 && queue.hasPending(storage, accountA.id); i++) {
   await new Promise(resolve => setTimeout(resolve, 10));
 }
 assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'second-offline-A', 'returning to account A must upload its own pending snapshot');
-assert.equal(rows.get(accountB.id).payload.state.topics.length, 0, 'account B data must remain isolated after account A recovery');
+assert.equal(rows.has(accountB.id), false, 'account B remains untouched while prior-account pending work is preserved');
 assert.equal(queue.hasPending(storage, accountA.id), false, 'account A pending work must be acknowledged after verification');
 
 
@@ -442,4 +467,718 @@ assert.equal(getElement('cloudStatus').textContent, 'Synced',
 assert.ok(!getElement('cloudHelpText').textContent.includes('"undefined" is not valid JSON'),
   'the unsupported undefined JSON value must not escape from the merge helper');
 
-console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, and network-drop recovery.');
+// End-to-end regression for the reported Commerce loss during authenticated reconciliation.
+// The saved baseline and local outbox contain the full pack, while a newer cloud revision
+// has silently omitted untouched catalogue rows and the install marker without a deletion
+// tombstone. The real curriculum-integrity module must restore the pack before the merged
+// workspace is written back to the cloud.
+{
+  assert.ok(commercePack, 'The real Commerce catalogue pack must be available to the cloud runtime test.');
+  const makeCommerceWorkspace = () => {
+    const state = {
+      schema: 3,
+      streams: [{ id: commercePack.streamId, name: commercePack.streamName }],
+      subjects: commercePack.subjects.map((subject, index) => ({
+        id: subject.workspaceId, name: subject.name, streamId: commercePack.streamId, order: index
+      })),
+      topics: [], exams: [], history: [],
+      settings: { theme: 'system', intervalCap: 120, installedCurricula: [], curriculumTombstones: [] }
+    };
+    for (const subject of commercePack.subjects) {
+      subject.topics.forEach((name, index) => state.topics.push({
+        id: subject.legacyIdPrefix + '-' + String(index + 1).padStart(2, '0'),
+        subjectId: subject.workspaceId, name, notes: '', custom: false,
+        createdAt: '2026-10-20', lastReviewed: '', lastRating: null, dueDate: '',
+        intervalDays: 0, reviewCount: 0, streak: 0, lapses: 0, archived: false
+      }));
+    }
+    curriculumIntegrity.markInstalled(state, commercePack, 'pack');
+    return curriculumIntegrity.repair(state, commerceCatalogue.packs, { today: () => '2026-10-22' }).state;
+  };
+  const commerceBase = makeCommerceWorkspace();
+  const commerceLocal = JSON.parse(JSON.stringify(commerceBase));
+  const localEditedTopic = commerceLocal.topics.find(topic => topic.id === 'curr-bs-01');
+  localEditedTopic.name = 'User-edited Commerce topic';
+  localEditedTopic.reviewCount = 2;
+  localEditedTopic.lastReviewed = '2026-10-21';
+  localEditedTopic.lastRating = 4;
+  localEditedTopic.dueDate = '2026-10-28';
+  localEditedTopic.fsrs = { stability: 3.5, difficulty: 4.2, reps: 2 };
+  commerceLocal.streams.push({ id: 'commerce-local-manual-stream', name: 'My manual stream' });
+  commerceLocal.subjects.push({ id: 'commerce-local-manual-subject', name: 'My manual subject', streamId: 'commerce-local-manual-stream', order: 0 });
+  commerceLocal.topics.push({ id: 'commerce-local-manual-topic', subjectId: 'commerce-local-manual-subject', name: 'My manual topic', custom: true, reviewCount: 0 });
+
+  const commerceRemote = {
+    schema: 3,
+    streams: [{ id: 'commerce-cloud-manual-stream', name: 'Cloud manual stream' }],
+    subjects: [{ id: 'commerce-cloud-manual-subject', name: 'Cloud manual subject', streamId: 'commerce-cloud-manual-stream', order: 0 }],
+    topics: [{ id: 'commerce-cloud-manual-topic', subjectId: 'commerce-cloud-manual-subject', name: 'Cloud manual topic', custom: true, reviewCount: 0 }],
+    exams: [], history: [],
+    settings: { theme: 'system', intervalCap: 120, installedCurricula: [], curriculumTombstones: [] }
+  };
+  const commerceFeatures = { version: 1, journal: [], papers: [], goals: [], studyLogs: [], selectedTopicIds: [], settings: {} };
+  const baseStamp = '2026-10-22T20:00:00.000Z';
+  const remoteStamp = '2026-10-22T21:00:00.000Z';
+  const remotePayload = payloadFor(null);
+  remotePayload.state = commerceRemote;
+  remotePayload.featureState = commerceFeatures;
+  rows.set(accountA.id, { user_id: accountA.id, payload: remotePayload, updated_at: remoteStamp });
+  activeSession = { user: accountA };
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(commerceLocal));
+  storage.setItem(FEATURE_KEY, JSON.stringify(commerceFeatures));
+  context.state = commerceLocal;
+  queue.rememberBase(storage, accountA.id, { state: commerceBase, featureState: commerceFeatures }, baseStamp);
+  queue.rememberStamp(storage, accountA.id, remoteStamp);
+  queue.commitWorkspace(storage, [
+    { key: STATE_KEY, value: JSON.stringify(commerceLocal) },
+    { key: FEATURE_KEY, value: JSON.stringify(commerceFeatures) }
+  ], { app: 'Nexus Spaced Repetition Tracker', schema: 4, exportedAt: new Date().toISOString(), state: commerceLocal, featureState: commerceFeatures },
+  { baseServerVersion: baseStamp });
+
+  await window.NexusCloudSync.reconnect();
+  for (let i = 0; i < 300; i++) {
+    const synced = rows.get(accountA.id)?.payload?.state;
+    const count = synced?.topics?.filter(topic => String(topic.id).startsWith('curr-')).length || 0;
+    if (!queue.hasPending(storage, accountA.id) && count === 46 &&
+        synced.topics.some(topic => topic.id === 'commerce-local-manual-topic') &&
+        synced.topics.some(topic => topic.id === 'commerce-cloud-manual-topic')) break;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  const converged = rows.get(accountA.id).payload.state;
+  assert.equal(converged.topics.filter(topic => String(topic.id).startsWith('curr-')).length, 46,
+    'authenticated cloud reconciliation must reconstruct every omitted Commerce topic before verified upload');
+  assert.equal(converged.subjects.filter(subject => ['sub-bs', 'sub-acc', 'sub-econ'].includes(subject.id)).length, 3,
+    'all Commerce subjects must be restored before the cloud write');
+  assert.ok(converged.streams.some(stream => stream.id === commercePack.streamId),
+    'the Commerce stream must be restored before the cloud write');
+  assert.equal(converged.topics.find(topic => topic.id === 'curr-bs-01').name, 'User-edited Commerce topic',
+    'the edited/reviewed Commerce topic must retain its user-edited name');
+  assert.equal(converged.topics.find(topic => topic.id === 'curr-bs-01').reviewCount, 2,
+    'the edited/reviewed topic scheduling progress must survive reconciliation');
+  assert.deepEqual(converged.topics.find(topic => topic.id === 'curr-bs-01').fsrs,
+    { stability: 3.5, difficulty: 4.2, reps: 2 },
+    'the edited/reviewed topic FSRS card must survive reconciliation');
+  assert.ok(converged.streams.some(stream => stream.id === 'commerce-local-manual-stream'),
+    'the local manual stream must survive the full reconciliation');
+  assert.ok(converged.topics.some(topic => topic.id === 'commerce-local-manual-topic'),
+    'the local manual topic must survive the full reconciliation');
+  assert.ok(converged.streams.some(stream => stream.id === 'commerce-cloud-manual-stream'),
+    'unrelated remote manual data must survive the full reconciliation');
+  assert.ok(converged.topics.some(topic => topic.id === 'commerce-cloud-manual-topic'),
+    'unrelated remote manual topics must survive the full reconciliation');
+  assert.ok(!queue.hasPending(storage, accountA.id),
+    'the repaired cloud workspace must be verified before the outbox entry is acknowledged');
+
+  // Critical regression: the local device is clean and exactly matches its last-synced
+  // baseline, but a newer cloud revision has lost all untouched catalogue rows and markers.
+  // This must still merge against the baseline rather than replacing the local workspace
+  // wholesale; stable topic IDs must retain review and FSRS data, not merely recreate names.
+  const knownGoodBaselineState = JSON.parse(JSON.stringify(converged));
+  const knownGoodFeatures = JSON.parse(JSON.stringify(commerceFeatures));
+  const baselineCloudRow = rows.get(accountA.id);
+  const cleanBaselineStamp = baselineCloudRow.updated_at;
+  assert.equal(queue.hasPending(storage, accountA.id), false,
+    'the clean-baseline regression must begin without a pending local outbox entry');
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(knownGoodBaselineState));
+  storage.setItem(FEATURE_KEY, JSON.stringify(knownGoodFeatures));
+  context.state = knownGoodBaselineState;
+  queue.rememberBase(storage, accountA.id, {
+    state: knownGoodBaselineState, featureState: knownGoodFeatures
+  }, cleanBaselineStamp);
+  queue.rememberStamp(storage, accountA.id, cleanBaselineStamp);
+
+  const commerceSubjectIds = new Set(commercePack.subjects.map(subject => subject.workspaceId));
+  const partialCleanRemoteState = {
+    ...JSON.parse(JSON.stringify(knownGoodBaselineState)),
+    streams: knownGoodBaselineState.streams.filter(stream => stream.id !== commercePack.streamId),
+    subjects: knownGoodBaselineState.subjects.filter(subject => !commerceSubjectIds.has(subject.id)),
+    topics: knownGoodBaselineState.topics.filter(topic =>
+      !commerceSubjectIds.has(topic.subjectId) &&
+      !/^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))),
+    settings: {
+      ...knownGoodBaselineState.settings,
+      installedCurricula: [],
+      curriculumTombstones: []
+    }
+  };
+  const cleanRecoveryRemotePayload = payloadFor(null);
+  cleanRecoveryRemotePayload.state = partialCleanRemoteState;
+  cleanRecoveryRemotePayload.featureState = knownGoodFeatures;
+  const cleanRecoveryRemoteStamp = new Date(Date.parse(cleanBaselineStamp) + 60000).toISOString();
+  rows.set(accountA.id, {
+    user_id: accountA.id,
+    payload: cleanRecoveryRemotePayload,
+    updated_at: cleanRecoveryRemoteStamp
+  });
+
+  await window.NexusCloudSync.reconnect();
+  for (let i = 0; i < 300; i++) {
+    const synced = rows.get(accountA.id)?.payload?.state;
+    const count = synced?.topics?.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length || 0;
+    if (!queue.hasPending(storage, accountA.id) && count === 46 &&
+        synced.topics.some(topic => topic.id === 'commerce-local-manual-topic') &&
+        synced.topics.some(topic => topic.id === 'commerce-cloud-manual-topic')) break;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  const cleanBaselineConverged = rows.get(accountA.id).payload.state;
+  assert.equal(cleanBaselineConverged.topics.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length, 46,
+    'a clean local baseline must recover all 46 catalogue rows from a newer incomplete cloud snapshot');
+  assert.equal(cleanBaselineConverged.topics.find(topic => topic.id === 'curr-bs-01').name, 'User-edited Commerce topic',
+    'an omitted but locally unchanged catalogue topic must retain its edited name');
+  assert.equal(cleanBaselineConverged.topics.find(topic => topic.id === 'curr-bs-01').reviewCount, 2,
+    'an omitted but locally unchanged catalogue topic must retain review progress');
+  assert.deepEqual(cleanBaselineConverged.topics.find(topic => topic.id === 'curr-bs-01').fsrs,
+    { stability: 3.5, difficulty: 4.2, reps: 2 },
+    'an omitted but locally unchanged catalogue topic must retain its FSRS card');
+  assert.ok(cleanBaselineConverged.streams.some(stream => stream.id === commercePack.streamId),
+    'a clean-baseline merge must restore the omitted Commerce stream');
+  assert.equal(cleanBaselineConverged.subjects.filter(subject => commerceSubjectIds.has(subject.id)).length, 3,
+    'a clean-baseline merge must restore all three Commerce subjects');
+  assert.ok(cleanBaselineConverged.topics.some(topic => topic.id === 'commerce-local-manual-topic') &&
+    cleanBaselineConverged.topics.some(topic => topic.id === 'commerce-cloud-manual-topic'),
+    'recovering Commerce must preserve manual workspace records from both local and cloud');
+  assert.equal(queue.hasPending(storage, accountA.id), false,
+    'the recovered clean-baseline workspace must be verified before its outbox entry is cleared');
+}
+
+
+// Critical account-handoff regression: Commerce is installed while signed out after a
+// previous account's clean baseline was saved. Signing into another account must pause
+// for an explicit data choice, not silently reset the populated local workspace.
+{
+  const signedOutCommerceState = {
+    schema: 3,
+    streams: [
+      { id: commercePack.streamId, name: commercePack.streamName },
+      { id: 'stream-commerce-manual-test', name: 'Test' }
+    ],
+    subjects: commercePack.subjects.map((subject, order) => ({
+      id: subject.workspaceId, name: subject.name, streamId: commercePack.streamId, order
+    })),
+    topics: commercePack.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+      id: String(subject.legacyIdPrefix || '').replace(/^seed-/i, 'curr-') + '-' + String(index + 1).padStart(2, '0'),
+      subjectId: subject.workspaceId, name, notes: '', custom: false, createdAt: '2026-10-22',
+      lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, reviewCount: 0, streak: 0, lapses: 0, archived: false
+    }))),
+    exams: [], history: [],
+    settings: { theme: 'system', intervalCap: 120, installedCurricula: ['installed:pack:sl-al-commerce-si'], curriculumTombstones: [] }
+  };
+  const previousOwnerBaseline = { state: stateFor(null), featureState: featuresFor(null) };
+  const previousOwnerStamp = rows.get(accountA.id)?.updated_at || null;
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(signedOutCommerceState));
+  storage.setItem(FEATURE_KEY, JSON.stringify(featuresFor(null)));
+  context.state = signedOutCommerceState;
+  queue.rememberBase(storage, accountA.id, previousOwnerBaseline, previousOwnerStamp);
+  queue.rememberStamp(storage, accountA.id, previousOwnerStamp);
+  assert.equal(queue.hasPending(storage, accountA.id), false,
+    'the signed-out pack-install reproduction starts without an old-account pending snapshot');
+  activeSession = { user: accountB };
+  await window.NexusCloudSync.reconnect();
+  const preserved = JSON.parse(storage.getItem(STATE_KEY));
+  assert.equal(preserved.topics.length, 46,
+    'signing into a different account must not silently erase a signed-out Commerce install');
+  assert.ok(preserved.settings.installedCurricula.includes('installed:pack:sl-al-commerce-si'),
+    'the Commerce install marker must remain when account setup needs an explicit data choice');
+  assert.equal(storage.getItem(OWNER), accountA.id,
+    'the new account must not claim ownership until the data choice is completed');
+  assert.equal(rows.has(accountB.id), false,
+    'local Commerce data must not be uploaded or replaced before explicit consent');
+  assert.equal(getElement('cloudStatus').textContent, 'Data choice required',
+    'the user must see that account setup is paused instead of losing local data');
+}
+
+
+// Regression: a target account can have an older pending snapshot of its own.
+// Do not apply that snapshot over a newly installed, unassigned Commerce workspace
+// before the cross-account safety check has classified the local data.
+{
+  const signedOutCommerceState = {
+    schema: 3,
+    streams: [
+      { id: commercePack.streamId, name: commercePack.streamName },
+      { id: 'stream-commerce-manual-test', name: 'Test' }
+    ],
+    subjects: commercePack.subjects.map((subject, order) => ({
+      id: subject.workspaceId, name: subject.name, streamId: commercePack.streamId, order
+    })),
+    topics: commercePack.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+      id: String(subject.legacyIdPrefix || '').replace(/^seed-/i, 'curr-') + '-' + String(index + 1).padStart(2, '0'),
+      subjectId: subject.workspaceId, name, notes: '', custom: false, createdAt: '2026-10-22',
+      lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, reviewCount: 0, streak: 0, lapses: 0, archived: false
+    }))),
+    exams: [], history: [],
+    settings: { theme: 'system', intervalCap: 120, installedCurricula: ['installed:pack:sl-al-commerce-si'], curriculumTombstones: [] }
+  };
+  const previousOwnerBaseline = { state: stateFor(null), featureState: featuresFor(null) };
+  const previousOwnerStamp = rows.get(accountA.id)?.updated_at || null;
+  const targetBaseStamp = new Date(Math.max(Date.now(), Date.parse(previousOwnerStamp || '') || 0) + 120000).toISOString();
+  const targetRemotePayload = payloadFor(null);
+  rows.set(accountB.id, { user_id: accountB.id, payload: targetRemotePayload, updated_at: targetBaseStamp });
+  queue.rememberBase(storage, accountA.id, previousOwnerBaseline, previousOwnerStamp);
+  queue.rememberStamp(storage, accountA.id, previousOwnerStamp);
+
+  const targetPendingPayload = payloadFor('target-pending-B');
+  targetPendingPayload.state.streams.push({ id: 'stream-target-account-manual', name: 'Target account manual stream' });
+  targetPendingPayload.state.subjects.push({
+    id: 'subject-target-account-manual', name: 'Target account manual subject',
+    streamId: 'stream-target-account-manual', order: 0
+  });
+  targetPendingPayload.state.topics.push({
+    id: 'target-account-manual-topic', name: 'Target account manual topic',
+    subjectId: 'subject-target-account-manual', custom: true
+  });
+  storage.setItem(OWNER, accountB.id);
+  queue.rememberBase(storage, accountB.id, {
+    state: targetRemotePayload.state, featureState: targetRemotePayload.featureState
+  }, targetBaseStamp);
+  queue.rememberStamp(storage, accountB.id, targetBaseStamp);
+  queue.commitWorkspace(storage, [
+    { key: STATE_KEY, value: JSON.stringify(targetPendingPayload.state) },
+    { key: FEATURE_KEY, value: JSON.stringify(targetPendingPayload.featureState) }
+  ], targetPendingPayload);
+
+  // Recreate the real state at the moment the user signs into account B:
+  // the previous account still owns the device, while offline Commerce is newer.
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(signedOutCommerceState));
+  storage.setItem(FEATURE_KEY, JSON.stringify(featuresFor(null)));
+  context.state = signedOutCommerceState;
+  activeSession = { user: accountB };
+  await window.NexusCloudSync.reconnect();
+
+  const preserved = JSON.parse(storage.getItem(STATE_KEY));
+  assert.equal(preserved.topics.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length, 46,
+    'target-account pending adoption must not overwrite the signed-out Commerce install');
+  assert.ok(preserved.settings.installedCurricula.includes('installed:pack:sl-al-commerce-si'),
+    'the Commerce install marker must survive classification of local data before target pending adoption');
+  assert.ok(preserved.streams.some(stream => stream.id === 'stream-commerce-manual-test'),
+    'local manual streams must remain with an unassigned curriculum install');
+  assert.equal(storage.getItem(OWNER), accountA.id,
+    'the previous owner must remain until the unassigned local workspace is explicitly resolved');
+  assert.equal(rows.get(accountB.id).payload.state.topics.length, 0,
+    'the target account cloud must not be overwritten before the user resolves the local workspace');
+  assert.ok(queue.hasPending(storage, accountB.id),
+    'the target account pending snapshot must remain recoverable while local data choice is pending');
+  assert.equal(getElement('cloudStatus').textContent, 'Data choice required',
+    'the sign-in must pause for an explicit data choice instead of silently adopting the target pending snapshot');
+}
+
+
+ 
+// Reused-owner baseline regression: the Commerce marker already exists in the prior owner's
+// verified baseline, while a signed-out edit updates that owner's mutable outbox. Comparing
+// local state to the outbox hides the edit and lets the target account's pending snapshot win.
+for (const scenario of [
+  { name: 'untouched-pack-with-manual-stream', editTopic: false, addManualStream: true },
+  { name: 'edited-pack-without-manual-stream', editTopic: true, addManualStream: false }
+]) {
+  const baselineState = {
+    schema: 3,
+    streams: [{ id: commercePack.streamId, name: commercePack.streamName }],
+    subjects: commercePack.subjects.map((subject, order) => ({
+      id: subject.workspaceId, name: subject.name, streamId: commercePack.streamId, order
+    })),
+    topics: commercePack.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+      id: String(subject.legacyIdPrefix || '').replace(/^seed-/i, 'curr-') + '-' + String(index + 1).padStart(2, '0'),
+      subjectId: subject.workspaceId, name, notes: '', custom: false, createdAt: '2026-10-22',
+      lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, reviewCount: 0, streak: 0, lapses: 0, archived: false
+    }))),
+    exams: [], history: [],
+    settings: { theme: 'system', intervalCap: 120, installedCurricula: ['installed:pack:sl-al-commerce-si'], curriculumTombstones: [] }
+  };
+  const localState = JSON.parse(JSON.stringify(baselineState));
+  if (scenario.editTopic) {
+    const edited = localState.topics.find(topic => topic.id === 'curr-bs-01');
+    assert.ok(edited, 'the test fixture must include the first Commerce Business Studies topic');
+    edited.name = 'User-edited Commerce topic';
+    edited.reviewCount = 1;
+    edited.lastReviewed = '2026-10-21';
+    edited.dueDate = '2026-10-28';
+    edited.fsrs = { stability: 2.2, difficulty: 4.5, reps: 1 };
+  }
+  if (scenario.addManualStream) {
+    const id = 'manual-stream-' + scenario.name;
+    localState.streams.push({ id, name: 'My manually-created stream' });
+    localState.subjects.push({ id: id + '-subject', name: 'My manual subject', streamId: id, order: 0 });
+    localState.topics.push({ id: id + '-topic', name: 'My manual topic', subjectId: id + '-subject', custom: true, reviewCount: 0 });
+  }
+
+  const priorStamp = new Date(Date.now() - 60000).toISOString();
+  const targetStamp = new Date(Date.now() + 60000).toISOString();
+  const priorFeatures = featuresFor(null);
+  const targetRemotePayload = payloadFor(null);
+  rows.set(accountA.id, { user_id: accountA.id, payload: { state: baselineState, featureState: priorFeatures }, updated_at: priorStamp });
+  rows.set(accountB.id, { user_id: accountB.id, payload: targetRemotePayload, updated_at: targetStamp });
+
+  if (queue.hasPending(storage, accountA.id)) queue.archive(storage, accountA.id, 'reused-baseline-test-reset');
+  if (queue.hasPending(storage, accountB.id)) queue.archive(storage, accountB.id, 'reused-baseline-test-reset');
+  queue.rememberBase(storage, accountA.id, { state: baselineState, featureState: priorFeatures }, priorStamp);
+  queue.rememberStamp(storage, accountA.id, priorStamp);
+
+  const targetPendingPayload = payloadFor('target-pending-' + scenario.name);
+  targetPendingPayload.state.streams.push({ id: 'stream-target-account-manual', name: 'Target account manual stream' });
+  targetPendingPayload.state.subjects.push({
+    id: 'subject-target-account-manual', name: 'Target account manual subject',
+    streamId: 'stream-target-account-manual', order: 0
+  });
+  targetPendingPayload.state.topics.push({
+    id: 'target-account-manual-topic', name: 'Target account manual topic',
+    subjectId: 'subject-target-account-manual', custom: true
+  });
+  storage.setItem(OWNER, accountB.id);
+  queue.rememberBase(storage, accountB.id, {
+    state: targetRemotePayload.state, featureState: targetRemotePayload.featureState
+  }, targetStamp);
+  queue.rememberStamp(storage, accountB.id, targetStamp);
+  queue.commitWorkspace(storage, [
+    { key: STATE_KEY, value: JSON.stringify(targetPendingPayload.state) },
+    { key: FEATURE_KEY, value: JSON.stringify(targetPendingPayload.featureState) }
+  ], targetPendingPayload, { baseServerVersion: targetStamp });
+
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(localState));
+  storage.setItem(FEATURE_KEY, JSON.stringify(priorFeatures));
+  context.state = localState;
+  const localPayload = {
+    app: 'Nexus Spaced Repetition Tracker', schema: 4, exportedAt: new Date().toISOString(),
+    state: localState, featureState: priorFeatures
+  };
+  queue.commitWorkspace(storage, [
+    { key: STATE_KEY, value: JSON.stringify(localState) },
+    { key: FEATURE_KEY, value: JSON.stringify(priorFeatures) }
+  ], localPayload, { baseServerVersion: priorStamp });
+  assert.equal(queue.getPending(storage, accountA.id).payload.state.topics.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length, 46,
+    'the previous owner outbox must contain all 46 Commerce topics');
+
+  activeSession = { user: accountB };
+  await window.NexusCloudSync.reconnect();
+
+  const preserved = JSON.parse(storage.getItem(STATE_KEY));
+  assert.equal(preserved.topics.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length, 46,
+    scenario.name + ': all 46 Commerce topics must survive target-account sign-in');
+  assert.ok(preserved.settings.installedCurricula.includes('installed:pack:sl-al-commerce-si'),
+    scenario.name + ': the Commerce install marker must survive target-account sign-in');
+  assert.equal(storage.getItem(OWNER), accountA.id,
+    scenario.name + ': the previous owner must remain until the data choice is resolved');
+  assert.equal(rows.get(accountB.id).payload.state.topics.length, 0,
+    scenario.name + ': target-account cloud data must not be overwritten before consent');
+  assert.ok(queue.hasPending(storage, accountB.id),
+    scenario.name + ': target-account pending snapshot must remain recoverable');
+  assert.equal(getElement('cloudStatus').textContent, 'Data choice required',
+    scenario.name + ': account setup must stop at an explicit data choice');
+  if (scenario.editTopic) {
+    assert.equal(preserved.topics.find(topic => topic.id === 'curr-bs-01').name, 'User-edited Commerce topic',
+      'the edited Commerce topic name must survive account handoff');
+    assert.deepEqual(preserved.topics.find(topic => topic.id === 'curr-bs-01').fsrs,
+      { stability: 2.2, difficulty: 4.5, reps: 1 },
+      'the edited Commerce FSRS state must survive account handoff');
+  }
+  if (scenario.addManualStream) {
+    assert.ok(preserved.streams.some(stream => stream.id === 'manual-stream-' + scenario.name),
+      'an existing manually-created stream must survive account handoff');
+    assert.ok(preserved.topics.some(topic => topic.id === 'manual-stream-' + scenario.name + '-topic'),
+      'the manual stream topic must survive account handoff');
+  }
+
+  // Signing out and then re-running curriculum hydration must retain the same local rows.
+  activeSession = null;
+  await window.NexusCloudSync.reconnect();
+  const afterRefresh = curriculumIntegrity.repair(
+    JSON.parse(storage.getItem(STATE_KEY)), commerceCatalogue.packs,
+    { today: () => '2026-10-22', makeId: prefix => prefix + '-refresh-repair' }
+  ).state;
+  assert.equal(afterRefresh.topics.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length, 46,
+    scenario.name + ': full Commerce pack must remain after sign-out and refresh');
+  if (scenario.addManualStream) {
+    assert.ok(afterRefresh.streams.some(stream => stream.id === 'manual-stream-' + scenario.name),
+      'manual stream must also survive sign-out and refresh');
+  }
+}
+
+
+// Regression: first sign-in must merge an unowned guest Commerce install with an
+// existing account outbox. The queued account snapshot must never replace guest data
+// before the runtime has compared/combined both workspaces.
+{
+  const guestCommerceState = {
+    schema: 3,
+    streams: [{ id: commercePack.streamId, name: commercePack.streamName }],
+    subjects: commercePack.subjects.map((subject, order) => ({
+      id: subject.workspaceId, name: subject.name, streamId: commercePack.streamId, order
+    })),
+    topics: commercePack.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+      id: String(subject.legacyIdPrefix || '').replace(/^seed-/i, 'curr-') + '-' + String(index + 1).padStart(2, '0'),
+      subjectId: subject.workspaceId, name, notes: '', custom: false, createdAt: '2026-10-23',
+      lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, reviewCount: 0,
+      streak: 0, lapses: 0, archived: false
+    }))),
+    exams: [], history: [],
+    settings: {
+      theme: 'system', intervalCap: 120,
+      installedCurricula: ['installed:pack:' + commercePack.id],
+      curriculumTombstones: []
+    }
+  };
+  const remotePayload = payloadFor(null);
+  const remoteStamp = new Date(Date.now() - 45000).toISOString();
+  rows.set(accountB.id, {
+    user_id: accountB.id, payload: remotePayload, updated_at: remoteStamp
+  });
+
+  if (queue.hasPending(storage, accountB.id)) {
+    queue.archive(storage, accountB.id, 'guest-first-sign-in-regression-reset');
+  }
+  queue.rememberBase(storage, accountB.id, {
+    state: remotePayload.state, featureState: remotePayload.featureState
+  }, remoteStamp);
+  queue.rememberStamp(storage, accountB.id, remoteStamp);
+
+  const pendingAccountPayload = payloadFor(null);
+  pendingAccountPayload.state.topics.push({
+    id: 'target-account-pending-topic',
+    name: 'Target account pending topic',
+    subjectId: 'subject-general',
+    custom: true,
+    reviewCount: 0
+  });
+  storage.setItem(OWNER, accountB.id);
+  queue.commitWorkspace(storage, [
+    { key: STATE_KEY, value: JSON.stringify(pendingAccountPayload.state) },
+    { key: FEATURE_KEY, value: JSON.stringify(pendingAccountPayload.featureState) }
+  ], pendingAccountPayload, { baseServerVersion: remoteStamp });
+
+  // The browser is currently signed out. Installing the pack updates local storage,
+  // while the target account still has its own pending snapshot from an earlier session.
+  storage.removeItem(OWNER);
+  storage.setItem(STATE_KEY, JSON.stringify(guestCommerceState));
+  storage.setItem(FEATURE_KEY, JSON.stringify(featuresFor(null)));
+  context.state = guestCommerceState;
+  activeSession = { user: accountB };
+  networkAvailable = true;
+
+  await window.NexusCloudSync.reconnect();
+
+  const localAfterSignIn = JSON.parse(storage.getItem(STATE_KEY));
+  const synced = rows.get(accountB.id).payload.state;
+  const packTopicCount = state => state.topics.filter(topic =>
+    /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))
+  ).length;
+  assert.equal(packTopicCount(localAfterSignIn), 46,
+    'Guest Commerce must survive first sign-in even when the account has a pending snapshot');
+  assert.ok(localAfterSignIn.settings.installedCurricula.includes('installed:pack:' + commercePack.id),
+    'Guest Commerce install intent must survive first sign-in');
+  assert.ok(localAfterSignIn.topics.some(topic => topic.id === 'target-account-pending-topic'),
+    'The target account pending topic must be merged, not discarded');
+  assert.equal(packTopicCount(synced), 46,
+    'The merged Commerce pack must be verified in the account cloud row');
+  assert.ok(synced.topics.some(topic => topic.id === 'target-account-pending-topic'),
+    'The target account pending topic must remain in the verified cloud row');
+  assert.equal(storage.getItem(OWNER), accountB.id,
+    'The merged guest workspace must be bound to the signed-in account only after it is persisted');
+  assert.equal(queue.hasPending(storage, accountB.id), false,
+    'The combined guest/account workspace must be verified before clearing its pending queue');
+
+  activeSession = null;
+  await window.NexusCloudSync.reconnect();
+  const afterSignOut = JSON.parse(storage.getItem(STATE_KEY));
+  assert.equal(packTopicCount(afterSignOut), 46,
+    'Signing out after initial account binding must not remove the installed Commerce pack');
+}
+
+
+ 
+// Regression: a cloud read can be slow while the user finishes an offline edit/install.
+// Initialization must re-read the local workspace after the await instead of applying
+// the stale pre-request snapshot over the newer local Commerce pack.
+{
+  const baseline = payloadFor(null);
+  const baselineStamp = new Date(Date.now() - 90000).toISOString();
+  if (queue.hasPending(storage, accountA.id)) queue.archive(storage, accountA.id, 'hydration-race-regression-reset');
+  if (queue.hasPending(storage, accountB.id)) queue.archive(storage, accountB.id, 'hydration-race-regression-reset');
+  rows.set(accountA.id, { user_id: accountA.id, payload: baseline, updated_at: baselineStamp });
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(baseline.state));
+  storage.setItem(FEATURE_KEY, JSON.stringify(baseline.featureState));
+  context.state = JSON.parse(JSON.stringify(baseline.state));
+  queue.rememberBase(storage, accountA.id, { state: baseline.state, featureState: baseline.featureState }, baselineStamp);
+  queue.rememberStamp(storage, accountA.id, baselineStamp);
+  activeSession = { user: accountA };
+  networkAvailable = true;
+  deferNextRemoteRead = true;
+  releaseDeferredRemoteRead = null;
+
+  const initializing = window.NexusCloudSync.reconnect();
+  for (let i = 0; i < 100 && !releaseDeferredRemoteRead; i++) {
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+  assert.equal(typeof releaseDeferredRemoteRead, 'function',
+    'the test must pause account initialization in the remote read');
+
+  const installedDuringRead = {
+    ...JSON.parse(JSON.stringify(baseline.state)),
+    streams: [{ id: commercePack.streamId, name: commercePack.streamName }],
+    subjects: commercePack.subjects.map((subject, order) => ({
+      id: subject.workspaceId, name: subject.name, streamId: commercePack.streamId, order
+    })),
+    topics: commercePack.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+      id: String(subject.legacyIdPrefix || '').replace(/^seed-/i, 'curr-') + '-' + String(index + 1).padStart(2, '0'),
+      subjectId: subject.workspaceId, name, notes: '', custom: false, createdAt: '2026-10-23',
+      lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, reviewCount: 0,
+      streak: 0, lapses: 0, archived: false
+    }))),
+    settings: {
+      ...baseline.state.settings,
+      installedCurricula: ['installed:pack:' + commercePack.id],
+      curriculumTombstones: []
+    }
+  };
+  context.state = installedDuringRead;
+  storage.setItem(STATE_KEY, JSON.stringify(installedDuringRead));
+  releaseDeferredRemoteRead();
+  await initializing;
+
+  const preserved = JSON.parse(storage.getItem(STATE_KEY));
+  assert.equal(preserved.topics.length, 46,
+    'a newer offline Commerce install must survive a cloud read that started before the install');
+  assert.ok(preserved.settings.installedCurricula.includes('installed:pack:' + commercePack.id),
+    'the Commerce install intent must survive the account hydration race');
+  const syncedTopics = rows.get(accountA.id)?.payload?.state?.topics || [];
+  const syncedCommerceCount = syncedTopics.filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length;
+  assert.ok(syncedCommerceCount === 46 || queue.hasPending(storage, accountA.id),
+    'the newer Commerce install must either be verified in cloud or remain queued for recovery');
+}
+
+// Regression: both the current local workspace and cloud row can share an incomplete
+// snapshot after an earlier bad write. In that case ordinary local-vs-cloud comparison
+// says "equal"; the last verified base must still recover Commerce install intent and rows.
+{
+  const makeInstalledCommerce = () => {
+    const state = stateFor(null);
+    state.streams = [{ id: commercePack.streamId, name: commercePack.streamName }];
+    state.subjects = commercePack.subjects.map((subject, order) => ({
+      id: subject.workspaceId, name: subject.name, streamId: commercePack.streamId, order
+    }));
+    state.topics = commercePack.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+      id: String(subject.legacyIdPrefix || '').replace(/^seed-/i, 'curr-') + '-' + String(index + 1).padStart(2, '0'),
+      subjectId: subject.workspaceId, name, notes: '', custom: false, createdAt: '2026-10-23',
+      lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, reviewCount: 0,
+      streak: 0, lapses: 0, archived: false
+    })));
+    state.settings.installedCurricula = ['installed:pack:' + commercePack.id];
+    state.settings.curriculumTombstones = [];
+    return { app: 'Nexus Spaced Repetition Tracker', schema: 4, exportedAt: new Date().toISOString(), state, featureState: featuresFor(null) };
+  };
+  const verifiedBase = makeInstalledCommerce();
+  const incomplete = payloadFor(null);
+  const baseStamp = new Date(Date.now() - 5000).toISOString();
+  const remoteStamp = new Date(Date.now() - 1000).toISOString();
+  if (queue.hasPending(storage, accountA.id)) queue.archive(storage, accountA.id, 'same-incomplete-state-recovery-reset');
+  if (queue.hasPending(storage, accountB.id)) queue.archive(storage, accountB.id, 'same-incomplete-state-recovery-reset');
+  rows.set(accountA.id, { user_id: accountA.id, payload: JSON.parse(JSON.stringify(incomplete)), updated_at: remoteStamp });
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(incomplete.state));
+  storage.setItem(FEATURE_KEY, JSON.stringify(incomplete.featureState));
+  context.state = JSON.parse(JSON.stringify(incomplete.state));
+  queue.rememberBase(storage, accountA.id, { state: verifiedBase.state, featureState: verifiedBase.featureState }, baseStamp);
+  queue.rememberStamp(storage, accountA.id, remoteStamp);
+  // Model the real refresh failure: a queued snapshot and the cloud row are identical
+  // and incomplete, while the last verified base still contains the installed pack.
+  // Initialization must not acknowledge this pending write and overwrite that baseline.
+  queue.rebase(storage, accountA.id, incomplete, remoteStamp, 'test-same-incomplete-pending-snapshot');
+  activeSession = { user: accountA };
+  networkAvailable = true;
+
+  await window.NexusCloudSync.reconnect();
+
+  const repairedLocal = JSON.parse(storage.getItem(STATE_KEY));
+  const repairedRemote = rows.get(accountA.id)?.payload?.state;
+  const countCommerce = state => (state?.topics || []).filter(topic => /^(?:curr|seed)-(?:bs|acc|econ)-/i.test(String(topic.id))).length;
+  assert.equal(countCommerce(repairedLocal), 46,
+    'refresh must recover Commerce when local and cloud match an incomplete snapshot but the verified base contains the installed pack');
+  assert.ok(repairedLocal.settings.installedCurricula.includes('installed:pack:' + commercePack.id),
+    'refresh must recover the missing Commerce install marker from the verified base');
+  assert.equal(countCommerce(repairedRemote), 46,
+    'the recovered Commerce pack must be verified in the cloud row');
+}
+
+
+/* Regression: first sign-in after a guest Commerce install must adopt and verify
+   that local workspace directly. It must not re-open the generic restore/replace
+   choice after already rebasing the guest workspace into the new account queue. */
+{
+  const guestCommerceState = {
+    schema: 3,
+    streams: [{ id: commercePack.streamId, name: commercePack.streamName }],
+    subjects: commercePack.subjects.map((subject, order) => ({
+      id: subject.workspaceId, name: subject.name, streamId: commercePack.streamId, order
+    })),
+    topics: commercePack.subjects.flatMap(subject => subject.topics.map((name, index) => ({
+      id: String(subject.legacyIdPrefix || '').replace(/^seed-/i, 'curr-') + '-' + String(index + 1).padStart(2, '0'),
+      subjectId: subject.workspaceId, name, notes: '', custom: false, createdAt: '2026-10-23',
+      lastReviewed: '', lastRating: null, dueDate: '', intervalDays: 0, reviewCount: 0,
+      streak: 0, lapses: 0, archived: false
+    }))),
+    exams: [], history: [],
+    settings: { theme: 'system', intervalCap: 120, installedCurricula: ['installed:pack:' + commercePack.id], curriculumTombstones: [] }
+  };
+  if (queue.hasPending(storage, accountB.id)) queue.archive(storage, accountB.id, 'guest-adoption-regression-reset');
+  rows.delete(accountB.id);
+  storage.removeItem(OWNER);
+  storage.setItem(STATE_KEY, JSON.stringify(guestCommerceState));
+  storage.setItem(FEATURE_KEY, JSON.stringify(featuresFor(null)));
+  queue.rememberStamp(storage, accountB.id, null);
+  context.state = JSON.parse(JSON.stringify(guestCommerceState));
+  activeSession = { user: accountB };
+  networkAvailable = true;
+
+  await window.NexusCloudSync.reconnect();
+
+  const adoptedLocal = JSON.parse(storage.getItem(STATE_KEY));
+  const adoptedCloud = rows.get(accountB.id)?.payload?.state;
+  assert.equal(storage.getItem(OWNER), accountB.id,
+    'the new account should own the guest workspace after safe adoption');
+  assert.equal(adoptedLocal.topics.length, 46,
+    'first sign-in must preserve all 46 local Commerce topics');
+  assert.ok(adoptedLocal.settings.installedCurricula.includes('installed:pack:' + commercePack.id),
+    'first sign-in must preserve the Commerce install marker locally');
+  assert.equal(adoptedCloud?.topics?.length, 46,
+    'first sign-in must upload and verify the adopted Commerce workspace');
+  assert.ok(adoptedCloud.settings.installedCurricula.includes('installed:pack:' + commercePack.id),
+    'first sign-in must persist the Commerce install marker to the cloud');
+  assert.equal(queue.hasPending(storage, accountB.id), false,
+    'the guest adoption queue should clear only after the cloud snapshot is verified');
+  assert.equal(getElement('cloudStatus').textContent, 'Synced',
+    'successful guest adoption should end in a verified synced state');
+}
+
+
+/* Regression: a new local save must replace an older queued payload before upload.
+   Otherwise a pending clean snapshot can be uploaded after a Commerce install and
+   the next refresh restores the incomplete cloud state. */
+{
+  if (queue.hasPending(storage, accountB.id)) queue.archive(storage, accountB.id, 'local-save-queue-regression-reset');
+  const cloudStamp = rows.get(accountB.id)?.updated_at || null;
+  const currentState = JSON.parse(storage.getItem(STATE_KEY));
+  const currentFeatures = JSON.parse(storage.getItem(FEATURE_KEY) || '{}');
+  const stalePayload = { app: 'Nexus Spaced Repetition Tracker', schema: 4, exportedAt: new Date().toISOString(), state: currentState, featureState: currentFeatures };
+  queue.rebase(storage, accountB.id, stalePayload, cloudStamp, 'test-stale-snapshot');
+  const changedState = JSON.parse(JSON.stringify(currentState));
+  changedState.topics.push({
+    id: 'local-save-after-pending', name: 'Local save after queue creation',
+    subjectId: changedState.subjects[0].id, custom: true, dueDate: '', intervalDays: 0,
+    reviewCount: 0, streak: 0, lapses: 0, archived: false
+  });
+  storage.setItem(STATE_KEY, JSON.stringify(changedState));
+  context.state = JSON.parse(JSON.stringify(changedState));
+  window.NexusCloudSync.recordLocalSave({ state: changedState, featureState: currentFeatures });
+  const refreshedPending = queue.getPending(storage, accountB.id);
+  assert.ok(refreshedPending.payload.state.topics.some(topic => topic.id === 'local-save-after-pending'),
+    'a local save must update the queued payload rather than allowing an older snapshot to overwrite it');
+  assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics.length, changedState.topics.length,
+    'queueing a local save must not remove or alter the locally persisted workspace');
+}
+
+console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, and target-account pending-snapshot isolation.');
