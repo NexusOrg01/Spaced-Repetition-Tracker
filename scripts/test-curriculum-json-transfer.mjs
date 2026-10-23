@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 const require=createRequire(import.meta.url),store=require('../curriculum-pack-store.js');
 globalThis.NexusCurriculumPackStore=store;
@@ -8,6 +9,20 @@ const pack={id:'test-course-json',title:'Test course',country:'Test country',exa
 const makeId=prefix=>prefix+'-random-'+Math.random().toString(36).slice(2,8),today=()=> '2026-10-23';
 function emptyState(){return{schema:3,streams:[],subjects:[],topics:[],exams:[],history:[],settings:{theme:'system',intervalCap:120,installedCurricula:[],curriculumTombstones:[],installedCurriculumPacks:[]}};}
 const packet=transfer.createPacket(pack,'topic','A','Topic A2');assert.equal(packet.type,'nexus-curriculum-pack');assert.equal(transfer.describe(packet).topicCount,1);assert.match(transfer.fileName(packet),/^nexus-curriculum-test-course-json-topic-A-Topic-A2\.json$/);
+// Regression: the file downloaded by Explore survives actual JSON serialization.
+const downloadedPacket=JSON.parse(JSON.stringify(packet));
+assert.equal(transfer.parsePacket(downloadedPacket).type,transfer.type);
+assert.equal(transfer.describe(downloadedPacket).topicCount,1);
+// Study Hub overrides the base backup importer; ensure curriculum packets are dispatched
+// back to the core importer before the generic full-backup restore path.
+const studyHubSource=await readFile(new URL('../study-hub.js',import.meta.url),'utf8');
+const dispatchStart=studyHubSource.indexOf('const baseImportBackup=importBackup;');
+const dispatchEnd=studyHubSource.indexOf('const baseResetAll=resetAll;',dispatchStart);
+assert.ok(dispatchStart>=0&&dispatchEnd>dispatchStart,'Study Hub import override must exist');
+const dispatch=studyHubSource.slice(dispatchStart,dispatchEnd);
+assert.ok(dispatch.includes('data.type===transfer.type'),'Study Hub must detect downloaded curriculum packets');
+assert.ok(dispatch.indexOf('return baseImportBackup(file)')>=0,'Curriculum files must reach the core importer');
+assert.ok(dispatch.indexOf('return baseImportBackup(file)')<dispatch.indexOf('return restoreOrMerge(file)'),'Curriculum dispatch must occur before backup restore fallback');
 const partial=emptyState(),imported=transfer.importSelection(partial,packet,{makeId,today});assert.equal(imported.addedStreams,1);assert.equal(imported.addedSubjects,1);assert.equal(imported.addedTopics,1);assert.equal(partial.streams[0].name,'Test stream');assert.equal(partial.subjects[0].name,'Subject A');assert.equal(partial.topics[0].name,'Topic A2');assert.equal(partial.topics[0].custom,true);assert.ok(!partial.topics[0].id.startsWith('curr-'));assert.deepEqual(partial.settings.installedCurricula,[]);assert.deepEqual(partial.settings.installedCurriculumPacks,[]);assert.deepEqual(partial.settings.personalCurriculumPacks,['test-course-json']);
 const noRestore=integrity.repair(partial,[pack],{today,makeId});assert.equal(noRestore.restoredTopics,0,'manual JSON data must not trigger catalogue auto-repair');assert.equal(noRestore.state.topics.length,1);assert.equal(noRestore.state.topics[0].custom,true);
 const storage=new MemoryStorage(),old=emptyState();store.recordInstall(old,pack,'pack',null,null,storage);integrity.markInstall(old,pack,'pack',null,null);let registered=store.createStorageEntry(old,storage,null);storage.setItem(registered.key,registered.value);
