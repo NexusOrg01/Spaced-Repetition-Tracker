@@ -130,6 +130,21 @@ function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
 function applyRemote(payload,ownerId,serverVersion){
   if(!payload||!payload.state||!Array.isArray(payload.state.streams))throw new Error('Cloud backup format is invalid.');
   const normalizedState=normalizeState(payload.state);
+  // When restoring the same account on this device, retain locally recorded curriculum
+  // install intent and deletion tombstones before repair. Cloud snapshots from older or
+  // incomplete saves can omit the pack marker; without it, repair cannot reconstruct the
+  // untouched catalogue rows. Never carry these markers across account ownership changes.
+  const currentOwner=localStorage.getItem(OWNER_KEY)||'';
+  if(ownerId&&currentOwner===ownerId){
+    try{
+      const localRaw=localStorage.getItem(window.NexusStorageKey);
+      const localState=localRaw?JSON.parse(localRaw):null;
+      const localSettings=localState&&localState.settings||{};
+      normalizedState.settings=normalizedState.settings||{};
+      normalizedState.settings.installedCurricula=unionStrings(normalizedState.settings.installedCurricula,localSettings.installedCurricula);
+      normalizedState.settings.curriculumTombstones=unionStrings(normalizedState.settings.curriculumTombstones,localSettings.curriculumTombstones);
+    }catch(err){console.warn('Could not preserve local curriculum intent during same-account restore; using verified cloud snapshot.',err);}
+  }
   const nextState=window.NexusRepairCurriculumState?window.NexusRepairCurriculumState(normalizedState):normalizedState;
   const hasFeatures=Object.prototype.hasOwnProperty.call(payload,'featureState');
   const nextFeatures=window.NexusNormalizeFeatureState(hasFeatures?payload.featureState:undefined);
