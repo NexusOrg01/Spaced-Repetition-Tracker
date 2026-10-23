@@ -229,7 +229,8 @@ for (let i = 0; i < 100 && queue.hasPending(storage, accountA.id); i++) {
   await new Promise(resolve => setTimeout(resolve, 10));
 }
 assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'second-offline-A', 'returning to account A must upload its own pending snapshot');
-assert.equal(rows.has(accountB.id), false, 'account B remains untouched while prior-account pending work is preserved');
+assert.equal(rows.has(accountB.id), true, 'account B retains its own workspace while account A pending work is restored');
+assert.equal(rows.get(accountB.id).payload.state.topics.length, 0, 'returning to account A must not copy account A changes into account B cloud');
 assert.equal(queue.hasPending(storage, accountA.id), false, 'account A pending work must be acknowledged after verification');
 
 
