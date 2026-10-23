@@ -1084,6 +1084,10 @@ for (const scenario of [
   context.state = JSON.parse(JSON.stringify(incomplete.state));
   queue.rememberBase(storage, accountA.id, { state: verifiedBase.state, featureState: verifiedBase.featureState }, baseStamp);
   queue.rememberStamp(storage, accountA.id, remoteStamp);
+  // Model the real refresh failure: a queued snapshot and the cloud row are identical
+  // and incomplete, while the last verified base still contains the installed pack.
+  // Initialization must not acknowledge this pending write and overwrite that baseline.
+  queue.rebase(storage, accountA.id, incomplete, remoteStamp, 'test-same-incomplete-pending-snapshot');
   activeSession = { user: accountA };
   networkAvailable = true;
 
