@@ -160,14 +160,18 @@ async function reconcileConcurrentSnapshot(userId,initialRemote){
   await assertActiveUser(userId);
   const pending=queue.getPending(localStorage,userId);
   if(!pending)return {ok:true,conflicts:totalConflicts};
-  if(remote&&remote.payload&&sameWorkspace(remote.payload,pending.payload)){
+  // Equality of the current local/cloud snapshots is insufficient when both are
+  // missing an install intent retained by the last verified base. Do not acknowledge
+  // this incomplete snapshot as healthy; force the three-way repair path below.
+  const missingBaselineCurriculumIntent=hasMissingBaselineCurriculumIntent(userId,pending.payload,remote&&remote.payload);
+  if(remote&&remote.payload&&sameWorkspace(remote.payload,pending.payload)&&!missingBaselineCurriculumIntent){
    queue.rememberBase(localStorage,userId,remote.payload,remote.updated_at||null);
    queue.acknowledge(localStorage,userId,pending.operationId,pending.baseServerVersion,remote.updated_at||null);
    lastRemoteStamp=remote.updated_at||null;
    return {ok:true,conflicts:totalConflicts};
   }
   const remoteStamp=remote&&remote.updated_at?remote.updated_at:null;
-  if((pending.baseServerVersion||null)===(remoteStamp||null)){
+  if((pending.baseServerVersion||null)===(remoteStamp||null)&&!missingBaselineCurriculumIntent){
    lastRemoteStamp=remoteStamp;ready=true;
    const uploaded=await upload();
    if(uploaded)return {ok:true,conflicts:totalConflicts};
