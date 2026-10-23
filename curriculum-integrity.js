@@ -457,11 +457,12 @@
         }
       }
     }
-    // A missing remote install marker is not an uninstall. Explicit user deletions
-    // are represented by tombstones; absent markers alone are ambiguous and can be
-    // caused by an incomplete/older cloud snapshot. Preserve the local installed intent
-    // unless the reconciled state contains a matching explicit deletion tombstone.
-    for (const marker of local.installed) {
+    // Missing markers are not uninstall intent. Preserve local install intent and
+    // recover it from the last verified base as well: an older incomplete cloud write
+    // can remove the marker from BOTH the current local state and cloud, while the
+    // queue's verified base is the only remaining evidence that the catalogue existed.
+    // Explicit uninstall/delete tombstones still win.
+    for (const marker of [...local.installed, ...(base ? base.installed : [])]) {
       if (deletionBlocksInstalledMarker(marker, merged.deleted)) continue;
       if (!merged.installed.has(marker)) {
         merged.installed.add(marker);
