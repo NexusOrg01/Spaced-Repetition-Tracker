@@ -1,7 +1,7 @@
 (function(){'use strict';
 const CFG_KEY='nexus.cloud.config.v1',OWNER_KEY='nexus.cloud.last-user-id',DEFAULT_CONFIG={url:'https://txugbdavblpettcnhcxl.supabase.co',key:'sb_publishable_sQkKOf-CfHlG7mvA2sFjIg_qcezI2Fa'};
 const LIVE_SUPABASE_URL='https://txugbdavblpettcnhcxl.supabase.co';
-const SYNC_DIAG_ENABLED=(()=>{try{return new URLSearchParams(location.search).get('nexusSyncDiag')==='1';}catch(_){return false;}})();
+const SYNC_DIAG_ENABLED=(()=>{try{const requested=new URLSearchParams(location.search).get('nexusSyncDiag')==='1';if(requested)sessionStorage.setItem('nexus.syncdiag.enabled','1');return requested||sessionStorage.getItem('nexus.syncdiag.enabled')==='1';}catch(_){return false;}})();
 const SYNC_DIAG_KEY='nexus.syncdiag.session.v1';
 function syncDiagSummary(payload){
  const s=payload&&payload.state&&typeof payload.state==='object'?payload.state:{};
