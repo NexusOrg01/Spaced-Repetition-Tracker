@@ -200,7 +200,7 @@ async function settle(event) {
 
 assert.ok(source.includes('keys.filter(k=>k.startsWith(CACHE_PREFIX)&&k!==CACHE_NAME)'),
   'the activation handler must scope cache cleanup to Nexus-owned cache names');
-assert.ok(source.includes('const CACHE_NAME=CACHE_PREFIX+\'v34\';'),
+assert.ok(source.includes('const CACHE_NAME=CACHE_PREFIX+\'v35\';'),
   'the app-shell cache version must advance after service-worker behavior changes');
 assert.ok(appCoreSource.includes("navigator.serviceWorker.register('./sw.js',{updateViaCache:'none'})"),
   'service-worker checks must bypass HTTP caching so offline clients can receive the repaired app shell');
