@@ -57,6 +57,7 @@
     return [{id:'sl-al-commerce-si',title:'වාණිජ (Commerce)',country:'Sri Lanka',exam:'GCE Advanced Level',language:'Sinhala',streamName:'වාණිජ (Commerce)',streamId:'stream-commerce',description:'Commerce starter curriculum in Sinhala, organised by subject.',keywords:['commerce','වාණිජ','A/L','GCE Advanced Level','Sri Lanka','Sinhala'],subjects:[...groups.values()]}];
   }
   let CURRICULUM_PACKS=buildFallbackCurriculumPacks();
+  let curriculumCatalogLoaded=false;
   const LEGACY_SUBJECT_MAP = {
     'Business Studies':'ව්‍යාපාර අධ්‍යයනය','Business Studies (BS)':'ව්‍යාපාර අධ්‍යයනය','BS':'ව්‍යාපාර අධ්‍යය���ය',
     'Accounting':'ගිණුම්කරණය','ACC':'ගිණුම්කරණය',
@@ -75,14 +76,34 @@
   function fmtDate(s){if(!validDate(s))return '—';return new Date(s+'T12:00:00').toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'});}
   function baseState(){
     // New workspaces start empty. Starter curricula are installed explicitly from Explore.
-    return {schema:3,streams:[],subjects:[],topics:[],exams:[],history:[],settings:{theme:'system',intervalCap:120,installedCurricula:[],curriculumTombstones:[]}};
+    return {schema:3,streams:[],subjects:[],topics:[],exams:[],history:[],settings:{theme:'system',intervalCap:120,installedCurricula:[],curriculumTombstones:[],installedCurriculumPacks:[]}};
   }
-  function repairInstalledCurricula(data,ownerId){const api=window.NexusCurriculumIntegrity;if(!api||typeof api.repair!=='function')return data;const candidate=typeof api.applyIntentLedger==='function'?api.applyIntentLedger(data,localStorage,ownerId,CURRICULUM_PACKS):data;return api.repair(candidate,CURRICULUM_PACKS,{today,makeId}).state;}
+  function repairInstalledCurricula(data,ownerId,options={}){
+    const api=window.NexusCurriculumIntegrity;if(!api||typeof api.repair!=='function')return data;
+    let packs=CURRICULUM_PACKS.slice(),candidate=data;
+    if(!options.skipIntentLedger&&typeof api.applyIntentLedger==='function')candidate=api.applyIntentLedger(candidate,localStorage,ownerId,packs);
+    const store=window.NexusCurriculumPackStore;
+    if(store&&!options.skipPackStore){
+      const hydrated=store.hydrateState(candidate,localStorage,ownerId,packs);
+      candidate=hydrated.state;
+      const byId=new Map(packs.map(pack=>[String(pack.id),pack]));
+      for(const storedPack of hydrated.packs||[])if(!byId.has(String(storedPack.id))||!curriculumCatalogLoaded)byId.set(String(storedPack.id),storedPack);
+      packs=Array.from(byId.values());
+    }
+    if(!options.skipIntentLedger&&typeof api.applyIntentLedger==='function')candidate=api.applyIntentLedger(candidate,localStorage,ownerId,packs);
+    return api.repair(candidate,packs,{today,makeId}).state;
+  }
   window.NexusRepairInstalledCurricula=repairInstalledCurricula;
-  // Cloud hydration and merge commits must persist the same owner-scoped install intent
-  // as ordinary UI saves. Keep catalogue ownership inside this module so sync code cannot
-  // accidentally create a ledger with a stale or incomplete fallback catalogue.
-  window.NexusCreateCurriculumIntentLedgerEntry=function(data,ownerId,options={}){const api=window.NexusCurriculumIntegrity;if(!api||typeof api.createIntentLedgerEntry!=='function')return null;return api.createIntentLedgerEntry(data,localStorage,{...options,ownerId,packs:CURRICULUM_PACKS});};
+  // Cloud hydration and merge commits persist the selected JSON syllabus alongside data.
+  window.NexusCreateCurriculumPackStoreEntry=function(data,ownerId,options={}){
+    const store=window.NexusCurriculumPackStore;
+    return store&&typeof store.createStorageEntry==='function'?store.createStorageEntry(data,localStorage,ownerId,{replace:options.replace===true}):null;
+  };
+  window.NexusCreateCurriculumIntentLedgerEntry=function(data,ownerId,options={}){
+    const api=window.NexusCurriculumIntegrity;
+    if(!api||typeof api.createIntentLedgerEntry!=='function')return null;
+    return api.createIntentLedgerEntry(data,localStorage,{...options,ownerId,packs:CURRICULUM_PACKS});
+  };
   function safeRead(key){try{const val=localStorage.getItem(key);return val?JSON.parse(val):null;}catch(e){console.warn('Could not read saved data',e);return null;}}
   function normalizeTopic(t, fallbackSub){return {id:String(t.id||makeId('topic')),subjectId:String(t.subjectId||fallbackSub),name:String(t.name||t.topic||'Untitled topic').slice(0,240),notes:String(t.notes||'').slice(0,1000),custom:t.custom!==false,createdAt:validDate(t.createdAt)?t.createdAt:today(),lastReviewed:validDate(t.lastReviewed)?t.lastReviewed:(validDate(t.lastDate)?t.lastDate:''),lastRating:Number(t.lastRating??t.score)>=1&&Number(t.lastRating??t.score)<=5?Number(t.lastRating??t.score):null,dueDate:validDate(t.dueDate)?t.dueDate:(validDate(t.nextDate)?t.nextDate:''),intervalDays:Math.max(0,Math.min(120,Number(t.intervalDays)||0)),reviewCount:Math.max(0,Math.min(100000,Number(t.reviewCount)||0)),streak:Math.max(0,Number(t.streak)||0),lapses:Math.max(0,Number(t.lapses??t.lapseCount)||0),archived:Boolean(t.archived),fsrs:window.NexusBackupRestoreUtils.sanitizeFsrsCard(t.fsrs)};}
   function migrateOld(raw,options={}){
@@ -160,7 +181,8 @@
     const exams=Array.isArray(raw.exams)?raw.exams.filter(e=>e&&e.name).map(sanitizeExam):[];
     const theme=['system','light','dark'].includes(raw.settings?.theme)?raw.settings.theme:'system';
     const strings=value=>Array.isArray(value)?Array.from(new Set(value.filter(x=>typeof x==='string'&&x.length>0))).slice(0,5000):[];
-    const normalized={schema:3,streams,subjects,topics,history:cleanHistory,exams,settings:{theme,intervalCap:120,installedCurricula:strings(raw.settings?.installedCurricula),curriculumTombstones:strings(raw.settings?.curriculumTombstones)}};
+    const installedCurriculumPacks=window.NexusCurriculumPackStore?window.NexusCurriculumPackStore.cleanDocuments(raw.settings?.installedCurriculumPacks):[];
+    const normalized={schema:3,streams,subjects,topics,history:cleanHistory,exams,settings:{theme,intervalCap:120,installedCurricula:strings(raw.settings?.installedCurricula),curriculumTombstones:strings(raw.settings?.curriculumTombstones),installedCurriculumPacks}};
     return options.skipCurriculumRepair?normalized:repairInstalledCurricula(normalized);
   }
   window.NexusNormalizeState=normalizeState;
@@ -172,7 +194,26 @@
     return data;
   }
   function loadState(){const current=safeRead(STORAGE_KEY);if(current){try{return detachPristineStarterContent(normalizeState(current));}catch(e){console.warn('Saved data was invalid; using recovery defaults',e);}}const old=safeRead('alSrsTrackerV2');if(old){try{return migrateOld(old.state||old);}catch(e){console.warn(e);}}const legacyT=safeRead('alTrackerData'),legacyH=safeRead('alHistoryLog');if(Array.isArray(legacyT)||Array.isArray(legacyH))return migrateOld({topics:legacyT||[],history:legacyH||[]});return baseState();}
-  function save(options={}){try{if(window.NexusCurriculumIntegrity&&typeof window.NexusCurriculumIntegrity.repair==='function'){if(typeof window.NexusCurriculumIntegrity.applyIntentLedger==='function')window.NexusCurriculumIntegrity.applyIntentLedger(state,localStorage,undefined,CURRICULUM_PACKS);state=window.NexusCurriculumIntegrity.repair(state,CURRICULUM_PACKS,{today,makeId}).state;}const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():(()=>{try{const x=JSON.parse(localStorage.getItem('recall.study.features.v1')||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{}}catch(_){return {}}})();if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');const entries=[{key:STORAGE_KEY,value:JSON.stringify(state)}];const ledgerEntry=window.NexusCurriculumIntegrity&&window.NexusCurriculumIntegrity.createIntentLedgerEntry?window.NexusCurriculumIntegrity.createIntentLedgerEntry(state,localStorage,{replace:options.replaceCurriculumLedger===true,replacePackIds:options.replaceCurriculumLedgerForPack?[String(options.replaceCurriculumLedgerForPack)]:[],packs:CURRICULUM_PACKS}):null;if(ledgerEntry)entries.push(ledgerEntry);window.NexusOfflineSyncQueue.commitWorkspace(localStorage,entries,{state,featureState},{returnOperationPayload:false});$('saveStatus').textContent='Saved on this device';$('saveStatus').style.color='';if(window.NexusCloudSync)window.NexusCloudSync.schedule();return true;}catch(e){$('saveStatus').textContent='Save failed — export backup';$('saveStatus').style.color='var(--red)';notify('Could not save data. Export a backup and check browser storage.');return false;}}
+  function save(options={}){
+    try{
+      const resetting=options.replaceCurriculumLedger===true||options.replaceCurriculumPacks===true;
+      state=repairInstalledCurricula(state,undefined,{skipIntentLedger:options.replaceCurriculumLedger===true,skipPackStore:resetting});
+      const packEntry=window.NexusCurriculumPackStore?window.NexusCurriculumPackStore.createStorageEntry(state,localStorage,undefined,{replace:resetting}):null;
+      const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():(()=>{try{const x=JSON.parse(localStorage.getItem('recall.study.features.v1')||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{}}catch(_){return {}}})();
+      if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');
+      const entries=[{key:STORAGE_KEY,value:JSON.stringify(state)}];
+      const ledgerEntry=window.NexusCurriculumIntegrity&&window.NexusCurriculumIntegrity.createIntentLedgerEntry?window.NexusCurriculumIntegrity.createIntentLedgerEntry(state,localStorage,{replace:options.replaceCurriculumLedger===true,replacePackIds:options.replaceCurriculumLedgerForPack?[String(options.replaceCurriculumLedgerForPack)]:[],packs:CURRICULUM_PACKS}):null;
+      if(ledgerEntry)entries.push(ledgerEntry);
+      if(packEntry)entries.push(packEntry);
+      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,entries,{state,featureState},{returnOperationPayload:false});
+      $('saveStatus').textContent='Saved on this device';$('saveStatus').style.color='';
+      if(window.NexusCloudSync)window.NexusCloudSync.schedule();
+      return true;
+    }catch(e){
+      $('saveStatus').textContent='Save failed — export backup';$('saveStatus').style.color='var(--red)';
+      notify('Could not save data. Export a backup and check browser storage.');return false;
+    }
+  }
 
   // Preview-only, privacy-conscious data-integrity trace. Records counts and catalogue
   // identity evidence at persistence boundaries; never auth tokens or Study Hub content.
@@ -344,49 +385,89 @@
   const naturalCollator = new Intl.Collator(undefined, {numeric:true, sensitivity:'base'});
   function naturalCompare(a,b){ return naturalCollator.compare(a,b); }
 
+  function validatePackDefinition(entry){
+    if(!entry||typeof entry!=='object')throw new Error('Invalid curriculum pack definition.');
+    const id=String(entry.id||'').trim(),title=String(entry.title||'').trim(),country=String(entry.country||'').trim(),exam=String(entry.exam||'').trim(),language=String(entry.language||'').trim(),streamName=String(entry.streamName||'').trim();
+    if(!/^[a-z0-9][a-z0-9-]{1,79}$/i.test(id)||!title||!country||!exam||!language||!streamName)throw new Error('Pack metadata is incomplete or has an invalid id: '+(id||'unnamed pack'));
+    if(!Array.isArray(entry.subjects)||!entry.subjects.length)throw new Error('Pack '+id+' must contain subjects.');
+    const subjectIds=new Set();
+    const cleanSubjects=entry.subjects.map((subject,subjectIndex)=>{
+      if(!subject||typeof subject!=='object')throw new Error('Invalid subject in pack '+id+'.');
+      const sid=String(subject.id||'').trim(),name=String(subject.name||'').trim();
+      if(!/^[a-z0-9][a-z0-9-]{0,79}$/i.test(sid)||!name)throw new Error('Subject metadata is incomplete in pack '+id+', position '+(subjectIndex+1)+'.');
+      if(subjectIds.has(sid))throw new Error('Duplicate subject id '+sid+' in pack '+id+'.');subjectIds.add(sid);
+      if(!Array.isArray(subject.topics)||!subject.topics.length)throw new Error('Subject '+name+' in pack '+id+' must contain topics.');
+      const topicNames=new Set();
+      const topics=subject.topics.map(value=>{if(typeof value!=='string')throw new Error('Topics must be plain strings in '+id+'/'+sid+'.');const topic=value.trim();if(!topic||topic.length>240)throw new Error('A topic in '+id+'/'+sid+' is empty or exceeds 240 characters.');const key=topic.toLocaleLowerCase();if(topicNames.has(key))throw new Error('Duplicate topic '+topic+' in '+id+'/'+sid+'.');topicNames.add(key);return topic;});
+      const workspaceId=typeof subject.workspaceId==='string'&&subject.workspaceId.trim()?subject.workspaceId.trim():'';
+      const rawLegacyIdPrefix=typeof subject.legacyIdPrefix==='string'&&/^[a-z0-9-]+$/i.test(subject.legacyIdPrefix)?subject.legacyIdPrefix:'';
+      const legacyPrefixAliases={'seed-bs':'curr-bs','seed-acc':'curr-acc','seed-econ':'curr-econ'};
+      const legacyIdPrefix=legacyPrefixAliases[rawLegacyIdPrefix.toLocaleLowerCase()]||rawLegacyIdPrefix;
+      return {id:sid,name,workspaceId,legacyIdPrefix,topics};
+    });
+    const keywords=Array.isArray(entry.keywords)?entry.keywords.filter(x=>typeof x==='string'&&x.trim()).map(x=>x.trim()):[];
+    return {id,title,country,exam,language,streamName,streamId:typeof entry.streamId==='string'?entry.streamId.trim():'',description:String(entry.description||'').trim(),keywords,subjects:cleanSubjects};
+  }
   function validateCurriculumCatalog(raw){
-    if(!raw||raw.version!==1||!Array.isArray(raw.packs)||!raw.packs.length)throw new Error('Catalogue must contain a version 1 packs array.');
-    const packIds=new Set();
-    const packs=raw.packs.map((entry,packIndex)=>{
-      if(!entry||typeof entry!=='object')throw new Error('Invalid pack at position '+(packIndex+1)+'.');
-      const id=String(entry.id||'').trim(),title=String(entry.title||'').trim(),country=String(entry.country||'').trim(),exam=String(entry.exam||'').trim(),language=String(entry.language||'').trim(),streamName=String(entry.streamName||'').trim();
+    if(!raw||!Array.isArray(raw.packs)||!raw.packs.length)throw new Error('Catalogue must contain a non-empty packs array.');
+    if(raw.version===1){
+      const ids=new Set(),packs=raw.packs.map(validatePackDefinition);
+      for(const pack of packs){if(ids.has(pack.id))throw new Error('Duplicate pack id: '+pack.id);ids.add(pack.id);}
+      if(!packs.some(pack=>pack.id==='sl-al-commerce-si'))throw new Error('The existing Commerce starter pack must remain in the catalogue.');
+      return {version:1,packs};
+    }
+    if(raw.version!==2)throw new Error('Unsupported curriculum catalogue version.');
+    const ids=new Set();
+    const packs=raw.packs.map((entry,index)=>{
+      if(!entry||typeof entry!=='object')throw new Error('Invalid catalogue entry at position '+(index+1)+'.');
+      const id=String(entry.id||'').trim(),title=String(entry.title||'').trim(),country=String(entry.country||'').trim(),exam=String(entry.exam||'').trim(),language=String(entry.language||'').trim(),streamName=String(entry.streamName||'').trim(),file=String(entry.file||'').trim();
       if(!/^[a-z0-9][a-z0-9-]{1,79}$/i.test(id)||!title||!country||!exam||!language||!streamName)throw new Error('Pack metadata is incomplete or has an invalid id: '+(id||'unnamed pack'));
-      if(packIds.has(id))throw new Error('Duplicate pack id: '+id);packIds.add(id);
-      if(!Array.isArray(entry.subjects)||!entry.subjects.length)throw new Error('Pack '+id+' must contain subjects.');
-      const subjectIds=new Set();
-      const cleanSubjects=entry.subjects.map((subject,subjectIndex)=>{
-        if(!subject||typeof subject!=='object')throw new Error('Invalid subject in pack '+id+'.');
-        const sid=String(subject.id||'').trim(),name=String(subject.name||'').trim();
-        if(!/^[a-z0-9][a-z0-9-]{0,79}$/i.test(sid)||!name)throw new Error('Subject metadata is incomplete in pack '+id+', position '+(subjectIndex+1)+'.');
-        if(subjectIds.has(sid))throw new Error('Duplicate subject id '+sid+' in pack '+id+'.');subjectIds.add(sid);
-        if(!Array.isArray(subject.topics)||!subject.topics.length)throw new Error('Subject '+name+' in pack '+id+' must contain topics.');
-        const topicNames=new Set();
-        const topics=subject.topics.map(value=>{if(typeof value!=='string')throw new Error('Topics must be plain strings in '+id+'/'+sid+'.');const topic=value.trim();if(!topic||topic.length>240)throw new Error('A topic in '+id+'/'+sid+' is empty or exceeds 240 characters.');const key=topic.toLocaleLowerCase();if(topicNames.has(key))throw new Error('Duplicate topic '+topic+' in '+id+'/'+sid+'.');topicNames.add(key);return topic;});
-        const workspaceId=typeof subject.workspaceId==='string'&&subject.workspaceId.trim()?subject.workspaceId.trim():'';
-        const rawLegacyIdPrefix=typeof subject.legacyIdPrefix==='string'&&/^[a-z0-9-]+$/i.test(subject.legacyIdPrefix)?subject.legacyIdPrefix:'';const legacyPrefixAliases={'seed-bs':'curr-bs','seed-acc':'curr-acc','seed-econ':'curr-econ'};const legacyIdPrefix=legacyPrefixAliases[rawLegacyIdPrefix.toLocaleLowerCase()]||rawLegacyIdPrefix;
-        return {id:sid,name,workspaceId,legacyIdPrefix,topics};
-      });
-      const keywords=Array.isArray(entry.keywords)?entry.keywords.filter(x=>typeof x==='string'&&x.trim()).map(x=>x.trim()):[];
-      return {id,title,country,exam,language,streamName,streamId:typeof entry.streamId==='string'?entry.streamId.trim():'',description:String(entry.description||'').trim(),keywords,subjects:cleanSubjects};
+      if(ids.has(id))throw new Error('Duplicate pack id: '+id);ids.add(id);
+      if(file!=='./packs/'+id+'.json')throw new Error('Pack '+id+' must reference its own JSON file under curricula/packs/.');
+      const keywords=Array.isArray(entry.keywords)?entry.keywords.filter(value=>typeof value==='string'&&value.trim()).map(value=>value.trim()):[];
+      return {id,title,country,exam,language,streamName,streamId:typeof entry.streamId==='string'?entry.streamId.trim():'',description:String(entry.description||'').trim(),keywords,file};
     });
     if(!packs.some(pack=>pack.id==='sl-al-commerce-si'))throw new Error('The existing Commerce starter pack must remain in the catalogue.');
-    return packs;
+    return {version:2,packs};
   }
   async function loadCurriculumCatalog(){
     try{
       const response=await fetch('./curricula/catalog.json');
       if(!response.ok)throw new Error('Catalogue request returned '+response.status+'.');
-      const loaded=validateCurriculumCatalog(await response.json());
-      CURRICULUM_PACKS=loaded;
+      const catalog=validateCurriculumCatalog(await response.json());
+      let loaded=catalog.packs;
+      if(catalog.version===2){
+        const fallbackPacks=new Map(CURRICULUM_PACKS.map(pack=>[pack.id,pack]));
+        if(window.NexusCurriculumPackStore){
+          for(const pack of window.NexusCurriculumPackStore.storedPacks(state,localStorage,undefined))if(!fallbackPacks.has(pack.id))fallbackPacks.set(pack.id,pack);
+        }
+        const outcomes=await Promise.all(catalog.packs.map(async metadata=>{
+          try{
+            const packResponse=await fetch('./curricula/'+metadata.file.replace(/^\.\//,''));
+            if(!packResponse.ok)throw new Error('Pack JSON request returned '+packResponse.status+'.');
+            const definition=validatePackDefinition(await packResponse.json());
+            if(definition.id!==metadata.id)throw new Error('The catalogue ID does not match the pack JSON ID.');
+            return {...definition,...metadata,subjects:definition.subjects};
+          }catch(error){
+            const fallback=fallbackPacks.get(metadata.id);
+            if(!fallback){console.warn('Could not load curriculum pack '+metadata.id+'.',error);return null;}
+            console.warn('Using the saved JSON copy for curriculum pack '+metadata.id+'.',error);
+            return {...fallback,...metadata,subjects:fallback.subjects};
+          }
+        }));
+        loaded=outcomes.filter(Boolean);
+      }
+      const byId=new Map(loaded.map(pack=>[String(pack.id),pack]));
+      if(window.NexusCurriculumPackStore){
+        for(const pack of window.NexusCurriculumPackStore.storedPacks(state,localStorage,undefined))if(!byId.has(String(pack.id)))byId.set(String(pack.id),pack);
+      }
+      loaded=Array.from(byId.values());
+      if(!loaded.some(pack=>pack.id==='sl-al-commerce-si'))throw new Error('The Commerce pack is not available after catalogue validation.');
+      CURRICULUM_PACKS=loaded;curriculumCatalogLoaded=true;
       if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('catalog-loaded-before-repair',state);
-      // Re-run integrity repair after the authoritative catalogue arrives. Startup first
-      // normalizes local data against a lightweight fallback pack; that fallback can lag
-      // behind catalogue updates and otherwise leave a partial workspace persisted.
       if(state&&window.NexusCurriculumIntegrity&&typeof window.NexusCurriculumIntegrity.repair==='function'){
         const previousState=state;
-        const candidate=window.NexusCurriculumIntegrity.applyIntentLedger
-          ?window.NexusCurriculumIntegrity.applyIntentLedger(clone(state),localStorage,undefined,loaded):clone(state);
-        const repaired=window.NexusCurriculumIntegrity.repair(candidate,loaded,{today,makeId}).state;
+        const repaired=repairInstalledCurricula(clone(state));
         if(JSON.stringify(repaired)!==JSON.stringify(previousState)){
           state=repaired;
           if(save()){renderAll();renderSetup();renderExplore();}
@@ -395,7 +476,7 @@
       }
       if(window.NexusRecordDataIntegrityDiagnostic)window.NexusRecordDataIntegrityDiagnostic('catalog-loaded-after-repair',state);
       renderExplore();
-    }catch(error){console.warn('Nexus curriculum catalogue could not be refreshed; using the built-in Commerce fallback.',error);}
+    }catch(error){console.warn('Nexus curriculum catalogue could not be refreshed; using the stored JSON pack copies and built-in Commerce fallback.',error);renderExplore();}
   }
   function findPackStream(pack){
     // Prefer the stable pack stream ID even if a user has renamed the workspace label.
@@ -455,6 +536,7 @@
         }
       }
       const scope=subjectId?(topicName!==null?'topic':'subject'):'pack';
+      if(window.NexusCurriculumPackStore)window.NexusCurriculumPackStore.recordInstall(state,pack,scope,subjectId,topicName,localStorage);
       if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markInstall(state,pack,scope,subjectId,topicName);
       if(!save({replaceCurriculumLedgerForPack:pack.id})){
         state=previousState;renderAll();renderSetup();renderExplore();
@@ -791,7 +873,7 @@
       localStorage.removeItem(STORAGE_KEY);
       OLD_KEYS.forEach(k=>localStorage.removeItem(k));
       state = baseState();
-      save({replaceCurriculumLedger:true}); renderAll();
+      save({replaceCurriculumLedger:true,replaceCurriculumPacks:true}); renderAll();
     };
     
     // Dropdown filters toggle
