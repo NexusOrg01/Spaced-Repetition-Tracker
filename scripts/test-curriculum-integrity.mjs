@@ -123,7 +123,9 @@ assert.ok(!partial.topics.some(t => t.name === 'Topic three'), 'explicitly delet
 // data, and install markers are missing as they can be after legacy-state migration. Refresh
 // (JSON persistence + normalization/repair) must reconstruct the entire explicitly installed pack.
 const catalogue = JSON.parse(readFileSync(new URL('../curricula/catalog.json', import.meta.url), 'utf8'));
-const commerce = catalogue.packs.find(item => item.id === 'sl-al-commerce-si');
+const commerce = catalogue.version===2
+  ? JSON.parse(readFileSync(new URL('../curricula/packs/sl-al-commerce-si.json', import.meta.url), 'utf8'))
+  : catalogue.packs.find(item => item.id === 'sl-al-commerce-si');
 assert.ok(commerce && commerce.subjects.length >= 3, 'the real Sinhala Commerce catalogue must be exercised');
 
 // Mirror the observed refresh case: the renamed canonical Commerce stream survives, but
