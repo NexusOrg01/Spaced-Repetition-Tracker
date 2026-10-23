@@ -13,20 +13,38 @@ const cloudSync = fs.readFileSync(cloudSyncPath, 'utf8');
 const errors = [];
 const assert = (condition, message) => { if (!condition) errors.push(message); };
 
-assert(catalog && catalog.version === 1, 'curricula/catalog.json must declare version: 1.');
+assert(catalog && (catalog.version === 1 || catalog.version === 2), 'curricula/catalog.json must declare supported version: 1 or 2.');
 assert(Array.isArray(catalog.packs) && catalog.packs.length > 0, 'The catalogue must contain at least one pack.');
 const packIds = new Set();
 let totalTopics = 0;
-for (const [packIndex, pack] of (catalog.packs || []).entries()) {
-  const prefix = 'Pack '+(packIndex + 1)+' ('+(pack?.id || 'unnamed')+')';
-  assert(pack && /^[a-z0-9][a-z0-9-]{1,79}$/.test(pack.id || ''), prefix+': id must be a unique lowercase slug.');
-  assert(!packIds.has(pack?.id), prefix+': duplicate pack id.');
-  if (pack?.id) packIds.add(pack.id);
-  for (const field of ['title','country','exam','language','streamName']) assert(typeof pack?.[field] === 'string' && pack[field].trim(), prefix+': missing '+field+'.');
-  assert(Array.isArray(pack?.subjects) && pack.subjects.length > 0, prefix+': subjects must be a non-empty array.');
+const validatedPacks = [];
+for (const [packIndex, entry] of (catalog.packs || []).entries()) {
+  const prefix = 'Pack '+(packIndex + 1)+' ('+(entry?.id || 'unnamed')+')';
+  assert(entry && /^[a-z0-9][a-z0-9-]{1,79}$/.test(entry.id || ''), prefix+': id must be a unique lowercase slug.');
+  assert(!packIds.has(entry?.id), prefix+': duplicate pack id.');
+  if (entry?.id) packIds.add(entry.id);
+  for (const field of ['title','country','exam','language','streamName']) assert(typeof entry?.[field] === 'string' && entry[field].trim(), prefix+': missing '+field+'.');
+  let pack = entry;
+  if (catalog.version === 2) {
+    assert(typeof entry.file === 'string' && entry.file === './packs/'+entry.id+'.json', prefix+': file must point to its matching JSON pack in curricula/packs/.');
+    if (typeof entry.file === 'string' && entry.file === './packs/'+entry.id+'.json') {
+      try {
+        pack = JSON.parse(fs.readFileSync(new URL('../curricula/'+entry.file.replace(/^\.\//,''), import.meta.url), 'utf8'));
+      } catch (error) {
+        assert(false, prefix+': linked JSON file could not be read ('+error.message+').');
+        pack = {...entry, subjects: []};
+      }
+      assert(pack.id === entry.id, prefix+': JSON pack id must match its catalogue index id.');
+      for (const field of ['title','country','exam','language','streamName']) assert(pack[field] === entry[field], prefix+': JSON pack metadata differs from the catalogue index for '+field+'.');
+    } else {
+      pack = {...entry, subjects: []};
+    }
+  }
+  const definition = prefix+' JSON';
+  assert(Array.isArray(pack?.subjects) && pack.subjects.length > 0, definition+': subjects must be a non-empty array.');
   const subjectIds = new Set();
   for (const [subjectIndex, subject] of (pack?.subjects || []).entries()) {
-    const sp = prefix+', subject '+(subjectIndex + 1)+' ('+(subject?.id || 'unnamed')+')';
+    const sp = definition+', subject '+(subjectIndex + 1)+' ('+(subject?.id || 'unnamed')+')';
     assert(subject && /^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}$/.test(subject.id || ''), sp+': invalid subject id.');
     assert(!subjectIds.has(subject?.id), sp+': duplicate subject id in the same pack.');
     if (subject?.id) subjectIds.add(subject.id);
@@ -43,8 +61,10 @@ for (const [packIndex, pack] of (catalog.packs || []).entries()) {
       }
     }
   }
+  validatedPacks.push(pack);
 }
 assert(packIds.has('sl-al-commerce-si'), 'The existing Commerce starter pack must remain available.');
+assert(fs.existsSync(new URL('../curricula/packs/sl-al-commerce-si.json', import.meta.url)), 'Commerce must have a standalone syllabus JSON file.');
 assert(!(catalog.packs || []).some(pack => /^temporary(?:-|$)/i.test(pack?.id || '')), 'Temporary test curricula must not remain in the catalogue.');
 assert(!appSource.includes('temporary-biology-test'), 'The temporary Biology test pack must be removed from the app version.');
 assert(appSource.includes('id="hubRatingGrouping"'), 'Analytics must expose topic, subject, and syllabus grouping.');
