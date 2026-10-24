@@ -149,17 +149,27 @@ async function flushDurableLocalWrites(){
 async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
   if(!window.NexusBackupRestoreUtils||!window.NexusStorageKey||!window.NexusFeatureStorageKey||!window.NexusNormalizeFeatureState||!window.NexusSetFeatureState)throw new Error('Safe local workspace storage is unavailable. Cloud data was not applied.');
   const safeState=window.NexusRepairCurriculumState?window.NexusRepairCurriculumState(nextState):nextState;
-  const nextFeatures=window.NexusNormalizeFeatureState(rawFeatures);
+  const previousOwner=localStorage.getItem(OWNER_KEY)||'';
+  const inputFeatures=rawFeatures&&typeof rawFeatures==='object'&&!Array.isArray(rawFeatures)?rawFeatures:{};
+  const featureInput={...inputFeatures};
+  if(ownerId&&previousOwner&&previousOwner!==String(ownerId)&&!Object.prototype.hasOwnProperty.call(featureInput,'fsrsSettings')){
+    // Do not carry account A's device-only scheduler preference into account B when
+    // B's older cloud snapshot predates the FSRS-settings field.
+    featureInput.fsrsSettings={enabled:true,request_retention:0.9,maximum_interval:120,enable_fuzz:false,w:null};
+  }
+  const nextFeatures=window.NexusNormalizeFeatureState(featureInput);
   const entries=[
     {key:window.NexusStorageKey,value:JSON.stringify(safeState)},
-    {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)}
+    {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)},
+    {key:'nexus.fsrs.settings.v1',value:JSON.stringify(nextFeatures.fsrsSettings)}
   ];
   if(ownerId)entries.push({key:OWNER_KEY,value:String(ownerId)});
   // Free redundant snapshot space before applying a cloud workspace to this browser.
   if(window.NexusOfflineSyncQueue&&typeof window.NexusOfflineSyncQueue.compactMetadata==='function')window.NexusOfflineSyncQueue.compactMetadata(localStorage);
   await window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,entries);
   state=safeState;
-  window.NexusSetFeatureState(nextFeatures,{persist:false,render:false});
+  if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(nextFeatures.fsrsSettings,{syncFeature:false,persist:false});
+  window.NexusSetFeatureState(nextFeatures,{persist:false,render:false,applyFsrs:false});
   renderAll();
   if(window.NexusRenderHub)window.NexusRenderHub();
   return true;
