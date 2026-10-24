@@ -130,6 +130,11 @@ class FakeIndexedDB {
   open(name, version) {
     const request = { result: null, error: null, onupgradeneeded: null, onsuccess: null, onerror: null, onblocked: null };
     queueMicrotask(() => {
+      if (this.failOpen) {
+        request.error = new Error('Synthetic IndexedDB open failure.');
+        if (typeof request.onerror === 'function') request.onerror({ target: request });
+        return;
+      }
       let db = this.databases.get(name);
       const isNew = !db;
       if (!db) {
@@ -263,6 +268,41 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   await loaded.api.flush();
   assert.equal(loaded.api.getStatus().pendingEntries, 0, 'a retry should drain the pending write');
   assert.equal(idb.databases.get('nexus-workspace-v1').stores.get('records').get('recall.study.tracker.v1').value, '{"safe":false}');
+}
+
+// A later IndexedDB-open failure must not let a stale durable snapshot overwrite
+// changes made safely in the journaled browser-storage fallback.
+{
+  const native = new MemoryStorage([
+    ['recall.study.tracker.v1', '{"revision":"before"}'],
+    ['recall.study.features.v1', '{"marker":"hub"}'],
+    ['nexus.cloud.last-user-id', 'account-recovery'],
+    ['sb-testproject-auth-token', '{"access_token":"session"}']
+  ]);
+  const idb = new FakeIndexedDB();
+  const first = loadApi(makeWindow(native, idb));
+  assert.equal(await first.api.bootstrap(), true);
+  idb.failOpen = true;
+  const fallback = loadApi(makeWindow(native, idb));
+  assert.equal(await fallback.api.bootstrap(), false, 'an IndexedDB open failure should activate a visible browser-storage fallback');
+  const fallbackStorage = fallback.context.window.localStorage;
+  fallbackStorage.setItem('recall.study.tracker.v1', '{"revision":"fallback"}');
+  assert.equal(native.getItem('recall.study.tracker.v1'), '{"revision":"fallback"}',
+    'fallback changes should remain usable in browser storage while IndexedDB is unavailable');
+  assert.ok(native.getItem('nexus.storage.internal.fallback-journal.v1'),
+    'the fallback should journal a checksum before changing the legacy value');
+  assert.equal(native.getItem('sb-testproject-auth-token'), '{"access_token":"session"}',
+    'fallback writes must preserve Supabase auth tokens');
+
+  idb.failOpen = false;
+  const recovered = loadApi(makeWindow(native, idb));
+  assert.equal(await recovered.api.bootstrap(), true, 'IndexedDB should recover on a later page load');
+  assert.equal(recovered.context.window.localStorage.getItem('recall.study.tracker.v1'), '{"revision":"fallback"}',
+    'journaled fallback edits must supersede stale IndexedDB values');
+  assert.equal(idb.databases.get('nexus-workspace-v1').stores.get('records').get('recall.study.tracker.v1').value, '{"revision":"fallback"}',
+    'the recovered value must commit to the durable records store');
+  assert.equal(native.getItem('nexus.storage.internal.fallback-journal.v1'), null,
+    'the recovery journal should clear after migration and mirror reconciliation commit');
 }
 
 console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, clear scoping, and failed-write recovery.');
