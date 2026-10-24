@@ -194,7 +194,7 @@ queue.commitWorkspace(storage, [
 await window.NexusCloudSync.reconnect();
 assert.equal(rows.has(accountA.id), false, 'offline startup must not write to cloud');
 assert.ok(queue.hasPending(storage, accountA.id), 'offline startup must retain the account-A pending snapshot');
-assert.equal(getElement('cloudStatus').textContent, 'Sync unavailable', 'offline failure must be visible instead of claiming sync success');
+assert.equal(getElement('cloudStatus').textContent, 'Offline · local workspace', 'an authenticated account with its own local workspace should remain usable offline without claiming sync success');
 
 networkAvailable = true;
 listeners['window:online']();
