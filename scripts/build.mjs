@@ -93,22 +93,28 @@ async function verifyStorageBootstrap() {
     'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-sync.js',
     'nexus-app-inline.js', 'workspace-isolation-guard.js'
   ];
-  assert.equal((html.match(/<script src="\\.\\/nexus-storage\\.js"><\\/script>/g) || []).length, 1,
+  assert.equal(html.split('<script src="./nexus-storage.js"></script>').length - 1, 1,
     'index.html must load the storage adapter exactly once.');
-  assert.equal((html.match(/<script src="\\.\\/nexus-app-bootstrap\\.js"><\\/script>/g) || []).length, 1,
+  assert.equal(html.split('<script src="./nexus-app-bootstrap.js"></script>').length - 1, 1,
     'index.html must load the storage-gated bootstrap exactly once.');
   assert.ok(storage.includes("const DB_NAME = 'nexus-workspace-v1'") &&
     storage.includes("const RECORDS = 'records'") && storage.includes('migrateLegacyValues'),
     'the durable storage adapter must use its versioned IndexedDB database and idempotent legacy migration.');
-  const runtimeMatch = bootstrap.match(/const RUNTIME_ASSETS = \\[([\\s\\S]*?)\\];/);
-  assert.ok(runtimeMatch, 'the bootstrap must declare its ordered runtime asset list.');
-  const assets = runtimeMatch ? [...runtimeMatch[1].matchAll(/'([^']+)'/g)].map(match => match[1]) : [];
+  const runtimeStart = bootstrap.indexOf('const RUNTIME_ASSETS = [');
+  const runtimeEnd = bootstrap.indexOf('];', runtimeStart);
+  assert.ok(runtimeStart >= 0 && runtimeEnd > runtimeStart, 'the bootstrap must declare its ordered runtime asset list.');
+  const runtimeBody = runtimeStart >= 0 && runtimeEnd > runtimeStart ? bootstrap.slice(runtimeStart, runtimeEnd) : '';
+  const assets = [...runtimeBody.matchAll(/'([^']+)'/g)].map(match => match[1]);
   assert.deepEqual(assets, expected, 'runtime modules must load only after IndexedDB initialization and in dependency-safe order.');
-  for (const asset of expected) {
-    await readFile(join(root, asset), 'utf8');
+  for (const asset of expected) await readFile(join(root, asset), 'utf8');
+  for (const asset of [
+    'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
+    'explore-curriculum.js', 'app-core.js', 'study-hub.js', 'nexus-build-config.js',
+    'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-sync.js', 'workspace-isolation-guard.js'
+  ]) {
+    assert.ok(!html.includes('<script src="./' + asset + '"></script>'),
+      'App module ' + asset + ' must not execute directly from index.html before durable storage initialization.');
   }
-  assert.doesNotMatch(html, /<script\\b[^>]*src=["']\\.\\/(?:backup-restore-utils|offline-sync-queue|curriculum-integrity|explore-curriculum|app-core|study-hub|nexus-build-config|cloud-sync-recovery|workspace-sync-merge|cloud-sync|workspace-isolation-guard)\\.js["']/,
-    'app modules must not execute directly from index.html before durable storage initialization.');
 }
 
 async function copySiteFiles() {
