@@ -43,6 +43,8 @@ for (const asset of ['backup-restore-utils.js','offline-sync-queue.js','curricul
   assert.ok(!index.includes('<script src="./' + asset + '"></script>'), asset + ' must not load before the asynchronous storage bootstrap.');
 }
 assert.ok(storageSource.includes("const DB_NAME = 'nexus-workspace-v1'") && storageSource.includes('function commitLocalStorageEntries(entries)') && storageSource.includes('async function persistPending()'), 'the IndexedDB layer must expose the compatibility write path and durable flush logic');
+assert.ok(appSource.includes('Saving to this device') && appSource.includes('storage.flush().then('), 'the tracker must not show a successful save before the durable storage promise resolves');
+assert.ok(cloudSync.includes('await durableStorage.flush()'), 'cloud uploads must wait for the IndexedDB write queue to commit before selecting a snapshot');
 assert.ok(bootstrap.includes('await window.NexusStorage.bootstrap()') && bootstrap.includes('for (const asset of RUNTIME_ASSETS) await loadScript(asset)'), 'app modules must wait for storage initialization and load sequentially');
 assert.ok(appSource.includes('window.NexusStorageKey = STORAGE_KEY;'), 'expose the primary storage key for shared transactions');
 assert.ok(runtimeAssets.indexOf('workspace-sync-merge.js') >= 0 && runtimeAssets.indexOf('cloud-sync.js') > runtimeAssets.indexOf('workspace-sync-merge.js'), 'three-way merge engine must load before cloud sync runtime');
