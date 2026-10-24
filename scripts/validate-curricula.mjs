@@ -1,5 +1,9 @@
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const cataloguePath = new URL('../curricula/catalog.json', import.meta.url);
 const htmlPath = new URL('../index.html', import.meta.url);
