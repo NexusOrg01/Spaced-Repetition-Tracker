@@ -1,6 +1,5 @@
--- RECONSTRUCTED migration from the surviving privilege-revocation notes.
--- Original file was not recoverable from repository history.
--- Nexus cloud sync updates a user's snapshot; it does not need client-side DELETE.
-revoke delete
-  on table public.nexus_user_data
-  from authenticated;
+-- Restored from the SQL statements recorded in production migration history.
+-- Keep this file aligned with version 20261012034918; do not apply it manually
+-- to production or alter remote migration history as part of this repair.
+
+REVOKE DELETE ON TABLE public.nexus_user_data FROM authenticated;
