@@ -617,7 +617,7 @@
       seen.add(entry.key);
       return { key: entry.key, value: entry.value };
     });
-    if (!enabled) return nativeAtomicWrite(normalized);
+    if (!enabled) return normalized.every(entry => isManagedKey(entry.key)) ? fallbackAtomicWrite(normalized) : nativeAtomicWrite(normalized);
     if (normalized.some(entry => !isManagedKey(entry.key))) {
       throw new Error('This atomic operation included a key outside Nexus durable storage.');
     }
@@ -642,8 +642,9 @@
       },
       setItem(key, value) {
         const name = String(key), text = String(value);
-        if (enabled && isManagedKey(name)) {
-          commitLocalStorageEntries([{ key: name, value: text }]);
+        if (isManagedKey(name)) {
+          if (enabled) commitLocalStorageEntries([{ key: name, value: text }]);
+          else fallbackAtomicWrite([{ key: name, value: text }]);
           return;
         }
         if (!nativeStorage) throw new Error('Browser storage is unavailable.');
@@ -651,19 +652,21 @@
       },
       removeItem(key) {
         const name = String(key);
-        if (enabled && isManagedKey(name)) {
-          commitLocalStorageEntries([{ key: name, value: null }]);
+        if (isManagedKey(name)) {
+          if (enabled) commitLocalStorageEntries([{ key: name, value: null }]);
+          else fallbackAtomicWrite([{ key: name, value: null }]);
           return;
         }
         if (nativeStorage) nativeStorage.removeItem(name);
       },
       clear() {
-        if (enabled) {
-          const entries = Array.from(cache.keys()).map(key => ({ key, value: null }));
-          if (entries.length) commitLocalStorageEntries(entries);
-          return;
+        const entries = enabled
+          ? Array.from(cache.keys()).map(key => ({ key, value: null }))
+          : nativeKeys().filter(isManagedKey).map(key => ({ key, value: null }));
+        if (entries.length) {
+          if (enabled) commitLocalStorageEntries(entries);
+          else fallbackAtomicWrite(entries);
         }
-        if (nativeStorage) nativeStorage.clear();
       },
       key(index) {
         const i = Number(index);
@@ -677,8 +680,8 @@
   }
 
   async function runBootstrap() {
-    if (!root || !root.indexedDB) {
-      startupError = 'This browser does not provide IndexedDB. Nexus will use the existing browser-storage fallback.';
+    if (!root) {
+      startupError = 'Browser window is unavailable.';
       return false;
     }
     try { nativeStorage = root.localStorage; } catch (error) {
@@ -706,6 +709,11 @@
       return false;
     }
 
+    if (!root.indexedDB) {
+      startupError = 'This browser does not provide IndexedDB. Nexus will use the journaled browser-storage fallback.';
+      return false;
+    }
+
     try {
       database = await openDatabase();
       await migrateLegacyValues();
@@ -721,6 +729,9 @@
       enabled = true;
       await seedWorkspaceProjection(snapshot.rows, snapshot.revision);
       mirrorAll(snapshot.rows);
+      try { nativeStorage.removeItem(FALLBACK_JOURNAL_KEY); } catch (error) {
+        mirrorError = safeError(error, 'The fallback recovery journal could not be cleared.');
+      }
       return true;
     } catch (error) {
       startupError = safeError(error, 'IndexedDB could not be initialized.');
@@ -730,7 +741,10 @@
       pending.clear();
       try { if (database) database.close(); } catch (_) {}
       database = null;
-      restoreNativeProperty();
+      // Keep the compatibility facade installed. In fallback mode it writes only
+      // managed keys and records checksummed intent so a later successful boot can
+      // reconcile these values over an older IndexedDB copy. It also prevents a
+      // workspace clear from removing Supabase auth tokens or unrelated settings.
       return false;
     }
   }
