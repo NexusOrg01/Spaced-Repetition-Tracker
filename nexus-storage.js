@@ -10,6 +10,10 @@
   const DB_VERSION = 1;
   const RECORDS = 'records';
   const META = 'meta';
+  const WORKSPACES = 'workspaces';
+  const TRACKER_KEY = 'recall.study.tracker.v1';
+  const FEATURE_KEY = 'recall.study.features.v1';
+  const OWNER_KEY = 'nexus.cloud.last-user-id';
   const APP_KEY = /^(?:recall\.|nexus\.|alSrsTrackerV2$|alTrackerData$|alHistoryLog$)/;
   const INTERNAL_KEY = /^nexus\.storage\.internal\./;
   const isManagedKey = key => typeof key === 'string' && APP_KEY.test(key) && !INTERNAL_KEY.test(key);
@@ -226,6 +230,99 @@
     });
   }
 
+  function workspaceKey(ownerId) {
+    return ownerId ? 'user:' + String(ownerId) : 'guest';
+  }
+
+  function rowValue(row) {
+    return row && row.deleted !== true && typeof row.value === 'string' ? row.value : null;
+  }
+
+  function workspaceChecksum(tracker, featureState) {
+    const text = tracker + '\n' + featureState;
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return 'fnv1a32:' + (hash >>> 0).toString(16).padStart(8, '0');
+  }
+
+  function makeWorkspaceRow(ownerId, tracker, featureState, savedRevision) {
+    return {
+      key: workspaceKey(ownerId),
+      ownerId: ownerId || null,
+      schemaVersion: 1,
+      tracker,
+      featureState,
+      checksum: workspaceChecksum(tracker, featureState),
+      revision: savedRevision,
+      updatedAt: timestamp()
+    };
+  }
+
+  function validWorkspaceRow(row, ownerId) {
+    return !!row &&
+      row.schemaVersion === 1 &&
+      row.ownerId === (ownerId || null) &&
+      typeof row.tracker === 'string' &&
+      typeof row.featureState === 'string' &&
+      row.checksum === workspaceChecksum(row.tracker, row.featureState);
+  }
+
+  async function seedWorkspaceProjection(rows, savedRevision) {
+    const byKey = new Map((rows || []).filter(row => row && typeof row.key === 'string').map(row => [row.key, row]));
+    const owner = rowValue(byKey.get(OWNER_KEY));
+    const tracker = rowValue(byKey.get(TRACKER_KEY));
+    const featureState = rowValue(byKey.get(FEATURE_KEY));
+    if (tracker === null || featureState === null) return false;
+    const key = workspaceKey(owner);
+    return transaction([WORKSPACES], 'readwrite', (tx, set) => {
+      const store = tx.objectStore(WORKSPACES);
+      const request = store.get(key);
+      request.onsuccess = () => {
+        if (validWorkspaceRow(request.result, owner)) {
+          set(false);
+          return;
+        }
+        store.put(makeWorkspaceRow(owner, tracker, featureState, savedRevision));
+        set(true);
+      };
+    });
+  }
+
+  function readWorkspace(ownerId) {
+    if (!enabled || !database) return Promise.resolve(null);
+    return transaction([WORKSPACES], 'readonly', (tx, set) => {
+      const request = tx.objectStore(WORKSPACES).get(workspaceKey(ownerId));
+      request.onsuccess = () => {
+        const row = request.result;
+        if (!validWorkspaceRow(row, ownerId)) {
+          set(null);
+          return;
+        }
+        try {
+          const state = JSON.parse(row.tracker);
+          const featureState = JSON.parse(row.featureState);
+          if (!state || typeof state !== 'object' || Array.isArray(state) ||
+              !featureState || typeof featureState !== 'object' || Array.isArray(featureState)) {
+            set(null);
+            return;
+          }
+          set({
+            ownerId: row.ownerId,
+            state,
+            featureState,
+            revision: Number.isSafeInteger(Number(row.revision)) ? Number(row.revision) : 0,
+            updatedAt: typeof row.updatedAt === 'string' ? row.updatedAt : null
+          });
+        } catch (_) {
+          set(null);
+        }
+      };
+    });
+  }
+
   function restoreNativeProperty() {
     if (!root || !facadeInstalled) return;
     try {
@@ -308,23 +405,74 @@
   }
 
   function persistBatch(batch) {
-    return transaction([RECORDS, META], 'readwrite', (tx, set) => {
+    return transaction([RECORDS, META, WORKSPACES], 'readwrite', (tx, set) => {
       const records = tx.objectStore(RECORDS);
       const meta = tx.objectStore(META);
+      const workspaces = tx.objectStore(WORKSPACES);
       const request = meta.get('lastCommittedRevision');
       request.onsuccess = () => {
         const nextRevision = Math.max(0, Number(request.result && request.result.value) || 0) + 1;
-        for (const item of batch) {
-          records.put({
-            key: item.key,
-            value: item.value === null ? null : item.value,
-            deleted: item.value === null,
-            revision: nextRevision,
-            updatedAt: timestamp()
-          });
+        const touchesWorkspace = batch.some(item =>
+          item.key === TRACKER_KEY || item.key === FEATURE_KEY || item.key === OWNER_KEY);
+        const previousOwnerRequest = touchesWorkspace ? records.get(OWNER_KEY) : null;
+        const writeRecords = previousOwner => {
+          for (const item of batch) {
+            records.put({
+              key: item.key,
+              value: item.value === null ? null : item.value,
+              deleted: item.value === null,
+              revision: nextRevision,
+              updatedAt: timestamp()
+            });
+          }
+          meta.put({ key: 'lastCommittedRevision', value: nextRevision, updatedAt: timestamp() });
+          if (!touchesWorkspace) {
+            set(nextRevision);
+            return;
+          }
+
+          // Read the post-write keys in the same transaction. This projection is
+          // committed atomically with the compatibility records that generated it.
+          const ownerRequest = records.get(OWNER_KEY);
+          const trackerRequest = records.get(TRACKER_KEY);
+          const featureRequest = records.get(FEATURE_KEY);
+          const values = {};
+          let remaining = 3;
+          const done = () => {
+            remaining--;
+            if (remaining !== 0) return;
+            const owner = rowValue(values.owner);
+            const tracker = rowValue(values.tracker);
+            const featureState = rowValue(values.featureState);
+            const ownerChanged = rowValue(previousOwner) !== owner;
+            const writesBothWorkspaceKeys =
+              batch.some(item => item.key === TRACKER_KEY) &&
+              batch.some(item => item.key === FEATURE_KEY);
+
+            // Never attribute account A's records to account B just because the
+            // owner marker changed by itself. Account handoff must write both
+            // workspace components in the same atomic operation.
+            if (ownerChanged && !writesBothWorkspaceKeys) {
+              set(nextRevision);
+              return;
+            }
+            const key = workspaceKey(owner);
+            if (tracker === null || featureState === null) {
+              workspaces.delete(key);
+            } else {
+              workspaces.put(makeWorkspaceRow(owner, tracker, featureState, nextRevision));
+            }
+            set(nextRevision);
+          };
+          ownerRequest.onsuccess = () => { values.owner = ownerRequest.result || null; done(); };
+          trackerRequest.onsuccess = () => { values.tracker = trackerRequest.result || null; done(); };
+          featureRequest.onsuccess = () => { values.featureState = featureRequest.result || null; done(); };
+        };
+        if (previousOwnerRequest) {
+          previousOwnerRequest.onsuccess = () => writeRecords(previousOwnerRequest.result || null);
+        } else {
+          writeRecords(null);
         }
-        meta.put({ key: 'lastCommittedRevision', value: nextRevision, updatedAt: timestamp() });
-        set(nextRevision);
       };
     });
   }
@@ -472,6 +620,7 @@
       }
       revision = snapshot.revision;
       enabled = true;
+      await seedWorkspaceProjection(snapshot.rows, snapshot.revision);
       mirrorAll(snapshot.rows);
       return true;
     } catch (error) {
@@ -506,6 +655,7 @@
     isEnabled: () => enabled,
     isFacade: storage => storage === facade,
     commitLocalStorageEntries,
+    getWorkspace: readWorkspace,
     getStatus: () => ({
       enabled,
       database: DB_NAME,
