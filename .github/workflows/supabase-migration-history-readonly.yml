@@ -1,0 +1,132 @@
+name: Supabase Migration History (Read Only)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "supabase/migrations/**"
+      - ".github/workflows/supabase-migration-history-readonly.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-migration-readonly
+  cancel-in-progress: false
+
+jobs:
+  migration-history:
+    name: Compare local and remote migration history
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate local migration filenames
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          migrations = sorted(Path("supabase/migrations").glob("*.sql"))
+          if not migrations:
+              raise SystemExit("No SQL migrations found in supabase/migrations.")
+
+          seen = {}
+          legacy = []
+          for path in migrations:
+              match = re.match(r"^(\d{14}|\d{8})_([a-z0-9_]+)\.sql$", path.name)
+              if not match:
+                  raise SystemExit(f"Invalid migration filename: {path}")
+              version = match.group(1)
+              if version in seen:
+                  raise SystemExit(
+                      f"Duplicate migration version {version}: {seen[version]} and {path}"
+                  )
+              seen[version] = path
+              if len(version) == 8:
+                  legacy.append(path.name)
+
+          print(f"Validated {len(migrations)} migration filenames; versions are unique.")
+          if legacy:
+              print("Legacy 8-digit migration prefixes are accepted for now:")
+              for name in legacy:
+                  print(f"  - {name}")
+          PY
+
+      - name: Verify read-only API settings are present
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ vars.NEXUS_SUPABASE_PROJECT_REF }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || missing+=("repository secret SUPABASE_ACCESS_TOKEN")
+          [[ -n "$SUPABASE_PROJECT_REF" ]] || missing+=("repository variable NEXUS_SUPABASE_PROJECT_REF")
+          if (( ${#missing[@]} )); then
+            printf 'Missing required GitHub configuration: %s\n' "${missing[@]}"
+            echo "Add them in repository Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      - name: Compare local files with remote applied migration versions (read only)
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ vars.NEXUS_SUPABASE_PROJECT_REF }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Supabase Management API: GET migration history, requiring database_migrations_read.
+          # No database password, db push, migration repair, or SQL mutation is used.
+          curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            --header "Accept: application/json" \
+            "https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_REF/database/migrations" \
+            --output /tmp/remote-migrations.json
+
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          raw = json.loads(Path("/tmp/remote-migrations.json").read_text())
+          if isinstance(raw, dict) and isinstance(raw.get("result"), list):
+              raw = raw["result"]
+          if not isinstance(raw, list):
+              raise SystemExit(
+                  "Supabase migration-history API returned an unexpected response shape; "
+                  "no comparison was reported as successful."
+              )
+
+          remote = set()
+          for row in raw:
+              if not isinstance(row, dict) or "version" not in row:
+                  raise SystemExit("A remote migration row did not contain a version.")
+              remote.add(str(row["version"]))
+
+          local = {}
+          for path in Path("supabase/migrations").glob("*.sql"):
+              match = re.match(r"^(\d{14}|\d{8})_([a-z0-9_]+)\.sql$", path.name)
+              if match:
+                  local[match.group(1)] = path
+
+          missing = sorted(remote - set(local))
+          if missing:
+              print("Remote migration versions missing from the local repository:")
+              for version in missing:
+                  print(f"  - {version}")
+              raise SystemExit(1)
+
+          pending = sorted(set(local) - remote)
+          print(f"Verified all {len(remote)} remote migration versions exist locally.")
+          if pending:
+              print("Local migrations not yet recorded as applied remotely (review before any deployment):")
+              for version in pending:
+                  print(f"  - {version}: {local[version].name}")
+          PY
