@@ -1189,4 +1189,60 @@ for (const scenario of [
     'queueing a local save must not remove or alter the locally persisted workspace');
 }
 
+// A different authenticated account must recover only its own cached local workspace
+// when the cloud is unreachable; account A's visible data must never be uploaded as B.
+{
+  if (queue.hasPending(storage, accountB.id)) queue.archive(storage, accountB.id, 'offline-account-cache-test-reset');
+  const localA = payloadFor('account-A-before-offline-switch');
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(localA.state));
+  storage.setItem(FEATURE_KEY, JSON.stringify(localA.featureState));
+  context.state = JSON.parse(JSON.stringify(localA.state));
+  queue.commitWorkspace(storage, [
+    { key: STATE_KEY, value: JSON.stringify(localA.state) },
+    { key: FEATURE_KEY, value: JSON.stringify(localA.featureState) }
+  ], localA);
+  const remoteBBefore = rows.get(accountB.id) ? JSON.stringify(rows.get(accountB.id)) : null;
+  const cachedB = payloadFor('cached-B-offline');
+  window.NexusStorage = {
+    isEnabled: () => true,
+    async getWorkspace(ownerId) {
+      return ownerId === accountB.id
+        ? { ownerId: accountB.id, state: cachedB.state, featureState: cachedB.featureState, revision: 12 }
+        : null;
+    }
+  };
+  activeSession = { user: accountB };
+  networkAvailable = false;
+  await window.NexusCloudSync.reconnect();
+  assert.equal(storage.getItem(OWNER), accountB.id,
+    'offline account handoff should activate only the target account when its local snapshot is found');
+  assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id, 'cached-B-offline',
+    'account B must restore its own cached workspace instead of retaining account A data');
+  assert.equal(JSON.parse(storage.getItem(FEATURE_KEY)).journal[0].text, 'cached-B-offline',
+    'the matching account cache must restore Study Hub state along with tracker state');
+  assert.ok(queue.hasPending(storage, accountA.id),
+    'account A offline work must remain parked under A while B is restored');
+  assert.equal(rows.get(accountA.id)?.payload.state.topics[0].id, 'offline-A',
+    'the offline handoff must not write account A changes to the cloud');
+  assert.equal(rows.get(accountB.id) ? JSON.stringify(rows.get(accountB.id)) : null, remoteBBefore,
+    'the cached workspace must not trigger a cloud write while offline');
+  assert.equal(getElement('cloudStatus').textContent, 'Offline · local workspace loaded',
+    'offline restoration must be shown as local-only, not synced');
+
+  const accountC = { id: 'account-C-no-cache', email: 'c@example.test' };
+  activeSession = { user: accountC };
+  await window.NexusCloudSync.reconnect();
+  assert.equal(storage.getItem(OWNER), accountB.id,
+    'without a C-specific cached workspace, Nexus must not re-label B data as C data');
+  assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id, 'cached-B-offline',
+    'the prior workspace must not be overwritten when a new account has no cached data');
+  assert.equal(getElement('cloudStatus').textContent, 'Sync unavailable',
+    'missing target-account data while offline must keep sync blocked');
+  assert.ok(getElement('cloudHelpText').textContent.includes('previous account remains protected and hidden'),
+    'the offline no-cache path must explain why the previous workspace remains hidden');
+  activeSession = null;
+  await window.NexusCloudSync.reconnect();
+}
+
 console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, and target-account pending-snapshot isolation.');
