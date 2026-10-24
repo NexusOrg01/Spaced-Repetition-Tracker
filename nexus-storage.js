@@ -617,7 +617,11 @@
       seen.add(entry.key);
       return { key: entry.key, value: entry.value };
     });
-    if (!enabled) return normalized.every(entry => isManagedKey(entry.key)) ? fallbackAtomicWrite(normalized) : nativeAtomicWrite(normalized);
+    if (!enabled) {
+      const managedCount = normalized.filter(entry => isManagedKey(entry.key)).length;
+      if (managedCount && managedCount !== normalized.length) throw new Error('This atomic operation mixed Nexus data with browser/auth storage; no values were written.');
+      return managedCount ? fallbackAtomicWrite(normalized) : nativeAtomicWrite(normalized);
+    }
     if (normalized.some(entry => !isManagedKey(entry.key))) {
       throw new Error('This atomic operation included a key outside Nexus durable storage.');
     }
