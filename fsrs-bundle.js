@@ -279,6 +279,17 @@
         try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (_) {}
       }
       sched = build();
+      // Backup/cloud restores can change scheduler settings after the controls
+      // have already been wired. Keep the visible controls in sync with the
+      // active scheduler instead of leaving a stale checkbox/value on screen.
+      const enabledControl = document.getElementById("fsrsEnabled");
+      const retentionControl = document.getElementById("fsrsRetention");
+      const retentionOutput = document.getElementById("fsrsRetentionOut");
+      const maximumControl = document.getElementById("fsrsMax");
+      if (enabledControl) enabledControl.checked = settings.enabled;
+      if (retentionControl) retentionControl.value = String(settings.request_retention);
+      if (retentionOutput) retentionOutput.textContent = Math.round(settings.request_retention * 100) + "%";
+      if (maximumControl) maximumControl.value = String(settings.maximum_interval);
       // FSRS configuration belongs to the workspace, not only this browser.
       // A caller applying a remote/backup snapshot can suppress this reverse-sync
       // to avoid a second feature-state save while the atomic workspace is committing.
