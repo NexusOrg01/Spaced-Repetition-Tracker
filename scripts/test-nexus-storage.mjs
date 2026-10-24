@@ -223,7 +223,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   second.context.window.localStorage.removeItem('recall.study.tracker.v1');
   await second.api.flush();
   assert.equal(second.context.window.localStorage.getItem('recall.study.tracker.v1'), null, 'deleted values must not reappear after reload');
-  assert.equal(rows.get('recall.study.tracker.v1').deleted, true, 'deletions must be stored as durable tombstones');
+  assert.equal(idb.databases.get('nexus-workspace-v1').stores.get('records').get('recall.study.tracker.v1').deleted, true, 'deletions must be stored as durable tombstones');
   second.context.window.localStorage.clear();
   await second.api.flush();
   assert.equal(native.getItem('sb-testproject-auth-token'), '{"access_token":"session"}', 'clearing Nexus workspace data must not clear the Supabase auth session');
