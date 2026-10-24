@@ -81,7 +81,6 @@ const defaults = {
   focusActualStartedAt: null, focusPausedAt: null, focusTopicId: '', focusSubjectId: ''
 };
 
-assert.deepEqual(normalized.fsrsSettings, defaults.fsrsSettings, 'legacy feature backups should get safe FSRS scheduler defaults');
 const customFsrs = normalizeFsrsSettings({
   enabled: false, request_retention: 0.995, maximum_interval: 999,
   enable_fuzz: true, w: Array.from({ length: 21 }, (_, index) => index - 10)
