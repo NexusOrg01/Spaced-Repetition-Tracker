@@ -36,7 +36,9 @@ The repository still contains legacy Netlify configuration and may be deployable
 
 ## Data, sync, and notification limits
 
-- Data is stored locally in the browser profile on each device. Export full JSON backups regularly and store a copy somewhere safe.
+- Nexus uses IndexedDB as its durable on-device workspace store, with a synchronous `localStorage` compatibility layer for existing tracker, Study Hub, FSRS, and offline-sync code. The Supabase authentication session remains in browser storage; study data is not placed in the auth-token store.
+- On first startup with the new storage layer, app-owned legacy `localStorage` values are copied into a versioned IndexedDB database in a transaction. The original browser values are not cleared by migration. Existing full JSON backups remain the portable recovery option.
+- IndexedDB is the local durable cache, not a substitute for cloud account recovery. Optional Supabase cloud sync remains account-bound and uses conditional revision checks; a device with no cloud upload must still keep its own backups. If IndexedDB cannot initialize, Nexus displays a browser-storage fallback warning rather than blocking access to the tracker.
 - Cloud sync is preconfigured to use the Nexus Supabase project and its public publishable key. Email magic-link sign-in and Google sign-in require the deployed Vercel production URL to be allowed in Supabase Auth. Never put a service_role/secret key in the app.
 - In Supabase → Authentication → URL Configuration, add your deployed app URL to the allowed redirect URLs. In Authentication → Providers, enable Google and configure its OAuth client. Email sign-in uses a magic link.
 - Browser notifications can be checked while the app is open and permission is granted. Reliable scheduled push notifications while the browser is fully closed require push infrastructure and a server.
