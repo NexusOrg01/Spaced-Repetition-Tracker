@@ -116,6 +116,12 @@ assert.throws(() => resolvePreviewConfig({ ...previewEnv, NEXUS_SUPABASE_ANON_KE
 assert.match(renderConfigScript(null), /const config=null/);
 assert.match(renderConfigScript({ url: previewEnv.NEXUS_SUPABASE_URL, key: previewEnv.NEXUS_SUPABASE_ANON_KEY }), /nexus\.cloud\.config\.v1/);
 
+const netlifyConfig = readFileSync(new URL('../netlify.toml', import.meta.url), 'utf8');
+assert.match(netlifyConfig, /^\s*command\s*=\s*['"]npm run build['"]/m,
+  'Netlify must run the static build that generates nexus-build-config.js');
+assert.match(netlifyConfig, /^\s*publish\s*=\s*['"]dist['"]/m,
+  'Netlify must publish the generated dist output instead of the source root');
+
 const freshBranch = 'ai-dev/fresh-curriculum-sync-rebuild';
 assert.deepEqual(resolvePreviewConfig({ ...previewEnv, VERCEL_GIT_COMMIT_REF: freshBranch }), {
   url: previewEnv.NEXUS_SUPABASE_URL,
