@@ -158,6 +158,9 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
     featureInput.fsrsSettings={enabled:true,request_retention:0.9,maximum_interval:120,enable_fuzz:false,w:null};
   }
   const nextFeatures=window.NexusNormalizeFeatureState(featureInput);
+  // Legacy cloud snapshots and older cached runtimes may not expose FSRS preferences.
+  // The scheduler-settings compatibility key must always receive a valid JSON value.
+  if(!nextFeatures.fsrsSettings||typeof nextFeatures.fsrsSettings!=='object'||Array.isArray(nextFeatures.fsrsSettings))nextFeatures.fsrsSettings={enabled:true,request_retention:0.9,maximum_interval:120,enable_fuzz:false,w:null};
   const entries=[
     {key:window.NexusStorageKey,value:JSON.stringify(safeState)},
     {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)},
