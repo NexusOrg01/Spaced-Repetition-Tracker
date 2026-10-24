@@ -6,6 +6,7 @@ import vm from 'node:vm';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const html = readFileSync(resolve(root, 'index.html'), 'utf8');
+const bootstrap = readFileSync(resolve(root, 'nexus-app-bootstrap.js'), 'utf8');
 const appCore = readFileSync(resolve(root, 'app-core.js'), 'utf8');
 const studyHub = readFileSync(resolve(root, 'study-hub.js'), 'utf8');
 const appSource = html + '\n' + appCore + '\n' + studyHub;
@@ -65,7 +66,15 @@ const replayed = scheduler.replay([
 ]);
 assert.equal(replayed.lastReview, '2026-10-21', 'history replay must sort reviews chronologically');
 
-assert.ok(appSource.includes('<script defer src="./fsrs-bundle.js"></script>'), 'the FSRS integration bundle must be loaded by the app');
+const fsrsRuntimeStart = bootstrap.indexOf('const RUNTIME_ASSETS = [');
+const fsrsRuntimeEnd = bootstrap.indexOf('];', fsrsRuntimeStart);
+const fsrsRuntimeBody = fsrsRuntimeStart >= 0 && fsrsRuntimeEnd > fsrsRuntimeStart ? bootstrap.slice(fsrsRuntimeStart, fsrsRuntimeEnd) : '';
+const fsrsRuntimeAssets = [...fsrsRuntimeBody.matchAll(/'([^']+)'/g)].map(match => match[1]);
+assert.ok(!html.includes('<script defer src="./fsrs-bundle.js"></script>') &&
+  fsrsRuntimeAssets.indexOf('app-core.js') >= 0 &&
+  fsrsRuntimeAssets.indexOf('fsrs-bundle.js') > fsrsRuntimeAssets.indexOf('app-core.js') &&
+  fsrsRuntimeAssets.indexOf('fsrs-bundle.js') < fsrsRuntimeAssets.indexOf('study-hub.js'),
+  'the FSRS integration must load after tracker core initialization and before Study Hub');
 assert.ok(bundle.includes('save = function () { persistCards(); return baseSave.apply(this, arguments); }'),
   'FSRS memory state must be persisted whenever Nexus saves tracker data');
 assert.ok(bundle.includes('saveReview = function (rating)') && bundle.includes('t.fsrs = pending.fsrs;'),
