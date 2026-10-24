@@ -277,7 +277,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     ['recall.study.tracker.v1', '{"revision":"before"}'],
     ['recall.study.features.v1', '{"marker":"hub"}'],
     ['nexus.cloud.last-user-id', 'account-recovery'],
-    ['sb-testproject-auth-token', '{"access_token":"session"}']
+    ['sb-testproject-auth-token', '{"access_token":"session"}'],
+    ['unrelated.preference', 'keep-me']
   ]);
   const idb = new FakeIndexedDB();
   const first = loadApi(makeWindow(native, idb));
@@ -287,12 +288,14 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(await fallback.api.bootstrap(), false, 'an IndexedDB open failure should activate a visible browser-storage fallback');
   const fallbackStorage = fallback.context.window.localStorage;
   fallbackStorage.setItem('recall.study.tracker.v1', '{"revision":"fallback"}');
+  fallbackStorage.removeItem('recall.study.features.v1');
   assert.equal(native.getItem('recall.study.tracker.v1'), '{"revision":"fallback"}',
     'fallback changes should remain usable in browser storage while IndexedDB is unavailable');
   assert.ok(native.getItem('nexus.storage.internal.fallback-journal.v1'),
     'the fallback should journal a checksum before changing the legacy value');
   assert.equal(native.getItem('sb-testproject-auth-token'), '{"access_token":"session"}',
     'fallback writes must preserve Supabase auth tokens');
+  assert.equal(native.getItem('unrelated.preference'), 'keep-me', 'fallback operations must preserve unrelated browser settings');
 
   idb.failOpen = false;
   const recovered = loadApi(makeWindow(native, idb));
@@ -303,6 +306,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'the recovered value must commit to the durable records store');
   assert.equal(native.getItem('nexus.storage.internal.fallback-journal.v1'), null,
     'the recovery journal should clear after migration and mirror reconciliation commit');
+  assert.equal(idb.databases.get('nexus-workspace-v1').stores.get('records').get('recall.study.features.v1').deleted, true,
+    'a fallback deletion must become a durable tombstone after recovery');
 }
 
 console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, clear scoping, and failed-write recovery.');
