@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { cp, mkdir, readdir, rm, writeFile, readFile } from 'node:fs/promises';
 import vm from 'node:vm';
+import { runNexusStorageTests } from './test-nexus-storage.mjs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -83,8 +84,39 @@ async function verifySafeAuthStorage() {
   assert.equal(safe.getItem('sb-testproject-auth-token'), valid, 'valid Supabase session JSON should be preserved');
 }
 
+async function verifyNexusStorageIntegration() {
+  const [storageSource, appSource, cloudSource, htmlSource, serviceWorker] = await Promise.all([
+    readFile(join(root, 'nexus-storage.js'), 'utf8'),
+    readFile(join(root, 'app-core.js'), 'utf8'),
+    readFile(join(root, 'cloud-sync.js'), 'utf8'),
+    readFile(join(root, 'index.html'), 'utf8'),
+    readFile(join(root, 'sw.js'), 'utf8')
+  ]);
+  assert.ok(storageSource.includes("root.indexedDB.open") || storageSource.includes("root.indexedDB.open(DB_NAME"),
+    'Nexus must open its own IndexedDB offline store');
+  assert.ok(storageSource.includes("nexus.cloud.offline-outbox.v1") && storageSource.includes("recall.study.features.v1"),
+    'IndexedDB migration must cover tracker, Study Hub and account-bound sync metadata');
+  assert.ok(!storageSource.includes("sb-") || !storageSource.includes("auth-token'),"),
+    'workspace IndexedDB must not persist Supabase auth-token values');
+  const storageTag = htmlSource.indexOf('<script src="./nexus-storage.js"></script>');
+  const fsrsTag = htmlSource.indexOf('<script defer src="./fsrs-bundle.js"></script>');
+  const appTag = htmlSource.indexOf('<script src="./app-core.js"></script>');
+  assert.ok(storageTag >= 0 && fsrsTag > storageTag && appTag > storageTag,
+    'IndexedDB bootstrap must be loaded before FSRS and app state readers');
+  assert.ok(serviceWorker.includes("'./nexus-storage.js'") && serviceWorker.includes("url.pathname.endsWith('/nexus-storage.js')"),
+    'service worker must cache and refresh the offline storage module');
+  assert.ok(cloudSource.includes("await window.NexusStorage.ready()") &&
+    cloudSource.includes("await window.NexusStorage.flush()"),
+    'cloud auth and uploads must wait for storage initialization and pending durable writes');
+  assert.ok(appSource.includes("saveStatus.textContent='Saved offline'") &&
+    appSource.includes("Offline backup write failed — export backup"),
+    'the tracker must report IndexedDB durability failures instead of falsely reporting a durable save');
+}
+
 async function copySiteFiles() {
   await verifySafeAuthStorage();
+  await verifyNexusStorageIntegration();
+  await runNexusStorageTests();
   await rm(output, { recursive: true, force: true });
   await mkdir(output, { recursive: true });
   const excluded = new Set(['.git', '.github', 'node_modules', 'dist', 'scripts', 'supabase', '.gitignore', 'package.json', 'vercel.json', 'netlify.toml']);
