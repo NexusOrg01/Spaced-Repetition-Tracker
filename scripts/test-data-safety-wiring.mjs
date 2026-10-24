@@ -161,4 +161,5 @@ assert.ok(isolationOverlayAt >= 0 && runtimeAssets.indexOf('workspace-isolation-
 assert.ok(appSource.includes('aria-modal="true"') && appSource.includes('workspaceIsolationSignOut') && appSource.includes('workspaceIsolationRetry'), 'the account-mismatch lock must be modal and provide retry/sign-out recovery');
 assert.ok(guard.includes('retry.hidden=false;') && guard.includes('signOut.hidden=false;'), 'retry and sign-out must remain available even if account loading stalls');
 
+assert.ok(cloudSync.includes("if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',startCloudSyncUi,{once:true});else startCloudSyncUi();"), 'cloud sync must initialize controls whether its deferred module loads before or after DOMContentLoaded');
 console.log('Data-safety integration wiring checks passed.');
