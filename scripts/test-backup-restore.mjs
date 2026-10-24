@@ -86,7 +86,7 @@ const customFsrs = normalizeFsrsSettings({
   enabled: false, request_retention: 0.995, maximum_interval: 999,
   enable_fuzz: true, w: Array.from({ length: 21 }, (_, index) => index - 10)
 }, defaults.fsrsSettings);
-assert.equal(customFsrs.enabled, false);
+assert.equal(Object.hasOwn(customFsrs, 'enabled'), false, 'legacy enabled flags must be ignored; FSRS is always the active scheduler');
 assert.equal(customFsrs.request_retention, 0.97, 'FSRS retention should be bounded');
 assert.equal(customFsrs.maximum_interval, 120, 'FSRS max interval should respect the app limit');
 assert.equal(customFsrs.enable_fuzz, true);
@@ -150,10 +150,10 @@ const merged = mergeFeatureState(
 assert.equal(merged.journal.length, 2, 'merge should deduplicate records by ID');
 assert.equal(merged.journal[0].text, 'local', 'local data should win when IDs collide');
 assert.equal(merged.settings.reminders, false, 'explicit imported settings should be applied');
-const currentScheduler = { ...defaults.fsrsSettings, enabled: true };
+const currentScheduler = { ...defaults.fsrsSettings };
 const importedScheduler = { ...defaults.fsrsSettings, enabled: false, request_retention: 0.8 };
 assert.deepEqual(mergeFeatureState({ ...defaults, fsrsSettings: currentScheduler }, { ...defaults, fsrsSettings: importedScheduler }, defaults, {}).fsrsSettings, currentScheduler, 'a merge must keep local FSRS preferences when the import does not explicitly include them');
-assert.deepEqual(mergeFeatureState({ ...defaults, fsrsSettings: currentScheduler }, { ...defaults, fsrsSettings: importedScheduler }, defaults, { fsrsSettings: importedScheduler }).fsrsSettings, importedScheduler, 'explicit imported FSRS preferences should be merged');
+assert.deepEqual(mergeFeatureState({ ...defaults, fsrsSettings: currentScheduler }, { ...defaults, fsrsSettings: importedScheduler }, defaults, { fsrsSettings: importedScheduler }).fsrsSettings, { ...defaults.fsrsSettings, request_retention: 0.8 }, 'explicit imported FSRS tuning should be merged while the retired enabled flag is ignored');
 assert.ok(merged.settings.dailyMinutes === defaults.settings.dailyMinutes);
 
 class MemoryStorage {
