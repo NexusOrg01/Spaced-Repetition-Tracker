@@ -1,0 +1,79 @@
+name: Supabase Migration History (Read Only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-migration-readonly
+  cancel-in-progress: false
+
+jobs:
+  migration-history:
+    name: Compare local and remote migration history
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate local migration filenames
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          migrations = sorted(Path("supabase/migrations").glob("*.sql"))
+          if not migrations:
+              raise SystemExit("No SQL migrations found in supabase/migrations.")
+          seen = {}
+          for path in migrations:
+              match = re.match(r"^(\d{14})_([a-z0-9_]+)\.sql$", path.name)
+              if not match:
+                  raise SystemExit(f"Invalid migration filename: {path}")
+              version = match.group(1)
+              if version in seen:
+                  raise SystemExit(f"Duplicate migration version {version}: {seen[version]} and {path}")
+              seen[version] = path
+          print(f"Validated {len(migrations)} migration filenames; versions are unique.")
+          PY
+
+      - name: Verify required connection settings are present
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_PROJECT_REF: ${{ vars.NEXUS_SUPABASE_PROJECT_REF }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || missing+=("repository secret SUPABASE_ACCESS_TOKEN")
+          [[ -n "$SUPABASE_DB_PASSWORD" ]] || missing+=("repository secret SUPABASE_DB_PASSWORD")
+          [[ -n "$SUPABASE_PROJECT_REF" ]] || missing+=("repository variable NEXUS_SUPABASE_PROJECT_REF")
+          if (( ${#missing[@]} )); then
+            printf 'Missing required GitHub configuration: %s\n' "${missing[@]}"
+            echo "Add these in repository Settings > Secrets and variables > Actions, then rerun this workflow."
+            exit 1
+          fi
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2
+
+      - name: Link the target project
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_PROJECT_REF: ${{ vars.NEXUS_SUPABASE_PROJECT_REF }}
+        run: supabase link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
+
+      - name: Compare migration history (read only)
+        run: |
+          set -euo pipefail
+          # This command lists local and remote migration versions only.
+          # Do not add db push, migration repair, or other mutating commands here.
+          supabase migration list --linked
