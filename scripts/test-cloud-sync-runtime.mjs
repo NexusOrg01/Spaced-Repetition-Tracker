@@ -32,7 +32,8 @@ const stateFor = id => ({
   topics: id ? [{ id, name: id, subjectId: 'subject-general', dueDate: '2026-10-20' }] : [],
   exams: [], history: [], settings: { theme: 'system', intervalCap: 120 }
 });
-const featuresFor = id => ({ version: 1, journal: id ? [{ id: 'journal-' + id, text: id }] : [], papers: [], goals: [], studyLogs: [], settings: {} });
+const DEFAULT_FSRS = { enabled: true, request_retention: 0.9, maximum_interval: 120, enable_fuzz: false, w: null };
+const featuresFor = (id, fsrsSettings = DEFAULT_FSRS) => ({ version: 1, fsrsSettings: { ...fsrsSettings }, journal: id ? [{ id: 'journal-' + id, text: id }] : [], papers: [], goals: [], studyLogs: [], settings: {} });
 const payloadFor = id => ({ app: 'Nexus Spaced Repetition Tracker', schema: 4, exportedAt: '2026-10-20T00:00:00.000Z', state: stateFor(id), featureState: featuresFor(id) });
 
 class MemoryStorage {
@@ -91,6 +92,7 @@ const window = {
     }).state;
   },
   NexusWorkspaceSyncMerge: workspaceMerge,
+  NexusFSRS: { currentSettings: { ...DEFAULT_FSRS }, settings() { return { ...this.currentSettings }; }, setSettings(value) { this.currentSettings = { ...value }; } },
   NexusStorageKey: STATE_KEY,
   NexusFeatureStorageKey: FEATURE_KEY,
   NexusGetFeatureState: () => JSON.parse(storage.getItem(FEATURE_KEY) || '{}'),
@@ -1209,7 +1211,7 @@ for (const scenario of [
   ], localA);
   const remoteBBefore = rows.get(accountB.id) ? JSON.stringify(rows.get(accountB.id)) : null;
   const remoteABefore = rows.get(accountA.id) ? JSON.stringify(rows.get(accountA.id)) : null;
-  const cachedB = payloadFor('cached-B-offline');
+  const cachedB = payloadFor('cached-B-offline', { enabled: false, request_retention: 0.82, maximum_interval: 60, enable_fuzz: true, w: null });
   window.NexusStorage = {
     isEnabled: () => true,
     async getWorkspace(ownerId) {
@@ -1227,6 +1229,10 @@ for (const scenario of [
     'account B must restore its own cached workspace instead of retaining account A data');
   assert.equal(JSON.parse(storage.getItem(FEATURE_KEY)).journal[0].text, 'cached-B-offline',
     'the matching account cache must restore Study Hub state along with tracker state');
+  assert.deepEqual(JSON.parse(storage.getItem('nexus.fsrs.settings.v1')), cachedB.featureState.fsrsSettings,
+    'offline account restore must persist that account’s FSRS scheduler preferences');
+  assert.deepEqual(window.NexusFSRS.currentSettings, cachedB.featureState.fsrsSettings,
+    'offline account restore must update the active FSRS scheduler, not only its saved JSON');
   assert.ok(queue.hasPending(storage, accountA.id),
     'account A offline work must remain parked under A while B is restored');
   assert.equal(rows.get(accountA.id) ? JSON.stringify(rows.get(accountA.id)) : null, remoteABefore,
