@@ -9,6 +9,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const policy = require('../cloud-sync-recovery.js');
 const cloud = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
 const index = readFileSync(resolve(root, 'index.html'), 'utf8');
+const bootstrap = readFileSync(resolve(root, 'nexus-app-bootstrap.js'), 'utf8');
 
 assert.equal(policy.retryDelay(0), 1500, 'the first transient retry should be delayed rather than spun');
 assert.equal(policy.retryDelay(1), 3000, 'retry delay should back off after repeated failures');
@@ -33,10 +34,13 @@ assert.equal(policy.nextRevisionStamp('2026-10-20T12:00:00.000Z',sameMillis),'20
 assert.ok(Date.parse(policy.nextRevisionStamp('2026-10-20T12:00:00.900Z',sameMillis))>Date.parse('2026-10-20T12:00:00.900Z'),
   'a client clock behind the saved revision must still produce a strictly newer revision');
 
-const recoveryTag = '<script src="./cloud-sync-recovery.js"></script>';
-const cloudTag = '<script src="./cloud-sync.js"></script>';
-assert.ok(index.indexOf(recoveryTag) >= 0 && index.indexOf(recoveryTag) < index.indexOf(cloudTag),
-  'retry policy must load before the cloud sync runtime');
+const runtimeStart = bootstrap.indexOf('const RUNTIME_ASSETS = [');
+const runtimeEnd = bootstrap.indexOf('];', runtimeStart);
+const runtimeBody = runtimeStart >= 0 && runtimeEnd > runtimeStart ? bootstrap.slice(runtimeStart, runtimeEnd) : '';
+const runtimeAssets = [...runtimeBody.matchAll(/'([^']+)'/g)].map(match => match[1]);
+assert.ok(runtimeAssets.indexOf('cloud-sync-recovery.js') >= 0 &&
+  runtimeAssets.indexOf('cloud-sync.js') > runtimeAssets.indexOf('cloud-sync-recovery.js'),
+  'retry policy must load before the cloud sync runtime after storage initializes');
 assert.ok(cloud.includes("addEventListener('online',resumeAfterConnectivity)"),
   'network restoration must explicitly resume cloud synchronization');
 assert.ok(cloud.includes("addEventListener('pageshow',resumeAfterConnectivity)") &&
