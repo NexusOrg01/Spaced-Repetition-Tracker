@@ -35,11 +35,11 @@ const runtimeBody = runtimeStart >= 0 && runtimeEnd > runtimeStart ? bootstrap.s
 const runtimeAssets = [...runtimeBody.matchAll(/'([^']+)'/g)].map(match => match[1]);
 assert.deepEqual(runtimeAssets, [
   'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
-  'explore-curriculum.js', 'app-core.js', 'study-hub.js', 'nexus-build-config.js',
+  'explore-curriculum.js', 'app-core.js', 'fsrs-bundle.js', 'study-hub.js', 'nexus-build-config.js',
   'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-sync.js',
   'nexus-app-inline.js', 'workspace-isolation-guard.js'
 ], 'all app modules must load in their existing dependency order after storage bootstrap');
-for (const asset of ['backup-restore-utils.js','offline-sync-queue.js','curriculum-integrity.js','explore-curriculum.js','app-core.js','study-hub.js','nexus-build-config.js','cloud-sync-recovery.js','workspace-sync-merge.js','cloud-sync.js','workspace-isolation-guard.js']) {
+for (const asset of ['backup-restore-utils.js','offline-sync-queue.js','curriculum-integrity.js','explore-curriculum.js','app-core.js','study-hub.js','nexus-build-config.js','cloud-sync-recovery.js','workspace-sync-merge.js','cloud-sync.js','workspace-isolation-guard.js','fsrs-bundle.js']) {
   assert.ok(!index.includes('<script src="./' + asset + '"></script>'), asset + ' must not load before the asynchronous storage bootstrap.');
 }
 assert.ok(storageSource.includes("const DB_NAME = 'nexus-workspace-v1'") && storageSource.includes('function commitLocalStorageEntries(entries)') && storageSource.includes('async function persistPending()'), 'the IndexedDB layer must expose the compatibility write path and durable flush logic');
