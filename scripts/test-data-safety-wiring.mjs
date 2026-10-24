@@ -49,6 +49,8 @@ assert.ok(cloudSync.includes('async function recoverCachedWorkspaceForOfflineAcc
 assert.ok(appSource.includes('Saving to this device') && appSource.includes('storage.flush().then('), 'the tracker must not show a successful save before the durable storage promise resolves');
 assert.ok(appSource.includes("document.readyState==='complete'") && appSource.includes('registerServiceWorker,{once:true}'), 'delayed app bootstrap must not miss service-worker registration after the window load event');
 assert.ok(cloudSync.includes('await durableStorage.flush()'), 'cloud uploads must wait for the IndexedDB write queue to commit before selecting a snapshot');
+assert.ok(cloudSync.includes('async function flushDurableLocalWrites()') && cloudSync.includes("await flushDurableLocalWrites();status('Synced');"), 'sync queue acknowledgements, bases, and cloud write verification metadata must be durable before a synced status is shown');
+assert.ok(cloudSync.includes("await flushDurableLocalWrites();\n  ready=true;"), 'restoring a remote workspace must durably commit the associated merge base before marking the account ready');
 const hydratedWorkspace = section(cloudSync, 'async function applyWorkspaceSnapshot(', 'async function applyRemote(', 'cloud workspace persistence');
 const workspaceCommit = hydratedWorkspace.indexOf('await window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,entries);');
 const workspacePublish = hydratedWorkspace.indexOf('state=safeState;');
