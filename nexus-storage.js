@@ -261,22 +261,50 @@
 
   async function migrateLegacyValues() {
     const marker = await readMeta('initialized');
-    if (marker && marker.value === true) return;
+    const alreadyInitialized = !!(marker && marker.value === true);
     const legacy = nativeEntries();
+    const nativeByKey = new Map(legacy.map(entry => [entry.key, entry.value]));
+    const journal = readFallbackJournal();
+    const reconciledFallbackEntries = [];
+    for (const [key, entry] of Object.entries(journal.entries)) {
+      const currentNativeValue = nativeByKey.has(key) ? nativeByKey.get(key) : null;
+      if (entry.deleted) {
+        // The native delete must have completed before a tombstone can supersede
+        // the old durable value. If rollback restored the value, ignore this intent.
+        if (currentNativeValue === null) reconciledFallbackEntries.push({ key, value: null });
+      } else if (currentNativeValue !== null && valueHash(currentNativeValue) === entry.hash) {
+        // A checksum confirms the fallback value actually reached browser storage.
+        reconciledFallbackEntries.push({ key, value: currentNativeValue });
+      }
+    }
+
     await transaction([RECORDS, META], 'readwrite', (tx, set) => {
       const records = tx.objectStore(RECORDS);
       const meta = tx.objectStore(META);
       const existingRequest = records.getAll();
       existingRequest.onsuccess = () => {
         const existing = new Set((existingRequest.result || []).map(row => row && row.key).filter(Boolean));
-        for (const entry of legacy) {
-          // Never replace a record already written to IndexedDB. This makes an
-          // interrupted/overlapping migration safe to retry.
-          if (!existing.has(entry.key)) {
-            records.put({ key: entry.key, value: entry.value, deleted: false, revision: 0, updatedAt: timestamp() });
+        if (!alreadyInitialized) {
+          for (const entry of legacy) {
+            // Never replace a record already written to IndexedDB during a
+            // fresh/interrupted migration; only seed absent records from legacy.
+            if (!existing.has(entry.key)) {
+              records.put({ key: entry.key, value: entry.value, deleted: false, revision: 0, updatedAt: timestamp() });
+            }
           }
         }
-        meta.put({ key: 'initialized', value: true, updatedAt: timestamp() });
+        // A journaled browser-storage fallback is newer than the durable record
+        // only when its checksum/delete state agrees with the current native store.
+        for (const entry of reconciledFallbackEntries) {
+          records.put({
+            key: entry.key,
+            value: entry.value,
+            deleted: entry.value === null,
+            revision: 0,
+            updatedAt: timestamp()
+          });
+        }
+        if (!alreadyInitialized) meta.put({ key: 'initialized', value: true, updatedAt: timestamp() });
         const revRequest = meta.get('lastCommittedRevision');
         revRequest.onsuccess = () => {
           if (!revRequest.result) meta.put({ key: 'lastCommittedRevision', value: 0, updatedAt: timestamp() });
