@@ -234,9 +234,28 @@
   // maximum_interval defaults to 120 because the app's data normalisers clamp intervalDays to 120.
   const defaults = { enabled: true, request_retention: 0.9, maximum_interval: 120, enable_fuzz: false, w: null };
 
+  function normalizeSettings(value, fallback = defaults) {
+    const input = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const base = fallback && typeof fallback === "object" ? fallback : defaults;
+    const rawW = input.w === undefined ? base.w : input.w;
+    const w = Array.isArray(rawW) && rawW.length === 21 && rawW.every(n => typeof n === "number" && Number.isFinite(n))
+      ? rawW.map(n => clamp(n, -1000, 1000))
+      : null;
+    const retention = Number(input.request_retention === undefined ? base.request_retention : input.request_retention);
+    const maximum = Number(input.maximum_interval === undefined ? base.maximum_interval : input.maximum_interval);
+    return {
+      enabled: typeof (input.enabled === undefined ? base.enabled : input.enabled) === "boolean"
+        ? (input.enabled === undefined ? base.enabled : input.enabled) : defaults.enabled,
+      request_retention: clamp(Number.isFinite(retention) ? retention : defaults.request_retention, 0.7, 0.97),
+      maximum_interval: clamp(Number.isFinite(maximum) ? maximum : defaults.maximum_interval, 30, 120),
+      enable_fuzz: typeof (input.enable_fuzz === undefined ? base.enable_fuzz : input.enable_fuzz) === "boolean"
+        ? (input.enable_fuzz === undefined ? base.enable_fuzz : input.enable_fuzz) : defaults.enable_fuzz,
+      w
+    };
+  }
   function load() {
-    try { return Object.assign({}, defaults, JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}")); }
-    catch (_) { return Object.assign({}, defaults); }
+    try { return normalizeSettings(JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}")); }
+    catch (_) { return normalizeSettings(defaults); }
   }
   let settings = load();
   let sched = build();
@@ -254,10 +273,25 @@
 
   const api = {
     settings: () => Object.assign({}, settings),
-    setSettings(patch) {
-      settings = Object.assign({}, settings, patch);
-      try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (_) {}
+    setSettings(patch, options = {}) {
+      settings = normalizeSettings({ ...settings, ...(patch && typeof patch === "object" ? patch : {}) });
+      if (options.persist !== false) {
+        try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (_) {}
+      }
       sched = build();
+      // FSRS configuration belongs to the workspace, not only this browser.
+      // A caller applying a remote/backup snapshot can suppress this reverse-sync
+      // to avoid a second feature-state save while the atomic workspace is committing.
+      if (options.syncFeature !== false && typeof root.NexusGetFeatureState === "function" &&
+          typeof root.NexusSetFeatureState === "function") {
+        try {
+          const featureState = root.NexusGetFeatureState();
+          featureState.fsrsSettings = Object.assign({}, settings);
+          root.NexusSetFeatureState(featureState, { persist: true, render: false, applyFsrs: false });
+        } catch (error) {
+          try { console.warn("FSRS settings are active locally but could not be added to the saved workspace.", error); } catch (_) {}
+        }
+      }
     },
 
     /** Validate/clean a stored card (used when loading data). Returns undefined if unusable. */
