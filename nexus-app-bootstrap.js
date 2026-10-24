@@ -8,6 +8,7 @@
     'curriculum-integrity.js',
     'explore-curriculum.js',
     'app-core.js',
+    'fsrs-bundle.js',
     'study-hub.js',
     'nexus-build-config.js',
     'cloud-sync-recovery.js',
