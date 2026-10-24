@@ -14,6 +14,7 @@
   const TRACKER_KEY = 'recall.study.tracker.v1';
   const FEATURE_KEY = 'recall.study.features.v1';
   const OWNER_KEY = 'nexus.cloud.last-user-id';
+  const FALLBACK_JOURNAL_KEY = 'nexus.storage.internal.fallback-journal.v1';
   const APP_KEY = /^(?:recall\.|nexus\.|alSrsTrackerV2$|alTrackerData$|alHistoryLog$)/;
   const INTERNAL_KEY = /^nexus\.storage\.internal\./;
   const isManagedKey = key => typeof key === 'string' && APP_KEY.test(key) && !INTERNAL_KEY.test(key);
@@ -64,6 +65,76 @@
       } catch (_) {}
     }
     return entries;
+  }
+
+  function valueHash(value) {
+    let hash = 2166136261;
+    for (let i = 0; i < value.length; i++) {
+      hash ^= value.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+  }
+
+  function readFallbackJournal() {
+    if (!nativeStorage) return { schemaVersion: 1, entries: {} };
+    const raw = nativeStorage.getItem(FALLBACK_JOURNAL_KEY);
+    if (raw === null) return { schemaVersion: 1, entries: {} };
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch (_) {
+      throw new Error('The browser-storage recovery journal is unreadable. Keep this device data intact and export a backup before continuing.');
+    }
+    if (!parsed || parsed.schemaVersion !== 1 || !parsed.entries ||
+        typeof parsed.entries !== 'object' || Array.isArray(parsed.entries)) {
+      throw new Error('The browser-storage recovery journal has an unsupported format. Keep this device data intact.');
+    }
+    for (const [key, entry] of Object.entries(parsed.entries)) {
+      if (!isManagedKey(key) || !entry || typeof entry !== 'object' ||
+          typeof entry.deleted !== 'boolean' ||
+          (!entry.deleted && (typeof entry.hash !== 'string' || !/^[0-9a-f]{8}$/.test(entry.hash)))) {
+        throw new Error('The browser-storage recovery journal contains an invalid entry. Keep this device data intact.');
+      }
+    }
+    return parsed;
+  }
+
+  function writeFallbackJournal(journal) {
+    if (!nativeStorage) throw new Error('Browser storage is unavailable.');
+    const entries = journal && journal.entries ? journal.entries : {};
+    if (!Object.keys(entries).length) {
+      nativeStorage.removeItem(FALLBACK_JOURNAL_KEY);
+      return;
+    }
+    nativeStorage.setItem(FALLBACK_JOURNAL_KEY, JSON.stringify({ schemaVersion: 1, entries }));
+  }
+
+  function fallbackAtomicWrite(entries) {
+    if (!nativeStorage) throw new Error('Browser storage is unavailable.');
+    if (!entries.every(entry => isManagedKey(entry.key))) return nativeAtomicWrite(entries);
+    const previousJournal = nativeStorage.getItem(FALLBACK_JOURNAL_KEY);
+    const journal = readFallbackJournal();
+    for (const entry of entries) {
+      journal.entries[entry.key] = entry.value === null
+        ? { deleted: true, updatedAt: timestamp() }
+        : { deleted: false, hash: valueHash(entry.value), updatedAt: timestamp() };
+    }
+    // Write the intent first. If the tab closes between the journal and the value
+    // update, the checksum prevents a stale value from being mistaken for the new one.
+    writeFallbackJournal(journal);
+    try {
+      return nativeAtomicWrite(entries);
+    } catch (error) {
+      // If rollback was complete, restore the old journal. If native rollback was
+      // incomplete, retain it so the next successful IndexedDB open can reconcile
+      // whichever values were actually committed to browser storage.
+      if (error.rollbackSucceeded !== false) {
+        try {
+          if (previousJournal === null) nativeStorage.removeItem(FALLBACK_JOURNAL_KEY);
+          else nativeStorage.setItem(FALLBACK_JOURNAL_KEY, previousJournal);
+        } catch (_) {}
+      }
+      throw error;
+    }
   }
 
   function nativeAtomicWrite(entries) {
