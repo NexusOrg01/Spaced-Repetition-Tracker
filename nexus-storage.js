@@ -15,6 +15,7 @@
   const DB_VERSION = 1;
   const STORE_NAME = 'kv';
   const DIRTY_KEY = 'nexus.storage.indexeddb-dirty.v1';
+  const CACHE_FAILED_SESSION_KEY = 'nexus.storage.cache-failed-keys.v1';
   const DATA_KEYS = new Set([
     'recall.study.tracker.v1',
     'recall.study.features.v1',
@@ -53,6 +54,8 @@
     let phase = 'opening';
     let lastError = '';
     let revision = 0;
+    let recovered = false;
+    let nativeCacheFailure = false;
     let flushPromise = null;
     let flushScheduled = false;
     let internalWrite = 0;
@@ -66,17 +69,57 @@
     function directGet(key) {
       try { return nativeGet.call(storage, key); } catch (_) { return null; }
     }
+    function readCacheFailureKeys() {
+      try {
+        const raw = root.sessionStorage && root.sessionStorage.getItem(CACHE_FAILED_SESSION_KEY);
+        const values = raw ? JSON.parse(raw) : [];
+        return new Set(Array.isArray(values) ? values.filter(key => DATA_KEYS.has(String(key))).map(String) : []);
+      } catch (_) { return new Set(); }
+    }
+    let cacheFailureKeys = readCacheFailureKeys();
+    function writeCacheFailureKeys() {
+      try {
+        if (!root.sessionStorage) return;
+        if (cacheFailureKeys.size) root.sessionStorage.setItem(CACHE_FAILED_SESSION_KEY, JSON.stringify(Array.from(cacheFailureKeys)));
+        else root.sessionStorage.removeItem(CACHE_FAILED_SESSION_KEY);
+      } catch (_) {}
+    }
+    function noteCacheFailure(key, error) {
+      nativeCacheFailure = true;
+      if (DATA_KEYS.has(String(key))) cacheFailureKeys.add(String(key));
+      writeCacheFailureKeys();
+      lastError = String(error && error.message || error || 'Local cache could not be updated').slice(0, 500);
+    }
+    function clearCacheFailure(key) {
+      cacheFailureKeys.delete(String(key));
+      writeCacheFailureKeys();
+    }
     function directSet(key, value) {
+      const text = String(value);
+      if (DATA_KEYS.has(String(key))) cacheValues.set(String(key), text);
       internalWrite++;
-      try { nativeSet.call(storage, key, String(value)); }
-      finally { internalWrite--; }
+      try {
+        nativeSet.call(storage, key, text);
+        if (DATA_KEYS.has(String(key))) clearCacheFailure(key);
+        return true;
+      } catch (error) {
+        noteCacheFailure(key, error);
+        return false;
+      } finally { internalWrite--; }
     }
     function directRemove(key) {
+      if (DATA_KEYS.has(String(key))) cacheValues.delete(String(key));
       internalWrite++;
-      try { nativeRemove.call(storage, key); }
-      finally { internalWrite--; }
+      try {
+        nativeRemove.call(storage, key);
+        if (DATA_KEYS.has(String(key))) clearCacheFailure(key);
+        return true;
+      } catch (error) {
+        noteCacheFailure(key, error);
+        return false;
+      } finally { internalWrite--; }
     }
-    function localSnapshot() {
+    function snapshotAtStartup() {
       const values = new Map();
       for (const key of DATA_KEYS) {
         const value = directGet(key);
@@ -84,11 +127,16 @@
       }
       return values;
     }
-    function snapshotAtStartup() {
-      try { return localSnapshot(); } catch (_) { return new Map(); }
-    }
     const startupSnapshot = snapshotAtStartup();
+    const cacheValues = new Map(startupSnapshot);
     const dirtyAtStartup = directGet(DIRTY_KEY) === '1';
+    function localSnapshot() {
+      const values = new Map();
+      for (const key of DATA_KEYS) {
+        if (cacheValues.has(key)) values.set(key, cacheValues.get(key));
+      }
+      return values;
+    }
 
     function createGate(message, canContinue) {
       const doc = root.document;
@@ -163,6 +211,7 @@
       return {
         phase,
         durable: Boolean(db && !degraded && phase === 'ready'),
+        recovered,
         recovering,
         revision,
         pendingWrites: pendingKeys.size,
@@ -193,21 +242,51 @@
     }
     function patchStorage() {
       try {
+        proto.getItem = function(key) {
+          const name = String(key);
+          if (this === storage && DATA_KEYS.has(name)) return cacheValues.has(name) ? cacheValues.get(name) : null;
+          return nativeGet.call(this, key);
+        };
         proto.setItem = function(key, value) {
-          const result = nativeSet.call(this, key, value);
-          if (this === storage) markChanged(String(key));
-          return result;
+          const name = String(key);
+          if (this !== storage || !DATA_KEYS.has(name)) return nativeSet.call(this, key, value);
+          const text = String(value);
+          cacheValues.set(name, text);
+          if (runtimeActive && !internalWrite) markChanged(name);
+          try {
+            nativeSet.call(this, name, text);
+            clearCacheFailure(name);
+          } catch (error) {
+            noteCacheFailure(name, error);
+          }
+          return undefined;
         };
         proto.removeItem = function(key) {
-          const result = nativeRemove.call(this, key);
-          if (this === storage) markChanged(String(key));
-          return result;
+          const name = String(key);
+          if (this !== storage || !DATA_KEYS.has(name)) return nativeRemove.call(this, key);
+          cacheValues.delete(name);
+          if (runtimeActive && !internalWrite) markChanged(name);
+          try {
+            nativeRemove.call(this, name);
+            clearCacheFailure(name);
+          } catch (error) {
+            noteCacheFailure(name, error);
+          }
+          return undefined;
         };
         if (typeof nativeClear === 'function') {
           proto.clear = function() {
-            const removed = this === storage ? Array.from(DATA_KEYS).filter(key => directGet(key) !== null) : [];
-            const result = nativeClear.call(this);
-            if (this === storage) {
+            if (this !== storage) return nativeClear.call(this);
+            const removed = Array.from(DATA_KEYS).filter(key => cacheValues.has(key));
+            for (const key of removed) cacheValues.delete(key);
+            let result;
+            try {
+              result = nativeClear.call(this);
+              for (const key of removed) clearCacheFailure(key);
+            } catch (error) {
+              for (const key of removed) noteCacheFailure(key, error);
+            }
+            if (runtimeActive && !internalWrite) {
               for (const key of removed) markChanged(key);
               if (removed.length) {
                 try { directSet(DIRTY_KEY, '1'); } catch (_) {}
@@ -285,7 +364,7 @@
         const batchKeys = Array.from(pendingKeys);
         for (const key of batchKeys) pendingKeys.delete(key);
         const entries = batchKeys.map(function(key) {
-          return { key, value: directGet(key) };
+          return { key, value: cacheValues.has(key) ? cacheValues.get(key) : null };
         });
         try {
           await writeBatch(entries);
@@ -349,25 +428,38 @@
         patchStorage();
         await openDatabase();
         const stored = await readDatabase();
-        if (stored.size && !dirtyAtStartup) {
+        if (stored.size) {
           let restored = false;
+          let allRecoveredKeysMirrored = true;
           for (const [key, value] of stored) {
-            // Recover missing cache entries from the durable copy. If a key already
-            // exists, preserve it as possible newer work from an older app version.
-            if (!startupSnapshot.has(key)) {
-              directSet(key, value);
+            // A failed localStorage cache write is recorded in sessionStorage. For
+            // those keys, prefer the durable IndexedDB value even if a stale cache
+            // entry still exists. Otherwise recover only missing cache entries.
+            const shouldRecover = cacheFailureKeys.has(key) || (!dirtyAtStartup && !startupSnapshot.has(key));
+            if (shouldRecover && cacheValues.get(key) !== value) {
+              const mirrored = directSet(key, value);
               restored = true;
+              if (!mirrored) allRecoveredKeysMirrored = false;
+            }
+          }
+          if (!dirtyAtStartup) {
+            for (const key of Array.from(cacheFailureKeys)) {
+              if (!stored.has(key) && startupSnapshot.has(key)) {
+                cacheValues.delete(key);
+                if (!directRemove(key)) allRecoveredKeysMirrored = false;
+                restored = true;
+              }
             }
           }
           if (restored) {
-            recovering = true;
-            phase = 'recovering';
-            createGate('Recovered saved study data from the offline database. Nexus is reopening to load the recovered workspace safely…', false);
-            if (root.location && typeof root.location.reload === 'function') {
+            recovered = true;
+            if (allRecoveredKeysMirrored && root.location && typeof root.location.reload === 'function') {
+              recovering = true;
+              phase = 'recovering';
+              createGate('Recovered saved study data from the offline database. Nexus is reopening to load the recovered workspace safely…', false);
               root.location.reload();
               return;
             }
-            throw new Error('Recovered data was restored, but this environment cannot reload Nexus automatically.');
           }
         }
 
