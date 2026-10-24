@@ -393,7 +393,8 @@ async function upload(){
  syncing=true;status('Syncing…');syncDiag('upload-start',snapshot(),{hasQueue:!!window.NexusOfflineSyncQueue});let uploaded=false,retryReconcileAfterConflict=false,attemptedPayload=null,attemptedOperationId=null,attemptedBase=null,attemptedPriorStamp=null;
  const queue=window.NexusOfflineSyncQueue;
  try{
-  const {data:authData,error:authError}=await client.auth.getUser();
+  const durableStorage=window.NexusStorage;if(durableStorage&&typeof durableStorage.isEnabled==='function'&&durableStorage.isEnabled()&&typeof durableStorage.flush==='function')await durableStorage.flush();
+   const {data:authData,error:authError}=await client.auth.getUser();
   if(authError)throw new Error('Supabase could not verify the active login before cloud write: '+authError.message);
   if(!authData.user||authData.user.id!==uploadUserId||!session||session.user.id!==uploadUserId)throw new Error('The active Google/account session changed or could not be verified. Cloud write paused to protect the other account. Sign in again and retry.');
   let pending=queue?queue.getPending(localStorage,uploadUserId):null;
