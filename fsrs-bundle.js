@@ -232,7 +232,7 @@
   const gradeOf = (r) => RATING_TO_GRADE[r] || 3;
 
   // maximum_interval defaults to 120 because the app's data normalisers clamp intervalDays to 120.
-  const defaults = { enabled: true, request_retention: 0.9, maximum_interval: 120, enable_fuzz: false, w: null };
+  const defaults = { request_retention: 0.9, maximum_interval: 120, enable_fuzz: false, w: null };
 
   function normalizeSettings(value, fallback = defaults) {
     const input = value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -244,8 +244,6 @@
     const retention = Number(input.request_retention === undefined ? base.request_retention : input.request_retention);
     const maximum = Number(input.maximum_interval === undefined ? base.maximum_interval : input.maximum_interval);
     return {
-      enabled: typeof (input.enabled === undefined ? base.enabled : input.enabled) === "boolean"
-        ? (input.enabled === undefined ? base.enabled : input.enabled) : defaults.enabled,
       request_retention: clamp(Number.isFinite(retention) ? retention : defaults.request_retention, 0.7, 0.97),
       maximum_interval: clamp(Number.isFinite(maximum) ? maximum : defaults.maximum_interval, 30, 120),
       enable_fuzz: typeof (input.enable_fuzz === undefined ? base.enable_fuzz : input.enable_fuzz) === "boolean"
@@ -280,13 +278,10 @@
       }
       sched = build();
       // Backup/cloud restores can change scheduler settings after the controls
-      // have already been wired. Keep the visible controls in sync with the
-      // active scheduler instead of leaving a stale checkbox/value on screen.
-      const enabledControl = document.getElementById("fsrsEnabled");
+      // have already been wired. Keep the visible FSRS tuning values in sync.
       const retentionControl = document.getElementById("fsrsRetention");
       const retentionOutput = document.getElementById("fsrsRetentionOut");
       const maximumControl = document.getElementById("fsrsMax");
-      if (enabledControl) enabledControl.checked = settings.enabled;
       if (retentionControl) retentionControl.value = String(settings.request_retention);
       if (retentionOutput) retentionOutput.textContent = Math.round(settings.request_retention * 100) + "%";
       if (maximumControl) maximumControl.value = String(settings.maximum_interval);
@@ -394,12 +389,11 @@
   save = function () { persistCards(); return baseSave.apply(this, arguments); };
 
   // 1) Interval used by the preview buttons, the review preview and saveReview().
-  const prevInterval = interval;
-  interval = function (rating, previous) {
-    if (!N.settings().enabled) return prevInterval(rating, previous);
+  interval = function (rating) {
     const t = reviewTopicId ? getTopic(reviewTopicId) : null;
-    if (!t) return prevInterval(rating, previous);
-    return N.previewButtons(t)[Number(rating)] || prevInterval(rating, previous);
+    const intervals = N.previewButtons(t || {});
+    const days = intervals[Number(rating)];
+    return Number.isFinite(days) && days > 0 ? days : 1;
   };
 
   // 2) Store FSRS memory state when a review is saved.
@@ -459,23 +453,23 @@
   const baseRenderAll = renderAll;
   renderAll = function () { ensureMigrated(); baseRenderAll(); };
 
-  // 5) Settings panel (markup is added by apply_fsrs_patch.py).
+  // 5) FSRS-only scheduler tuning controls.
   function wireSettings() {
-    const en = document.getElementById("fsrsEnabled"), ret = document.getElementById("fsrsRetention"),
+    const ret = document.getElementById("fsrsRetention"),
       out = document.getElementById("fsrsRetentionOut"), max = document.getElementById("fsrsMax");
-    if (!en || !ret || !max) return;
+    if (!ret || !out || !max) return;
     const s = N.settings();
-    en.checked = s.enabled; ret.value = s.request_retention; max.value = s.maximum_interval;
+    ret.value = s.request_retention; max.value = s.maximum_interval;
     out.textContent = Math.round(s.request_retention * 100) + "%";
     ret.addEventListener("input", () => { out.textContent = Math.round(ret.value * 100) + "%"; });
     const apply = () => {
       N.setSettings({
-        enabled: en.checked, request_retention: Number(ret.value),
+        request_retention: Number(ret.value),
         maximum_interval: Math.min(120, Math.max(30, Number(max.value) || 120)),
       });
-      notify("Scheduler settings saved. They apply to future reviews.");
+      notify("FSRS-6 settings saved. They apply to future reviews.");
     };
-    [en, ret, max].forEach((el) => el.addEventListener("change", apply));
+    [ret, max].forEach((el) => el.addEventListener("change", apply));
   }
 
   // 6) Study Hub: the old "FSRS-inspired" selector is superseded. Keep the <select> in the DOM
@@ -493,8 +487,8 @@
     });
   }).observe(hub, { childList: true, subtree: true });
 
-  // 7) Replace the old "Review schedule" panel with the FSRS settings, and fix the help text.
-  const PANEL = `<section class="panel" style="margin-top:15px"><div class="panel-head"><div><h3>Review schedule · FSRS-6</h3><p>Intervals are predicted from each topic's memory stability and difficulty.</p></div></div><div class="panel-body"><div class="form-grid"><div class="helper"><strong>1 — Again</strong><br>Forgotten: interval resets to 1 day.</div><div class="helper"><strong>2 — Hard</strong><br>Recalled with difficulty: small growth.</div><div class="helper"><strong>3 — Good</strong><br>Standard FSRS growth.</div><div class="helper"><strong>4 — Very good</strong><br>Good update, interval between Good and Easy.</div><div class="helper"><strong>5 — Easy</strong><br>Largest growth; difficulty drops.</div><div class="helper"><strong>Recall now</strong><br>Topic cards show the predicted chance you could recall it today.</div></div><div class="divider"></div><div class="form-grid"><div class="form-group full"><label class="form-label"><input type="checkbox" id="fsrsEnabled"> Use FSRS-6 scheduler (uncheck for the old multiplier method)</label></div><div class="form-group"><label class="form-label" for="fsrsRetention">Desired retention: <span id="fsrsRetentionOut">90%</span></label><input type="range" id="fsrsRetention" min="0.7" max="0.97" step="0.01"></div><div class="form-group"><label class="form-label" for="fsrsMax">Maximum interval (days, 30–120)</label><input class="control" type="number" id="fsrsMax" min="30" max="120"></div></div><p class="muted small">Higher retention means shorter intervals and more reviews. 90% is the standard. Changes apply to future reviews; existing due dates are kept.</p></div></section>`;
+  // 7) Replace the old "Review schedule" panel with FSRS-only settings, and fix the help text.
+  const PANEL = `<section class="panel" style="margin-top:15px"><div class="panel-head"><div><h3>Review schedule · FSRS-6</h3><p>Intervals are predicted from each topic's memory stability and difficulty.</p></div></div><div class="panel-body"><div class="form-grid"><div class="helper"><strong>1 — Again</strong><br>Forgotten: interval resets to 1 day.</div><div class="helper"><strong>2 — Hard</strong><br>Recalled with difficulty: small growth.</div><div class="helper"><strong>3 — Good</strong><br>Standard FSRS growth.</div><div class="helper"><strong>4 — Very good</strong><br>Good update, interval between Good and Easy.</div><div class="helper"><strong>5 — Easy</strong><br>Largest growth; difficulty drops.</div><div class="helper"><strong>Recall now</strong><br>Topic cards show the predicted chance you could recall it today.</div></div><div class="divider"></div><div class="form-grid"><div class="form-group"><label class="form-label" for="fsrsRetention">Desired retention: <span id="fsrsRetentionOut">90%</span></label><input type="range" id="fsrsRetention" min="0.7" max="0.97" step="0.01"></div><div class="form-group"><label class="form-label" for="fsrsMax">Maximum interval (days, 30–120)</label><input class="control" type="number" id="fsrsMax" min="30" max="120"></div></div><p class="muted small">Higher retention means shorter intervals and more reviews. 90% is the standard. Changes apply to future reviews; existing due dates are kept.</p></div></section>`;
   const oldPanel = [...document.querySelectorAll("#view-setup .panel")].find((p) => p.querySelector("h3")?.textContent.trim() === "Review schedule");
   if (oldPanel) { oldPanel.outerHTML = PANEL; wireSettings(); }
   document.querySelectorAll("#helpDialog .help-content p").forEach((p) => {
