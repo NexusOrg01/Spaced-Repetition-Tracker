@@ -32,7 +32,7 @@ const stateFor = id => ({
   topics: id ? [{ id, name: id, subjectId: 'subject-general', dueDate: '2026-10-20' }] : [],
   exams: [], history: [], settings: { theme: 'system', intervalCap: 120 }
 });
-const DEFAULT_FSRS = { enabled: true, request_retention: 0.9, maximum_interval: 120, enable_fuzz: false, w: null };
+const DEFAULT_FSRS = { request_retention: 0.9, maximum_interval: 120, enable_fuzz: false, w: null };
 const featuresFor = (id, fsrsSettings = DEFAULT_FSRS) => ({ version: 1, fsrsSettings: { ...fsrsSettings }, journal: id ? [{ id: 'journal-' + id, text: id }] : [], papers: [], goals: [], studyLogs: [], settings: {} });
 const payloadFor = id => ({ app: 'Nexus Spaced Repetition Tracker', schema: 4, exportedAt: '2026-10-20T00:00:00.000Z', state: stateFor(id), featureState: featuresFor(id) });
 
@@ -1211,7 +1211,7 @@ for (const scenario of [
   ], localA);
   const remoteBBefore = rows.get(accountB.id) ? JSON.stringify(rows.get(accountB.id)) : null;
   const remoteABefore = rows.get(accountA.id) ? JSON.stringify(rows.get(accountA.id)) : null;
-  const cachedB = payloadFor('cached-B-offline', { enabled: false, request_retention: 0.82, maximum_interval: 60, enable_fuzz: true, w: null });
+  const cachedB = payloadFor('cached-B-offline', { request_retention: 0.82, maximum_interval: 60, enable_fuzz: true, w: null });
   window.NexusStorage = {
     isEnabled: () => true,
     async getWorkspace(ownerId) {
