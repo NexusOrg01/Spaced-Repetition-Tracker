@@ -71,7 +71,7 @@ assert.deepEqual(sanitizeFsrsCard({
 
 const defaults = {
   version: 1,
-  fsrsSettings: { enabled: true, request_retention: 0.9, maximum_interval: 120, enable_fuzz: false, w: null },
+  fsrsSettings: { request_retention: 0.9, maximum_interval: 120, enable_fuzz: false, w: null },
   settings: {
     dailyMinutes: 90, sessionMinutes: 25, scheduler: 'classic', weeklyReviewGoal: 100,
     backlogDays: 7, reminders: false, reminderTime: '08:00', maxInterval: 120,
