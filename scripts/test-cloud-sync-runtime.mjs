@@ -1203,6 +1203,7 @@ for (const scenario of [
     { key: FEATURE_KEY, value: JSON.stringify(localA.featureState) }
   ], localA);
   const remoteBBefore = rows.get(accountB.id) ? JSON.stringify(rows.get(accountB.id)) : null;
+  const remoteABefore = rows.get(accountA.id) ? JSON.stringify(rows.get(accountA.id)) : null;
   const cachedB = payloadFor('cached-B-offline');
   window.NexusStorage = {
     isEnabled: () => true,
@@ -1223,8 +1224,8 @@ for (const scenario of [
     'the matching account cache must restore Study Hub state along with tracker state');
   assert.ok(queue.hasPending(storage, accountA.id),
     'account A offline work must remain parked under A while B is restored');
-  assert.equal(rows.get(accountA.id)?.payload.state.topics[0].id, 'offline-A',
-    'the offline handoff must not write account A changes to the cloud');
+  assert.equal(rows.get(accountA.id) ? JSON.stringify(rows.get(accountA.id)) : null, remoteABefore,
+    'the offline handoff must not change account A cloud data');
   assert.equal(rows.get(accountB.id) ? JSON.stringify(rows.get(accountB.id)) : null, remoteBBefore,
     'the cached workspace must not trigger a cloud write while offline');
   assert.equal(getElement('cloudStatus').textContent, 'Offline · local workspace loaded',
