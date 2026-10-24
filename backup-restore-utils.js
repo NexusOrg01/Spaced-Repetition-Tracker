@@ -149,7 +149,6 @@
   }
 
   const DEFAULT_FSRS_SETTINGS = Object.freeze({
-    enabled: true,
     request_retention: 0.9,
     maximum_interval: 120,
     enable_fuzz: false,
@@ -162,9 +161,8 @@
     if (!isRecord(value)) throw new Error('Backup section "fsrsSettings" must be an object.');
     const retentionRaw = value.request_retention === undefined ? base.request_retention : value.request_retention;
     const maximumRaw = value.maximum_interval === undefined ? base.maximum_interval : value.maximum_interval;
-    const enabledRaw = value.enabled === undefined ? base.enabled : value.enabled;
     const fuzzRaw = value.enable_fuzz === undefined ? base.enable_fuzz : value.enable_fuzz;
-    if (typeof enabledRaw !== 'boolean' || typeof fuzzRaw !== 'boolean' ||
+    if (typeof fuzzRaw !== 'boolean' ||
         typeof retentionRaw !== 'number' || !Number.isFinite(retentionRaw) ||
         typeof maximumRaw !== 'number' || !Number.isFinite(maximumRaw)) {
       throw new Error('Backup section "fsrsSettings" contains invalid scheduler settings.');
@@ -179,7 +177,6 @@
       weights = rawWeights.map(weight => Math.min(1000, Math.max(-1000, weight)));
     }
     return {
-      enabled: enabledRaw,
       request_retention: Math.min(0.97, Math.max(0.7, retentionRaw)),
       maximum_interval: Math.min(120, Math.max(30, maximumRaw)),
       enable_fuzz: fuzzRaw,
