@@ -106,7 +106,10 @@ async function verifyStorageBootstrap() {
   const runtimeBody = runtimeStart >= 0 && runtimeEnd > runtimeStart ? bootstrap.slice(runtimeStart, runtimeEnd) : '';
   const assets = [...runtimeBody.matchAll(/'([^']+)'/g)].map(match => match[1]);
   assert.deepEqual(assets, expected, 'runtime modules must load only after IndexedDB initialization and in dependency-safe order.');
-  for (const asset of expected) await readFile(join(root, asset), 'utf8');
+  for (const asset of expected) {
+    // nexus-build-config.js is generated into the output directory by this build.
+    if (asset !== 'nexus-build-config.js') await readFile(join(root, asset), 'utf8');
+  }
   for (const asset of [
     'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
     'explore-curriculum.js', 'app-core.js', 'study-hub.js', 'nexus-build-config.js',
