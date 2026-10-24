@@ -196,7 +196,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     ['recall.study.tracker.v1', '{"revision":"before"}'],
     ['recall.study.features.v1', '{"journal":[]}'],
     ['nexus.cloud.last-user-id', 'account-b'],
-    ['sb-testproject-auth-token', '{"access_token":"session"}']
+    ['sb-testproject-auth-token', '{"access_token":"session"}'],
+    ['unrelated.preference', 'keep-me']
   ]);
   const idb = new FakeIndexedDB();
   const first = loadApi(makeWindow(native, idb));
@@ -226,7 +227,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   second.context.window.localStorage.clear();
   await second.api.flush();
   assert.equal(native.getItem('sb-testproject-auth-token'), '{"access_token":"session"}', 'clearing Nexus workspace data must not clear the Supabase auth session');
-  assert.equal(native.getItem('unrelated.preference'), null, 'clear should remove Nexus keys but preserve unrelated keys');
+  assert.equal(native.getItem('unrelated.preference'), 'keep-me', 'clear should preserve unrelated browser keys');
 }
 
 // Failed transactions must be reported, leave the pending change available, and support a later retry.
