@@ -21,17 +21,31 @@ function section(source, startMarker, endMarker, label) {
   return source.slice(start, end);
 }
 
-const helperTag = '<script src="./backup-restore-utils.js"></script>';
-const helperAt = index.indexOf(helperTag);
-const queueTag = '<script src="./offline-sync-queue.js"></script>';
-const queueAt = index.indexOf(queueTag);
-const appStateAt = index.indexOf('<script src="./app-core.js"></script>');
-assert.ok(helperAt >= 0 && queueAt > helperAt && appStateAt > queueAt, 'load backup and queue safety helpers before the main app script');
+const storageTag = '<script src="./nexus-storage.js"></script>';
+const bootstrapTag = '<script src="./nexus-app-bootstrap.js"></script>';
+assert.equal(index.split(storageTag).length - 1, 1, 'load the storage adapter exactly once');
+assert.equal(index.split(bootstrapTag).length - 1, 1, 'load the storage-gated bootstrap exactly once');
+assert.ok(index.indexOf(storageTag) >= 0 && index.indexOf(bootstrapTag) > index.indexOf(storageTag), 'load the storage adapter before the bootstrap');
+const storageSource = readFileSync(resolve(root, 'nexus-storage.js'), 'utf8');
+const bootstrap = readFileSync(resolve(root, 'nexus-app-bootstrap.js'), 'utf8');
+const runtimeStart = bootstrap.indexOf('const RUNTIME_ASSETS = [');
+const runtimeEnd = bootstrap.indexOf('];', runtimeStart);
+assert.ok(runtimeStart >= 0 && runtimeEnd > runtimeStart, 'the bootstrap must define the ordered app runtime');
+const runtimeBody = runtimeStart >= 0 && runtimeEnd > runtimeStart ? bootstrap.slice(runtimeStart, runtimeEnd) : '';
+const runtimeAssets = [...runtimeBody.matchAll(/'([^']+)'/g)].map(match => match[1]);
+assert.deepEqual(runtimeAssets, [
+  'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
+  'explore-curriculum.js', 'app-core.js', 'study-hub.js', 'nexus-build-config.js',
+  'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-sync.js',
+  'nexus-app-inline.js', 'workspace-isolation-guard.js'
+], 'all app modules must load in their existing dependency order after storage bootstrap');
+for (const asset of ['backup-restore-utils.js','offline-sync-queue.js','curriculum-integrity.js','explore-curriculum.js','app-core.js','study-hub.js','nexus-build-config.js','cloud-sync-recovery.js','workspace-sync-merge.js','cloud-sync.js','workspace-isolation-guard.js']) {
+  assert.ok(!index.includes('<script src="./' + asset + '"></script>'), asset + ' must not load before the asynchronous storage bootstrap.');
+}
+assert.ok(storageSource.includes("const DB_NAME = 'nexus-workspace-v1'") && storageSource.includes('function commitLocalStorageEntries(entries)') && storageSource.includes('async function persistPending()'), 'the IndexedDB layer must expose the compatibility write path and durable flush logic');
+assert.ok(bootstrap.includes('await window.NexusStorage.bootstrap()') && bootstrap.includes('for (const asset of RUNTIME_ASSETS) await loadScript(asset)'), 'app modules must wait for storage initialization and load sequentially');
 assert.ok(appSource.includes('window.NexusStorageKey = STORAGE_KEY;'), 'expose the primary storage key for shared transactions');
-const mergeTag = '<script src="./workspace-sync-merge.js"></script>';
-const mergeAt = index.indexOf(mergeTag);
-const cloudScriptAt = index.indexOf('<script src="./cloud-sync.js"></script>');
-assert.ok(mergeAt >= 0 && cloudScriptAt > mergeAt, 'three-way merge engine must load before cloud sync runtime');
+assert.ok(runtimeAssets.indexOf('workspace-sync-merge.js') >= 0 && runtimeAssets.indexOf('cloud-sync.js') > runtimeAssets.indexOf('workspace-sync-merge.js'), 'three-way merge engine must load before cloud sync runtime');
 assert.ok(cloudSync.includes('reconcileConcurrentSnapshot(newUserId,remote)'), 'same-account pending snapshots on stale cloud revisions must attempt automatic merge before the workspace-choice fallback');
 assert.ok(cloudSync.includes('queue.getBase(localStorage,userId)'), 'automatic conflict resolution must compare the last synced base, local edits, and cloud edits');
 assert.ok(cloudSync.includes('conflicts:result.conflicts') && cloudSync.includes('conflictMetadata:{baseServerVersion:pending.baseServerVersion,remoteServerVersion:remoteStamp}'), 'overlapping edit alternatives must share the same atomic commit as the merge before cloud overwrite can happen');
@@ -116,17 +130,15 @@ assert.ok(!accountChoice.includes('Cloud replacement cancelled; the account clou
 assert.ok(accountChoice.includes('lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;'), 'confirmed cloud replacement must retain the observed revision for conditional writes');
 assert.ok(accountChoice.includes("if(choice==='merge'){lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;applyLocalMerged("), 'merging with an existing cloud backup must use the fetched revision for a conditional write');
 
-assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v27';"), 'cache version must advance after adding the workspace merge engine');
-assert.ok(serviceWorker.includes("'./app-core.js'") && serviceWorker.includes("'./study-hub.js'") && serviceWorker.includes("'./explore-curriculum.js'") && serviceWorker.includes("'./backup-restore-utils.js'") && serviceWorker.includes("'./offline-sync-queue.js'") && serviceWorker.includes("'./workspace-isolation-guard.js'") && serviceWorker.includes("'./nexus-build-config.js'") && serviceWorker.includes("'./cloud-sync-recovery.js'") && serviceWorker.includes("'./cloud-sync.js'"), 'offline app shell must cache both safety helpers');
+assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v28';"), 'cache version must advance after adding the workspace merge engine');
+assert.ok(serviceWorker.includes("'./nexus-storage.js'") && serviceWorker.includes("'./nexus-app-bootstrap.js'") && serviceWorker.includes("'./nexus-app-inline.js'") && serviceWorker.includes("'./app-core.js'") && serviceWorker.includes("'./study-hub.js'") && serviceWorker.includes("'./explore-curriculum.js'") && serviceWorker.includes("'./backup-restore-utils.js'") && serviceWorker.includes("'./offline-sync-queue.js'") && serviceWorker.includes("'./workspace-isolation-guard.js'") && serviceWorker.includes("'./nexus-build-config.js'") && serviceWorker.includes("'./cloud-sync-recovery.js'") && serviceWorker.includes("'./cloud-sync.js'"), 'offline app shell must cache the storage bootstrap and dependent app scripts');
 const networkFirstSources = serviceWorker.split('const networkFirst=')[1]?.split(';')[0] || '';
-assert.ok(networkFirstSources.includes("url.pathname.endsWith('/app-core.js')") && networkFirstSources.includes("url.pathname.endsWith('/study-hub.js')") && networkFirstSources.includes("url.pathname.endsWith('/explore-curriculum.js')") && networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/offline-sync-queue.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-isolation-guard.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-build-config.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync-recovery.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync.js')"), 'critical helpers and FSRS scripts must revalidate online and fall back to cache offline');
+assert.ok(networkFirstSources.includes("url.pathname.endsWith('/nexus-storage.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-app-bootstrap.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-app-inline.js')") && networkFirstSources.includes("url.pathname.endsWith('/app-core.js')") && networkFirstSources.includes("url.pathname.endsWith('/study-hub.js')") && networkFirstSources.includes("url.pathname.endsWith('/explore-curriculum.js')") && networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/offline-sync-queue.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-isolation-guard.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-build-config.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync-recovery.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync.js')"), 'critical storage/bootstrap/FSRS scripts must revalidate online and fall back to cache offline');
 assert.ok(workflow.includes('node scripts/test-offline-sync-queue.mjs') && workflow.includes('node scripts/test-cloud-sync-recovery.mjs') && workflow.includes('node scripts/test-workspace-isolation-guard.mjs') && workflow.includes('node scripts/test-data-safety-wiring.mjs'), 'CI must run the queue and integration-wiring checks');
 
 
-const guardTag = '<script src="./workspace-isolation-guard.js"></script>';
-const guardAt = index.indexOf(guardTag);
 const isolationOverlayAt = index.indexOf('id="workspaceIsolationLock"');
-assert.ok(isolationOverlayAt >= 0 && guardAt > isolationOverlayAt && guardAt > index.indexOf('<script src="./cloud-sync.js"></script>'), 'install the workspace isolation guard after cloud-sync UI exists');
+assert.ok(isolationOverlayAt >= 0 && runtimeAssets.indexOf('workspace-isolation-guard.js') > runtimeAssets.indexOf('cloud-sync.js'), 'install the workspace isolation guard after the app UI and cloud sync modules exist');
 assert.ok(appSource.includes('aria-modal="true"') && appSource.includes('workspaceIsolationSignOut') && appSource.includes('workspaceIsolationRetry'), 'the account-mismatch lock must be modal and provide retry/sign-out recovery');
 assert.ok(guard.includes('retry.hidden=false;') && guard.includes('signOut.hidden=false;'), 'retry and sign-out must remain available even if account loading stalls');
 
