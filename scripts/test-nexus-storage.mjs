@@ -220,6 +220,24 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const rows = idb.databases.get('nexus-workspace-v1').stores.get('records');
   assert.equal(rows.get('nexus.cloud.sync-base.v1').revision, rows.get('nexus.cloud.offline-outbox.v1').revision, 'atomic batches must share a committed revision');
 
+  const cachedB = await second.api.getWorkspace('account-b');
+  assert.equal(cachedB.ownerId, 'account-b', 'the current owner should have an owner-scoped IndexedDB workspace');
+  assert.equal(cachedB.state.revision, 'after', 'the workspace projection should contain the durable tracker snapshot');
+  assert.equal(cachedB.featureState.journal.length, 0, 'the workspace projection should include Study Hub state');
+
+  await second.api.commitLocalStorageEntries([
+    { key: 'nexus.cloud.last-user-id', value: 'account-a' },
+    { key: 'recall.study.tracker.v1', value: '{"owner":"A"}' },
+    { key: 'recall.study.features.v1', value: '{"owner":"A-hub"}' }
+  ]);
+  await second.api.flush();
+  const cachedA = await second.api.getWorkspace('account-a');
+  const stillCachedB = await second.api.getWorkspace('account-b');
+  assert.equal(cachedA.state.owner, 'A', 'atomic account handoff should create account A workspace without overwriting B');
+  assert.equal(cachedA.featureState.owner, 'A-hub', 'tracker and Study Hub data must be projected together');
+  assert.equal(stillCachedB.state.revision, 'after', 'switching accounts must preserve the prior account workspace');
+  assert.equal(await second.api.getWorkspace('account-c'), null, 'a workspace must never be returned for an account that has no cached record');
+
   second.context.window.localStorage.removeItem('recall.study.tracker.v1');
   await second.api.flush();
   assert.equal(second.context.window.localStorage.getItem('recall.study.tracker.v1'), null, 'deleted values must not reappear after reload');
