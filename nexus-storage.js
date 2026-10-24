@@ -331,6 +331,7 @@
     function finishReady(durable) {
       runtimeActive = true;
       if (durable) {
+        if (!pendingKeys.size) directRemove(DIRTY_KEY);
         setPhase('ready');
         clearWarning();
       } else {
@@ -379,8 +380,11 @@
             await drainPending();
             finishReady(true);
           } catch (error) {
-            finishReady(false);
+            runtimeActive = true;
             setPhase('warning', error);
+            resolveReady(getStatus());
+            hideGate();
+            showWarning('Nexus could not finish saving its offline database copy. Your browser copy remains present. Keep Nexus open, check available storage, and export a full JSON backup.');
           }
         } else {
           finishReady(true);
