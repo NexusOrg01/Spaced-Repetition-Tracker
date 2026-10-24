@@ -89,7 +89,7 @@ async function verifyStorageBootstrap() {
   const bootstrap = await readFile(join(root, 'nexus-app-bootstrap.js'), 'utf8');
   const expected = [
     'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
-    'explore-curriculum.js', 'app-core.js', 'study-hub.js', 'nexus-build-config.js',
+    'explore-curriculum.js', 'app-core.js', 'fsrs-bundle.js', 'study-hub.js', 'nexus-build-config.js',
     'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-sync.js',
     'nexus-app-inline.js', 'workspace-isolation-guard.js'
   ];
@@ -113,7 +113,7 @@ async function verifyStorageBootstrap() {
   for (const asset of [
     'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
     'explore-curriculum.js', 'app-core.js', 'study-hub.js', 'nexus-build-config.js',
-    'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-sync.js', 'workspace-isolation-guard.js'
+    'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-sync.js', 'workspace-isolation-guard.js', 'fsrs-bundle.js'
   ]) {
     assert.ok(!html.includes('<script src="./' + asset + '"></script>'),
       'App module ' + asset + ' must not execute directly from index.html before durable storage initialization.');
