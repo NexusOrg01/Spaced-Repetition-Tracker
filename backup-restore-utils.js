@@ -217,6 +217,11 @@
 
   function commitLocalStorageAtomically(storage, entries) {
     if (!storage || !Array.isArray(entries) || entries.length === 0) throw new Error('Invalid local restore transaction.');
+    const durableStorage = typeof window !== 'undefined' ? window.NexusStorage : null;
+    if (durableStorage && typeof durableStorage.isFacade === 'function' && durableStorage.isFacade(storage) &&
+        typeof durableStorage.commitLocalStorageEntries === 'function') {
+      return durableStorage.commitLocalStorageEntries(entries);
+    }
     const seen = new Set();
     for (const entry of entries) {
       if (!entry || typeof entry.key !== 'string' || typeof entry.value !== 'string' || seen.has(entry.key)) {
