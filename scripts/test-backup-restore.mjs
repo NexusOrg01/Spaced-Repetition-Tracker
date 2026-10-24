@@ -5,6 +5,7 @@ const {
   validateBackupState,
   sanitizeFocusState,
   sanitizeFsrsCard,
+  normalizeFsrsSettings,
   normalizeFeatureState,
   mergeFeatureState,
   resolveReplaceFeatureState,
