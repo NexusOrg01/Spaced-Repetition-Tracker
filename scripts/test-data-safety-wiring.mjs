@@ -118,6 +118,16 @@ assert.ok(completeResetSection.includes('await storage.flush()') && completeRese
 assert.ok(appCore.includes("$('resetBtn').addEventListener('click',()=>resetAll());"), 'the Reset button must dispatch to the active full-workspace reset handler instead of retaining the original tracker-only callback');
 assert.ok(index.includes('the reset can sync to your account') && index.includes('Restore lets you choose REPLACE') && index.includes('durable local copy on this device'), 'storage, restore, and reset UI help must reflect actual workspace behavior');
 assert.ok(!index.includes('does not automatically sync between devices') && !index.includes('This is a simple scheduler, not FSRS.'), 'the setup copy must not retain contradictory sync or legacy scheduler claims');
+const dangerScreen = section(index, '<div id="dangerZoneStandalone"', '<dialog id="reviewDialog">', 'Danger Zone screen');
+const setupView = section(index, '<section class="view" id="view-setup">', '<!-- RECALL STUDY HUB ADDON START -->', 'settings view');
+assert.ok(index.includes('Danger Zone: Review History / Account Reset'), 'the Danger Zone entry must identify both high-impact actions');
+assert.ok(dangerScreen.includes('Every saved review is an input to your rating graphs, review counts, averages and detailed PDF/CSV history. Deleting one entry removes that event from future analytics. Clearing all history removes every saved review event.') && dangerScreen.includes('Topic schedules and next-due dates may remain unchanged. Use Undo immediately after an accidental deletion, or restore a backup that contains the records. Do not delete history just to reset a chart.'), 'the existing red Review History warning copy must remain unchanged');
+assert.ok(!setupView.includes('id="resetBtn"'), 'the workspace reset button must no longer appear in Settings');
+const historySectionEnd = dangerScreen.indexOf('</section>', dangerScreen.indexOf('<section id="view-history"'));
+const resetSectionStart = dangerScreen.indexOf('<section class="danger-account-reset-section"');
+const resetWarning = dangerScreen.indexOf('id="dangerAccountResetWarningTitle"');
+const resetCard = dangerScreen.indexOf('id="resetBtn"');
+assert.ok(historySectionEnd >= 0 && resetSectionStart > historySectionEnd && resetWarning > resetSectionStart && resetCard > resetWarning, 'the Account Reset section and its dedicated warning must follow and remain separate from Review History');
 assert.ok(restore.includes("archivePending:mode==='REPLACE'"), 'replace restore must archive the prior pending snapshot after explicit confirmation');
 
 const cloud = section(cloudSync, 'function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){', 'async function initializeSession(s)', 'cloud workspace hydration');
