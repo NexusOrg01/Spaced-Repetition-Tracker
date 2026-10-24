@@ -148,6 +148,42 @@
     };
   }
 
+  const DEFAULT_FSRS_SETTINGS = Object.freeze({
+    request_retention: 0.9,
+    maximum_interval: 120,
+    enable_fuzz: false,
+    w: null
+  });
+
+  function normalizeFsrsSettings(value, fallback = DEFAULT_FSRS_SETTINGS) {
+    const base = isRecord(fallback) ? fallback : DEFAULT_FSRS_SETTINGS;
+    if (value === undefined) value = base;
+    if (!isRecord(value)) throw new Error('Backup section "fsrsSettings" must be an object.');
+    const retentionRaw = value.request_retention === undefined ? base.request_retention : value.request_retention;
+    const maximumRaw = value.maximum_interval === undefined ? base.maximum_interval : value.maximum_interval;
+    const fuzzRaw = value.enable_fuzz === undefined ? base.enable_fuzz : value.enable_fuzz;
+    if (typeof fuzzRaw !== 'boolean' ||
+        typeof retentionRaw !== 'number' || !Number.isFinite(retentionRaw) ||
+        typeof maximumRaw !== 'number' || !Number.isFinite(maximumRaw)) {
+      throw new Error('Backup section "fsrsSettings" contains invalid scheduler settings.');
+    }
+    const rawWeights = value.w === undefined ? base.w : value.w;
+    let weights = null;
+    if (rawWeights !== null && rawWeights !== undefined) {
+      if (!Array.isArray(rawWeights) || rawWeights.length !== 21 ||
+          rawWeights.some(weight => typeof weight !== 'number' || !Number.isFinite(weight))) {
+        throw new Error('Backup section "fsrsSettings.w" must be null or contain 21 finite weights.');
+      }
+      weights = rawWeights.map(weight => Math.min(1000, Math.max(-1000, weight)));
+    }
+    return {
+      request_retention: Math.min(0.97, Math.max(0.7, retentionRaw)),
+      maximum_interval: Math.min(120, Math.max(30, maximumRaw)),
+      enable_fuzz: fuzzRaw,
+      w: weights
+    };
+  }
+
   function normalizeFeatureState(input, defaults) {
     if (!isRecord(defaults) || !isRecord(defaults.settings)) throw new Error('Internal Study Hub defaults are invalid.');
     if (input === undefined) return copy(defaults);
@@ -162,6 +198,7 @@
       ...copy(defaults),
       version: typeof input.version === 'number' && Number.isFinite(input.version) ? Math.max(1, Math.min(100, input.version)) : defaults.version,
       settings,
+      fsrsSettings: normalizeFsrsSettings(input.fsrsSettings, defaults.fsrsSettings || DEFAULT_FSRS_SETTINGS),
       syllabusTargets: cleanRecordMap(input.syllabusTargets, 'syllabusTargets', 'number'),
       taskChecks: cleanRecordMap(input.taskChecks, 'taskChecks', 'arrays'),
       journal: cleanRows(input.journal, 'journal'),
@@ -208,6 +245,7 @@
     result.syllabusTargets = { ...imported.syllabusTargets, ...current.syllabusTargets };
     result.taskChecks = { ...imported.taskChecks, ...current.taskChecks };
     result.selectedTopicIds = Array.from(new Set([...current.selectedTopicIds, ...imported.selectedTopicIds]));
+    if (own(raw, 'fsrsSettings')) result.fsrsSettings = imported.fsrsSettings;
     return result;
   }
 
@@ -217,6 +255,11 @@
 
   function commitLocalStorageAtomically(storage, entries) {
     if (!storage || !Array.isArray(entries) || entries.length === 0) throw new Error('Invalid local restore transaction.');
+    const durableStorage = typeof window !== 'undefined' ? window.NexusStorage : null;
+    if (durableStorage && typeof durableStorage.isFacade === 'function' && durableStorage.isFacade(storage) &&
+        typeof durableStorage.commitLocalStorageEntries === 'function') {
+      return durableStorage.commitLocalStorageEntries(entries);
+    }
     const seen = new Set();
     for (const entry of entries) {
       if (!entry || typeof entry.key !== 'string' || typeof entry.value !== 'string' || seen.has(entry.key)) {
@@ -347,5 +390,5 @@
     return rows;
   }
 
-  return { validateBackupState, sanitizeFocusState, sanitizeFsrsCard, normalizeFeatureState, mergeFeatureState, resolveReplaceFeatureState, commitLocalStorageAtomically, writeCloudSnapshot, csvCell, parseCsv };
+  return { validateBackupState, sanitizeFocusState, sanitizeFsrsCard, normalizeFsrsSettings, normalizeFeatureState, mergeFeatureState, resolveReplaceFeatureState, commitLocalStorageAtomically, writeCloudSnapshot, csvCell, parseCsv };
 });

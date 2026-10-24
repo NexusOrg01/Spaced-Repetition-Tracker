@@ -161,7 +161,45 @@
     return repaired;
   }
   function loadState(){const current=safeRead(STORAGE_KEY);if(current){try{return loadAndRepair(current);}catch(e){console.warn('Saved data was invalid; existing saved bytes were not overwritten.',e);}}const old=safeRead('alSrsTrackerV2');if(old){try{return loadAndRepair(migrateOld(old.state||old));}catch(e){console.warn(e);}}const legacyT=safeRead('alTrackerData'),legacyH=safeRead('alHistoryLog');if(Array.isArray(legacyT)||Array.isArray(legacyH))return loadAndRepair(migrateOld({topics:legacyT||[],history:legacyH||[]}));return baseState();}
-  function save(){try{state=repairCurriculumState(state);const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():(()=>{try{const x=JSON.parse(localStorage.getItem('recall.study.features.v1')||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{}}catch(_){return {}}})();if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[{key:STORAGE_KEY,value:JSON.stringify(state)}],{state,featureState},{returnOperationPayload:false});if(window.NexusCloudSync&&window.NexusCloudSync.recordLocalSave)window.NexusCloudSync.recordLocalSave({state,featureState});$('saveStatus').textContent='Saved on this device';$('saveStatus').style.color='';if(window.NexusCloudSync)window.NexusCloudSync.schedule();return true;}catch(e){$('saveStatus').textContent='Save failed — export backup';$('saveStatus').style.color='var(--red)';notify('Could not save data. Export a backup and check browser storage.');return false;}}
+  let storageSaveRevision=0;
+  function save(){
+    try{
+      state=repairCurriculumState(state);
+      const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():(()=>{
+        try{const x=JSON.parse(localStorage.getItem('recall.study.features.v1')||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{}}catch(_){return {}}
+      })();
+      if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');
+      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[{key:STORAGE_KEY,value:JSON.stringify(state)}],{state,featureState},{returnOperationPayload:false});
+      const storage=window.NexusStorage;
+      if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function'){
+        const saveRevision=++storageSaveRevision;
+        $('saveStatus').textContent='Saving to this device…';
+        $('saveStatus').style.color='';
+        storage.flush().then(()=>{
+          if(saveRevision!==storageSaveRevision)return;
+          $('saveStatus').textContent='Saved on this device';
+          $('saveStatus').style.color='';
+        }).catch(error=>{
+          if(saveRevision!==storageSaveRevision)return;
+          $('saveStatus').textContent='Save failed — export backup';
+          $('saveStatus').style.color='var(--red)';
+          notify('Could not finish saving to durable device storage. Keep Nexus open and export a backup before continuing.');
+          console.error('Nexus durable save failed',error);
+        });
+      }else{
+        $('saveStatus').textContent='Saved on this device';
+        $('saveStatus').style.color='';
+      }
+      if(window.NexusCloudSync&&window.NexusCloudSync.recordLocalSave)window.NexusCloudSync.recordLocalSave({state,featureState});
+      if(window.NexusCloudSync)window.NexusCloudSync.schedule();
+      return true;
+    }catch(e){
+      $('saveStatus').textContent='Save failed — export backup';
+      $('saveStatus').style.color='var(--red)';
+      notify('Could not save data. Export a backup and check browser storage.');
+      return false;
+    }
+  }
   function notify(text,undoable=false){$('toastText').textContent=text;$('undoBtn').style.display=undoable?'':'none';$('toast').classList.toggle('undoable',undoable);$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),6500);}
   function startUndo(text){if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();undoState=clone(state);clearTimeout(undoTimer);notify(text,true);undoTimer=setTimeout(()=>{undoState=null;$('undoBtn').style.display='none';},6500);}
   function undo(){if(!undoState)return;state=undoState;undoState=null;clearTimeout(undoTimer);if(window.NexusUndoCascadeDelete)window.NexusUndoCascadeDelete();save();renderAll();$('toast').classList.remove('show');}
@@ -508,7 +546,7 @@
   window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;$('installBtn').classList.remove('is-installed');$('installBtnLabel').textContent='Install';});
   window.addEventListener('appinstalled',()=>{installPrompt=null;$('installBtn').classList.add('is-installed');$('installBtnLabel').textContent='Installed';notify('Nexus installed on this device.');});
   // On secure hosting, cache the application shell for later offline use.
-  if('serviceWorker' in navigator && (location.protocol==='https:'||location.hostname==='localhost')){window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Offline support could not be registered',err)));}
+  if('serviceWorker' in navigator && (location.protocol==='https:'||location.hostname==='localhost')){const registerServiceWorker=()=>navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Offline support could not be registered',err));if(document.readyState==='complete')registerServiceWorker();else window.addEventListener('load',registerServiceWorker,{once:true});}
 
   // --- Persistent Undo toast: one source of truth for message, visibility, and timers. ---
   (function(){

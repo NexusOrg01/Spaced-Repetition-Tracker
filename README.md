@@ -36,11 +36,14 @@ The repository still contains legacy Netlify configuration and may be deployable
 
 ## Data, sync, and notification limits
 
-- Data is stored locally in the browser profile on each device. Export full JSON backups regularly and store a copy somewhere safe.
+- Nexus uses IndexedDB as its durable on-device workspace store, with a synchronous `localStorage` compatibility layer for existing tracker, Study Hub, FSRS, and offline-sync code. The Supabase authentication session remains in browser storage; study data is not placed in the auth-token store.
+- On first startup with the new storage layer, app-owned legacy `localStorage` values are copied into a versioned IndexedDB database in a transaction. The original browser values are not cleared by migration. Existing full JSON backups remain the portable recovery option.
+- IndexedDB is the local durable cache, not a substitute for cloud account recovery. Optional Supabase cloud sync remains account-bound and uses conditional revision checks; a device with no cloud upload must still keep its own backups. If IndexedDB cannot initialize, Nexus displays a browser-storage fallback warning rather than blocking access to the tracker.
+- A compact, checksummed recovery journal records app-owned writes while IndexedDB is unavailable, so the next successful startup can reconcile those fallback changes instead of blindly replacing them with an older database copy. Signed-in account workspaces are also cached separately by owner ID; offline account switching only restores data for the authenticated account, never another account’s workspace. FSRS scheduler preferences are also included in the Study Hub workspace payload and compatibility key, so they can follow verified cloud restores and full JSON backups.
 - Cloud sync is preconfigured to use the Nexus Supabase project and its public publishable key. Email magic-link sign-in and Google sign-in require the deployed Vercel production URL to be allowed in Supabase Auth. Never put a service_role/secret key in the app.
 - In Supabase → Authentication → URL Configuration, add your deployed app URL to the allowed redirect URLs. In Authentication → Providers, enable Google and configure its OAuth client. Email sign-in uses a magic link.
 - Browser notifications can be checked while the app is open and permission is granted. Reliable scheduled push notifications while the browser is fully closed require push infrastructure and a server.
-- The app includes the FSRS-6 scheduler in fsrs-bundle.js; this update leaves the scheduler bundle and its integration unchanged.
+- The app includes the FSRS-6 scheduler in `fsrs-bundle.js`. Its integration now loads after tracker core initialization, and scheduler preferences are normalized into Study Hub workspace state so backup and account cloud restore can carry them.
 - The syllabus coverage percentage reflects topics you have entered, or your optional expected topic count; it cannot independently know the complete official syllabus.
 
 ## Adding new curriculum packs (data-only workflow)

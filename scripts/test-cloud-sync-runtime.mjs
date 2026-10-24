@@ -32,7 +32,8 @@ const stateFor = id => ({
   topics: id ? [{ id, name: id, subjectId: 'subject-general', dueDate: '2026-10-20' }] : [],
   exams: [], history: [], settings: { theme: 'system', intervalCap: 120 }
 });
-const featuresFor = id => ({ version: 1, journal: id ? [{ id: 'journal-' + id, text: id }] : [], papers: [], goals: [], studyLogs: [], settings: {} });
+const DEFAULT_FSRS = { request_retention: 0.9, maximum_interval: 120, enable_fuzz: false, w: null };
+const featuresFor = (id, fsrsSettings = DEFAULT_FSRS) => ({ version: 1, fsrsSettings: { ...fsrsSettings }, journal: id ? [{ id: 'journal-' + id, text: id }] : [], papers: [], goals: [], studyLogs: [], settings: {} });
 const payloadFor = id => ({ app: 'Nexus Spaced Repetition Tracker', schema: 4, exportedAt: '2026-10-20T00:00:00.000Z', state: stateFor(id), featureState: featuresFor(id) });
 
 class MemoryStorage {
@@ -91,6 +92,7 @@ const window = {
     }).state;
   },
   NexusWorkspaceSyncMerge: workspaceMerge,
+  NexusFSRS: { currentSettings: { ...DEFAULT_FSRS }, settings() { return { ...this.currentSettings }; }, setSettings(value) { this.currentSettings = { ...value }; } },
   NexusStorageKey: STATE_KEY,
   NexusFeatureStorageKey: FEATURE_KEY,
   NexusGetFeatureState: () => JSON.parse(storage.getItem(FEATURE_KEY) || '{}'),
@@ -194,7 +196,7 @@ queue.commitWorkspace(storage, [
 await window.NexusCloudSync.reconnect();
 assert.equal(rows.has(accountA.id), false, 'offline startup must not write to cloud');
 assert.ok(queue.hasPending(storage, accountA.id), 'offline startup must retain the account-A pending snapshot');
-assert.equal(getElement('cloudStatus').textContent, 'Sync unavailable', 'offline failure must be visible instead of claiming sync success');
+assert.equal(getElement('cloudStatus').textContent, 'Offline · local workspace', 'an authenticated account with its own local workspace should remain usable offline without claiming sync success');
 
 networkAvailable = true;
 listeners['window:online']();
@@ -984,6 +986,11 @@ for (const scenario of [
     'The merged Commerce pack must be verified in the account cloud row');
   assert.ok(synced.topics.some(topic => topic.id === 'target-account-pending-topic'),
     'The target account pending topic must remain in the verified cloud row');
+  const durableFsrsSettings = JSON.parse(storage.getItem('nexus.fsrs.settings.v1') || 'null');
+  assert.equal(durableFsrsSettings.maximum_interval, 120,
+    'a legacy workspace without FSRS preferences must still produce a valid durable scheduler-settings record');
+  assert.equal(rows.get(accountB.id).payload.featureState.fsrsSettings.maximum_interval, 120,
+    'the legacy workspace default must be included in the cloud snapshot without losing pending edits');
   assert.equal(storage.getItem(OWNER), accountB.id,
     'The merged guest workspace must be bound to the signed-in account only after it is persisted');
   assert.equal(queue.hasPending(storage, accountB.id), false,
@@ -1187,6 +1194,67 @@ for (const scenario of [
     'a local save must update the queued payload rather than allowing an older snapshot to overwrite it');
   assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics.length, changedState.topics.length,
     'queueing a local save must not remove or alter the locally persisted workspace');
+}
+
+// A different authenticated account must recover only its own cached local workspace
+// when the cloud is unreachable; account A's visible data must never be uploaded as B.
+{
+  if (queue.hasPending(storage, accountB.id)) queue.archive(storage, accountB.id, 'offline-account-cache-test-reset');
+  const localA = payloadFor('account-A-before-offline-switch');
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(localA.state));
+  storage.setItem(FEATURE_KEY, JSON.stringify(localA.featureState));
+  context.state = JSON.parse(JSON.stringify(localA.state));
+  queue.commitWorkspace(storage, [
+    { key: STATE_KEY, value: JSON.stringify(localA.state) },
+    { key: FEATURE_KEY, value: JSON.stringify(localA.featureState) }
+  ], localA);
+  const remoteBBefore = rows.get(accountB.id) ? JSON.stringify(rows.get(accountB.id)) : null;
+  const remoteABefore = rows.get(accountA.id) ? JSON.stringify(rows.get(accountA.id)) : null;
+  const cachedB = payloadFor('cached-B-offline', { request_retention: 0.82, maximum_interval: 60, enable_fuzz: true, w: null });
+  window.NexusStorage = {
+    isEnabled: () => true,
+    async getWorkspace(ownerId) {
+      return ownerId === accountB.id
+        ? { ownerId: accountB.id, state: cachedB.state, featureState: cachedB.featureState, revision: 12 }
+        : null;
+    }
+  };
+  activeSession = { user: accountB };
+  networkAvailable = false;
+  await window.NexusCloudSync.reconnect();
+  assert.equal(storage.getItem(OWNER), accountB.id,
+    'offline account handoff should activate only the target account when its local snapshot is found');
+  assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id, 'cached-B-offline',
+    'account B must restore its own cached workspace instead of retaining account A data');
+  assert.equal(JSON.parse(storage.getItem(FEATURE_KEY)).journal[0].text, 'cached-B-offline',
+    'the matching account cache must restore Study Hub state along with tracker state');
+  assert.deepEqual(JSON.parse(storage.getItem('nexus.fsrs.settings.v1')), cachedB.featureState.fsrsSettings,
+    'offline account restore must persist that account’s FSRS scheduler preferences');
+  assert.deepEqual(window.NexusFSRS.currentSettings, cachedB.featureState.fsrsSettings,
+    'offline account restore must update the active FSRS scheduler, not only its saved JSON');
+  assert.ok(queue.hasPending(storage, accountA.id),
+    'account A offline work must remain parked under A while B is restored');
+  assert.equal(rows.get(accountA.id) ? JSON.stringify(rows.get(accountA.id)) : null, remoteABefore,
+    'the offline handoff must not change account A cloud data');
+  assert.equal(rows.get(accountB.id) ? JSON.stringify(rows.get(accountB.id)) : null, remoteBBefore,
+    'the cached workspace must not trigger a cloud write while offline');
+  assert.equal(getElement('cloudStatus').textContent, 'Offline · local workspace loaded',
+    'offline restoration must be shown as local-only, not synced');
+
+  const accountC = { id: 'account-C-no-cache', email: 'c@example.test' };
+  activeSession = { user: accountC };
+  await window.NexusCloudSync.reconnect();
+  assert.equal(storage.getItem(OWNER), accountB.id,
+    'without a C-specific cached workspace, Nexus must not re-label B data as C data');
+  assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id, 'cached-B-offline',
+    'the prior workspace must not be overwritten when a new account has no cached data');
+  assert.equal(getElement('cloudStatus').textContent, 'Sync unavailable',
+    'missing target-account data while offline must keep sync blocked');
+  assert.ok(getElement('cloudHelpText').textContent.includes('previous account remains protected and hidden'),
+    'the offline no-cache path must explain why the previous workspace remains hidden');
+  activeSession = null;
+  await window.NexusCloudSync.reconnect();
 }
 
 console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, and target-account pending-snapshot isolation.');

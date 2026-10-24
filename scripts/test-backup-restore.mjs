@@ -5,6 +5,7 @@ const {
   validateBackupState,
   sanitizeFocusState,
   sanitizeFsrsCard,
+  normalizeFsrsSettings,
   normalizeFeatureState,
   mergeFeatureState,
   resolveReplaceFeatureState,
@@ -70,6 +71,7 @@ assert.deepEqual(sanitizeFsrsCard({
 
 const defaults = {
   version: 1,
+  fsrsSettings: { request_retention: 0.9, maximum_interval: 120, enable_fuzz: false, w: null },
   settings: {
     dailyMinutes: 90, sessionMinutes: 25, scheduler: 'classic', weeklyReviewGoal: 100,
     backlogDays: 7, reminders: false, reminderTime: '08:00', maxInterval: 120,
@@ -79,6 +81,18 @@ const defaults = {
   selectedTopicIds: [], lastBackupAt: '', lastReminderAt: '', focusStartedAt: null,
   focusActualStartedAt: null, focusPausedAt: null, focusTopicId: '', focusSubjectId: ''
 };
+
+const customFsrs = normalizeFsrsSettings({
+  enabled: false, request_retention: 0.995, maximum_interval: 999,
+  enable_fuzz: true, w: Array.from({ length: 21 }, (_, index) => index - 10)
+}, defaults.fsrsSettings);
+assert.equal(Object.hasOwn(customFsrs, 'enabled'), false, 'legacy enabled flags must be ignored; FSRS is always the active scheduler');
+assert.equal(customFsrs.request_retention, 0.97, 'FSRS retention should be bounded');
+assert.equal(customFsrs.maximum_interval, 120, 'FSRS max interval should respect the app limit');
+assert.equal(customFsrs.enable_fuzz, true);
+assert.equal(customFsrs.w.length, 21, 'valid custom FSRS weights should be preserved');
+assert.throws(() => normalizeFsrsSettings([], defaults.fsrsSettings), /fsrsSettings.*must be an object/);
+assert.throws(() => normalizeFsrsSettings({ w: [1, 2, 3] }, defaults.fsrsSettings), /must be null or contain 21 finite weights/);
 
 const normalized = normalizeFeatureState({
   settings: { dailyMinutes: 999999, reminders: true, scheduler: 'unexpected', reminderTime: '99:99' },
@@ -97,6 +111,9 @@ assert.equal(normalized.journal[0].id, 'j1');
 assert.equal(normalized.studyLogs[0].id, 'studyLogs-restored-0', 'legacy feature records should receive stable IDs');
 assert.deepEqual(normalized.taskChecks['2026-10-19'], ['taskA', '7']);
 assert.deepEqual(normalized.selectedTopicIds, ['topicA', '7']);
+assert.deepEqual(normalized.fsrsSettings, defaults.fsrsSettings, 'FSRS preferences should be present in every normalized full workspace');
+assert.deepEqual(normalizeFeatureState({ fsrsSettings: customFsrs }, defaults).fsrsSettings, customFsrs, 'FSRS preferences should round-trip through the backup normalizer');
+assert.throws(() => normalizeFeatureState({ fsrsSettings: null }, defaults), /fsrsSettings.*must be an object/);
 assert.throws(() => normalizeFeatureState({ journal: {} }, defaults), /must be an array/);
 assert.throws(() => normalizeFeatureState({ journal: null }, defaults), /must be an array/, 'explicit null must not silently clear journal data');
 assert.throws(() => normalizeFeatureState({ settings: null }, defaults), /settings must be an object/);
@@ -133,6 +150,10 @@ const merged = mergeFeatureState(
 assert.equal(merged.journal.length, 2, 'merge should deduplicate records by ID');
 assert.equal(merged.journal[0].text, 'local', 'local data should win when IDs collide');
 assert.equal(merged.settings.reminders, false, 'explicit imported settings should be applied');
+const currentScheduler = { ...defaults.fsrsSettings };
+const importedScheduler = { ...defaults.fsrsSettings, enabled: false, request_retention: 0.8 };
+assert.deepEqual(mergeFeatureState({ ...defaults, fsrsSettings: currentScheduler }, { ...defaults, fsrsSettings: importedScheduler }, defaults, {}).fsrsSettings, currentScheduler, 'a merge must keep local FSRS preferences when the import does not explicitly include them');
+assert.deepEqual(mergeFeatureState({ ...defaults, fsrsSettings: currentScheduler }, { ...defaults, fsrsSettings: importedScheduler }, defaults, { fsrsSettings: importedScheduler }).fsrsSettings, { ...defaults.fsrsSettings, request_retention: 0.8 }, 'explicit imported FSRS tuning should be merged while the retired enabled flag is ignored');
 assert.ok(merged.settings.dailyMinutes === defaults.settings.dailyMinutes);
 
 class MemoryStorage {

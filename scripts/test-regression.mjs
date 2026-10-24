@@ -6,6 +6,7 @@ import vm from 'node:vm';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const html = readFileSync(resolve(root, 'index.html'), 'utf8');
+const bootstrap = readFileSync(resolve(root, 'nexus-app-bootstrap.js'), 'utf8');
 const appCore = readFileSync(resolve(root, 'app-core.js'), 'utf8');
 const studyHub = readFileSync(resolve(root, 'study-hub.js'), 'utf8');
 const appSource = html + '\n' + appCore + '\n' + studyHub;
@@ -65,7 +66,15 @@ const replayed = scheduler.replay([
 ]);
 assert.equal(replayed.lastReview, '2026-10-21', 'history replay must sort reviews chronologically');
 
-assert.ok(appSource.includes('<script defer src="./fsrs-bundle.js"></script>'), 'the FSRS integration bundle must be loaded by the app');
+const fsrsRuntimeStart = bootstrap.indexOf('const RUNTIME_ASSETS = [');
+const fsrsRuntimeEnd = bootstrap.indexOf('];', fsrsRuntimeStart);
+const fsrsRuntimeBody = fsrsRuntimeStart >= 0 && fsrsRuntimeEnd > fsrsRuntimeStart ? bootstrap.slice(fsrsRuntimeStart, fsrsRuntimeEnd) : '';
+const fsrsRuntimeAssets = [...fsrsRuntimeBody.matchAll(/'([^']+)'/g)].map(match => match[1]);
+assert.ok(!html.includes('<script defer src="./fsrs-bundle.js"></script>') &&
+  fsrsRuntimeAssets.indexOf('app-core.js') >= 0 &&
+  fsrsRuntimeAssets.indexOf('fsrs-bundle.js') > fsrsRuntimeAssets.indexOf('app-core.js') &&
+  fsrsRuntimeAssets.indexOf('fsrs-bundle.js') < fsrsRuntimeAssets.indexOf('study-hub.js'),
+  'the FSRS integration must load after tracker core initialization and before Study Hub');
 assert.ok(bundle.includes('save = function () { persistCards(); return baseSave.apply(this, arguments); }'),
   'FSRS memory state must be persisted whenever Nexus saves tracker data');
 assert.ok(bundle.includes('saveReview = function (rating)') && bundle.includes('t.fsrs = pending.fsrs;'),
@@ -87,11 +96,11 @@ assert.ok(backupUtils.includes('focusActualStartedAt: actualStarted || started')
 assert.ok(appSource.includes('if(focusStart&&!focusTimer)focusTimer=setInterval(refreshLiveFocusUi,1000);'), 'an active focus timer must restart its refresh interval after a normal page reload');
 assert.ok(appSource.includes("const restoreFocusUi=()=>{if(focusStart)openFocusMode();else refreshLiveFocusUi();};") && appSource.includes("document.addEventListener('DOMContentLoaded',restoreFocusUi,{once:true})"), 'an active focus session must reopen the focus clock after the dialog is present in the DOM');
 assert.ok(appSource.includes('focusStart=Date.now();focusPausedAt=null;fsState.focusStartedAt=new Date(focusStart).toISOString();fsState.focusActualStartedAt=new Date(focusStart).toISOString();fsState.focusPausedAt=null;saveFs();'), 'starting a new focus session must clear stale pause state and initialize the original wall-clock start before persisting');
-assert.ok(serviceWorker.includes("'./fsrs-bundle.js'") && serviceWorker.includes("'./explore-curriculum.js'") && serviceWorker.includes("'./backup-restore-utils.js'") && serviceWorker.includes("'./offline-sync-queue.js'") && serviceWorker.includes("'./workspace-isolation-guard.js'") && serviceWorker.includes("'./nexus-build-config.js'") && serviceWorker.includes("'./cloud-sync-recovery.js'") && serviceWorker.includes("'./workspace-sync-merge.js'") && serviceWorker.includes("'./cloud-sync.js'"),
-  'offline app shell must cache the scheduler and backup safety helpers');
-assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v27';"), 'the service-worker cache must be versioned and scoped to Nexus-owned caches');
+assert.ok(serviceWorker.includes("'./nexus-storage.js'") && serviceWorker.includes("'./nexus-app-bootstrap.js'") && serviceWorker.includes("'./nexus-app-inline.js'") && serviceWorker.includes("'./fsrs-bundle.js'") && serviceWorker.includes("'./explore-curriculum.js'") && serviceWorker.includes("'./backup-restore-utils.js'") && serviceWorker.includes("'./offline-sync-queue.js'") && serviceWorker.includes("'./workspace-isolation-guard.js'") && serviceWorker.includes("'./nexus-build-config.js'") && serviceWorker.includes("'./cloud-sync-recovery.js'") && serviceWorker.includes("'./workspace-sync-merge.js'") && serviceWorker.includes("'./cloud-sync.js'"),
+  'offline app shell must cache the storage bootstrap, scheduler, and backup safety helpers');
+assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v28';"), 'the service-worker cache must be versioned and scoped to Nexus-owned caches');
 const networkFirstSources = serviceWorker.split('const networkFirst=')[1]?.split(';')[0] || '';
-assert.ok(networkFirstSources.includes("url.pathname.endsWith('/explore-curriculum.js')") && networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/offline-sync-queue.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-isolation-guard.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-build-config.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync-recovery.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-sync-merge.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync.js')"), 'online loads must refresh the coupled FSRS and backup helpers while preserving offline cache fallback');
+assert.ok(networkFirstSources.includes("url.pathname.endsWith('/nexus-storage.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-app-bootstrap.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-app-inline.js')") && networkFirstSources.includes("url.pathname.endsWith('/explore-curriculum.js')") && networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/offline-sync-queue.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-isolation-guard.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-build-config.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync-recovery.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-sync-merge.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync.js')"), 'online loads must refresh the durable storage/bootstrap and coupled FSRS/sync helpers while preserving offline cache fallback');
 assert.equal(manifest.theme_color, '#6C8AFF', 'installed app chrome should use the Nexus brand color');
 assert.equal(manifest.display, 'standalone', 'the PWA must remain installable in standalone mode');
 assert.ok(serviceWorker.includes('if(url.search||!response||response.status!==200||response.type!==\'basic\')return Promise.resolve(response)'), 'OAuth callback and other query-bearing URLs must not be cached');

@@ -83,8 +83,46 @@ async function verifySafeAuthStorage() {
   assert.equal(safe.getItem('sb-testproject-auth-token'), valid, 'valid Supabase session JSON should be preserved');
 }
 
+async function verifyStorageBootstrap() {
+  const html = await readFile(join(root, 'index.html'), 'utf8');
+  const storage = await readFile(join(root, 'nexus-storage.js'), 'utf8');
+  const bootstrap = await readFile(join(root, 'nexus-app-bootstrap.js'), 'utf8');
+  const expected = [
+    'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
+    'explore-curriculum.js', 'app-core.js', 'fsrs-bundle.js', 'study-hub.js', 'nexus-build-config.js',
+    'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-sync.js',
+    'nexus-app-inline.js', 'workspace-isolation-guard.js'
+  ];
+  assert.equal(html.split('<script src="./nexus-storage.js"></script>').length - 1, 1,
+    'index.html must load the storage adapter exactly once.');
+  assert.equal(html.split('<script src="./nexus-app-bootstrap.js"></script>').length - 1, 1,
+    'index.html must load the storage-gated bootstrap exactly once.');
+  assert.ok(storage.includes("const DB_NAME = 'nexus-workspace-v1'") &&
+    storage.includes("const RECORDS = 'records'") && storage.includes('migrateLegacyValues'),
+    'the durable storage adapter must use its versioned IndexedDB database and idempotent legacy migration.');
+  const runtimeStart = bootstrap.indexOf('const RUNTIME_ASSETS = [');
+  const runtimeEnd = bootstrap.indexOf('];', runtimeStart);
+  assert.ok(runtimeStart >= 0 && runtimeEnd > runtimeStart, 'the bootstrap must declare its ordered runtime asset list.');
+  const runtimeBody = runtimeStart >= 0 && runtimeEnd > runtimeStart ? bootstrap.slice(runtimeStart, runtimeEnd) : '';
+  const assets = [...runtimeBody.matchAll(/'([^']+)'/g)].map(match => match[1]);
+  assert.deepEqual(assets, expected, 'runtime modules must load only after IndexedDB initialization and in dependency-safe order.');
+  for (const asset of expected) {
+    // nexus-build-config.js is generated into the output directory by this build.
+    if (asset !== 'nexus-build-config.js') await readFile(join(root, asset), 'utf8');
+  }
+  for (const asset of [
+    'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
+    'explore-curriculum.js', 'app-core.js', 'study-hub.js', 'nexus-build-config.js',
+    'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-sync.js', 'workspace-isolation-guard.js', 'fsrs-bundle.js'
+  ]) {
+    assert.ok(!html.includes('<script src="./' + asset + '"></script>'),
+      'App module ' + asset + ' must not execute directly from index.html before durable storage initialization.');
+  }
+}
+
 async function copySiteFiles() {
   await verifySafeAuthStorage();
+  await verifyStorageBootstrap();
   await rm(output, { recursive: true, force: true });
   await mkdir(output, { recursive: true });
   const excluded = new Set(['.git', '.github', 'node_modules', 'dist', 'scripts', 'supabase', '.gitignore', 'package.json', 'vercel.json', 'netlify.toml']);

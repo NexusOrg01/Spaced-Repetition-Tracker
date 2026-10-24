@@ -10,6 +10,7 @@ const catalogue = JSON.parse(readFileSync(new URL('../curricula/catalog.json', i
 const appCore = readFileSync(new URL('../app-core.js', import.meta.url), 'utf8');
 const exploreCurriculum = readFileSync(new URL('../explore-curriculum.js', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+const bootstrap = readFileSync(new URL('../nexus-app-bootstrap.js', import.meta.url), 'utf8');
 const cloudSync = readFileSync(new URL('../cloud-sync.js', import.meta.url), 'utf8');
 const mergeSource = readFileSync(new URL('../workspace-sync-merge.js', import.meta.url), 'utf8');
 const serviceWorker = readFileSync(new URL('../sw.js', import.meta.url), 'utf8');
@@ -280,9 +281,13 @@ assert.ok(!appCore.includes('detachPristineStarterContent'),
 assert.ok(appCore.includes('window.NexusRepairCurriculumState'), 'cloud sync needs the shared repair boundary');
 assert.ok(exploreCurriculum.includes('integrity.markInstalled(next, pack'), 'the isolated Explore module must persist explicit install intent through the shared integrity boundary');
 assert.ok(appCore.includes('markDeletedTopic(state,CURRICULUM_PACKS,t)'), 'deletions must create a topic tombstone');
-assert.ok(html.indexOf('<script src="./curriculum-integrity.js"></script>') < html.indexOf('<script src="./explore-curriculum.js"></script>') &&
-  html.indexOf('<script src="./explore-curriculum.js"></script>') < html.indexOf('<script src="./app-core.js"></script>'),
-  'curriculum integrity and Explore lifecycle modules must load before app initialization');
+const runtimeStart = bootstrap.indexOf('const RUNTIME_ASSETS = [');
+const runtimeEnd = bootstrap.indexOf('];', runtimeStart);
+const runtimeBody = runtimeStart >= 0 && runtimeEnd > runtimeStart ? bootstrap.slice(runtimeStart, runtimeEnd) : '';
+const runtimeAssets = [...runtimeBody.matchAll(/'([^']+)'/g)].map(match => match[1]);
+assert.ok(runtimeAssets.indexOf('curriculum-integrity.js') < runtimeAssets.indexOf('explore-curriculum.js') &&
+  runtimeAssets.indexOf('explore-curriculum.js') < runtimeAssets.indexOf('app-core.js'),
+  'curriculum integrity and Explore lifecycle modules must load before app initialization, after storage bootstrap');
 assert.ok(cloudSync.includes('window.NexusRepairCurriculumState?window.NexusRepairCurriculumState(normalized):normalized'),
   'remote snapshots must be repaired before reconciliation');
 assert.ok(cloudSync.includes('Rebuild catalogue-owned rows before any cloud write'),
