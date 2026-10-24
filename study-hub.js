@@ -712,6 +712,8 @@
   }
   function backupPayload(){let backupState=state;try{if(window.NexusRepairCurriculumState)backupState=window.NexusRepairCurriculumState(JSON.parse(JSON.stringify(state)));}catch(error){console.warn('Could not normalize curriculum metadata for the backup; original workspace data will still be exported.',error);}let syncStatus={schemaVersion:1,accountBoundQueueExcluded:true,queueStatus:'unavailable'};try{if(window.NexusOfflineSyncQueue)syncStatus={...syncStatus,...window.NexusOfflineSyncQueue.summary(localStorage,localStorage.getItem('nexus.cloud.last-user-id')),queueStatus:'local-only-metadata'};}catch(_){}return {app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:backupState,featureState:fsState,syncMetadata:syncStatus};}
   function fullBackup(){fsState.lastBackupAt=today();saveFs();downloadBlob(`nexus-full-backup-${today()}.json`,JSON.stringify(backupPayload(),null,2),'application/json;charset=utf-8');notify('Full backup downloaded. Keep an extra copy outside the browser.');renderHub();}
+  window.NexusCreateBackupPayload=backupPayload;
+  window.NexusExportFullBackup=fullBackup;
   async function restoreOrMerge(file){
     if(!file)return;
     let committed=false;
@@ -752,14 +754,19 @@
       if(typeof window.NexusRepairCurriculumState==='function')nextState=window.NexusRepairCurriculumState(nextState);
       const serializedState=JSON.stringify(nextState);
       const serializedFeatures=JSON.stringify(nextFeatures);
+      const serializedCards=JSON.stringify(Object.fromEntries((nextState.topics||[]).filter(topic=>topic&&topic.fsrs).map(topic=>[String(topic.id),topic.fsrs])));
+      const serializedFsrsSettings=JSON.stringify(nextFeatures.fsrsSettings);
       if(mode==='REPLACE'&&window.NexusOfflineSyncQueue.hasPending(localStorage,localStorage.getItem('nexus.cloud.last-user-id'))&&!confirm('This account has an unsynced local snapshot. Continue with REPLACE? The pending snapshot will be preserved in local recovery metadata, and only the restored workspace will be queued for upload.'))return;
       window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[
         {key:STORAGE_KEY,value:serializedState},
-        {key:FEATURE_KEY,value:serializedFeatures}
+        {key:FEATURE_KEY,value:serializedFeatures},
+        {key:'nexus.fsrs.cards.v1',value:serializedCards},
+        {key:'nexus.fsrs.settings.v1',value:serializedFsrsSettings}
       ],{state:nextState,featureState:nextFeatures},{archivePending:mode==='REPLACE',reason:'manual-restore-replace',returnOperationPayload:false});
       committed=true;
       state=nextState;
       fsState=nextFeatures;
+      if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(nextFeatures.fsrsSettings,{syncFeature:false,persist:false});
       focusGoalCacheKey='';
       focusStart=fsState.focusStartedAt?new Date(fsState.focusStartedAt).getTime():null;
       focusPausedAt=fsState.focusPausedAt?new Date(fsState.focusPausedAt).getTime():null;
@@ -918,7 +925,44 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
 
   // Override reset to clear all extension data only after the user's existing reset flow confirms.
   const oldReset=resetAll;
-  resetAll=function(){if(!confirm('Reset core tracker and Study Hub settings/data?\n\nThis removes topics, review history, papers, notes, goals, and Hub settings on this device. Export a full backup first.'))return;const typed=prompt('Type RESET to confirm complete removal:');if(typed!=='RESET')return;localStorage.removeItem(STORAGE_KEY);OLD_KEYS.forEach(k=>localStorage.removeItem(k));localStorage.removeItem(FEATURE_KEY);state=baseState();fsState=freshFeatureState();save();saveFs();renderAll();renderHub();notify('All tracker and Study Hub data reset.');};
+  resetAll=async function(){
+    const warning='Reset all Nexus workspace data?\\n\\nThis removes topics, review history, exams, Study Hub notes, papers, goals, FSRS memory, and scheduler preferences. If you are signed in, the empty workspace may sync to your cloud account and remove this study data from your other devices. Export a full JSON backup first.';
+    if(!confirm(warning))return;
+    const typed=prompt('Type RESET to confirm complete workspace removal:');
+    if(typed!=='RESET'){notify('Reset cancelled.');return;}
+    const queue=window.NexusOfflineSyncQueue;
+    const owner=localStorage.getItem('nexus.cloud.last-user-id')||'';
+    const hasPending=!!(queue&&queue.hasPending(localStorage,owner));
+    if(hasPending&&!confirm('This account has unsynced local changes. The pending snapshot will be archived in local recovery metadata before the reset is queued. Continue?'))return;
+    const defaultFsrs={request_retention:0.9,maximum_interval:120,enable_fuzz:false,w:null};
+    try{
+      if(!queue||typeof queue.commitWorkspace!=='function')throw new Error('Safe workspace reset is unavailable.');
+      const resetState=window.NexusRepairCurriculumState?window.NexusRepairCurriculumState(baseState()):baseState();
+      const resetFeatures=window.NexusNormalizeFeatureState({...freshFeatureState(),fsrsSettings:defaultFsrs});
+      const entries=[
+        {key:STORAGE_KEY,value:JSON.stringify(resetState)},
+        {key:FEATURE_KEY,value:JSON.stringify(resetFeatures)},
+        {key:'nexus.fsrs.cards.v1',value:'{}'},
+        {key:'nexus.fsrs.settings.v1',value:JSON.stringify(resetFeatures.fsrsSettings)}
+      ];
+      queue.commitWorkspace(localStorage,entries,{state:resetState,featureState:resetFeatures},{archivePending:true,reason:'manual-reset',returnOperationPayload:false});
+      state=resetState;fsState=resetFeatures;
+      if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(resetFeatures.fsrsSettings,{syncFeature:false,persist:false});
+      focusGoalCacheKey='';focusStart=null;focusPausedAt=null;focusTopicId='';focusSubjectId='';
+      if(focusTimer){clearInterval(focusTimer);focusTimer=null;}
+      if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+      const storage=window.NexusStorage;
+      if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function')await storage.flush();
+      OLD_KEYS.forEach(k=>localStorage.removeItem(k));
+      if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function')await storage.flush();
+      if(window.NexusCloudSync)window.NexusCloudSync.schedule();
+      renderAll();renderHub();
+      notify('Tracker and Study Hub data reset. If signed in, check cloud sync status before using another device.');
+    }catch(error){
+      console.error('Workspace reset failed',error);
+      alert('Nexus could not confirm that the full reset was saved. Keep this tab open and do not clear site data. '+(error.message||'Export a backup before retrying.'));
+    }
+  };
 
   // Gentle reminder check and 60-second scheduled-time check while open.
   const dueCountAtOpen=activeTopics().filter(t=>['overdue','due'].includes(status(t))).length;

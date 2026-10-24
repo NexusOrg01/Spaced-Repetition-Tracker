@@ -164,7 +164,8 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
   const entries=[
     {key:window.NexusStorageKey,value:JSON.stringify(safeState)},
     {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)},
-    {key:'nexus.fsrs.settings.v1',value:JSON.stringify(nextFeatures.fsrsSettings)}
+    {key:'nexus.fsrs.cards.v1',value:JSON.stringify(Object.fromEntries((safeState.topics||[]).filter(topic=>topic&&topic.fsrs).map(topic=>[String(topic.id),topic.fsrs])))},
+     {key:'nexus.fsrs.settings.v1',value:JSON.stringify(nextFeatures.fsrsSettings)}
   ];
   if(ownerId)entries.push({key:OWNER_KEY,value:String(ownerId)});
   // Free redundant snapshot space before applying a cloud workspace to this browser.

@@ -105,6 +105,19 @@ assert.ok(restore.includes('window.NexusCloudSync.schedule()'), 'schedule cloud 
 const backupPayloadSource = section(studyHub, 'function backupPayload(){', 'function fullBackup()', 'schema 4 full backup export');
 assert.ok(backupPayloadSource.includes("schema:4,exportedAt:new Date().toISOString(),state:backupState,featureState:fsState,syncMetadata:syncStatus"), 'full backups must include schema 4, Study Hub state, and account-bound queue metadata without importing the queue itself');
 assert.ok(backupPayloadSource.includes('window.NexusRepairCurriculumState(JSON.parse(JSON.stringify(state)))'), 'full backups must export inferred curriculum install intent without mutating the live workspace');
+assert.ok(appCore.includes("if(typeof window.NexusExportFullBackup==='function'){window.NexusExportFullBackup();return;}"), 'the main Backup button and menu must delegate to the same schema-4 full backup exporter');
+assert.ok(studyHub.includes('window.NexusCreateBackupPayload=backupPayload;') && studyHub.includes('window.NexusExportFullBackup=fullBackup;'), 'Study Hub must expose the canonical complete backup payload and export action');
+assert.ok(!appCore.includes("schema:3,exportedAt:new Date().toISOString(),state}"), 'the main backup path must not emit the obsolete schema-3 tracker-only packet');
+assert.ok(restore.includes("{key:'nexus.fsrs.cards.v1',value:serializedCards}") && restore.includes("{key:'nexus.fsrs.settings.v1',value:serializedFsrsSettings}"), 'restore must atomically align both FSRS cache keys with the restored tracker and Study Hub payload');
+assert.ok(restore.includes('window.NexusFSRS.setSettings(nextFeatures.fsrsSettings,{syncFeature:false,persist:false})'), 'restore must activate imported FSRS settings immediately, without a second independent write');
+assert.ok(cloudSync.includes("{key:'nexus.fsrs.cards.v1',value:JSON.stringify(Object.fromEntries((safeState.topics||[]).filter(topic=>topic&&topic.fsrs).map(topic=>[String(topic.id),topic.fsrs])))}"), 'cloud hydration must align its compatibility FSRS cache to the authoritative topic memory state');
+const completeResetSection = section(studyHub, 'resetAll=async function(){', '// Gentle reminder check', 'complete tracker and Study Hub reset');
+assert.ok(completeResetSection.includes("reason:'manual-reset'") && completeResetSection.includes('archivePending:true'), 'reset must archive an older unsynced snapshot before queuing the empty workspace');
+assert.ok(completeResetSection.includes("{key:'nexus.fsrs.cards.v1',value:'{}'}") && completeResetSection.includes('nexus.fsrs.settings.v1') && completeResetSection.includes('window.NexusFSRS.setSettings'), 'reset must clear cached FSRS cards and restore default scheduler preferences');
+assert.ok(completeResetSection.includes('await storage.flush()') && completeResetSection.includes('window.NexusCloudSync.schedule()'), 'reset must await durable local writes before scheduling cloud propagation');
+assert.ok(appCore.includes("$('resetBtn').addEventListener('click',()=>resetAll());"), 'the Reset button must dispatch to the active full-workspace reset handler instead of retaining the original tracker-only callback');
+assert.ok(index.includes('the reset can sync to your account') && index.includes('Restore lets you choose REPLACE') && index.includes('durable local copy on this device'), 'storage, restore, and reset UI help must reflect actual workspace behavior');
+assert.ok(!index.includes('does not automatically sync between devices') && !index.includes('This is a simple scheduler, not FSRS.'), 'the setup copy must not retain contradictory sync or legacy scheduler claims');
 assert.ok(restore.includes("archivePending:mode==='REPLACE'"), 'replace restore must archive the prior pending snapshot after explicit confirmation');
 
 const cloud = section(cloudSync, 'function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){', 'async function initializeSession(s)', 'cloud workspace hydration');
