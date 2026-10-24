@@ -984,6 +984,11 @@ for (const scenario of [
     'The merged Commerce pack must be verified in the account cloud row');
   assert.ok(synced.topics.some(topic => topic.id === 'target-account-pending-topic'),
     'The target account pending topic must remain in the verified cloud row');
+  const durableFsrsSettings = JSON.parse(storage.getItem('nexus.fsrs.settings.v1') || 'null');
+  assert.equal(durableFsrsSettings.maximum_interval, 120,
+    'a legacy workspace without FSRS preferences must still produce a valid durable scheduler-settings record');
+  assert.equal(rows.get(accountB.id).payload.featureState.fsrsSettings.maximum_interval, 120,
+    'the legacy workspace default must be included in the cloud snapshot without losing pending edits');
   assert.equal(storage.getItem(OWNER), accountB.id,
     'The merged guest workspace must be bound to the signed-in account only after it is persisted');
   assert.equal(queue.hasPending(storage, accountB.id), false,
