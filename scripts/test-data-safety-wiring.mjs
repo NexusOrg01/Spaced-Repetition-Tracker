@@ -9,6 +9,7 @@ const appCore = readFileSync(resolve(root, 'app-core.js'), 'utf8');
 const studyHub = readFileSync(resolve(root, 'study-hub.js'), 'utf8');
 const appSource = index + '\n' + appCore + '\n' + studyHub;
 const cloudSync = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
+const fsrsBundle = readFileSync(resolve(root, 'fsrs-bundle.js'), 'utf8');
 const serviceWorker = readFileSync(resolve(root, 'sw.js'), 'utf8');
 const workflow = readFileSync(resolve(root, '.github/workflows/validate-curricula.yml'), 'utf8');
 const guard = readFileSync(resolve(root, 'workspace-isolation-guard.js'), 'utf8');
@@ -27,6 +28,7 @@ assert.equal(index.split(storageTag).length - 1, 1, 'load the storage adapter ex
 assert.equal(index.split(bootstrapTag).length - 1, 1, 'load the storage-gated bootstrap exactly once');
 assert.ok(index.indexOf(storageTag) >= 0 && index.indexOf(bootstrapTag) > index.indexOf(storageTag), 'load the storage adapter before the bootstrap');
 const storageSource = readFileSync(resolve(root, 'nexus-storage.js'), 'utf8');
+const backupUtils = readFileSync(resolve(root, 'backup-restore-utils.js'), 'utf8');
 const bootstrap = readFileSync(resolve(root, 'nexus-app-bootstrap.js'), 'utf8');
 const runtimeStart = bootstrap.indexOf('const RUNTIME_ASSETS = [');
 const runtimeEnd = bootstrap.indexOf('];', runtimeStart);
@@ -49,6 +51,9 @@ assert.ok(cloudSync.includes('async function recoverCachedWorkspaceForOfflineAcc
 assert.ok(appSource.includes('Saving to this device') && appSource.includes('storage.flush().then('), 'the tracker must not show a successful save before the durable storage promise resolves');
 assert.ok(appSource.includes("document.readyState==='complete'") && appSource.includes('registerServiceWorker,{once:true}'), 'delayed app bootstrap must not miss service-worker registration after the window load event');
 assert.ok(cloudSync.includes('await durableStorage.flush()'), 'cloud uploads must wait for the IndexedDB write queue to commit before selecting a snapshot');
+assert.ok(cloudSync.includes("{key:'nexus.fsrs.settings.v1',value:JSON.stringify(nextFeatures.fsrsSettings)}") && cloudSync.includes('NexusFSRS.setSettings(nextFeatures.fsrsSettings'), 'account hydration must persist and activate the account-scoped FSRS scheduler preferences');
+assert.ok(fsrsBundle.includes('featureState.fsrsSettings = Object.assign({}, settings)') && fsrsBundle.includes('NexusSetFeatureState(featureState'), 'changing FSRS preferences must place them in the synchronized Study Hub state');
+assert.ok(backupUtils.includes('function normalizeFsrsSettings') && backupUtils.includes("fsrsSettings: normalizeFsrsSettings(input.fsrsSettings"), 'backup import/export normalization must validate FSRS settings');
 assert.ok(cloudSync.includes('async function flushDurableLocalWrites()') && cloudSync.includes("await flushDurableLocalWrites();status('Synced');"), 'sync queue acknowledgements, bases, and cloud write verification metadata must be durable before a synced status is shown');
 assert.ok(cloudSync.includes("await flushDurableLocalWrites();\n  ready=true;"), 'restoring a remote workspace must durably commit the associated merge base before marking the account ready');
 const hydratedWorkspace = section(cloudSync, 'async function applyWorkspaceSnapshot(', 'async function applyRemote(', 'cloud workspace persistence');
