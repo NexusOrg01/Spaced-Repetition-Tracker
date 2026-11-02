@@ -34,6 +34,13 @@ assert.match(core, /addEventListener\(['"]click['"],installPwa\)/,
   'the modern API must remain gated behind a real user click');
 
 
+assert.match(bootstrap, /addEventListener\(['"]beforeinstallprompt['"]/,
+  'the installability event must be captured before asynchronous app startup');
+assert.match(bootstrap, /window\.NexusInstallPrompt\s*=\s*event/,
+  'the early installability event must be retained for the later-loaded app core');
+assert.match(core, /installPrompt=window\.NexusInstallPrompt\|\|null/,
+  'the app core must recover an install event captured during bootstrap');
+
 assert.match(bootstrap, /navigator\.serviceWorker\.register\(['"]\.\/sw\.js['"],\s*\{\s*scope:\s*['"]\.\/['"]\s*\}\)/,
   'the app bootstrap must register the root-scoped service worker for PWA installability and offline support');
 assert.match(bootstrap, /registerServiceWorker\(\)/,
