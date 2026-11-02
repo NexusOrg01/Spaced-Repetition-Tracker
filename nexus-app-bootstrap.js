@@ -18,6 +18,16 @@
     'workspace-isolation-guard.js'
   ];
 
+  // Capture Chromium's installability event before asynchronous storage setup and
+  // sequential app-module loading can delay registration of the main app listeners.
+  window.addEventListener('beforeinstallprompt', event => {
+    event.preventDefault();
+    window.NexusInstallPrompt = event;
+  });
+  window.addEventListener('appinstalled', () => {
+    window.NexusInstallPrompt = null;
+  });
+
   function whenDomReady() {
     return new Promise(resolve => {
       if (document.readyState === 'loading') {
