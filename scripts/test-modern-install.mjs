@@ -15,14 +15,16 @@ assert.match(html, /<button[^>]*id="pwaInstallOption"/i,
 
 const installFunction = core.match(/async function installPwa\(\)\s*\{[\s\S]*?\n  \}/);
 assert.ok(installFunction, 'the in-app install action must be implemented as an async user-initiated handler');
+assert.match(installFunction[0], /if\s*\(installPrompt\)[\s\S]*?promptEvent\.prompt\(\)/,
+  'the established beforeinstallprompt flow must be preferred when Chrome provides it');
 assert.match(installFunction[0], /typeof navigator\.install\s*===\s*['"]function['"]/,
-  'the experimental Web Install API must be feature-detected');
+  'the experimental Web Install API must remain feature-detected as a secondary path');
 assert.match(installFunction[0], /await navigator\.install\(\)/,
-  'the experimental Web Install API must be invoked for the current PWA from the user action');
+  'the experimental Web Install API must remain available from the real user action');
+assert.ok(installFunction[0].indexOf('promptEvent.prompt()') < installFunction[0].indexOf('typeof navigator.install'),
+  'the established browser prompt must run before the experimental API');
 assert.match(installFunction[0], /error\?\.name\s*===\s*['"]AbortError['"]/,
   'a user-cancelled browser installation must be handled without showing a misleading error');
-assert.match(installFunction[0], /promptEvent\.prompt\(\)/,
-  'the legacy beforeinstallprompt flow must remain available as a fallback');
 
 assert.match(core, /addEventListener\(['"]beforeinstallprompt['"]/,
   'the legacy Chromium install event listener must remain registered');
