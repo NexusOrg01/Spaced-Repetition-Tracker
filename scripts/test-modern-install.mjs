@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const html = readFileSync(resolve(root, 'index.html'), 'utf8');
 const core = readFileSync(resolve(root, 'app-core.js'), 'utf8');
+const bootstrap = readFileSync(resolve(root, 'nexus-app-bootstrap.js'), 'utf8');
 
 assert.match(html, /<install\b[^>]*id="nexusBrowserInstall"/i,
   'the install dialog must expose the browser-recognizable HTML install element for the current PWA');
@@ -29,5 +30,13 @@ assert.match(core, /addEventListener\(['"]appinstalled['"]/,
   'the app-installed event must continue to update the existing installation state');
 assert.match(core, /addEventListener\(['"]click['"],installPwa\)/,
   'the modern API must remain gated behind a real user click');
+
+
+assert.match(bootstrap, /navigator\.serviceWorker\.register\(['"]\.\/sw\.js['"],\s*\{\s*scope:\s*['"]\.\/['"]\s*\}\)/,
+  'the app bootstrap must register the root-scoped service worker for PWA installability and offline support');
+assert.match(bootstrap, /registerServiceWorker\(\)/,
+  'service-worker registration must be invoked during application startup');
+assert.match(bootstrap, /register\(['"]\.\/sw\.js['"][\s\S]*?\.catch\(/,
+  'service-worker registration failures must be handled without blocking app startup');
 
 console.log('PWAStore Modern Install integration and legacy fallback checks passed.');
