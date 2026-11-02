@@ -1,6 +1,7 @@
 {
   "name": "Nexus: Spaced Repetition Tracker",
   "short_name": "Nexus",
+  "id": "/",
   "description": "Offline-first study planner and spaced repetition tracker.",
   "start_url": "./index.html",
   "scope": "./",
@@ -26,6 +27,22 @@
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "https://dyy7am1gmxz1v.cloudfront.net/apps/j97dnjk9f33475qavgqz71w7vs8gye72/jn740wrgtgbsz25j8tk7y23xnd8gys86/6d2bebcf9c13a5ffe62d4f88cdfae9a595b76bf6a1476ef7e315d7ca072509fd-mobile-screenshot.jpg",
+      "sizes": "390x844",
+      "type": "image/jpeg",
+      "form_factor": "narrow",
+      "label": "Nexus mobile study tracker"
+    },
+    {
+      "src": "https://dyy7am1gmxz1v.cloudfront.net/apps/j97dnjk9f33475qavgqz71w7vs8gye72/jn740wrgtgbsz25j8tk7y23xnd8gys86/eb97e71febf9ec0ab769cab2f16aef6cbcca15fac25921ce98f37f6665f7ca09-desktop-screenshot.jpg",
+      "sizes": "1440x900",
+      "type": "image/jpeg",
+      "form_factor": "wide",
+      "label": "Nexus desktop study workspace"
     }
   ]
 }
