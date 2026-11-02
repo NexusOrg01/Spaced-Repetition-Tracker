@@ -511,6 +511,23 @@
   function openHelp(){$('helpDialog').showModal();}
   function install(){$('pwaInstallOption').hidden=false;$('installNote').textContent=installPrompt?'Use the button below to install Nexus through your browser.':'If the button cannot open an install prompt, use your browser menu: in Chrome, tap ⋮ and choose “Install app”. If it is not listed, refresh Nexus and check again. On other browsers, use “Add to Home screen” if available.';$('installDialog').showModal();}
   async function installPwa(){
+    // Prefer Chromium's established beforeinstallprompt flow whenever it is available.
+    // Keep the experimental Web Install API as a secondary path for browsers that expose it.
+    if(installPrompt){
+      const promptEvent=installPrompt;
+      installPrompt=null;
+      $('installDialog').close();
+      try{
+        await promptEvent.prompt();
+      }catch(error){
+        console.warn('Browser install prompt failed.',error);
+        notify('Open your browser menu and choose Install app or Add to Home screen.');
+      }finally{
+        $('pwaInstallOption').hidden=false;
+      }
+      return;
+    }
+
     // The experimental Web Install API must run directly from this user-initiated click.
     if(typeof navigator.install==='function'){
       $('installDialog').close();
@@ -520,24 +537,11 @@
       }catch(error){
         // A dismissed browser prompt is a normal user choice, not a failure.
         if(error?.name==='AbortError')return;
-        console.warn('Modern Web Install API failed; falling back to the browser install prompt.',error);
+        console.warn('Modern Web Install API failed; falling back to browser instructions.',error);
       }
     }
-    if(!installPrompt){
-      $('installNote').textContent='This browser does not provide an in-page installation prompt. In Chrome, open the ⋮ menu and choose “Install app”. If that option is missing, refresh Nexus and try again. Other browsers may offer “Add to Home screen” instead.';
-      return;
-    }
-    $('installDialog').close();
-    const promptEvent=installPrompt;
-    installPrompt=null;
-    try{
-      await promptEvent.prompt();
-    }catch(error){
-      console.warn('Browser install prompt failed.',error);
-      notify('Open your browser menu and choose Install app or Add to Home screen.');
-    }finally{
-      $('pwaInstallOption').hidden=false;
-    }
+
+    $('installNote').textContent='This browser does not provide an in-page installation prompt. In Chrome, open the ⋮ menu and choose “Install app”. If that option is missing, refresh Nexus and try again. Other browsers may offer “Add to Home screen” instead.';
   }
   // Events are attached once; dynamic content uses delegated handlers.
   document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>switchView(b.dataset.view)));
