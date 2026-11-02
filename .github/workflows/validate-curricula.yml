@@ -23,6 +23,8 @@ jobs:
         run: node scripts/validate-curricula.mjs
       - name: Validate PWAStore App-Grade manifest, icon, and screenshots
         run: node scripts/test-pwastore-app-grade.mjs
+      - name: Validate PWAStore Modern Install integration and browser fallbacks
+        run: node scripts/test-modern-install.mjs
       - name: Test isolated preview configuration and build static output
         run: node scripts/test-preview-build-config.mjs && npm run build
       - name: Check and test backup, restore, and account-switch safety helpers
