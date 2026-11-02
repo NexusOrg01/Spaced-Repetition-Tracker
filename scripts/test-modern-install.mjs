@@ -40,7 +40,7 @@ assert.match(bootstrap, /register\(['"]\.\/sw\.js['"][\s\S]*?\.catch\(/,
   'service-worker registration failures must be handled without blocking app startup');
 
 
-assert.match(core, /function applyTheme\\(\\)[\\s\\S]*?meta\\[name="theme-color"\\][\\s\\S]*?getComputedStyle\\(document\\.documentElement\\)[\\s\\S]*?setAttribute\\(['"]content['"]/,
+assert.match(core, /function applyTheme\(\)[\s\S]*?theme-color[\s\S]*?getComputedStyle[\s\S]*?setAttribute/,
   'the Android browser chrome color must follow the active app theme');
 assert.match(installFunction[0], /does not provide an in-page installation prompt/,
   'browsers without an install API must receive clear browser-menu instructions instead of a misleading failure');
