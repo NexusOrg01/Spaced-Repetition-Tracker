@@ -506,10 +506,10 @@
   async function importBackup(file){if(!file)return;try{const parsed=JSON.parse(await file.text()),raw=parsed?.state||parsed;const restored=normalizeState(raw);if(!restored.topics||!restored.history||!restored.subjects)throw new Error('Required backup sections are missing.');if(!confirm(`Import ${restored.topics.length} topics, ${restored.history.length} history records, and ${restored.exams.length} exams? This replaces current local data.`))return;startUndo('Backup imported.');state=restored;save();renderAll();switchView('overview');notify('Backup restored.',true);}catch(err){alert(`Could not import this backup. ${err.message||'Check the file format.'}`);}finally{$('importFile').value='';}}
   function clearHistory(){if(!state.history.length){notify('History is already empty.');return;}if(!confirm('DANGER ZONE — Clear every saved review-history entry?\n\nAll rating analytics, review-history exports and historical counts based on these records will be lost. Topic schedules may remain unchanged. Use Undo immediately or restore a backup if this was accidental. Continue?'))return;startUndo('History cleared.');state.history=[];save();renderAll();notify('History cleared; schedules remain unchanged.',true);}
   function resetAll(){if(!confirm('Reset all local data, including topics, custom streams, subjects, exams, settings and history? Download a backup first if you may need it.'))return;startUndo('Tracker reset.');state=baseState();save();renderAll();switchView('overview');notify('Tracker reset.',true);}
-  function applyTheme(){document.documentElement.dataset.theme=state.settings.theme;$('themeSelect').value=state.settings.theme;$('themeBtn').textContent=state.settings.theme==='light'?'☀':state.settings.theme==='dark'?'☾':'◐';$('themeBtn').title=`Theme: ${state.settings.theme}. Click to cycle.`;}
+  function applyTheme(){document.documentElement.dataset.theme=state.settings.theme;const themeColor=document.querySelector('meta[name="theme-color"]');if(themeColor){const appBackground=getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();if(appBackground)themeColor.setAttribute('content',appBackground);}$('themeSelect').value=state.settings.theme;$('themeBtn').textContent=state.settings.theme==='light'?'☀':state.settings.theme==='dark'?'☾':'◐';$('themeBtn').title=`Theme: ${state.settings.theme}. Click to cycle.`;}
   function cycleTheme(){const seq=['system','light','dark'];state.settings.theme=seq[(seq.indexOf(state.settings.theme)+1)%seq.length];save();applyTheme();notify(`Theme: ${state.settings.theme}.`);}
   function openHelp(){$('helpDialog').showModal();}
-  function install(){$('pwaInstallOption').hidden=false;$('installNote').textContent=installPrompt?'Use the button below to install Nexus through your browser.':'If no install prompt appears, open your browser menu and choose “Install app” or “Add to Home screen” where available.';$('installDialog').showModal();}
+  function install(){$('pwaInstallOption').hidden=false;$('installNote').textContent=installPrompt?'Use the button below to install Nexus through your browser.':'If the button cannot open an install prompt, use your browser menu: in Chrome, tap ⋮ and choose “Install app”. If it is not listed, refresh Nexus and check again. On other browsers, use “Add to Home screen” if available.';$('installDialog').showModal();}
   async function installPwa(){
     // The experimental Web Install API must run directly from this user-initiated click.
     if(typeof navigator.install==='function'){
@@ -524,7 +524,7 @@
       }
     }
     if(!installPrompt){
-      notify('Open your browser menu and choose Install app or Add to Home screen.');
+      $('installNote').textContent='This browser does not provide an in-page installation prompt. In Chrome, open the ⋮ menu and choose “Install app”. If that option is missing, refresh Nexus and try again. Other browsers may offer “Add to Home screen” instead.';
       return;
     }
     $('installDialog').close();
