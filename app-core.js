@@ -63,7 +63,7 @@
     'Economics':'ආර්ථික විද්‍යාව','ECON':'ආර්ථික විද්‍යාව'
   };
   const RATING_LABELS = {1:'Again',2:'Hard',3:'Good',4:'Very good',5:'Easy'};
-  let state, undoState=null, undoTimer=null, toastTimer=null, editTopicId=null, reviewTopicId=null, selectedReviewRating=null, editStreamId=null, editSubjectId=null, editExamId=null, installPrompt=null, historyVisibleLimit=100, historyInsightsDirty=true, historySortedCache=null, historySortedCacheSource=null, historySortedCacheLength=-1, historySortedCacheFirst=null, historyMetricsCache=null;
+  let state, undoState=null, undoTimer=null, toastTimer=null, editTopicId=null, reviewTopicId=null, selectedReviewRating=null, editStreamId=null, editSubjectId=null, editExamId=null, installPrompt=window.NexusInstallPrompt||null, historyVisibleLimit=100, historyInsightsDirty=true, historySortedCache=null, historySortedCacheSource=null, historySortedCacheLength=-1, historySortedCacheFirst=null, historyMetricsCache=null;
   const $ = id => document.getElementById(id);
   const clone = obj => JSON.parse(JSON.stringify(obj));
   const makeId = prefix => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
@@ -506,11 +506,44 @@
   async function importBackup(file){if(!file)return;try{const parsed=JSON.parse(await file.text()),raw=parsed?.state||parsed;const restored=normalizeState(raw);if(!restored.topics||!restored.history||!restored.subjects)throw new Error('Required backup sections are missing.');if(!confirm(`Import ${restored.topics.length} topics, ${restored.history.length} history records, and ${restored.exams.length} exams? This replaces current local data.`))return;startUndo('Backup imported.');state=restored;save();renderAll();switchView('overview');notify('Backup restored.',true);}catch(err){alert(`Could not import this backup. ${err.message||'Check the file format.'}`);}finally{$('importFile').value='';}}
   function clearHistory(){if(!state.history.length){notify('History is already empty.');return;}if(!confirm('DANGER ZONE — Clear every saved review-history entry?\n\nAll rating analytics, review-history exports and historical counts based on these records will be lost. Topic schedules may remain unchanged. Use Undo immediately or restore a backup if this was accidental. Continue?'))return;startUndo('History cleared.');state.history=[];save();renderAll();notify('History cleared; schedules remain unchanged.',true);}
   function resetAll(){if(!confirm('Reset all local data, including topics, custom streams, subjects, exams, settings and history? Download a backup first if you may need it.'))return;startUndo('Tracker reset.');state=baseState();save();renderAll();switchView('overview');notify('Tracker reset.',true);}
-  function applyTheme(){document.documentElement.dataset.theme=state.settings.theme;$('themeSelect').value=state.settings.theme;$('themeBtn').textContent=state.settings.theme==='light'?'☀':state.settings.theme==='dark'?'☾':'◐';$('themeBtn').title=`Theme: ${state.settings.theme}. Click to cycle.`;}
+  function applyTheme(){document.documentElement.dataset.theme=state.settings.theme;const themeColor=document.querySelector('meta[name="theme-color"]');if(themeColor){const appBackground=getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();if(appBackground)themeColor.setAttribute('content',appBackground);}$('themeSelect').value=state.settings.theme;$('themeBtn').textContent=state.settings.theme==='light'?'☀':state.settings.theme==='dark'?'☾':'◐';$('themeBtn').title=`Theme: ${state.settings.theme}. Click to cycle.`;}
   function cycleTheme(){const seq=['system','light','dark'];state.settings.theme=seq[(seq.indexOf(state.settings.theme)+1)%seq.length];save();applyTheme();notify(`Theme: ${state.settings.theme}.`);}
   function openHelp(){$('helpDialog').showModal();}
-  function install(){$('pwaInstallOption').hidden=false;$('installNote').textContent=installPrompt?'Use the button below to install Nexus through your browser.':'If no install prompt appears, open your browser menu and choose “Install app” or “Add to Home screen” where available.';$('installDialog').showModal();}
-  function installPwa(){if(!installPrompt){notify('Open your browser menu and choose Install app or Add to Home screen.');return;}$('installDialog').close();installPrompt.prompt();installPrompt.userChoice.finally(()=>{installPrompt=null;$('pwaInstallOption').hidden=false;});}
+  function install(){$('pwaInstallOption').hidden=false;$('installNote').textContent=installPrompt?'Use the button below to install Nexus through your browser.':'If the button cannot open an install prompt, use your browser menu: in Chrome, tap ⋮ and choose “Install app”. If it is not listed, refresh Nexus and check again. On other browsers, use “Add to Home screen” if available.';$('installDialog').showModal();}
+  async function installPwa(){
+    // Prefer Chromium's established beforeinstallprompt flow whenever it is available.
+    // Keep the experimental Web Install API as a secondary path for browsers that expose it.
+    if(installPrompt){
+      const promptEvent=installPrompt;
+      installPrompt=null;
+      window.NexusInstallPrompt=null;
+      $('installDialog').close();
+      try{
+        await promptEvent.prompt();
+      }catch(error){
+        console.warn('Browser install prompt failed.',error);
+        notify('Open your browser menu and choose Install app or Add to Home screen.');
+      }finally{
+        $('pwaInstallOption').hidden=false;
+      }
+      return;
+    }
+
+    // The experimental Web Install API must run directly from this user-initiated click.
+    if(typeof navigator.install==='function'){
+      $('installDialog').close();
+      try{
+        await navigator.install();
+        return;
+      }catch(error){
+        // A dismissed browser prompt is a normal user choice, not a failure.
+        if(error?.name==='AbortError')return;
+        console.warn('Modern Web Install API failed; falling back to browser instructions.',error);
+      }
+    }
+
+    $('installNote').textContent='This browser does not provide an in-page installation prompt. In Chrome, open the ⋮ menu and choose “Install app”. If that option is missing, refresh Nexus and try again. Other browsers may offer “Add to Home screen” instead.';
+  }
   // Events are attached once; dynamic content uses delegated handlers.
   document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>switchView(b.dataset.view)));
   
@@ -543,10 +576,9 @@
   $('historyCsvBtn').addEventListener('click',exportHistory);$('setupHistoryCsvBtn').addEventListener('click',exportHistory);$('menuHistoryCsv').addEventListener('click',()=>{exportHistory();$('moreMenu').open=false;});$('setupTopicsCsvBtn').addEventListener('click',exportTopics);$('menuTopicsCsv').addEventListener('click',()=>{exportTopics();$('moreMenu').open=false;});$('clearHistoryBtn').addEventListener('click',clearHistory);$('resetBtn').addEventListener('click',()=>resetAll());$('undoBtn').addEventListener('click',undo);$('menuSettings').addEventListener('click',()=>{switchView('setup');$('moreMenu').open=false;});
   $('topicDialog').addEventListener('close',()=>{editTopicId=null;});$('streamDialog').addEventListener('close',()=>{editStreamId=null;});$('subjectDialog').addEventListener('close',()=>{editSubjectId=null;});$('examDialog').addEventListener('close',()=>{editExamId=null;});$('reviewDialog').addEventListener('close',()=>{reviewTopicId=null;});
   document.querySelectorAll('[data-rating]').forEach(b=>b.addEventListener('focus',()=>{}));
-  window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;$('installBtn').classList.remove('is-installed');$('installBtnLabel').textContent='Install';});
-  window.addEventListener('appinstalled',()=>{installPrompt=null;$('installBtn').classList.add('is-installed');$('installBtnLabel').textContent='Installed';notify('Nexus installed on this device.');});
-  // On secure hosting, cache the application shell for later offline use.
-  if('serviceWorker' in navigator && (location.protocol==='https:'||location.hostname==='localhost')){const registerServiceWorker=()=>navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Offline support could not be registered',err));if(document.readyState==='complete')registerServiceWorker();else window.addEventListener('load',registerServiceWorker,{once:true});}
+  window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;window.NexusInstallPrompt=e;$('installBtn').classList.remove('is-installed');$('installBtnLabel').textContent='Install';});
+  window.addEventListener('appinstalled',()=>{installPrompt=null;window.NexusInstallPrompt=null;$('installBtn').classList.add('is-installed');$('installBtnLabel').textContent='Installed';notify('Nexus installed on this device.');});
+  // Service-worker registration is handled once by nexus-app-bootstrap.js before app modules load.
 
   // --- Persistent Undo toast: one source of truth for message, visibility, and timers. ---
   (function(){

@@ -18,6 +18,16 @@
     'workspace-isolation-guard.js'
   ];
 
+  // Capture Chromium's installability event before asynchronous storage setup and
+  // sequential app-module loading can delay registration of the main app listeners.
+  window.addEventListener('beforeinstallprompt', event => {
+    event.preventDefault();
+    window.NexusInstallPrompt = event;
+  });
+  window.addEventListener('appinstalled', () => {
+    window.NexusInstallPrompt = null;
+  });
+
   function whenDomReady() {
     return new Promise(resolve => {
       if (document.readyState === 'loading') {
@@ -52,8 +62,17 @@
     else document.body.insertBefore(banner, document.body.firstChild);
   }
 
+  function registerServiceWorker() {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(error => {
+      // Service-worker support is an enhancement; never block the core app if registration fails.
+      console.warn('Nexus offline support could not register its service worker.', error);
+    });
+  }
+
   async function start() {
     await whenDomReady();
+    registerServiceWorker();
     let durableStorage = false;
     if (window.NexusStorage && typeof window.NexusStorage.bootstrap === 'function') {
       try {
