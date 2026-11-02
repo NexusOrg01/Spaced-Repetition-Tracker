@@ -22,13 +22,13 @@ assert.equal(startUrl.origin, manifestBase.origin, 'start URL must remain on the
 assert.ok(startUrl.href.startsWith(scopeUrl.href), 'start URL must remain inside the declared app scope');
 
 const icon = (manifest.icons || []).find(entry => {
-  const match = /^(\\d+)x(\\d+)$/.exec(entry.sizes || '');
+  const match = /^(\d+)x(\d+)$/.exec(entry.sizes || '');
   return entry.type === 'image/png' && match && Number(match[1]) >= 512 && Number(match[2]) >= 512 &&
-    String(entry.purpose || 'any').split(/\\s+/).includes('any');
+    String(entry.purpose || 'any').split(/\s+/).includes('any');
 });
 assert.ok(icon, 'manifest must declare a 512px-or-larger PNG icon with purpose any');
 
-const iconPath = resolve(root, icon.src.replace(/^\\.\\//, ''));
+const iconPath = resolve(root, icon.src.replace(/^\.\//, ''));
 const iconBytes = readFileSync(iconPath);
 assert.deepEqual([...iconBytes.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10],
   'declared 512px icon must be a decodable PNG file');
@@ -70,11 +70,11 @@ function jpegDimensions(bytes) {
 for (const screenshot of screenshots) {
   assert.ok(screenshot.src?.startsWith('https://'), 'manifest screenshot must use a public HTTPS URL');
   assert.equal(screenshot.type, 'image/jpeg', 'screenshot content type must match its JPEG asset');
-  const declared = /^(\\d+)x(\\d+)$/.exec(screenshot.sizes || '');
+  const declared = /^(\d+)x(\d+)$/.exec(screenshot.sizes || '');
   assert.ok(declared, 'screenshot must declare explicit pixel dimensions');
   const response = await fetch(screenshot.src, { redirect: 'follow', signal: AbortSignal.timeout(30000) });
   assert.ok(response.ok, 'manifest screenshot must be publicly fetchable: ' + screenshot.src);
-  assert.match(response.headers.get('content-type') || '', /^image\\/jpeg(?:;|$)/i,
+  assert.match(response.headers.get('content-type') || '', /^image\/jpeg(?:;|$)/i,
     'screenshot response must be served as image/jpeg');
   const bytes = Buffer.from(await response.arrayBuffer());
   assert.ok(bytes.length > 1024 && bytes.length < 15 * 1024 * 1024, 'screenshot must have a sensible image size');
@@ -85,9 +85,9 @@ for (const screenshot of screenshots) {
 
 assert.ok(html.includes('<link rel="manifest" href="./manifest.webmanifest">'),
   'the HTML entry point must link the manifest');
-assert.match(html, /<meta\\s+name="viewport"\\s+content="[^"]*width=device-width/,
+assert.match(html, /<meta\s+name="viewport"\s+content="[^"]*width=device-width/,
   'the HTML entry point must declare a responsive viewport');
-assert.match(html, /@media\\s*\\(\\s*max-width\\s*:\\s*390px\\s*\\)/,
+assert.match(html, /@media\s*\(\s*max-width\s*:\s*390px\s*\)/,
   'mobile styles must include the PWAStore 390px viewport breakpoint');
 
 console.log('PWAStore App-Grade manifest and asset preflight passed. The real-browser start and 390px overflow checks remain part of PWAStore verification.');
