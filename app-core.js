@@ -510,7 +510,35 @@
   function cycleTheme(){const seq=['system','light','dark'];state.settings.theme=seq[(seq.indexOf(state.settings.theme)+1)%seq.length];save();applyTheme();notify(`Theme: ${state.settings.theme}.`);}
   function openHelp(){$('helpDialog').showModal();}
   function install(){$('pwaInstallOption').hidden=false;$('installNote').textContent=installPrompt?'Use the button below to install Nexus through your browser.':'If no install prompt appears, open your browser menu and choose “Install app” or “Add to Home screen” where available.';$('installDialog').showModal();}
-  function installPwa(){if(!installPrompt){notify('Open your browser menu and choose Install app or Add to Home screen.');return;}$('installDialog').close();installPrompt.prompt();installPrompt.userChoice.finally(()=>{installPrompt=null;$('pwaInstallOption').hidden=false;});}
+  async function installPwa(){
+    // The experimental Web Install API must run directly from this user-initiated click.
+    if(typeof navigator.install==='function'){
+      $('installDialog').close();
+      try{
+        await navigator.install();
+        return;
+      }catch(error){
+        // A dismissed browser prompt is a normal user choice, not a failure.
+        if(error?.name==='AbortError')return;
+        console.warn('Modern Web Install API failed; falling back to the browser install prompt.',error);
+      }
+    }
+    if(!installPrompt){
+      notify('Open your browser menu and choose Install app or Add to Home screen.');
+      return;
+    }
+    $('installDialog').close();
+    const promptEvent=installPrompt;
+    installPrompt=null;
+    try{
+      await promptEvent.prompt();
+    }catch(error){
+      console.warn('Browser install prompt failed.',error);
+      notify('Open your browser menu and choose Install app or Add to Home screen.');
+    }finally{
+      $('pwaInstallOption').hidden=false;
+    }
+  }
   // Events are attached once; dynamic content uses delegated handlers.
   document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>switchView(b.dataset.view)));
   
