@@ -52,8 +52,17 @@
     else document.body.insertBefore(banner, document.body.firstChild);
   }
 
+  function registerServiceWorker() {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(error => {
+      // Service-worker support is an enhancement; never block the core app if registration fails.
+      console.warn('Nexus offline support could not register its service worker.', error);
+    });
+  }
+
   async function start() {
     await whenDomReady();
+    registerServiceWorker();
     let durableStorage = false;
     if (window.NexusStorage && typeof window.NexusStorage.bootstrap === 'function') {
       try {
