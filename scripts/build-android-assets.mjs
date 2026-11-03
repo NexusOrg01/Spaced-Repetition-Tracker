@@ -202,4 +202,21 @@ await patchFile('study-hub.js', source => replaceExactlyOnce(
   'Native Study Hub export integration'
 ), 'Android Study Hub export preparation');
 
+// Keep Capacitor's generated runtime configuration and native string resources aligned
+// with the application ID used by the auth callback scheme and Gradle build.
+const capacitorConfigPath = join(root, 'android', 'capacitor.config.json');
+const capacitorConfig = JSON.parse(await readFile(capacitorConfigPath, 'utf8'));
+capacitorConfig.appId = androidApplicationId;
+await writeFile(capacitorConfigPath, JSON.stringify(capacitorConfig, null, 2) + String.fromCharCode(10));
+
+const androidStringsPath = join(root, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml');
+let androidStrings = await readFile(androidStringsPath, 'utf8');
+for (const [name, value] of [['package_name', androidApplicationId], ['custom_url_scheme', androidApplicationId]]) {
+  const pattern = new RegExp('(<string name="' + name + '">)[^<]*(</string>)');
+  const matches = androidStrings.match(pattern);
+  assert.equal(matches ? 1 : 0, 1, 'Expected exactly one Android ' + name + ' string.');
+  androidStrings = androidStrings.replace(pattern, '$1' + value + '$2');
+}
+await writeFile(androidStringsPath, androidStrings, 'utf8');
+
 console.log('Android assets prepared. Cloud sync mode: ' + cloudMode + '.');
