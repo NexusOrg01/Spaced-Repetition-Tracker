@@ -1,5 +1,9 @@
 apply plugin: 'com.android.application'
 
+def nexusReleaseApplicationId = project.findProperty('nexusApplicationId')
+def nexusReleaseVersionCode = project.findProperty('nexusVersionCode')
+def nexusReleaseVersionName = project.findProperty('nexusVersionName')
+
 android {
     namespace 'org.nexus.tracker.preview'
     compileSdk rootProject.ext.compileSdkVersion
@@ -7,11 +11,12 @@ android {
     defaultConfig {
         // Temporary development identity only. Replace both store IDs once the
         // domain and final distribution/signing strategy are confirmed.
-        applicationId 'org.nexus.tracker.preview'
+        applicationId (nexusReleaseApplicationId ?: 'org.nexus.tracker.preview')
+        manifestPlaceholders = [nexusAuthScheme: (nexusReleaseApplicationId ?: 'org.nexus.tracker.preview')]
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName '0.1.0-dev'
+        versionCode (nexusReleaseVersionCode ? nexusReleaseVersionCode.toInteger() : 1)
+        versionName (nexusReleaseVersionName ?: '0.1.0-dev')
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
         aaptOptions {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
@@ -22,13 +27,13 @@ android {
     productFlavors {
         fdroid {
             dimension 'distribution'
-            applicationIdSuffix '.fdroidpreview'
-            versionNameSuffix '-fdroid-preview'
+            if (!nexusReleaseApplicationId) applicationIdSuffix '.fdroidpreview'
+            if (!nexusReleaseApplicationId) versionNameSuffix '-fdroid-preview'
         }
         play {
             dimension 'distribution'
-            applicationIdSuffix '.playpreview'
-            versionNameSuffix '-play-preview'
+            if (!nexusReleaseApplicationId) applicationIdSuffix '.playpreview'
+            if (!nexusReleaseApplicationId) versionNameSuffix '-play-preview'
         }
     }
 
