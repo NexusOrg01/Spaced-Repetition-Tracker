@@ -7,21 +7,32 @@ import { build } from 'esbuild';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(root, 'dist');
 const cloudEnabled = process.env.NEXUS_ANDROID_CLOUD_MODE === 'enabled';
+const allowProductionCloud = process.env.NEXUS_ANDROID_ALLOW_PRODUCTION_CLOUD === 'true';
+const liveSupabaseHost = 'txugbdavblpettcnhcxl.supabase.co';
 let androidCloudConfig = null;
+
 if (cloudEnabled) {
   const rawUrl = String(process.env.NEXUS_SUPABASE_URL || '').trim();
   const anonKey = String(process.env.NEXUS_SUPABASE_ANON_KEY || '').trim();
   let parsed;
-  try { parsed = new URL(rawUrl); } catch (_) { throw new Error('Cloud-enabled Android builds require NEXUS_SUPABASE_URL from a separate staging Supabase project.'); }
+  try {
+    parsed = new URL(rawUrl);
+  } catch (_) {
+    throw new Error('Cloud-enabled Android builds require NEXUS_SUPABASE_URL from a separate Supabase project.');
+  }
   const jwtRole = (() => {
     try { return JSON.parse(Buffer.from(anonKey.split('.')[1] || '', 'base64url').toString('utf8')).role; }
     catch (_) { return ''; }
   })();
-  if (parsed.protocol !== 'https:' || !parsed.hostname.endsWith('.supabase.co') ||
-      parsed.hostname === 'txugbdavblpettcnhcxl.supabase.co' ||
-      (anonKey.startsWith('sb_secret_')) ||
+  const isProductionProject = parsed.hostname === liveSupabaseHost;
+  if (parsed.protocol !== 'https:' ||
+      !parsed.hostname.endsWith('.supabase.co') ||
+      parsed.username || parsed.password || parsed.search || parsed.hash ||
+      (isProductionProject && !allowProductionCloud) ||
+      anonKey.startsWith('sb_secret_') ||
+      jwtRole === 'service_role' ||
       !(anonKey.startsWith('sb_publishable_') || jwtRole === 'anon')) {
-    throw new Error('Cloud-enabled Android builds require a publishable/anon key for a non-production HTTPS Supabase project.');
+    throw new Error('Cloud-enabled Android builds require a publishable/anon key and HTTPS Supabase project. Production requires the separate NEXUS_ANDROID_ALLOW_PRODUCTION_CLOUD=true opt-in.');
   }
   androidCloudConfig = { url: parsed.origin, key: anonKey };
 }
@@ -36,13 +47,14 @@ async function patchFile(name, transform, label) {
   const path = join(dist, name);
   const original = await readFile(path, 'utf8');
   const updated = transform(original);
-  assert.notEqual(updated, original, label + ' did not apply. Stop rather than build a partially patched Android bundle.');
+  assert.notEqual(updated, original, label + ' did not apply. Stop rather than produce a partially patched Android bundle.');
   await writeFile(path, updated, 'utf8');
 }
 
 await mkdir(join(dist, 'vendor'), { recursive: true });
-const supabaseUmd = join(root, 'node_modules', '@supabase', 'supabase-js', 'dist', 'umd', 'supabase.js');
-await copyFile(supabaseUmd, join(dist, 'vendor', 'supabase.js'));
+const supabasePackage = join(root, 'node_modules', '@supabase', 'supabase-js');
+await copyFile(join(supabasePackage, 'dist', 'umd', 'supabase.js'), join(dist, 'vendor', 'supabase.js'));
+await copyFile(join(supabasePackage, 'LICENSE'), join(dist, 'vendor', 'SUPABASE-LICENSE'));
 
 await build({
   entryPoints: [join(root, 'scripts', 'android-bridge.entry.js')],
@@ -52,7 +64,10 @@ await build({
   format: 'iife',
   target: ['chrome100'],
   minify: true,
-  define: {\n    __NEXUS_ANDROID_CLOUD_ENABLED__: JSON.stringify(cloudEnabled),\n    __NEXUS_ANDROID_CLOUD_CONFIG__: JSON.stringify(androidCloudConfig)\n  },
+  define: {
+    __NEXUS_ANDROID_CLOUD_ENABLED__: JSON.stringify(cloudEnabled),
+    __NEXUS_ANDROID_CLOUD_CONFIG__: JSON.stringify(androidCloudConfig)
+  },
   legalComments: 'eof'
 });
 
@@ -60,12 +75,12 @@ await patchFile('index.html', html => {
   const analytics = /\s*<!-- Vercel Web Analytics -->\s*<script>[\s\S]*?<\/script>\s*<script defer src="\/_vercel\/insights\/script\.js"><\/script>/;
   assert.match(html, analytics, 'Expected Vercel analytics block was not found.');
   let next = html.replace(analytics, '');
-  const current = '<script src="./nexus-storage.js"></script>\n  <script src="./nexus-app-bootstrap.js"></script>';
-  const replacement = '<script src="./nexus-storage.js"></script>\n' +
+  const currentScripts = '<script src="./nexus-storage.js"></script>\n  <script src="./nexus-app-bootstrap.js"></script>';
+  const androidScripts = '<script src="./nexus-storage.js"></script>\n' +
     '  <script src="./vendor/supabase.js"></script>\n' +
     '  <script src="./nexus-android-bridge.js"></script>\n' +
     '  <script src="./nexus-app-bootstrap.js"></script>';
-  next = replaceExactlyOnce(next, current, replacement, 'Android script injection');
+  next = replaceExactlyOnce(next, currentScripts, androidScripts, 'Android script injection');
   return next.replace('accept=".json,application/json"', 'accept=".json,.csv,application/json,text/csv,application/octet-stream"');
 }, 'Android HTML preparation');
 
@@ -76,26 +91,27 @@ await patchFile('cloud-sync.js', source => {
     "function isUnsafeCloudOrigin(){if(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp&&!window.NexusAndroidBridge.isCloudSyncEnabled())return true;const host=location.hostname.toLowerCase(),url=String(config().url||'').trim();let cloudHost='';try{cloudHost=new URL(url).hostname.toLowerCase();}catch(_){}return cloudHost===new URL(LIVE_SUPABASE_URL).hostname&&host!=='spaced-repetition-tracker-delta.vercel.app'&&host!=='kkmalithmalshan2000-png.github.io';}",
     'Android cloud safety guard'
   );
-  next = replaceExactlyOnce(
-    next,
-    "function loadSupabaseLibrary(){if(window.supabase&&window.supabase.createClient)return Promise.resolve();if(supabaseLoadPromise)return supabaseLoadPromise;supabaseLoadPromise=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3';script.async=true;script.onload=()=>window.supabase&&window.supabase.createClient?resolve():reject(new Error('Supabase client did not initialize.'));script.onerror=()=>reject(new Error('Could not load Supabase client. Check internet access.'));document.head.appendChild(script);});return supabaseLoadPromise;}",
-    "const androidLoader = "function loadSupabaseLibrary(){if(window.supabase&&window.supabase.createClient)return Promise.resolve();return Promise.reject(new Error('The locally bundled Supabase client is unavailable. Reinstall or update this Nexus build.'));}";",
-    'Android local Supabase guard'
-  );
+
+  const webLoader = "function loadSupabaseLibrary(){if(window.supabase&&window.supabase.createClient)return Promise.resolve();if(supabaseLoadPromise)return supabaseLoadPromise;supabaseLoadPromise=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3';script.async=true;script.onload=()=>window.supabase&&window.supabase.createClient?resolve():reject(new Error('Supabase client did not initialize.'));script.onerror=()=>reject(new Error('Could not load Supabase client. Check internet access.'));document.head.appendChild(script);});return supabaseLoadPromise;}";
+  const localOnlyLoader = "function loadSupabaseLibrary(){if(window.supabase&&window.supabase.createClient)return Promise.resolve();return Promise.reject(new Error('The locally bundled Supabase client is unavailable. Reinstall or update this Nexus build.'));}";
+  next = replaceExactlyOnce(next, webLoader, localOnlyLoader, 'Android local-only Supabase loader');
+
   next = replaceExactlyOnce(
     next,
     "function authRedirectUrl(){const target=new URL(location.pathname,location.origin);target.search='';target.hash='';return target.href;}",
     "function authRedirectUrl(){if(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp)return window.NexusAndroidBridge.authRedirectUrl;const target=new URL(location.pathname,location.origin);target.search='';target.hash='';return target.href;}",
     'Android auth redirect'
   );
+
   next = replaceExactlyOnce(
     next,
     "const {data,error}=await client.auth.signInWithOAuth({provider:'google',options:{redirectTo:authRedirectUrl(),queryParams:{prompt:'select_account'}}});if(error)throw error;if(data&&data.url)location.assign(data.url);",
     "const native=!!(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp);const options={redirectTo:authRedirectUrl(),queryParams:{prompt:'select_account'},...(native?{skipBrowserRedirect:true}:{})};const {data,error}=await client.auth.signInWithOAuth({provider:'google',options});if(error)throw error;if(data&&data.url){if(native)await window.NexusAndroidBridge.openAuthUrl(data.url);else location.assign(data.url);}",
     'Android OAuth browser handoff'
   );
+
   const anchor = "function conflictRecoveryOwner(){return session&&session.user&&session.user.id||localStorage.getItem(OWNER_KEY)||'';}";
-  const handler = `async function handleAndroidAuthUrl(rawUrl){
+  const authHandler = `async function handleAndroidAuthUrl(rawUrl){
  if(!window.NexusAndroidBridge||!window.NexusAndroidBridge.isNativeApp||!window.NexusAndroidBridge.isCloudSyncEnabled())return;
  try{
   const authClient=await ensureClient(),callback=new URL(String(rawUrl));
@@ -117,7 +133,7 @@ window.NexusHandleAndroidAuthUrl=handleAndroidAuthUrl;
 const pendingAndroidAuthUrls=Array.isArray(window.NexusAndroidPendingAuthUrls)?window.NexusAndroidPendingAuthUrls.splice(0):[];
 pendingAndroidAuthUrls.forEach(url=>handleAndroidAuthUrl(url));
 `;
-  return replaceExactlyOnce(next, anchor, handler + anchor, 'Android auth callback handling');
+  return replaceExactlyOnce(next, anchor, authHandler + anchor, 'Android auth callback handling');
 }, 'Android cloud-sync preparation');
 
 await patchFile('nexus-app-bootstrap.js', source => replaceExactlyOnce(
