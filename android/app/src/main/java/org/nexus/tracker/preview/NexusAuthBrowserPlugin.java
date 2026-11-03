@@ -10,6 +10,7 @@ import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import java.util.Objects;
 
 @CapacitorPlugin(name = "NexusAuthBrowser")
 public class NexusAuthBrowserPlugin extends Plugin {
@@ -103,7 +104,7 @@ public class NexusAuthBrowserPlugin extends Plugin {
         if (callbackUri == null ||
             !expectedScheme.equalsIgnoreCase(callbackUri.getScheme()) ||
             !expectedHost.equalsIgnoreCase(callbackUri.getHost()) ||
-            !expectedPath.equals(callbackUri.getPath()) ||
+            !Objects.equals(expectedPath, callbackUri.getPath()) ||
             callbackUri.getPort() != -1 ||
             callbackUri.getUserInfo() != null) {
             return;
