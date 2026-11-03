@@ -44,13 +44,13 @@ The callback scheme and package IDs are temporary. Final values must be selected
 - Android compile and target SDK: 36
 - Android Gradle Plugin: 8.13.0
 - Gradle wrapper: 8.14.3
-- CI JDK: 17; CI Node: 22
+- CI JDK: 21; CI Node: 22 (Capacitor 8.6.0's Android module compiles with Java source release 21).
 
 Android-only npm dependencies are isolated in `android/package.json`, so the existing root PWA build does not install Capacitor. Direct Android npm dependencies are pinned to exact versions. A committed Android npm lockfile and full Gradle dependency-verification metadata are still required before claiming a fully reproducible source build. F-Droid submission must independently verify the final build recipe and APK.
 
 ## Build locally
 
-Install Node.js 22, JDK 17, Android SDK Platform 36 and Build Tools 36.0.0:
+Install Node.js 22, JDK 21, Android SDK Platform 36 and Build Tools 36.0.0:
 
 ```sh
 npm run android:sync
