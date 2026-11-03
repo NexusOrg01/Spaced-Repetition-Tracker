@@ -29,6 +29,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: android/package-lock-source/*.b64
 
       - name: Set up JDK
         uses: actions/setup-java@v4
@@ -44,7 +46,7 @@ jobs:
 
       - name: Build Android-local web assets and sync native project
         env:
-          NEXUS_ANDROID_CLOUD_MODE: disabled
+          NEXUS_ANDROID_CLOUD_MODE: staging
         run: npm run android:sync
 
       - name: Verify Android asset isolation and native feature wiring
@@ -52,16 +54,18 @@ jobs:
 
       - name: Build debug APKs and unsigned release bundles
         working-directory: android
-        run: ./gradlew --no-daemon --stacktrace assembleFdroidDebug assemblePlayDebug bundleFdroidRelease bundlePlayRelease
+        run: ./gradlew --no-daemon --stacktrace dependencies --configuration fdroidDebugRuntimeClasspath > /tmp/fdroid-dependencies.txt && ! grep -Eiq 'com\\.google\\.android\\.gms|com\\.google\\.firebase|firebase-analytics|play-services' /tmp/fdroid-dependencies.txt && ./gradlew --no-daemon --stacktrace --write-verification-metadata sha256 assembleFdroidDebug assemblePlayDebug assembleFdroidRelease bundleFdroidRelease bundlePlayRelease
 
       - name: Upload Android preview artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nexus-android-preview-builds
+          name: nexus-android-release-validation
           if-no-files-found: error
           retention-days: 14
           path: |
             android/app/build/outputs/apk/fdroid/debug/*.apk
             android/app/build/outputs/apk/play/debug/*.apk
+            android/app/build/outputs/apk/fdroid/release/*.apk
             android/app/build/outputs/bundle/fdroidRelease/*.aab
             android/app/build/outputs/bundle/playRelease/*.aab
+            android/gradle/verification-metadata.xml
