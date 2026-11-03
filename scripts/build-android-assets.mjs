@@ -7,6 +7,24 @@ import { build } from 'esbuild';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(root, 'dist');
 const cloudEnabled = process.env.NEXUS_ANDROID_CLOUD_MODE === 'enabled';
+let androidCloudConfig = null;
+if (cloudEnabled) {
+  const rawUrl = String(process.env.NEXUS_SUPABASE_URL || '').trim();
+  const anonKey = String(process.env.NEXUS_SUPABASE_ANON_KEY || '').trim();
+  let parsed;
+  try { parsed = new URL(rawUrl); } catch (_) { throw new Error('Cloud-enabled Android builds require NEXUS_SUPABASE_URL from a separate staging Supabase project.'); }
+  const jwtRole = (() => {
+    try { return JSON.parse(Buffer.from(anonKey.split('.')[1] || '', 'base64url').toString('utf8')).role; }
+    catch (_) { return ''; }
+  })();
+  if (parsed.protocol !== 'https:' || !parsed.hostname.endsWith('.supabase.co') ||
+      parsed.hostname === 'txugbdavblpettcnhcxl.supabase.co' ||
+      (anonKey.startsWith('sb_secret_')) ||
+      !(anonKey.startsWith('sb_publishable_') || jwtRole === 'anon')) {
+    throw new Error('Cloud-enabled Android builds require a publishable/anon key for a non-production HTTPS Supabase project.');
+  }
+  androidCloudConfig = { url: parsed.origin, key: anonKey };
+}
 
 function replaceExactlyOnce(source, before, after, label) {
   const count = source.split(before).length - 1;
@@ -34,7 +52,7 @@ await build({
   format: 'iife',
   target: ['chrome100'],
   minify: true,
-  define: { __NEXUS_ANDROID_CLOUD_ENABLED__: JSON.stringify(cloudEnabled) },
+  define: {\n    __NEXUS_ANDROID_CLOUD_ENABLED__: JSON.stringify(cloudEnabled),\n    __NEXUS_ANDROID_CLOUD_CONFIG__: JSON.stringify(androidCloudConfig)\n  },
   legalComments: 'eof'
 });
 
@@ -61,7 +79,7 @@ await patchFile('cloud-sync.js', source => {
   next = replaceExactlyOnce(
     next,
     "function loadSupabaseLibrary(){if(window.supabase&&window.supabase.createClient)return Promise.resolve();if(supabaseLoadPromise)return supabaseLoadPromise;supabaseLoadPromise=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3';script.async=true;script.onload=()=>window.supabase&&window.supabase.createClient?resolve():reject(new Error('Supabase client did not initialize.'));script.onerror=()=>reject(new Error('Could not load Supabase client. Check internet access.'));document.head.appendChild(script);});return supabaseLoadPromise;}",
-    "function loadSupabaseLibrary(){if(window.supabase&&window.supabase.createClient)return Promise.resolve();if(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp)return Promise.reject(new Error('The locally bundled Supabase client is unavailable. Reinstall or update this Nexus build.'));if(supabaseLoadPromise)return supabaseLoadPromise;supabaseLoadPromise=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3';script.async=true;script.onload=()=>window.supabase&&window.supabase.createClient?resolve():reject(new Error('Supabase client did not initialize.'));script.onerror=()=>reject(new Error('Could not load Supabase client. Check internet access.'));document.head.appendChild(script);});return supabaseLoadPromise;}",
+    "const androidLoader = "function loadSupabaseLibrary(){if(window.supabase&&window.supabase.createClient)return Promise.resolve();return Promise.reject(new Error('The locally bundled Supabase client is unavailable. Reinstall or update this Nexus build.'));}";",
     'Android local Supabase guard'
   );
   next = replaceExactlyOnce(
