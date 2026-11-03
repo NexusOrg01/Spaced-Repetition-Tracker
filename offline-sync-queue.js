@@ -124,6 +124,33 @@ function getConflictHistory(s,owner){
  const map=readOwnerMap(s,CONFLICTS,'The sync conflict recovery archive');
  return Array.isArray(map[String(owner)])?copy(map[String(owner)]):[];
 }
+function forgetAccount(s,owner,additionalEntries=[]){
+ if(!owner)throw fail('A verified account owner is required to remove its local data.');
+ const key=String(owner),q=read(s),sm=stamps(s),bases=readOwnerMap(s,BASE,'The last-synced workspace base'),conflicts=readOwnerMap(s,CONFLICTS,'The sync conflict recovery archive');
+ const archivedBefore=q.archived.length,hadPending=!!q.pending[key],hadBase=Object.prototype.hasOwnProperty.call(bases,key),hadConflicts=Object.prototype.hasOwnProperty.call(conflicts,key),hadStamp=Object.prototype.hasOwnProperty.call(sm,key);
+ delete q.pending[key];q.archived=q.archived.filter(item=>!item||String(item.ownerUserId)!==key);delete sm[key];delete bases[key];delete conflicts[key];
+ if(!Array.isArray(additionalEntries))throw fail('Local account cleanup entries are invalid.');
+ const protectedKeys=new Set([KEY,STAMP,BASE,CONFLICTS,QUARANTINE,OWNER]);
+ const seen=new Set();
+ const entries=additionalEntries.map(entry=>{
+  if(!entry||typeof entry.key!=='string'||entry.value!==null||protectedKeys.has(entry.key)||seen.has(entry.key))throw fail('Local account cleanup contains an unsafe or duplicate storage key.');
+  seen.add(entry.key);return {key:entry.key,value:null};
+ });
+ if(!seen.has('recall.study.tracker.v1')||!seen.has('recall.study.features.v1'))throw fail('Both tracker and Study Hub workspaces must be included in local account cleanup.');
+ let quarantineRetained=false;
+ const quarantinedRaw=s.getItem(QUARANTINE);
+ if(quarantinedRaw!==null){
+  try{
+   const archivedQueue=JSON.parse(expandStorageValue(quarantinedRaw));
+   if(!obj(archivedQueue)||archivedQueue.schemaVersion!==SCHEMA||!obj(archivedQueue.pending)||!Array.isArray(archivedQueue.archived))throw new Error('Unsupported quarantined queue');
+   delete archivedQueue.pending[key];archivedQueue.archived=archivedQueue.archived.filter(item=>!item||String(item.ownerUserId)!==key);
+   entries.push({key:QUARANTINE,value:JSON.stringify(archivedQueue)});
+  }catch(_){quarantineRetained=true;}
+ }
+ entries.push({key:KEY,value:JSON.stringify(q)},{key:STAMP,value:JSON.stringify(sm)},{key:BASE,value:JSON.stringify(bases)},{key:CONFLICTS,value:JSON.stringify(conflicts)});
+ write(s,entries);
+ return {pendingRemoved:hadPending,archivedRemoved:archivedBefore-q.archived.length,baseRemoved:hadBase,conflictsRemoved:hadConflicts,stampRemoved:hadStamp,quarantineRetained};
+}
 function compactMetadata(s){
  if(!s||typeof s.getItem!=='function'||typeof s.setItem!=='function')return {compacted:0,charactersFreed:0};
  let compacted=0,charactersFreed=0;
@@ -142,5 +169,5 @@ function compactMetadata(s){
 }
 function summary(s,owner){const q=read(s),x=owner?q.pending[String(owner)]:null;return {schemaVersion:SCHEMA,pendingForOwner:!!(x&&x.status==='pending'),localSequence:x&&x.status==='pending'?x.localSequence:null,archivedForOwner:q.archived.filter(a=>a&&a.ownerUserId===String(owner)).length};}
 function allPending(s){const q=read(s);return Object.keys(q.pending).map(k=>q.pending[k]).filter(x=>x&&x.status==='pending').map(copy);}
-return {KEY,OWNER,STAMP,BASE,CONFLICTS,SCHEMA,commitWorkspace,compactMetadata,getPending,hasPending:(s,o)=>!!getPending(s,o),getAllPending:allPending,rebase,rebaseWithBase,archive,acknowledge,rememberStamp,getStamp,getBase,rememberBase,archiveConflicts,getConflictHistory,summary};
+return {KEY,OWNER,STAMP,BASE,CONFLICTS,QUARANTINE,SCHEMA,commitWorkspace,forgetAccount,compactMetadata,getPending,hasPending:(s,o)=>!!getPending(s,o),getAllPending:allPending,rebase,rebaseWithBase,archive,acknowledge,rememberStamp,getStamp,getBase,rememberBase,archiveConflicts,getConflictHistory,summary};
 });

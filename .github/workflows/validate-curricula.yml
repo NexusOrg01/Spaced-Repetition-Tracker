@@ -23,6 +23,12 @@ jobs:
         run: node scripts/validate-curricula.mjs
       - name: Validate public privacy and account-deletion pages
         run: node scripts/test-privacy-pages.mjs
+      - name: Set up Deno for Supabase Edge Function checks
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Type-check the authenticated account-deletion function
+        run: deno check --config supabase/functions/delete-account/deno.json supabase/functions/delete-account/index.ts
       - name: Validate PWAStore App-Grade manifest, icon, and screenshots
         run: node scripts/test-pwastore-app-grade.mjs
       - name: Validate PWAStore Modern Install integration and browser fallbacks
@@ -30,4 +36,4 @@ jobs:
       - name: Test isolated preview configuration and build static output
         run: node scripts/test-preview-build-config.mjs && npm run build
       - name: Check and test backup, restore, and account-switch safety helpers
-        run: node --check curriculum-integrity.js && node scripts/test-curriculum-integrity.mjs && node --check explore-curriculum.js && node scripts/test-explore-curriculum.mjs && node --check nexus-storage.js && node --check nexus-app-bootstrap.js && node --check nexus-app-inline.js && node scripts/test-nexus-storage.mjs && node --check app-core.js && node --check study-hub.js && node --check offline-sync-queue.js && node --check backup-restore-utils.js && node --check cloud-sync-recovery.js && node --check workspace-sync-merge.js && node --check cloud-sync.js && node --check workspace-isolation-guard.js && node --check sw.js && node --check fsrs-bundle.js && node scripts/test-backup-restore.mjs && node scripts/test-offline-sync-queue.mjs && node scripts/test-workspace-sync-merge.mjs && node scripts/test-cloud-sync-recovery.mjs && node scripts/test-cloud-sync-runtime.mjs && node scripts/test-workspace-isolation-guard.mjs && node scripts/test-data-safety-wiring.mjs && node scripts/validate-security-headers.mjs && node scripts/test-regression.mjs && node scripts/test-service-worker.mjs
+        run: node --check curriculum-integrity.js && node scripts/test-curriculum-integrity.mjs && node --check explore-curriculum.js && node scripts/test-explore-curriculum.mjs && node --check nexus-storage.js && node --check nexus-app-bootstrap.js && node --check nexus-app-inline.js && node scripts/test-nexus-storage.mjs && node --check app-core.js && node --check study-hub.js && node --check offline-sync-queue.js && node --check backup-restore-utils.js && node --check cloud-sync-recovery.js && node --check workspace-sync-merge.js && node --check cloud-sync.js && node --check workspace-isolation-guard.js && node --check sw.js && node --check fsrs-bundle.js && node scripts/test-backup-restore.mjs && node scripts/test-offline-sync-queue.mjs && node scripts/test-workspace-sync-merge.mjs && node scripts/test-cloud-sync-recovery.mjs && node scripts/test-cloud-sync-runtime.mjs && node scripts/test-workspace-isolation-guard.mjs && node scripts/test-data-safety-wiring.mjs && node scripts/test-account-deletion.mjs && node scripts/validate-security-headers.mjs && node scripts/test-regression.mjs && node scripts/test-service-worker.mjs

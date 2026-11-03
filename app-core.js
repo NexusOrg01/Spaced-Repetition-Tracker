@@ -573,7 +573,47 @@
   $('reviewNote').addEventListener('input',()=>{});
   $('themeBtn').addEventListener('click',cycleTheme);$('themeSelect').addEventListener('change',()=>{state.settings.theme=$('themeSelect').value;save();applyTheme();notify('Theme preference saved.');});$('helpBtn').addEventListener('click',openHelp);$('installBtn').addEventListener('click',install);$('supportNexusBtn').addEventListener('click',()=>$('supportNexusDialog').showModal());$('pwaInstallOption').addEventListener('click',installPwa);
   $('backupBtn').addEventListener('click',exportBackup);$('menuBackup').addEventListener('click',()=>{$('moreMenu').open=false;exportBackup();});$('restoreBtn').addEventListener('click',()=>$('importFile').click());$('menuRestore').addEventListener('click',()=>{$('moreMenu').open=false;$('importFile').click();});$('importFile').addEventListener('change',e=>importBackup(e.target.files?.[0]));
-  $('historyCsvBtn').addEventListener('click',exportHistory);$('setupHistoryCsvBtn').addEventListener('click',exportHistory);$('menuHistoryCsv').addEventListener('click',()=>{exportHistory();$('moreMenu').open=false;});$('setupTopicsCsvBtn').addEventListener('click',exportTopics);$('menuTopicsCsv').addEventListener('click',()=>{exportTopics();$('moreMenu').open=false;});$('clearHistoryBtn').addEventListener('click',clearHistory);$('resetBtn').addEventListener('click',()=>resetAll());$('undoBtn').addEventListener('click',undo);$('menuSettings').addEventListener('click',()=>{switchView('setup');$('moreMenu').open=false;});
+  $('historyCsvBtn').addEventListener('click',exportHistory);$('setupHistoryCsvBtn').addEventListener('click',exportHistory);$('menuHistoryCsv').addEventListener('click',()=>{exportHistory();$('moreMenu').open=false;});$('setupTopicsCsvBtn').addEventListener('click',exportTopics);$('menuTopicsCsv').addEventListener('click',()=>{exportTopics();$('moreMenu').open=false;});$('clearHistoryBtn').addEventListener('click',clearHistory);
+  function refreshDeletionChoiceUi(){
+    const account=window.NexusCloudSync&&typeof window.NexusCloudSync.getAccountState==='function'?window.NexusCloudSync.getAccountState():{signedIn:false,ready:false};
+    const choice=$('accountDeletionChoice'),hint=$('accountDeletionSignInHint'),email=$('deletionSignedInAccount'),status=$('accountDeletionStatusText'),button=$('accountDeleteChoiceBtn');
+    if(choice)choice.hidden=!account.signedIn;
+    if(hint)hint.hidden=!!account.signedIn;
+    if(email)email.textContent=account.email?'Signed in as '+account.email:'Signed-in Nexus account';
+    if(button)button.disabled=!account.signedIn||!account.ready||!!account.deleting||!!account.previewBlocked||!account.deletionServiceAvailable;
+    if(status)status.textContent=!account.signedIn?'Sign in to the account you want to delete.':account.previewBlocked?'Account deletion is disabled on this preview or local copy.':account.deleting?'Account deletion is in progress…':!account.ready?'Wait until Nexus has finished loading this account and the cloud status is Synced.':!account.deletionServiceAvailable?'The secure deletion service is not deployed on this Supabase project yet. Use the manual deletion instructions in the Account & Data Deletion page.': 'Account verified and deletion service available. A recent sign-in is still required before permanent deletion.';
+  }
+  window.NexusRefreshDeletionOptions=refreshDeletionChoiceUi;
+  $('resetBtn').addEventListener('click',()=>{refreshDeletionChoiceUi();$('workspaceDeletionDialog').showModal();});
+  $('workspaceResetOnlyBtn').addEventListener('click',()=>{$('workspaceDeletionDialog').close();resetAll();});
+  $('cancelWorkspaceDeletionBtn').addEventListener('click',()=>$('workspaceDeletionDialog').close());
+  $('accountDeleteChoiceBtn').addEventListener('click',async()=>{
+    refreshDeletionChoiceUi();
+    const account=window.NexusCloudSync&&typeof window.NexusCloudSync.getAccountState==='function'?window.NexusCloudSync.getAccountState():null;
+    if(!account||!account.signedIn||!account.ready||account.previewBlocked||!account.deletionServiceAvailable){alert('Sign in, wait until the account workspace is verified, and confirm that the secure deletion service is available before requesting account deletion.');return;}
+    const warning='Permanently delete this signed-in Nexus account and its cloud data?\n\nThis removes the Supabase account and cloud workspace. Nexus will also clear this device’s local workspace and account-specific sync recovery data after the server confirms deletion. Other devices may still contain offline copies, and downloaded JSON/CSV backups are not erased.\n\nDownload a full JSON backup first if you may need your study records.';
+    if(!confirm(warning))return;
+    const typed=prompt('Type DELETE ACCOUNT to permanently delete this account:');
+    if(typed!=='DELETE ACCOUNT'){notify('Account deletion cancelled.');return;}
+    const button=$('accountDeleteChoiceBtn');button.disabled=true;button.textContent='Deleting account…';
+    try{
+      if(!window.NexusCloudSync||typeof window.NexusCloudSync.deleteAccount!=='function')throw new Error('The account-deletion service is unavailable in this app build.');
+      const result=await window.NexusCloudSync.deleteAccount();
+      if(result&&result.localCleanupComplete){
+        alert('Your Nexus cloud account and this device’s workspace have been deleted. Clear Nexus site data on every other device you used, and delete any downloaded backups separately.');
+        window.location.reload();
+      }else{
+        alert('Your cloud account has been deleted, but this device could not safely clear all local recovery data. Close this tab, then clear the browser site data for the Nexus app on this device. Also clear Nexus site data on your other devices and delete downloaded backups separately.');
+        window.location.assign('./delete-account.html#local-cleanup');
+      }
+    }catch(error){
+      alert(error&&error.message?error.message:'Account deletion failed. Your local workspace has been kept.');
+      button.textContent='Permanently delete account';
+      refreshDeletionChoiceUi();
+    }
+  });
+  refreshDeletionChoiceUi();
+  $('undoBtn').addEventListener('click',undo);$('menuSettings').addEventListener('click',()=>{switchView('setup');$('moreMenu').open=false;});
   $('topicDialog').addEventListener('close',()=>{editTopicId=null;});$('streamDialog').addEventListener('close',()=>{editStreamId=null;});$('subjectDialog').addEventListener('close',()=>{editSubjectId=null;});$('examDialog').addEventListener('close',()=>{editExamId=null;});$('reviewDialog').addEventListener('close',()=>{reviewTopicId=null;});
   document.querySelectorAll('[data-rating]').forEach(b=>b.addEventListener('focus',()=>{}));
   window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;window.NexusInstallPrompt=e;$('installBtn').classList.remove('is-installed');$('installBtnLabel').textContent='Install';});
