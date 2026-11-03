@@ -7,5 +7,6 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs"
-  }
+  },
+  "license": "Apache-2.0"
 }
