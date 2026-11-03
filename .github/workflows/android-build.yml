@@ -54,7 +54,7 @@ jobs:
 
       - name: Build debug APKs and unsigned release bundles
         working-directory: android
-        run: ./gradlew --no-daemon --stacktrace dependencies --configuration fdroidDebugRuntimeClasspath > /tmp/fdroid-dependencies.txt && ! grep -Eiq 'com[.]google[.]android[.]gms|com[.]google[.]firebase|firebase-analytics|play-services' /tmp/fdroid-dependencies.txt && ./gradlew --no-daemon --stacktrace --write-verification-metadata sha256 assembleFdroidDebug assemblePlayDebug assembleFdroidRelease bundleFdroidRelease bundlePlayRelease
+        run: ./gradlew --no-daemon --stacktrace :app:dependencies --configuration fdroidDebugRuntimeClasspath > /tmp/fdroid-dependencies.txt && ! grep -Eiq 'com[.]google[.]android[.]gms|com[.]google[.]firebase|firebase-analytics|play-services' /tmp/fdroid-dependencies.txt && ./gradlew --no-daemon --stacktrace --write-verification-metadata sha256 assembleFdroidDebug assemblePlayDebug assembleFdroidRelease bundleFdroidRelease bundlePlayRelease
 
       - name: Upload Android preview artifacts
         uses: actions/upload-artifact@v4
