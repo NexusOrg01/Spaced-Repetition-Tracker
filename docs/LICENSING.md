@@ -51,3 +51,25 @@ The project may offer optional paid services or features in official distributio
 - F-Droid inclusion policy: https://f-droid.org/docs/Inclusion_Policy/
 - F-Droid licence metadata: https://f-droid.org/docs/Build_Metadata_Reference/
 - F-Droid reproducible builds: https://f-droid.org/docs/Reproducible_Builds/
+
+## Initial repository audit findings (2026-11-03)
+
+The following items were visible in the current `main` source during preparation. They are review findings, not proof that the materials are non-free or infringing.
+
+| Area | Observed in the repository | Required action before F-Droid release |
+|---|---|---|
+| Supabase JavaScript client | `cloud-sync.js` injects `@supabase/supabase-js@2.117.3` from jsDelivr at runtime. The package is not declared in `package.json`. | Pin and bundle the exact reviewed client in the Android/F-Droid build, preserve its upstream licence and notices, and avoid runtime CDN code loading. Verify the version and package provenance. |
+| Analytics | `index.html` loads Vercel Web Analytics from `/_vercel/insights/script.js`. | Exclude analytics from the F-Droid flavour unless its implementation and collection practices are independently shown to meet F-Droid's free-software and privacy requirements. Do not remove or change production analytics as part of this preparation. |
+| App icon | `icon.svg` embeds raster image data, and the repository has PNG app icons. No asset-specific licence or source record was found in the inspected files. | Confirm the artwork was created by an authorised project contributor or obtain redistribution rights. Record the source and licence for the SVG and PNG assets. |
+| Store screenshots | `manifest.webmanifest` points to two screenshots hosted on a PWAStore CloudFront domain. | Confirm who created the screenshots and that Nexus may redistribute them. Prefer repository-hosted copies for reproducible Android metadata after rights are confirmed. |
+| Sinhala Commerce curriculum | `curricula/catalog.json` and the fallback seed in `app-core.js` contain a 46-topic Sinhala Commerce starter pack. No source or licence attribution is recorded in the inspected catalogue. | Identify the source of the topic wording and subject names. Confirm the source's reuse terms or replace any material that cannot be redistributed. Do not assume curriculum content is covered by the app's Apache licence. |
+| Android packaging | The current repository is a static PWA project; no Android Gradle project or Capacitor configuration was found in the earlier root-level inspection. | A dedicated Android project and a reproducible, FLOSS-compatible build recipe are still required. A thin website wrapper alone is unlikely to satisfy F-Droid's quality policy; implement meaningful native integration. |
+
+### Release separation
+
+These findings do not require changing the hosted PWA. Keep the existing Vercel production configuration and live Supabase project unchanged. Any F-Droid-specific work should use a separate Android build flavour and staging/test services, with no production credentials or production deployment changes.
+
+### Ownership evidence still needed
+
+The GitHub commit search available during this audit did not return author identities, so it is not sufficient evidence that every historical contribution belongs to one copyright holder. Review the repository's contributor graph and relevant commit authors before finalising the licence scope. GitHub documents the contributor graph at https://github.com/NexusOrg01/Spaced-Repetition-Tracker/graphs/contributors and explains its limitations at https://docs.github.com/en/repositories/viewing-activity-and-data-for-your-repository/viewing-a-projects-contributors.
+
