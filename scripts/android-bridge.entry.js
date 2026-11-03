@@ -65,9 +65,15 @@ function installNativeFilePicker() {
   input.dataset.nexusNativePicker = '1';
   input.click = () => {
     pickBackupFile().catch(error => {
-      if (error && (error.code === 'canceled' || error.message === 'User cancelled')) return;
-      console.error('Nexus native backup selection failed.', error);
-      window.alert('Nexus could not open that backup file. Try another file or use the browser import option.');
+      if (error && ['canceled', 'USER_CANCELED'].includes(String(error.code || '')) ||
+          error && ['User cancelled', 'Canceled'].includes(String(error.message || ''))) return;
+      console.error('Nexus native backup selection failed; trying the WebView file chooser.', error);
+      try {
+        window.HTMLInputElement.prototype.click.call(input);
+      } catch (fallbackError) {
+        console.error('Nexus WebView backup selection fallback failed.', fallbackError);
+        window.alert('Nexus could not open that backup file. Try another file or restart the app.');
+      }
     });
   };
 }
