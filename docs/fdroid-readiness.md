@@ -24,6 +24,7 @@ The regular PWA build is not changed to this offline-only mode. Its existing clo
 - Android SDK Platform 36 and Build Tools 36.0.0
 - Android Gradle Plugin 8.13.2
 - AndroidX WebKit 1.18.0
+- AndroidX Activity 1.13.0
 
 From the repository root:
 
