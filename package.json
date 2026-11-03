@@ -9,7 +9,7 @@
     "build": "node scripts/build.mjs",
     "android:deps": "npm install --prefix android --no-audit --no-fund --package-lock=false",
     "android:assets": "node scripts/build-android-assets.mjs",
-    "android:sync": "npm run build && npm run android:deps && npm run android:assets && ./android/node_modules/.bin/cap sync android",
+    "android:sync": "npm run build && npm run android:deps && npm run android:assets && cd android && ./node_modules/.bin/cap sync android",
     "android:debug": "npm run android:sync && cd android && ./gradlew assembleFdroidDebug assemblePlayDebug",
     "test:android": "node scripts/test-android-build.mjs"
   },
