@@ -148,3 +148,7 @@ The following describes repository state and the limits of what source review ca
 ## Licence
 
 Original Nexus application source code is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0), subject to the scope and third-party material notes in [the licensing and release policy](docs/LICENSING.md). The full licence text is in [LICENSE](LICENSE). Third-party assets and dependencies retain their own licence terms.
+
+## App-store distribution
+
+Nexus's current PWA catalogue metadata and distribution roadmap are maintained in [docs/STORE_DISTRIBUTION.md](docs/STORE_DISTRIBUTION.md). This guide distinguishes PWA directories from Android app stores and records the outstanding privacy, account-deletion, signing, packaging and review requirements. Store submissions are performed separately by the project owner.
