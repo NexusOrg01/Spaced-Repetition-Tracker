@@ -8,7 +8,7 @@ import { FilePicker } from '@capawesome/capacitor-file-picker';
 const isNativeApp = Capacitor.isNativePlatform();
 const cloudSyncEnabled = Boolean(__NEXUS_ANDROID_CLOUD_ENABLED__);
 const androidCloudConfig = __NEXUS_ANDROID_CLOUD_CONFIG__;
-const AUTH_REDIRECT_URL = 'org.nexus.tracker.preview://auth-callback';
+const AUTH_REDIRECT_URL = __NEXUS_ANDROID_AUTH_REDIRECT_URL__;
 
 if (typeof window !== 'undefined') {
   window.Capacitor = Capacitor;
