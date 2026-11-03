@@ -75,6 +75,12 @@ for (const expected of [
 }
 assert.ok(!gradle.includes('google-services') && !gradle.includes('com.google.gms'));
 
+const expectedAndroidApplicationId = process.env.NEXUS_ANDROID_APPLICATION_ID || 'org.nexus.tracker.preview';
+assert.equal(JSON.parse(read('android/capacitor.config.json')).appId, expectedAndroidApplicationId);
+const androidStrings = read('android/app/src/main/res/values/strings.xml');
+assert.ok(androidStrings.includes('<string name="package_name">' + expectedAndroidApplicationId + '</string>'));
+assert.ok(androidStrings.includes('<string name="custom_url_scheme">' + expectedAndroidApplicationId + '</string>'));
+
 const manifest = read('android/app/src/main/AndroidManifest.xml');
 assert.ok(manifest.includes('android:allowBackup="false"'));
 assert.ok(manifest.includes('android.permission.INTERNET'));
