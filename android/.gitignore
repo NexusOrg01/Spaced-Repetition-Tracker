@@ -1,4 +1,4 @@
-# Android and Gradle outputs
+node_modules/\n\n# Android and Gradle outputs
 .gradle/
 **/build/
 **/.gradle/
