@@ -30,5 +30,8 @@ Run these checks on both debug APKs. CI verifies static wiring and Gradle compil
 - Open each main section and verify Android Back returns to Home.
 - Open a dialog or overflow menu and verify Back closes it before leaving the section.
 - Confirm app exit only occurs from Home with no dialog or menu open.
-- In default CI APKs, confirm sign-in controls are disabled and no production Supabase request is made.
-- Test account isolation and deletion only with staging, after allow-listing the callback URI.
+- Confirm the CI APK is configured for the isolated staging Supabase project, never the production project.
+- Confirm optional sign-in controls and cloud sync are available in both store flavours; no Google Play Services installation should be required.
+- Verify the staging callback URI (`org.nexus.tracker.preview://auth-callback` for the default preview ID) is allow-listed before testing email or OAuth sign-in.
+- Test sign-in, account isolation, offline queued changes, sync, sign-out and account deletion only with staging accounts. Do not use production accounts in preview APKs.
+- For release testing, ensure the Supabase redirect allow-list contains the exact final URI derived from the final application ID, and test the F-Droid APK with that same ID.
