@@ -8,19 +8,28 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(root, 'dist');
 const requireAndroid = createRequire(join(root, 'android', 'package.json'));
 const { build } = requireAndroid('esbuild');
-const cloudEnabled = process.env.NEXUS_ANDROID_CLOUD_MODE === 'enabled';
+const cloudMode = String(process.env.NEXUS_ANDROID_CLOUD_MODE || 'staging').trim().toLowerCase();
+const cloudEnabled = cloudMode !== 'disabled';
 const allowProductionCloud = process.env.NEXUS_ANDROID_ALLOW_PRODUCTION_CLOUD === 'true';
 const liveSupabaseHost = 'txugbdavblpettcnhcxl.supabase.co';
+const androidApplicationId = String(process.env.NEXUS_ANDROID_APPLICATION_ID || 'org.nexus.tracker.preview').trim();
+if (!/^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$/.test(androidApplicationId)) {
+  throw new Error('NEXUS_ANDROID_APPLICATION_ID must be a lowercase, URI-safe Android application ID.');
+}
 let androidCloudConfig = null;
 
-if (cloudEnabled) {
-  const rawUrl = String(process.env.NEXUS_SUPABASE_URL || '').trim();
-  const anonKey = String(process.env.NEXUS_SUPABASE_ANON_KEY || '').trim();
+function embeddedCloudConfig(source, name) {
+  const match = new RegExp(name + "={url:'([^']+)',key:'([^']+)'}").exec(source);
+  if (!match) throw new Error('Could not read the ' + name + ' Supabase config from cloud-sync.js.');
+  return { url: match[1], key: match[2] };
+}
+
+function validateCloudConfig(rawUrl, anonKey, label, productionAllowed) {
   let parsed;
   try {
     parsed = new URL(rawUrl);
   } catch (_) {
-    throw new Error('Cloud-enabled Android builds require NEXUS_SUPABASE_URL from a separate Supabase project.');
+    throw new Error(label + ' requires a valid HTTPS Supabase project URL.');
   }
   const jwtRole = (() => {
     try { return JSON.parse(Buffer.from(anonKey.split('.')[1] || '', 'base64url').toString('utf8')).role; }
@@ -30,13 +39,44 @@ if (cloudEnabled) {
   if (parsed.protocol !== 'https:' ||
       !parsed.hostname.endsWith('.supabase.co') ||
       parsed.username || parsed.password || parsed.search || parsed.hash ||
-      (isProductionProject && !allowProductionCloud) ||
+      (isProductionProject && !productionAllowed) ||
       anonKey.startsWith('sb_secret_') ||
       jwtRole === 'service_role' ||
       !(anonKey.startsWith('sb_publishable_') || jwtRole === 'anon')) {
-    throw new Error('Cloud-enabled Android builds require a publishable/anon key and HTTPS Supabase project. Production requires the separate NEXUS_ANDROID_ALLOW_PRODUCTION_CLOUD=true opt-in.');
+    throw new Error(label + ' requires HTTPS, a Supabase project URL and a publishable/anon key; production must be explicitly enabled.');
   }
-  androidCloudConfig = { url: parsed.origin, key: anonKey };
+  return { url: parsed.origin, key: anonKey };
+}
+
+if (!['disabled', 'staging', 'source', 'enabled'].includes(cloudMode)) {
+  throw new Error('NEXUS_ANDROID_CLOUD_MODE must be disabled, staging, source or enabled.');
+}
+
+if (cloudMode !== 'disabled') {
+  const cloudSource = await readFile(join(root, 'cloud-sync.js'), 'utf8');
+  if (cloudMode === 'staging') {
+    const staging = embeddedCloudConfig(cloudSource, 'STAGING_CONFIG');
+    androidCloudConfig = validateCloudConfig(staging.url, staging.key, 'Staging cloud build', false);
+    if (new URL(androidCloudConfig.url).hostname === liveSupabaseHost) {
+      throw new Error('Staging cloud builds must never target the production Supabase project.');
+    }
+  } else if (cloudMode === 'source') {
+    if (!allowProductionCloud) {
+      throw new Error('Source-configured release builds require NEXUS_ANDROID_ALLOW_PRODUCTION_CLOUD=true.');
+    }
+    const sourceConfig = embeddedCloudConfig(cloudSource, 'DEFAULT_CONFIG');
+    androidCloudConfig = validateCloudConfig(sourceConfig.url, sourceConfig.key, 'Source-configured release build', true);
+    if (new URL(androidCloudConfig.url).hostname !== liveSupabaseHost) {
+      throw new Error('The source-configured release build no longer points at the expected default Supabase project.');
+    }
+  } else if (cloudMode === 'enabled') {
+    const rawUrl = String(process.env.NEXUS_SUPABASE_URL || '').trim();
+    const anonKey = String(process.env.NEXUS_SUPABASE_ANON_KEY || '').trim();
+    if (!rawUrl || !anonKey) {
+      throw new Error('Custom cloud-enabled Android builds require NEXUS_SUPABASE_URL and NEXUS_SUPABASE_ANON_KEY.');
+    }
+    androidCloudConfig = validateCloudConfig(rawUrl, anonKey, 'Custom cloud build', allowProductionCloud);
+  }
 }
 
 function replaceExactlyOnce(source, before, after, label) {
@@ -69,7 +109,8 @@ await build({
   nodePaths: [join(root, 'android', 'node_modules')],
   define: {
     __NEXUS_ANDROID_CLOUD_ENABLED__: JSON.stringify(cloudEnabled),
-    __NEXUS_ANDROID_CLOUD_CONFIG__: JSON.stringify(androidCloudConfig)
+    __NEXUS_ANDROID_CLOUD_CONFIG__: JSON.stringify(androidCloudConfig),
+    __NEXUS_ANDROID_AUTH_REDIRECT_URL__: JSON.stringify(androidApplicationId + '://auth-callback')
   },
   legalComments: 'eof'
 });
@@ -160,4 +201,4 @@ await patchFile('study-hub.js', source => replaceExactlyOnce(
   'Native Study Hub export integration'
 ), 'Android Study Hub export preparation');
 
-console.log('Android assets prepared. Cloud sync is ' + (cloudEnabled ? 'enabled by explicit build setting.' : 'disabled by default.'));
+console.log('Android assets prepared. Cloud sync mode: ' + cloudMode + '.');
