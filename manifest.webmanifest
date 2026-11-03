@@ -2,13 +2,25 @@
   "name": "Nexus: Spaced Repetition Tracker",
   "short_name": "Nexus",
   "id": "/",
-  "description": "Offline-first study planner and spaced repetition tracker.",
+  "description": "Offline-first study planner and spaced repetition tracker for any subject, course, stream, or exam.",
+  "lang": "en",
+  "dir": "ltr",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
+  "display_override": [
+    "standalone",
+    "minimal-ui"
+  ],
   "orientation": "any",
   "background_color": "#09090b",
   "theme_color": "#09090b",
+  "categories": [
+    "education",
+    "productivity",
+    "utilities"
+  ],
+  "prefer_related_applications": false,
   "icons": [
     {
       "src": "./icon-192.png",
