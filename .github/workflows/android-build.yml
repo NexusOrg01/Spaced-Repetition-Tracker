@@ -42,9 +42,6 @@ jobs:
       - name: Install Android SDK 36
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
-      - name: Install pinned JavaScript dependencies
-        run: npm install --no-audit --no-fund --package-lock=false
-
       - name: Build Android-local web assets and sync native project
         env:
           NEXUS_ANDROID_CLOUD_MODE: disabled
