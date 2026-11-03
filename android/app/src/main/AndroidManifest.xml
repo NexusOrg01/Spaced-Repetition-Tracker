@@ -29,7 +29,7 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data
-                    android:scheme="@string/custom_url_scheme"
+                    android:scheme="${nexusAuthScheme}"
                     android:host="auth-callback" />
             </intent-filter>
         </activity>
