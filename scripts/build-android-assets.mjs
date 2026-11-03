@@ -13,7 +13,8 @@ const cloudEnabled = cloudMode !== 'disabled';
 const allowProductionCloud = process.env.NEXUS_ANDROID_ALLOW_PRODUCTION_CLOUD === 'true';
 const liveSupabaseHost = 'txugbdavblpettcnhcxl.supabase.co';
 const androidApplicationId = String(process.env.NEXUS_ANDROID_APPLICATION_ID || 'org.nexus.tracker.preview').trim();
-if (!/^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$/.test(androidApplicationId)) {
+const applicationIdParts = androidApplicationId.split('.');
+if (applicationIdParts.length < 2 || applicationIdParts.some(part => !/^[a-z][a-z0-9]*$/.test(part))) {
   throw new Error('NEXUS_ANDROID_APPLICATION_ID must be a lowercase, URI-safe Android application ID.');
 }
 let androidCloudConfig = null;
