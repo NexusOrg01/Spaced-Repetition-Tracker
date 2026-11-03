@@ -22,7 +22,7 @@ assert.ok(activity.includes('MediaStore.Downloads.EXTERNAL_CONTENT_URI'), 'Expor
 assert.ok(activity.includes('Intent.ACTION_OPEN_DOCUMENT'), 'Imports must use the Android system document picker.');
 assert.ok(activity.includes('WebViewAssetLoader'), 'The app must load packaged assets from a secure local origin.');
 assert.ok(activity.includes('ServiceWorkerControllerCompat'), 'Service-worker requests must be routed through the local asset loader.');
-assert.ok(activity.includes('onBackPressed'), 'Android Back must navigate WebView history.');
+assert.ok(activity.includes('OnBackPressedDispatcher') && activity.includes('webView.goBack()'), 'Android Back must use the predictive-back-compatible dispatcher.');
 assert.ok(bootstrap.includes("asset !== 'cloud-sync.js'"), 'Runtime bootstrap must skip online sync in the Android edition.');
 assert.ok(serviceWorker.includes("path === './cloud-sync.js'"), 'Service-worker install must skip online sync in the Android edition.');
 assert.ok(bridge.includes('saveTextFile'), 'The native JavaScript bridge must expose the export action.');
