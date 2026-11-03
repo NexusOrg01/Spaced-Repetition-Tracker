@@ -29,7 +29,7 @@
 
   <h2>2. Optional account and cloud synchronization</h2>
   <p>You can use Nexus without signing in. If you choose Google sign-in or email magic-link sign-in, Nexus uses Supabase authentication to establish your account session. Supabase receives the information needed to authenticate you, which can include your email address and provider account identifier.</p>
-  <p>When you are signed in and cloud synchronization is available, Nexus sends a workspace snapshot to the Nexus Supabase project so that the same account can access its study data on other devices. The cloud workspace includes the study and Study Hub records described above, together with relevant preferences and scheduler state. The cloud record is associated with the authenticated account. Account isolation and access controls are enforced by the application's Supabase configuration.</p>
+  <p>When you are signed in and cloud synchronization is available, Nexus sends a workspace snapshot to the Nexus Supabase project so that the same account can access its study data on other devices. The cloud workspace includes the study and Study Hub records described above, together with relevant preferences and scheduler state. The cloud record is associated with the authenticated account. The application uses Supabase row-level access controls intended to restrict each account to its own workspace record.</p>
   <p>Cloud synchronization is optional. Signing out stops the signed-in session; it does not itself delete the local workspace or request deletion of the cloud account. Keep your own JSON backups for recovery.</p>
 
   <h2>3. Service providers and external services</h2>
@@ -54,7 +54,7 @@
   <p>You can use the in-app backup and restore controls to export or manage your workspace. To request deletion of your Nexus cloud account and associated cloud workspace, follow the instructions on the <a href="./delete-account.html">Account and Data Deletion page</a>. A deletion request is currently handled manually; there is no in-app one-tap account deletion control. Deleting the cloud account does not automatically erase copies already stored locally on your devices or in files you exported.</p>
 
   <h2>6. Security</h2>
-  <p>Nexus uses HTTPS for its hosted application and cloud connections. Cloud access is intended to be restricted to the authenticated account owner through Supabase access controls. No internet-connected service or local device can be guaranteed completely secure. Protect your device, email account and downloaded backups, and do not share sign-in links or credentials.</p>
+  <p>Nexus uses HTTPS for its hosted application and cloud connections. The Supabase database is configured to use row-level access controls intended to restrict workspace access to the authenticated account owner. No internet-connected service or local device can be guaranteed completely secure. Protect your device, email account and downloaded backups, and do not share sign-in links or credentials.</p>
 
   <h2>7. Children's privacy</h2>
   <p>Nexus is a general-purpose study tool and is not designed to knowingly collect personal information from children through a separate child-directed service. If you believe a child has provided personal information through an account, contact the support address below so the request can be reviewed.</p>
