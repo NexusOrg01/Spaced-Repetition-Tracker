@@ -1,10 +1,10 @@
 # Nexus licensing and release policy
 
-**Status:** proposed for review in this pull request. This document is not legal advice and does not replace a review of copyright ownership, third-party licences, or applicable local law.
+This document defines the project's licensing and release policy. It is not legal advice and does not replace a review of copyright ownership, third-party licences, or applicable local law.
 
 ## Selected project licence
 
-The proposed licence for original Nexus application source code is **Apache License 2.0** (`Apache-2.0`). The full licence text is in the repository-root `LICENSE` file.
+The licence for original Nexus application source code is **Apache License 2.0** (`Apache-2.0`), limited to material that the project is authorised to license under the scope described in this policy. The full licence text is in the repository-root `LICENSE` file.
 
 The licence choice is intended to support public source availability, redistribution, modification, commercial distribution, and future optional paid services. It does not require downstream distributors to publish their modifications under Apache-2.0. A downstream party may sell a compliant fork or offer a modified fork under different terms, subject to the licence and other applicable rights.
 
