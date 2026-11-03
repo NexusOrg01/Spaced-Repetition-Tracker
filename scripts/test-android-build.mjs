@@ -30,7 +30,7 @@ assert.match(manifest, /android.permission.INTERNET/);
 assert.doesNotMatch(manifest, /READ_EXTERNAL_STORAGE|WRITE_EXTERNAL_STORAGE|MANAGE_EXTERNAL_STORAGE/);
 
 const bridge = read('scripts/android-bridge.entry.js');
-for (const part of ['FilePicker.pickFiles', 'Filesystem.writeFile', 'Share.share', 'Browser.open', 'appUrlOpen', 'backButton']) {
+for (const part of ['FilePicker.pickFiles', 'HTMLInputElement.prototype.click.call(input)', 'installBtn', 'pwaInstallOption', 'Filesystem.writeFile', 'Share.share', 'Browser.open', 'appUrlOpen', 'backButton']) {
   assert.ok(bridge.includes(part), 'Android bridge is missing ' + part);
 }
 
