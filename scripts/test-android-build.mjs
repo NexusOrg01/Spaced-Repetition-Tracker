@@ -3,9 +3,43 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve, join } from 'node:path';
 import vm from 'node:vm';
+import { isExpectedAndroidAuthCallback } from './android-auth-callback.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const read = path => readFileSync(resolve(root, path), 'utf8');
+
+const expectedAndroidRedirect = 'org.nexus.tracker.preview://auth-callback';
+assert.equal(
+  isExpectedAndroidAuthCallback(expectedAndroidRedirect + '?code=synthetic-code',
+    expectedAndroidRedirect),
+  true,
+  'Android OAuth must accept a valid authorization-code callback.'
+);
+assert.equal(
+  isExpectedAndroidAuthCallback(expectedAndroidRedirect + '#access_token=synthetic&refresh_token=synthetic',
+    expectedAndroidRedirect),
+  true,
+  'Android OAuth must accept a valid implicit-flow callback fragment.'
+);
+for (const invalidCallback of [
+  'org.nexus.tracker.preview://auth-callback/unexpected?code=synthetic',
+  'org.nexus.tracker.preview://auth-callback.evil?code=synthetic',
+  'https://auth-callback?code=synthetic',
+  'org.nexus.tracker.preview://user@auth-callback?code=synthetic',
+  'org.nexus.tracker.preview://auth-callback:443?code=synthetic'
+]) {
+  assert.equal(
+    isExpectedAndroidAuthCallback(invalidCallback, expectedAndroidRedirect),
+    false,
+    'Android OAuth must reject a callback outside the exact configured URI: ' + invalidCallback
+  );
+}
+assert.equal(
+  isExpectedAndroidAuthCallback(expectedAndroidRedirect + '?code=synthetic',
+    expectedAndroidRedirect + '?unexpected=1'),
+  false,
+  'The configured redirect itself must not contain query parameters.'
+);
 
 const rootPackage = JSON.parse(read('package.json'));
 assert.equal(rootPackage.scripts.build, 'node scripts/build.mjs');
@@ -96,16 +130,24 @@ assert.ok(!bridge.includes('Browser.close()') && !bridge.includes('closeAuthBrow
 for (const part of [
   '__NEXUS_ANDROID_AUTH_REDIRECT_URL__', 'FilePicker.pickFiles',
   'HTMLInputElement.prototype.click.call(input)', 'installBtn', 'pwaInstallOption',
-  'Filesystem.writeFile', 'Share.share', 'NexusAuthBrowser.openAuthSession', 'appUrlOpen', 'backButton'
+  'Filesystem.writeFile', 'Share.share', 'NexusAuthBrowser.openAuthSession', 'appUrlOpen', 'backButton',
+  "import { isExpectedAndroidAuthCallback } from './android-auth-callback.mjs'",
+  'isExpectedAndroidAuthCallback(callbackUrl, AUTH_REDIRECT_URL)'
 ]) {
   assert.ok(bridge.includes(part), 'Android bridge is missing ' + part);
 }
+assert.ok(
+  bridge.includes('!isExpectedAndroidAuthCallback(callbackUrl, AUTH_REDIRECT_URL)'),
+  'Android deep links must be rejected unless scheme, host and path exactly match the configured callback.'
+);
 
 const nativeAuthPlugin = read('android/app/src/main/java/org/nexus/tracker/preview/NexusAuthBrowserPlugin.java');
 for (const part of [
   '@CapacitorPlugin(name = "NexusAuthBrowser")', 'CustomTabsIntent',
   'authorizationUri.getQueryParameter("redirect_to")', 'handleOnNewIntent(Intent intent)',
-  'handleOnResume()', 'call.resolve(result)', 'USER_CANCELLED', 'AUTH_TIMEOUT'
+  'handleOnResume()', 'call.resolve(result)', 'USER_CANCELLED', 'AUTH_TIMEOUT',
+  'expectedPath = redirectUri.getPath()', '!expectedPath.equals(callbackUri.getPath())',
+  'redirectUri.getQuery() != null', 'callbackUri.getPort() != -1'
 ]) {
   assert.ok(nativeAuthPlugin.includes(part), 'Native Android auth plugin is missing ' + part);
 }
@@ -125,8 +167,8 @@ for (const expected of [
 }
 
 for (const part of [
-  'callbackUrl.startsWith(AUTH_REDIRECT_URL)',
-  'App.addListener(\'appUrlOpen\'', 'App.getLaunchUrl()'
+  'isExpectedAndroidAuthCallback(callbackUrl, AUTH_REDIRECT_URL)',
+  "App.addListener('appUrlOpen'", 'App.getLaunchUrl()'
 ]) {
   assert.ok(bridge.includes(part), 'Android deep-link bridge is missing ' + part);
 }
