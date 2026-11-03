@@ -151,6 +151,10 @@ function installAndroidNavigation() {
 }
 
 if (isNativeApp) {
+  for (const id of ['installBtn', 'pwaInstallOption']) {
+    const installControl = document.getElementById(id);
+    if (installControl) installControl.hidden = true;
+  }
   installNativeFilePicker();
   installAndroidNavigation();
 
