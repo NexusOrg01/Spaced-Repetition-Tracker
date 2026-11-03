@@ -33,7 +33,7 @@ const distHtml = read('dist/index.html');
 assert.doesNotMatch(distHtml, /_vercel\/insights\/script\.js/);
 assert.match(distHtml, /\.\/vendor\/supabase\.js/);
 assert.match(distHtml, /\.\/nexus-android-bridge\.js/);
-assert.ok(existsSync(resolve(root, 'dist/vendor/supabase.js')));
+assert.ok(existsSync(resolve(root, 'dist/vendor/supabase.js')));\nassert.ok(existsSync(resolve(root, 'dist/vendor/SUPABASE-LICENSE')));
 assert.ok(existsSync(resolve(root, 'dist/nexus-android-bridge.js')));
 
 const distCloud = read('dist/cloud-sync.js');
