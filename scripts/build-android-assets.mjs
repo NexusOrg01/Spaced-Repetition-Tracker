@@ -66,6 +66,7 @@ await build({
   format: 'iife',
   target: ['chrome100'],
   minify: true,
+  nodePaths: [join(root, 'android', 'node_modules')],
   define: {
     __NEXUS_ANDROID_CLOUD_ENABLED__: JSON.stringify(cloudEnabled),
     __NEXUS_ANDROID_CLOUD_CONFIG__: JSON.stringify(androidCloudConfig)
