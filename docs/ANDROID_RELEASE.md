@@ -22,11 +22,11 @@ The hosted Supabase service remains optional. The app can run offline without si
 
 ## Preview cloud safety
 
-CI and default debug APK builds set `NEXUS_ANDROID_CLOUD_MODE=disabled`. In this mode, cloud controls are disabled on Android and the preview APK must not initiate production Supabase requests.
+CI and the default Android asset build use `NEXUS_ANDROID_CLOUD_MODE=staging`. This keeps sign-in and cloud sync available for testing against the isolated staging Supabase project; it does not contact or modify the production backend. Use `NEXUS_ANDROID_CLOUD_MODE=disabled` only for explicit offline-only tests, not for a feature-parity release.
 
-To build a cloud-enabled internal test APK intentionally, set `NEXUS_ANDROID_CLOUD_MODE=enabled`, `NEXUS_SUPABASE_URL` and `NEXUS_SUPABASE_ANON_KEY` during `npm run android:sync`. The asset builder rejects the production Supabase project and secret/service-role keys. Use a separate staging project and never use production for destructive Android testing. The preview OAuth callback is `org.nexus.tracker.preview://auth-callback`; it must be allow-listed in the test project's redirect URLs before OAuth testing. This PR changes no Supabase configuration.
+To build a cloud-enabled internal test APK intentionally, set `NEXUS_ANDROID_CLOUD_MODE=enabled`, `NEXUS_SUPABASE_URL` and `NEXUS_SUPABASE_ANON_KEY` during `npm run android:sync`. The asset builder rejects the production Supabase project in this mode and rejects secret/service-role keys. Use a separate staging project and never use production for destructive Android testing. The preview OAuth callback is `org.nexus.tracker.preview://auth-callback`; it must be allow-listed in the test project's redirect URLs before OAuth testing. This PR changes no Supabase configuration.
 
-Example staging build: `NEXUS_ANDROID_CLOUD_MODE=enabled NEXUS_SUPABASE_URL=https://YOUR-STAGING-REF.supabase.co NEXUS_SUPABASE_ANON_KEY=YOUR-STAGING-PUBLISHABLE-KEY npm run android:sync`. The values are embedded as client-visible publishable configuration, so never pass a service-role/secret key.
+Example custom staging build: `NEXUS_ANDROID_CLOUD_MODE=enabled NEXUS_SUPABASE_URL=https://YOUR-STAGING-REF.supabase.co NEXUS_SUPABASE_ANON_KEY=YOUR-STAGING-PUBLISHABLE-KEY npm run android:sync`. The values are embedded as client-visible publishable configuration, so never pass a service-role/secret key.
 
 The callback scheme and package IDs are temporary. Final values must be selected after the project has an approved, project-controlled domain and the store-signing strategy is decided.
 
@@ -44,13 +44,13 @@ The callback scheme and package IDs are temporary. Final values must be selected
 - Android compile and target SDK: 36
 - Android Gradle Plugin: 8.13.0
 - Gradle wrapper: 8.14.3
-- CI JDK: 21; CI Node: 22
+- CI JDK: 17; CI Node: 22
 
 Android-only npm dependencies are isolated in `android/package.json`, so the existing root PWA build does not install Capacitor. Direct Android npm dependencies are pinned to exact versions. A committed Android npm lockfile and full Gradle dependency-verification metadata are still required before claiming a fully reproducible source build. F-Droid submission must independently verify the final build recipe and APK.
 
 ## Build locally
 
-Install Node.js 22, JDK 21, Android SDK Platform 36 and Build Tools 36.0.0:
+Install Node.js 22, JDK 17, Android SDK Platform 36 and Build Tools 36.0.0:
 
 ```sh
 npm run android:sync
@@ -59,7 +59,7 @@ cd android
 ./gradlew assembleFdroidDebug assemblePlayDebug
 ```
 
-The default Android asset build disables cloud sync. CI uploads debug APK previews and unsigned release AAB validation outputs. Those release bundles are not signed and must not be submitted.
+The default Android asset build uses the isolated staging cloud configuration so the F-Droid and Play variants can be tested with sign-in and sync. Set `NEXUS_ANDROID_CLOUD_MODE=disabled` only when you explicitly need an offline-only test build. CI uploads installable debug APK previews, an unsigned F-Droid release APK, and unsigned release AAB validation outputs. The release artifacts are not store-ready and must not be submitted.
 
 ## Outstanding before store submission
 
