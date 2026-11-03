@@ -151,7 +151,7 @@ await patchFile('cloud-sync.js', source => {
   next = replaceExactlyOnce(
     next,
     "const {data,error}=await client.auth.signInWithOAuth({provider:'google',options:{redirectTo:authRedirectUrl(),queryParams:{prompt:'select_account'}}});if(error)throw error;if(data&&data.url)location.assign(data.url);",
-    "const native=!!(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp);const options={redirectTo:authRedirectUrl(),queryParams:{prompt:'select_account'},...(native?{skipBrowserRedirect:true}:{})};const {data,error}=await client.auth.signInWithOAuth({provider:'google',options});if(error)throw error;if(data&&data.url){if(native)await window.NexusAndroidBridge.openAuthUrl(data.url);else location.assign(data.url);}",
+    "const native=!!(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp);const options={redirectTo:authRedirectUrl(),queryParams:{prompt:'select_account'},...(native?{skipBrowserRedirect:true}:{})};const {data,error}=await client.auth.signInWithOAuth({provider:'google',options});if(error)throw error;if(data&&data.url){if(native){const callbackUrl=await window.NexusAndroidBridge.openAuthUrl(data.url);if(callbackUrl)await window.NexusHandleAndroidAuthUrl(callbackUrl);}else location.assign(data.url);}",
     'Android OAuth browser handoff'
   );
 
@@ -160,6 +160,8 @@ await patchFile('cloud-sync.js', source => {
  if(!window.NexusAndroidBridge||!window.NexusAndroidBridge.isNativeApp||!window.NexusAndroidBridge.isCloudSyncEnabled())return;
  try{
   const authClient=await ensureClient(),callback=new URL(String(rawUrl));
+  const callbackError=callback.searchParams.get('error'),callbackErrorDescription=callback.searchParams.get('error_description');
+  if(callbackError)throw new Error(callbackErrorDescription||callbackError);
   const code=callback.searchParams.get('code'),tokenHash=callback.searchParams.get('token_hash');
   let result;
   if(code)result=await authClient.auth.exchangeCodeForSession(code);
@@ -171,7 +173,7 @@ await patchFile('cloud-sync.js', source => {
    result=await authClient.auth.setSession({access_token:accessToken,refresh_token:refreshToken});
   }
   if(result&&result.error)throw result.error;
-  await window.NexusAndroidBridge.closeAuthBrowser();
+  // Android's native auth-session plugin has already returned to this activity.
  }catch(error){status('Android sign-in could not be completed');say((error&&error.message)||'The sign-in callback could not be verified. Return to Nexus and try again.');console.error('Nexus Android auth callback failed.',error);}
 }
 window.NexusHandleAndroidAuthUrl=handleAndroidAuthUrl;

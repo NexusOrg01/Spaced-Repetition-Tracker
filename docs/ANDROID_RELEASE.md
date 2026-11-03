@@ -11,6 +11,7 @@ This document describes the in-progress shared Android project for F-Droid and G
 - Android's system document picker imports JSON and CSV files without broad storage permissions.
 - Backup exports are written to the app cache and passed to Android's system share sheet. The FileProvider exposes only the cache directory.
 - The packaged Android app skips the PWA service worker so browser caches cannot shadow assets installed with an APK update.
+- Native Google OAuth uses an app-owned Capacitor auth-session plugin with AndroidX Custom Tabs. It validates the requested deep-link target, returns the callback URI to the waiting app call, and handles cancellation/timeouts without relying on `Browser.close()` (which is unavailable on Android).
 
 ## Store separation
 

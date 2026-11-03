@@ -1,6 +1,7 @@
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
+
+const NexusAuthBrowser = registerPlugin('NexusAuthBrowser');
 import { App } from '@capacitor/app';
-import { Browser } from '@capacitor/browser';
 import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { FilePicker } from '@capawesome/capacitor-file-picker';
@@ -20,6 +21,10 @@ if (typeof window !== 'undefined') {
     }
   }
 }
+
+let nativeAuthSessionActive = false;
+let nativeAuthSessionEventUrl = null;
+const processedNativeAuthUrls = new Set();
 
 function dispatchAuthUrl(url) {
   if (!url || !isNativeApp) return;
@@ -109,19 +114,33 @@ async function openAuthUrl(url) {
   if (!isNativeApp || !cloudSyncEnabled) {
     throw new Error('Cloud sign-in is disabled in this Android build.');
   }
-  await Browser.open({ url });
-}
-
-async function closeAuthBrowser() {
-  try { await Browser.close(); } catch (_) {}
+  nativeAuthSessionActive = true;
+  nativeAuthSessionEventUrl = null;
+  try {
+    const result = await NexusAuthBrowser.openAuthSession({
+      url,
+      redirectUrl: AUTH_REDIRECT_URL
+    });
+    const callbackUrl = result && result.callbackURL || nativeAuthSessionEventUrl;
+    if (!callbackUrl) throw new Error('Android returned from the browser without an authentication callback.');
+    processedNativeAuthUrls.add(callbackUrl);
+    return callbackUrl;
+  } finally {
+    nativeAuthSessionActive = false;
+    nativeAuthSessionEventUrl = null;
+  }
 }
 
 async function handleAppUrl(url) {
   if (!url || !isNativeApp) return;
-  if (String(url).startsWith(AUTH_REDIRECT_URL)) {
-    await closeAuthBrowser();
-    dispatchAuthUrl(url);
+  const callbackUrl = String(url);
+  if (!callbackUrl.startsWith(AUTH_REDIRECT_URL) || processedNativeAuthUrls.has(callbackUrl)) return;
+  if (nativeAuthSessionActive) {
+    nativeAuthSessionEventUrl = callbackUrl;
+    return;
   }
+  processedNativeAuthUrls.add(callbackUrl);
+  dispatchAuthUrl(callbackUrl);
 }
 
 function installAndroidNavigation() {
@@ -172,6 +191,5 @@ window.NexusAndroidBridge = Object.freeze({
   isCloudSyncEnabled: () => isNativeApp && cloudSyncEnabled,
   authRedirectUrl: AUTH_REDIRECT_URL,
   openAuthUrl,
-  closeAuthBrowser,
   shareTextFile
 });

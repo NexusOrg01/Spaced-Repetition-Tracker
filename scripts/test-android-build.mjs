@@ -90,13 +90,26 @@ for (const forbidden of ['READ_EXTERNAL_STORAGE', 'WRITE_EXTERNAL_STORAGE', 'MAN
 }
 
 const bridge = read('scripts/android-bridge.entry.js');
+assert.ok(!bridge.includes('Browser.close()') && !bridge.includes('closeAuthBrowser'), 'Android auth must not rely on Browser.close(), which is unavailable on Android.');
 for (const part of [
   '__NEXUS_ANDROID_AUTH_REDIRECT_URL__', 'FilePicker.pickFiles',
   'HTMLInputElement.prototype.click.call(input)', 'installBtn', 'pwaInstallOption',
-  'Filesystem.writeFile', 'Share.share', 'Browser.open', 'appUrlOpen', 'backButton'
+  'Filesystem.writeFile', 'Share.share', 'NexusAuthBrowser.openAuthSession', 'appUrlOpen', 'backButton'
 ]) {
   assert.ok(bridge.includes(part), 'Android bridge is missing ' + part);
 }
+
+const nativeAuthPlugin = read('android/app/src/main/java/org/nexus/tracker/preview/NexusAuthBrowserPlugin.java');
+for (const part of [
+  '@CapacitorPlugin(name = "NexusAuthBrowser")', 'CustomTabsIntent',
+  'authorizationUri.getQueryParameter("redirect_to")', 'handleOnNewIntent(Intent intent)',
+  'handleOnResume()', 'call.resolve(result)', 'USER_CANCELLED', 'AUTH_TIMEOUT'
+]) {
+  assert.ok(nativeAuthPlugin.includes(part), 'Native Android auth plugin is missing ' + part);
+}
+const mainActivity = read('android/app/src/main/java/org/nexus/tracker/preview/MainActivity.java');
+assert.ok(mainActivity.indexOf('registerPlugin(NexusAuthBrowserPlugin.class)') < mainActivity.indexOf('super.onCreate(savedInstanceState)'), 'Register the native auth plugin before Capacitor bridge initialization.');
+assert.ok(read('android/app/build.gradle').includes('androidx.browser:browser:$androidxBrowserVersion'));
 
 const buildScript = read('scripts/build-android-assets.mjs');
 for (const expected of [
@@ -110,13 +123,13 @@ for (const expected of [
 }
 
 for (const part of [
-  'Browser.close()', 'String(url).startsWith(AUTH_REDIRECT_URL)',
+  'String(url).startsWith(AUTH_REDIRECT_URL)',
   'App.addListener(\'appUrlOpen\'', 'App.getLaunchUrl()'
 ]) {
   assert.ok(bridge.includes(part), 'Android deep-link bridge is missing ' + part);
 }
 for (const expected of [
-  'skipBrowserRedirect:true', 'openAuthUrl(data.url)',
+  'skipBrowserRedirect:true', 'openAuthUrl(data.url)', 'NexusHandleAndroidAuthUrl(callbackUrl)',
   'exchangeCodeForSession(code)', 'verifyOtp({token_hash:',
   'setSession({access_token:accessToken,refresh_token:refreshToken})',
   'window.NexusHandleAndroidAuthUrl=handleAndroidAuthUrl'
