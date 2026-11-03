@@ -2,11 +2,27 @@
   "name": "nexus-spaced-repetition-tracker",
   "private": true,
   "version": "1.0.0",
-  "engines": {
-    "node": "22.x"
-  },
+  "engines": { "node": "22.x" },
   "scripts": {
-    "build": "node scripts/build.mjs"
+    "build": "node scripts/build.mjs",
+    "android:assets": "node scripts/build-android-assets.mjs",
+    "android:sync": "npm run build && npm run android:assets && cap sync android",
+    "android:debug": "npm run android:sync && cd android && ./gradlew assembleFdroidDebug assemblePlayDebug",
+    "test:android": "node scripts/test-android-build.mjs"
   },
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@capacitor/android": "8.6.0",
+    "@capacitor/app": "8.1.2",
+    "@capacitor/browser": "8.0.5",
+    "@capacitor/core": "8.6.0",
+    "@capacitor/filesystem": "8.1.5",
+    "@capacitor/share": "8.0.1",
+    "@capawesome/capacitor-file-picker": "8.1.1",
+    "@supabase/supabase-js": "2.117.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.6.0",
+    "esbuild": "0.28.2"
+  }
 }

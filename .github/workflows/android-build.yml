@@ -1,0 +1,70 @@
+name: Android multi-store build
+
+on:
+  push:
+    branches:
+      - "android/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-build:
+    name: Build F-Droid and Google Play variants
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 36
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Install pinned JavaScript dependencies
+        run: npm install --no-audit --no-fund --package-lock=false
+
+      - name: Build Android-local web assets and sync native project
+        env:
+          NEXUS_ANDROID_CLOUD_MODE: disabled
+        run: npm run android:sync
+
+      - name: Verify Android asset isolation and native feature wiring
+        run: npm run test:android
+
+      - name: Build debug APKs and unsigned release bundles
+        working-directory: android
+        run: ./gradlew --no-daemon --stacktrace assembleFdroidDebug assemblePlayDebug bundleFdroidRelease bundlePlayRelease
+
+      - name: Upload Android preview artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-android-preview-builds
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            android/app/build/outputs/apk/fdroid/debug/*.apk
+            android/app/build/outputs/apk/play/debug/*.apk
+            android/app/build/outputs/bundle/fdroidRelease/*.aab
+            android/app/build/outputs/bundle/playRelease/*.aab

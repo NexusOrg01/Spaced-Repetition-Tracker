@@ -1,0 +1,6 @@
+{
+  "appId": "org.nexus.tracker.preview",
+  "appName": "Nexus",
+  "webDir": "dist",
+  "android": { "allowMixedContent": false }
+}

@@ -1,0 +1,28 @@
+# Android and Gradle outputs
+.gradle/
+**/build/
+**/.gradle/
+local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+*.hprof
+.externalNativeBuild/
+.cxx/
+.idea/
+*.iml
+
+# Capacitor-generated assets/configuration
+app/src/main/assets/public/
+app/src/main/assets/capacitor.config.json
+app/src/main/assets/capacitor.plugins.json
+app/src/main/res/xml/config.xml
+capacitor-cordova-android-plugins/
+capacitor.settings.gradle
+app/capacitor.build.gradle
+
+# Never commit release signing material
+*.jks
+*.keystore

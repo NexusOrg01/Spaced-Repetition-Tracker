@@ -1,0 +1,126 @@
+import assert from 'node:assert/strict';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const dist = join(root, 'dist');
+const cloudEnabled = process.env.NEXUS_ANDROID_CLOUD_MODE === 'enabled';
+
+function replaceExactlyOnce(source, before, after, label) {
+  const count = source.split(before).length - 1;
+  assert.equal(count, 1, label + ' expected one source match but found ' + count + '.');
+  return source.replace(before, after);
+}
+
+async function patchFile(name, transform, label) {
+  const path = join(dist, name);
+  const original = await readFile(path, 'utf8');
+  const updated = transform(original);
+  assert.notEqual(updated, original, label + ' did not apply. Stop rather than build a partially patched Android bundle.');
+  await writeFile(path, updated, 'utf8');
+}
+
+await mkdir(join(dist, 'vendor'), { recursive: true });
+const supabaseUmd = join(root, 'node_modules', '@supabase', 'supabase-js', 'dist', 'umd', 'supabase.js');
+await copyFile(supabaseUmd, join(dist, 'vendor', 'supabase.js'));
+
+await build({
+  entryPoints: [join(root, 'scripts', 'android-bridge.entry.js')],
+  outfile: join(dist, 'nexus-android-bridge.js'),
+  bundle: true,
+  platform: 'browser',
+  format: 'iife',
+  target: ['chrome100'],
+  minify: true,
+  define: { __NEXUS_ANDROID_CLOUD_ENABLED__: JSON.stringify(cloudEnabled) },
+  legalComments: 'eof'
+});
+
+await patchFile('index.html', html => {
+  const analytics = /\s*<!-- Vercel Web Analytics -->\s*<script>[\s\S]*?<\/script>\s*<script defer src="\/_vercel\/insights\/script\.js"><\/script>/;
+  assert.match(html, analytics, 'Expected Vercel analytics block was not found.');
+  let next = html.replace(analytics, '');
+  const current = '<script src="./nexus-storage.js"></script>\n  <script src="./nexus-app-bootstrap.js"></script>';
+  const replacement = '<script src="./nexus-storage.js"></script>\n' +
+    '  <script src="./vendor/supabase.js"></script>\n' +
+    '  <script src="./nexus-android-bridge.js"></script>\n' +
+    '  <script src="./nexus-app-bootstrap.js"></script>';
+  next = replaceExactlyOnce(next, current, replacement, 'Android script injection');
+  return next.replace('accept=".json,application/json"', 'accept=".json,.csv,application/json,text/csv,application/octet-stream"');
+}, 'Android HTML preparation');
+
+await patchFile('cloud-sync.js', source => {
+  let next = replaceExactlyOnce(
+    source,
+    "function isUnsafeCloudOrigin(){const host=location.hostname.toLowerCase(),url=String(config().url||'').trim();let cloudHost='';try{cloudHost=new URL(url).hostname.toLowerCase();}catch(_){}return cloudHost===new URL(LIVE_SUPABASE_URL).hostname&&host!=='spaced-repetition-tracker-delta.vercel.app'&&host!=='kkmalithmalshan2000-png.github.io';}",
+    "function isUnsafeCloudOrigin(){if(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp&&!window.NexusAndroidBridge.isCloudSyncEnabled())return true;const host=location.hostname.toLowerCase(),url=String(config().url||'').trim();let cloudHost='';try{cloudHost=new URL(url).hostname.toLowerCase();}catch(_){}return cloudHost===new URL(LIVE_SUPABASE_URL).hostname&&host!=='spaced-repetition-tracker-delta.vercel.app'&&host!=='kkmalithmalshan2000-png.github.io';}",
+    'Android cloud safety guard'
+  );
+  next = replaceExactlyOnce(
+    next,
+    "function loadSupabaseLibrary(){if(window.supabase&&window.supabase.createClient)return Promise.resolve();if(supabaseLoadPromise)return supabaseLoadPromise;supabaseLoadPromise=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3';script.async=true;script.onload=()=>window.supabase&&window.supabase.createClient?resolve():reject(new Error('Supabase client did not initialize.'));script.onerror=()=>reject(new Error('Could not load Supabase client. Check internet access.'));document.head.appendChild(script);});return supabaseLoadPromise;}",
+    "function loadSupabaseLibrary(){if(window.supabase&&window.supabase.createClient)return Promise.resolve();if(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp)return Promise.reject(new Error('The locally bundled Supabase client is unavailable. Reinstall or update this Nexus build.'));if(supabaseLoadPromise)return supabaseLoadPromise;supabaseLoadPromise=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3';script.async=true;script.onload=()=>window.supabase&&window.supabase.createClient?resolve():reject(new Error('Supabase client did not initialize.'));script.onerror=()=>reject(new Error('Could not load Supabase client. Check internet access.'));document.head.appendChild(script);});return supabaseLoadPromise;}",
+    'Android local Supabase guard'
+  );
+  next = replaceExactlyOnce(
+    next,
+    "function authRedirectUrl(){const target=new URL(location.pathname,location.origin);target.search='';target.hash='';return target.href;}",
+    "function authRedirectUrl(){if(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp)return window.NexusAndroidBridge.authRedirectUrl;const target=new URL(location.pathname,location.origin);target.search='';target.hash='';return target.href;}",
+    'Android auth redirect'
+  );
+  next = replaceExactlyOnce(
+    next,
+    "const {data,error}=await client.auth.signInWithOAuth({provider:'google',options:{redirectTo:authRedirectUrl(),queryParams:{prompt:'select_account'}}});if(error)throw error;if(data&&data.url)location.assign(data.url);",
+    "const native=!!(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp);const options={redirectTo:authRedirectUrl(),queryParams:{prompt:'select_account'},...(native?{skipBrowserRedirect:true}:{})};const {data,error}=await client.auth.signInWithOAuth({provider:'google',options});if(error)throw error;if(data&&data.url){if(native)await window.NexusAndroidBridge.openAuthUrl(data.url);else location.assign(data.url);}",
+    'Android OAuth browser handoff'
+  );
+  const anchor = "function conflictRecoveryOwner(){return session&&session.user&&session.user.id||localStorage.getItem(OWNER_KEY)||'';}";
+  const handler = `async function handleAndroidAuthUrl(rawUrl){
+ if(!window.NexusAndroidBridge||!window.NexusAndroidBridge.isNativeApp||!window.NexusAndroidBridge.isCloudSyncEnabled())return;
+ try{
+  const authClient=await ensureClient(),callback=new URL(String(rawUrl));
+  const code=callback.searchParams.get('code'),tokenHash=callback.searchParams.get('token_hash');
+  let result;
+  if(code)result=await authClient.auth.exchangeCodeForSession(code);
+  else if(tokenHash)result=await authClient.auth.verifyOtp({token_hash:tokenHash,type:callback.searchParams.get('type')||'email'});
+  else{
+   const tokens=new URLSearchParams(callback.hash.replace(/^#/,''));
+   const accessToken=tokens.get('access_token'),refreshToken=tokens.get('refresh_token');
+   if(!accessToken||!refreshToken)throw new Error('The sign-in link did not contain a supported session.');
+   result=await authClient.auth.setSession({access_token:accessToken,refresh_token:refreshToken});
+  }
+  if(result&&result.error)throw result.error;
+  await window.NexusAndroidBridge.closeAuthBrowser();
+ }catch(error){status('Android sign-in could not be completed');say((error&&error.message)||'The sign-in callback could not be verified. Return to Nexus and try again.');console.error('Nexus Android auth callback failed.',error);}
+}
+window.NexusHandleAndroidAuthUrl=handleAndroidAuthUrl;
+const pendingAndroidAuthUrls=Array.isArray(window.NexusAndroidPendingAuthUrls)?window.NexusAndroidPendingAuthUrls.splice(0):[];
+pendingAndroidAuthUrls.forEach(url=>handleAndroidAuthUrl(url));
+`;
+  return replaceExactlyOnce(next, anchor, handler + anchor, 'Android auth callback handling');
+}, 'Android cloud-sync preparation');
+
+await patchFile('nexus-app-bootstrap.js', source => replaceExactlyOnce(
+  source,
+  "function registerServiceWorker() {\n    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;",
+  "function registerServiceWorker() {\n    if (window.NexusAndroidBridge && window.NexusAndroidBridge.isNativeApp) return;\n    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;",
+  'Android service-worker exclusion'
+), 'Android bootstrap preparation');
+
+await patchFile('app-core.js', source => replaceExactlyOnce(
+  source,
+  "function downloadFile(filename,content,type){const blob=new Blob([content],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);}",
+  "function downloadFile(filename,content,type){if(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp){window.NexusAndroidBridge.shareTextFile(filename,content,type).then(shared=>{if(!shared)downloadFileInBrowser(filename,content,type);}).catch(error=>{console.warn('Nexus native export sharing failed.',error);notify('Android could not open the share sheet. Your export is still available through the browser fallback.');downloadFileInBrowser(filename,content,type);});return;}downloadFileInBrowser(filename,content,type);}function downloadFileInBrowser(filename,content,type){const blob=new Blob([content],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);}",
+  'Native tracker export integration'
+), 'Android tracker export preparation');
+
+await patchFile('study-hub.js', source => replaceExactlyOnce(
+  source,
+  "function downloadBlob(filename,text,type){const blob=new Blob([text],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;a.rel='noopener';a.style.position='fixed';a.style.left='-10000px';document.body.appendChild(a);try{a.click();}finally{a.remove();setTimeout(()=>URL.revokeObjectURL(url),15000);}}",
+  "function downloadBlob(filename,text,type){if(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp){window.NexusAndroidBridge.shareTextFile(filename,text,type).then(shared=>{if(!shared)downloadBlobInBrowser(filename,text,type);}).catch(error=>{console.warn('Nexus native Study Hub export sharing failed.',error);notify('Android could not open the share sheet. Your export is still available through the browser fallback.');downloadBlobInBrowser(filename,text,type);});return;}downloadBlobInBrowser(filename,text,type);}function downloadBlobInBrowser(filename,text,type){const blob=new Blob([text],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;a.rel='noopener';a.style.position='fixed';a.style.left='-10000px';document.body.appendChild(a);try{a.click();}finally{a.remove();setTimeout(()=>URL.revokeObjectURL(url),15000);}}",
+  'Native Study Hub export integration'
+), 'Android Study Hub export preparation');
+
+console.log('Android assets prepared. Cloud sync is ' + (cloudEnabled ? 'enabled by explicit build setting.' : 'disabled by default.'));
