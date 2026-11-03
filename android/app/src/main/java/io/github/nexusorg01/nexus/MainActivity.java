@@ -22,6 +22,8 @@ import android.webkit.WebView;
 import android.widget.FrameLayout;
 
 import androidx.annotation.Nullable;
+import androidx.webkit.ServiceWorkerClientCompat;
+import androidx.webkit.ServiceWorkerControllerCompat;
 import androidx.webkit.WebViewAssetLoader;
 import androidx.webkit.WebViewClientCompat;
 
@@ -66,6 +68,17 @@ public final class MainActivity extends Activity {
         WebViewAssetLoader assetLoader = new WebViewAssetLoader.Builder()
                 .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
                 .build();
+
+        // Service-worker requests do not pass through WebViewClient; route them through the same
+        // local asset loader so the offline app shell and IndexedDB-backed workspace work offline.
+        ServiceWorkerControllerCompat.getInstance().setServiceWorkerClient(
+                new ServiceWorkerClientCompat() {
+                    @Override
+                    public WebResourceResponse shouldInterceptRequest(WebResourceRequest request) {
+                        return assetLoader.shouldInterceptRequest(request.getUrl());
+                    }
+                }
+        );
 
         webView.addJavascriptInterface(new NexusNativeBridge(), "NexusNativeBridge");
         webView.setWebViewClient(new WebViewClientCompat() {
@@ -194,7 +207,7 @@ public final class MainActivity extends Activity {
         super.onDestroy();
     }
 
-    private final class NexusNativeBridge {
+    public final class NexusNativeBridge {
         @JavascriptInterface
         public boolean saveTextFile(String rawFilename, String content, String rawMimeType) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
