@@ -71,6 +71,10 @@ The F-Droid build recipe must not silently trust an npm-provided native executab
     ./node_modules/.bin/cap sync android
     ./gradlew --no-daemon -PnexusApplicationId=REPLACE_WITH_FINAL_ID -PnexusVersionCode=RELEASE_CODE -PnexusVersionName=RELEASE_VERSION assembleFdroidRelease
 
+## Project maturity and eligibility timing
+
+F-Droid's current Inclusion Policy says an app should have been actively developed for at least three months unless it can be shown to have users (or another stated exception applies). The public GitHub repository history currently begins on 2026-10-09, so that history alone does not establish three months of development. Before submission, either document the earlier public development history and evidence of existing users (for example, a verifiable public release/listing and genuine usage evidence), or plan for submission no earlier than 2027-01-09 if continuous development is maintained. F-Droid maintainers make the final eligibility decision.
+
 ## Release blockers
 
 Do not submit until:
