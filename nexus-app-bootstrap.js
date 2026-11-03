@@ -67,8 +67,10 @@
 
   function registerServiceWorker() {
     if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
-    const workerUrl = window.NexusAndroidEdition === true ? './sw.js?edition=fdroid' : './sw.js';
-    navigator.serviceWorker.register(workerUrl, { scope: './' }).catch(error => {
+    const registration = window.NexusAndroidEdition === true
+      ? navigator.serviceWorker.register('./sw.js?edition=fdroid', { scope: './' })
+      : navigator.serviceWorker.register('./sw.js', { scope: './' });
+    registration.catch(error => {
       // Service-worker support is an enhancement; never block the core app if registration fails.
       console.warn('Nexus offline support could not register its service worker.', error);
     });
