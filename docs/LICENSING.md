@@ -73,3 +73,25 @@ These findings do not require changing the hosted PWA. Keep the existing Vercel 
 
 The GitHub commit search available during this audit did not return author identities, so it is not sufficient evidence that every historical contribution belongs to one copyright holder. Review the repository's contributor graph and relevant commit authors before finalising the licence scope. GitHub documents the contributor graph at https://github.com/NexusOrg01/Spaced-Repetition-Tracker/graphs/contributors and explains its limitations at https://docs.github.com/en/repositories/viewing-activity-and-data-for-your-repository/viewing-a-projects-contributors.
 
+## Android/F-Droid technical baseline
+
+This is a proposed implementation baseline, not an Android project already present in the repository.
+
+- **Container:** use an embedded Capacitor Android project with local web assets. Do not configure the F-Droid build to load the hosted production website through a remote `server.url`.
+- **Capacitor candidate:** Capacitor 8.5.3 is the latest 8.x Android release identified during this review (2026-10-07). Recheck the official release notes and compatibility before pinning it in an implementation PR.
+- **Toolchain:** the current repository pins Node 22.x, which meets the official Capacitor 8 Node 22+ requirement. Capacitor 8's current setup guide specifies Android Studio 2025.2.1 or later and Android SDK API 24 or later; Android API 36 is the latest stable SDK level listed in that guide at the time of review.
+- **Native value:** add native functionality that improves the existing offline-first tracker, such as Android document-picker/file import-export integration and the system share sheet. Use reviewed FLOSS plugins and avoid Google Play Services-dependent integrations. The exact native feature set must be tested and documented; a thin WebView wrapper is not enough for F-Droid's stated website-wrapper quality requirement.
+- **F-Droid flavour:** ship web assets locally; omit Vercel Web Analytics from this flavour unless a later review establishes a clear compliance basis; bundle the pinned Supabase JavaScript client locally with its upstream licence notice; avoid downloading executable code at runtime.
+- **Cloud sync:** keep cloud sync optional and offline use fully functional. Review whether the hosted Supabase service requires an F-Droid Anti-Feature declaration or additional user-facing disclosure; do not assume that an open-source client makes every hosted service free software.
+- **Application ID:** select a stable, unique ID derived from a domain the project actually controls. The current TWA package identifier is based on a Vercel domain, so do not reuse it automatically as the long-term F-Droid identity. Confirm the ownership and availability of any proposed domain before choosing the reverse-DNS package ID. A different ID will install as a separate Android app; matching IDs across stores also require careful signing-key and migration planning.
+- **Reproducibility:** pin Capacitor, plugins, Gradle wrapper, Android Gradle Plugin, and SDK/build-tools versions; commit the Gradle wrapper; build release APKs from the command line with the wrapper; remove build timestamps and network-fetched build inputs; and verify repeated builds with F-Droid's reproducibility workflow.
+- **Metadata:** prepare an F-Droid YAML metadata file using SPDX `Apache-2.0`, a public HTTPS Git repository, a fixed full commit hash for each build, version name/code, and verified app description, icon, screenshots, and donation link.
+
+### Official technical references
+
+- Capacitor 8 environment setup: https://capacitorjs.com/docs/getting-started/environment-setup
+- Capacitor Android changelog: https://github.com/ionic-team/capacitor/blob/main/android/CHANGELOG.md
+- F-Droid inclusion policy: https://f-droid.org/docs/Inclusion_Policy/
+- F-Droid build metadata: https://f-droid.org/docs/Build_Metadata_Reference/
+- F-Droid reproducible builds: https://f-droid.org/docs/Reproducible_Builds/
+
