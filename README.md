@@ -148,3 +148,11 @@ The following describes repository state and the limits of what source review ca
 ## Licence
 
 Original Nexus application source code is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0), subject to the scope and third-party material notes in [the licensing and release policy](docs/LICENSING.md). The full licence text is in [LICENSE](LICENSE). Third-party assets and dependencies retain their own licence terms.
+
+## Privacy and account deletion
+
+- Public privacy policy: [privacy.html](https://spaced-repetition-tracker-delta.vercel.app/privacy.html)
+- Account and data deletion instructions: [delete-account.html](https://spaced-repetition-tracker-delta.vercel.app/delete-account.html)
+- Privacy/support contact: **nexusorg.contact01@gmail.com**
+
+Account deletion is currently handled manually after ownership verification. The published deletion page explains the distinction between deleting a cloud account/workspace and removing local browser data or downloaded backups. There is not yet an automated in-app account deletion control.
