@@ -21,6 +21,8 @@ jobs:
           node-version: 22
       - name: Validate catalogue and inline JavaScript syntax
         run: node scripts/validate-curricula.mjs
+      - name: Validate public privacy and account-deletion pages
+        run: node scripts/test-privacy-pages.mjs
       - name: Validate PWAStore App-Grade manifest, icon, and screenshots
         run: node scripts/test-pwastore-app-grade.mjs
       - name: Validate PWAStore Modern Install integration and browser fallbacks
