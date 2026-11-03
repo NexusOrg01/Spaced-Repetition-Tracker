@@ -1,6 +1,7 @@
 const CACHE_PREFIX='nexus-rating-analytics-';
-const CACHE_NAME=CACHE_PREFIX+'v28';
-const CORE_APP_SHELL=['./','./index.html','./nexus-storage.js','./nexus-app-bootstrap.js','./nexus-app-inline.js','./app-core.js','./study-hub.js','./fsrs-bundle.js','./backup-restore-utils.js','./offline-sync-queue.js','./curriculum-integrity.js','./explore-curriculum.js','./workspace-isolation-guard.js','./nexus-build-config.js','./cloud-sync-recovery.js','./workspace-sync-merge.js','./cloud-sync.js','./manifest.webmanifest'];
+const CACHE_NAME=CACHE_PREFIX+'v29';
+const FDROID_OFFLINE_EDITION = new URL(self.location.href).searchParams.get('edition') === 'fdroid';
+const CORE_APP_SHELL=['./','./index.html','./nexus-storage.js','./nexus-app-bootstrap.js','./nexus-app-inline.js','./app-core.js','./study-hub.js','./fsrs-bundle.js','./backup-restore-utils.js','./offline-sync-queue.js','./curriculum-integrity.js','./explore-curriculum.js','./workspace-isolation-guard.js','./nexus-build-config.js','./cloud-sync-recovery.js','./workspace-sync-merge.js','./cloud-sync.js','./manifest.webmanifest'].filter(path => !(FDROID_OFFLINE_EDITION && path === './cloud-sync.js'));
 const OPTIONAL_APP_SHELL=['./curricula/catalog.json','./icon.svg','./icon-192.png','./icon-512.png'];
 self.addEventListener('install',event=>{event.waitUntil(caches.open(CACHE_NAME).then(async cache=>{
   await cache.addAll(CORE_APP_SHELL.map(u=>new Request(u,{cache:'reload'})));
