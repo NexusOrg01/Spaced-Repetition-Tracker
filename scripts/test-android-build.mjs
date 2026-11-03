@@ -6,7 +6,11 @@ import { resolve } from 'node:path';
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const read = path => readFileSync(resolve(root, path), 'utf8');
 
-const pkg = JSON.parse(read('package.json'));
+const rootPackage = JSON.parse(read('package.json'));
+assert.equal(rootPackage.scripts.build, 'node scripts/build.mjs');
+assert.deepEqual(rootPackage.dependencies || {}, {}, 'the existing PWA root package must remain dependency-free');
+
+const pkg = JSON.parse(read('android/package.json'));
 assert.equal(pkg.dependencies['@capacitor/core'], '8.6.0');
 assert.equal(pkg.dependencies['@capacitor/android'], '8.6.0');
 assert.equal(pkg.dependencies['@supabase/supabase-js'], '2.117.3');
