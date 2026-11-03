@@ -1,0 +1,19 @@
+Nexus is an offline-first study tracker for organizing courses, subjects, topics and review sessions.
+
+Features:
+• Organize streams, subjects and topics.
+• Schedule reviews with the FSRS-6 spaced-repetition algorithm.
+• Record review history and track topic progress.
+• Use the Study Hub for planning, study logs, papers and goals.
+• Explore and install supported curriculum packs.
+• Review analytics and export records as CSV.
+• Create and restore full JSON backups.
+
+F-Droid Android edition:
+• Works offline without creating an account.
+• Stores study data locally on the device.
+• Saves JSON backups and CSV exports to Downloads/Nexus.
+• Uses the Android document picker to restore backups and import files.
+• Does not include cloud synchronization or analytics.
+
+Nexus is independently maintained and free to use.
