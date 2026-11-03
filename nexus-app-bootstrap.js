@@ -16,7 +16,7 @@
     'cloud-sync.js',
     'nexus-app-inline.js',
     'workspace-isolation-guard.js'
-  ];
+  ].filter(asset => !(window.NexusAndroidEdition === true && asset === 'cloud-sync.js'));
 
   // Capture Chromium's installability event before asynchronous storage setup and
   // sequential app-module loading can delay registration of the main app listeners.
@@ -64,9 +64,28 @@
 
   function registerServiceWorker() {
     if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
-    navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(error => {
+    const workerUrl = window.NexusAndroidEdition === true ? './sw.js?edition=fdroid' : './sw.js';
+    navigator.serviceWorker.register(workerUrl, { scope: './' }).catch(error => {
       // Service-worker support is an enhancement; never block the core app if registration fails.
       console.warn('Nexus offline support could not register its service worker.', error);
+    });
+  }
+
+  function applyAndroidEditionNotice() {
+    if (window.NexusAndroidEdition !== true) return;
+    const status = document.getElementById('cloudStatus');
+    const account = document.getElementById('cloudAccount');
+    const help = document.getElementById('cloudHelpText');
+    if (status) status.textContent = 'Offline edition';
+    if (account) account.textContent = 'This device only · no account required';
+    if (help) help.textContent = 'Cloud sync is not included in the F-Droid edition. Your study data stays on this device. Export a full JSON backup from Accounts & Backup before moving to another device.';
+    const heading = document.querySelector('#view-account h3');
+    const subtitle = document.querySelector('#view-account .panel-head p');
+    if (heading) heading.textContent = 'Local data & backup';
+    if (subtitle) subtitle.textContent = 'Private, offline storage on this device';
+    ['cloudGoogleSignInBtn', 'cloudEmailSignInBtn', 'cloudSignOutBtn'].forEach(id => {
+      const button = document.getElementById(id);
+      if (button) button.hidden = true;
     });
   }
 
@@ -84,6 +103,7 @@
 
     try {
       for (const asset of RUNTIME_ASSETS) await loadScript(asset);
+      applyAndroidEditionNotice();
     } catch (error) {
       console.error('Nexus application startup stopped before all required modules loaded.', error);
       showNotice('Nexus could not load a required application file. Keep this page open, check the connection, and reload before continuing.', true);
