@@ -146,8 +146,8 @@ for (const part of [
   '@CapacitorPlugin(name = "NexusAuthBrowser")', 'CustomTabsIntent',
   'authorizationUri.getQueryParameter("redirect_to")', 'handleOnNewIntent(Intent intent)',
   'handleOnResume()', 'call.resolve(result)', 'USER_CANCELLED', 'AUTH_TIMEOUT',
-  'expectedPath = redirectUri.getPath()', '!expectedPath.equals(callbackUri.getPath())',
-  'redirectUri.getQuery() != null', 'callbackUri.getPort() != -1'
+  'expectedPath = redirectUri.getPath()', '!Objects.equals(expectedPath, callbackUri.getPath())',
+  'redirectUri.getQuery() != null', 'callbackUri.getPort() != -1', 'import java.util.Objects;'
 ]) {
   assert.ok(nativeAuthPlugin.includes(part), 'Native Android auth plugin is missing ' + part);
 }
