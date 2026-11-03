@@ -155,4 +155,4 @@ Original Nexus application source code is licensed under the [Apache License 2.0
 - Account and data deletion instructions: [delete-account.html](https://spaced-repetition-tracker-delta.vercel.app/delete-account.html)
 - Privacy/support contact: **nexusorg.contact01@gmail.com**
 
-Account deletion is currently handled manually after ownership verification. The published deletion page explains the distinction between deleting a cloud account/workspace and removing local browser data or downloaded backups. There is not yet an automated in-app account deletion control.
+Nexus provides an in-app permanent account-deletion option when the authenticated deletion service is enabled for that deployment; an email request remains available as a fallback. The deletion page explains the distinction between deleting the cloud account/workspace and removing local browser data or downloaded backups.
