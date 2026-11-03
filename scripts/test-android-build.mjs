@@ -85,6 +85,8 @@ const manifest = read('android/app/src/main/AndroidManifest.xml');
 assert.ok(manifest.includes('android:allowBackup="false"'));
 assert.ok(manifest.includes('android.permission.INTERNET'));
 assert.ok(manifest.includes('android:scheme="${nexusAuthScheme}"'));
+assert.ok(manifest.includes('android:launchMode="singleTask"'), 'Android auth callback must reopen the existing activity instance.');
+assert.ok(manifest.includes('android:host="auth-callback"'), 'Android intent filter must match the Nexus OAuth callback host.');
 for (const forbidden of ['READ_EXTERNAL_STORAGE', 'WRITE_EXTERNAL_STORAGE', 'MANAGE_EXTERNAL_STORAGE']) {
   assert.ok(!manifest.includes(forbidden), 'Unexpected broad storage permission: ' + forbidden);
 }
@@ -123,7 +125,7 @@ for (const expected of [
 }
 
 for (const part of [
-  'String(url).startsWith(AUTH_REDIRECT_URL)',
+  'callbackUrl.startsWith(AUTH_REDIRECT_URL)',
   'App.addListener(\'appUrlOpen\'', 'App.getLaunchUrl()'
 ]) {
   assert.ok(bridge.includes(part), 'Android deep-link bridge is missing ' + part);
