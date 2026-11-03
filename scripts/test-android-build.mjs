@@ -117,6 +117,11 @@ for (const expected of ['feature parity', 'reproducible', 'Anti-Feature', 'esbui
 const shortDescription = read('fastlane/metadata/android/en-US/short_description.txt').trim();
 assert.ok(shortDescription.length <= 80, 'Store short description must be 80 characters or less.');
 
+const storeIcon = readFileSync(resolve(root, 'fastlane/metadata/android/en-US/images/icon.png'));
+assert.equal(storeIcon.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', 'Store icon must be a PNG file.');
+assert.equal(storeIcon.readUInt32BE(16), 512, 'Store icon must be 512 pixels wide.');
+assert.equal(storeIcon.readUInt32BE(20), 512, 'Store icon must be 512 pixels high.');
+
 const distHtml = read('dist/index.html');
 assert.ok(!distHtml.includes('_vercel/insights/script.js'), 'Android HTML must not include Vercel Analytics.');
 const scriptTags = distHtml.split('<script').slice(1).map(part => part.split('>')[0]);
