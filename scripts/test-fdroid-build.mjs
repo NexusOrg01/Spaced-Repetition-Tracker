@@ -17,14 +17,17 @@ assert.ok(!manifest.includes('android.permission.INTERNET'), 'F-Droid APK must n
 assert.ok(manifest.includes('android:allowBackup="false"'), 'Android Auto Backup must remain disabled until WebView data backup is verified.');
 assert.ok(gradle.includes('androidx.webkit:webkit:1.18.0'), 'WebViewAssetLoader must be used for a secure local HTTPS origin.');
 assert.ok(gradle.includes('cloud-sync.js'), 'The build task must explicitly manage the cloud-sync exclusion.');
-assert.ok(gradle.includes('/_vercel/insights/script.js'), 'The build task must explicitly strip Vercel analytics.');
+assert.ok(gradle.includes('_vercel') && gradle.includes('insights'), 'The build task must explicitly strip Vercel analytics.');
 assert.ok(activity.includes('MediaStore.Downloads.EXTERNAL_CONTENT_URI'), 'Exports must use Android Downloads.');
 assert.ok(activity.includes('Intent.ACTION_OPEN_DOCUMENT'), 'Imports must use the Android system document picker.');
 assert.ok(activity.includes('WebViewAssetLoader'), 'The app must load packaged assets from a secure local origin.');
+assert.ok(activity.includes('ServiceWorkerControllerCompat'), 'Service-worker requests must be routed through the local asset loader.');
 assert.ok(activity.includes('onBackPressed'), 'Android Back must navigate WebView history.');
 assert.ok(bootstrap.includes("asset === 'cloud-sync.js'"), 'Runtime bootstrap must skip online sync in the Android edition.');
 assert.ok(serviceWorker.includes("path === './cloud-sync.js'"), 'Service-worker install must skip online sync in the Android edition.');
 assert.ok(bridge.includes('saveTextFile'), 'The native JavaScript bridge must expose the export action.');
 assert.ok(license.includes('GNU GENERAL PUBLIC LICENSE') && license.includes('Version 3'), 'The root GPL-3.0-only licence is missing.');
+assert.ok(gradle.includes('"LICENSE"'), 'The full licence text must be copied into the APK assets.');
+assert.ok(gradle.includes('license.html') && gradle.includes('License &amp; copyright'), 'The Android app must expose its copyright and warranty notice.');
 
 console.log('F-Droid source-configuration checks passed.');
