@@ -105,8 +105,9 @@ const shortDescription = read('fastlane/metadata/android/en-US/short_description
 assert.ok(shortDescription.length <= 80, 'Store short description must be 80 characters or less.');
 
 const distHtml = read('dist/index.html');
-assert.doesNotMatch(distHtml, /_vercel\\/insights\\/script\\.js/);
-assert.doesNotMatch(distHtml, /<script[^>]*src=['"]https?:\\/\\//i, 'Android HTML must not load executable JavaScript from a remote host.');
+assert.ok(!distHtml.includes('_vercel/insights/script.js'), 'Android HTML must not include Vercel Analytics.');
+const scriptTags = [...distHtml.matchAll(/<script[^>]*>/gi)].map(([tag]) => tag);
+assert.ok(scriptTags.every(tag => !tag.includes('src="http') && !tag.includes("src='http")), 'Android HTML must not load executable JavaScript from a remote host.');
 assert.match(distHtml, /\\.\\/vendor\\/supabase\\.js/);
 assert.match(distHtml, /\\.\\/nexus-android-bridge\\.js/);
 assert.ok(!existsSync(resolve(root, 'dist/android')), 'Android Gradle project must never be copied into the hosted PWA bundle.');
@@ -120,7 +121,7 @@ for (const file of ['dist/cloud-sync.js', 'dist/nexus-app-bootstrap.js', 'dist/a
 
 const distCloud = read('dist/cloud-sync.js');
 assert.match(distCloud, /NexusAndroidBridge/);
-assert.doesNotMatch(distCloud, /cdn\\.jsdelivr\\.net\\/npm\\/@supabase/);
+assert.ok(!distCloud.includes('cdn.jsdelivr.net/npm/@supabase'), 'Android bundle must not load Supabase from a CDN.');
 assert.match(read('dist/nexus-app-bootstrap.js'), /NexusAndroidBridge[\\s\\S]{0,120}isNativeApp/);
 assert.match(read('dist/app-core.js'), /shareTextFile/);
 assert.match(read('dist/study-hub.js'), /shareTextFile/);
