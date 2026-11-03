@@ -103,6 +103,19 @@ References:
 - https://developer.huawei.com/consumer/en/doc/AppGallery-connect-Guides/agc-appsigning-aabtest-0000001059321484
 - https://learn.microsoft.com/en-us/microsoft-edge/progressive-web-apps/how-to/microsoft-store
 
+## Android developer verification outside Google Play
+
+Android's developer-verification rollout is separate from each store's own seller review. The current Android Developers guidance says the first regional enforcement phase began on 30 September 2026 in Brazil, Indonesia, Singapore and Thailand for selected partner stores, including Samsung Galaxy Store. Sri Lanka is not in that initial country list; Android says the rollout is intended to expand globally in 2027.
+
+Before broad Android distribution, monitor the official guidance and be prepared to:
+- create an Android Developer Console account for distribution outside Google Play;
+- verify the developer's identity;
+- register the permanent Android package name(s) and prove signing-key ownership.
+
+This makes the package ID and signing-key custody decisions especially important. Do not publish a temporary package ID and then expect to rename it later.
+
+Reference: https://developer.android.com/developer-verification/guides
+
 ## Release blockers to resolve before a public native-store submission
 
 1. Publish a public privacy policy that accurately describes local storage, optional Supabase cloud sync, authentication, data retention and contact details.
