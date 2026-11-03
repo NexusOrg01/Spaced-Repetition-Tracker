@@ -12,6 +12,14 @@ assert.equal(manifest.id, '/', 'Nexus must retain its stable root application id
 assert.ok(manifest.description?.trim(), 'manifest must declare a useful application description');
 assert.ok(manifest.start_url?.trim(), 'manifest must declare an explicit start URL');
 assert.equal(manifest.display, 'standalone', 'manifest must request an app-like standalone window');
+assert.equal(manifest.lang, 'en', 'manifest must declare its primary language');
+assert.equal(manifest.dir, 'ltr', 'manifest must declare its text direction');
+assert.ok(Array.isArray(manifest.display_override) && manifest.display_override.includes('standalone'),
+  'manifest must preserve standalone display while allowing supported display fallbacks');
+assert.deepEqual(manifest.categories, ['education', 'productivity', 'utilities'],
+  'manifest categories must accurately classify Nexus for app catalogues');
+assert.equal(manifest.prefer_related_applications, false,
+  'the browser should not prefer an unavailable related native application');
 
 const manifestBase = new URL('https://nexus.invalid/manifest.webmanifest');
 const appId = new URL(manifest.id, manifestBase);
@@ -90,4 +98,4 @@ assert.match(html, /<meta\s+name="viewport"\s+content="[^"]*width=device-width/,
 assert.match(html, /@media\s*\(\s*max-width\s*:\s*390px\s*\)/,
   'mobile styles must include the PWAStore 390px viewport breakpoint');
 
-console.log('PWAStore App-Grade manifest and asset preflight passed. The real-browser start and 390px overflow checks remain part of PWAStore verification.');
+console.log('PWA app-catalogue manifest and asset preflight passed. The real-browser start and 390px overflow checks remain part of PWAStore verification.');
