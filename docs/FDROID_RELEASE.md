@@ -31,6 +31,16 @@ Never embed a Supabase service_role or secret key in an Android application. Onl
 
 The default NEXUS_ANDROID_APPLICATION_ID is a temporary preview identity. For release, supply the same lowercase final application ID through NEXUS_ANDROID_APPLICATION_ID (web OAuth redirect scheme) and Gradle -PnexusApplicationId (native package and intent-filter scheme). Also supply -PnexusVersionCode and -PnexusVersionName.
 
+## Cloud sync policy decision
+
+Cloud sync is retained in the F-Droid build. F-Droid's Inclusion Policy does not categorically prohibit internet access or optional account-backed sync; it requires free software, transparent dependencies, and disclosure of relevant Anti-Features. Nexus must not ship an F-Droid edition with cloud sync silently disabled merely to simplify packaging.
+
+- The Android manifest's INTERNET permission is required for the optional account, OAuth and sync features. Local study tracking, scheduling, history, Study Hub and backup/restore remain usable without an account or network access.
+- Signing in is the opt-in point for account-backed cloud features. The Android build must not add analytics, advertising, crash reporting or background telemetry.
+- The app distributes only the public Supabase anon/publishable client key. A service-role or secret key must never be embedded in an APK.
+- The app currently targets the Nexus-hosted Supabase project. Since users cannot yet select another Supabase endpoint in the UI, this must be disclosed during F-Droid review. The fact that the service is optional and the app remains fully useful offline is relevant to Anti-Feature assessment, but F-Droid maintainers make the final classification. Do not claim that the hosted-service question is already cleared.
+- F-Droid and Google Play should use the same feature-complete app bundle. Distribution-specific differences should be limited to package identity, signing, store metadata and any genuinely store-specific integration—not removal of cloud sync or study features.
+
 ## F-Droid policy controls
 
 This implementation is designed around F-Droid's current Inclusion Policy and Reproducible Builds guidance:
@@ -47,7 +57,7 @@ The Android npm lockfile is stored as 12 Base64 fragments containing one gzip-co
 
 The current lock resolves 114 unique packages, all with declared MIT, ISC, 0BSD, Unlicense, BlueOak-1.0.0 or Apache-2.0 licence identifiers. CI rejects missing/unknown licence identifiers. The complete resolved Gradle/Maven dependency licence and binary scan remains a submission blocker.
 
-The F-Droid build recipe must build the esbuild executable from source rather than trust npm's prebuilt native binary, and replace android/node_modules/@esbuild/linux-x64/bin/esbuild with that source-built executable before building assets. Adapt the exact commands to the current locked esbuild version and verify them in the F-Droid buildserver.
+The F-Droid build recipe must not silently trust an npm-provided native executable. Build esbuild from its matching public source release with an approved FLOSS toolchain, or obtain explicit F-Droid maintainer acceptance for the exact pinned prebuilt binary. The current recipe outline is not yet a tested fdroidserver build; verify the selected approach in F-Droid's isolated buildserver before submission.
 
 ## Release build outline
 
@@ -74,3 +84,10 @@ Do not submit until:
 7. Privacy policy, account deletion, store identity and final package signing have been checked.
 
 The preview APKs and unsigned release APK/AAB files are validation artefacts, not store-ready releases.
+
+## Official policy references
+
+- [F-Droid Inclusion Policy](https://f-droid.org/en/docs/Inclusion_Policy/)
+- [F-Droid Anti-Features](https://f-droid.org/en/docs/Anti-Features/)
+- [F-Droid Reproducible Builds](https://f-droid.org/en/docs/Reproducible_Builds/)
+- [Submitting to F-Droid: Quick Start Guide](https://f-droid.org/en/docs/Submitting_to_F-Droid_Quick_Start_Guide/)
