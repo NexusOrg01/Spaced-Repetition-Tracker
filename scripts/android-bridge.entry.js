@@ -1,4 +1,5 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
+import { isExpectedAndroidAuthCallback } from './android-auth-callback.mjs';
 
 const NexusAuthBrowser = registerPlugin('NexusAuthBrowser');
 import { App } from '@capacitor/app';
@@ -122,7 +123,9 @@ async function openAuthUrl(url) {
       redirectUrl: AUTH_REDIRECT_URL
     });
     const callbackUrl = result && result.callbackURL || nativeAuthSessionEventUrl;
-    if (!callbackUrl) throw new Error('Android returned from the browser without an authentication callback.');
+    if (!callbackUrl || !isExpectedAndroidAuthCallback(callbackUrl, AUTH_REDIRECT_URL)) {
+      throw new Error('Android returned an invalid authentication callback. Return to Nexus and try again.');
+    }
     processedNativeAuthUrls.add(callbackUrl);
     return callbackUrl;
   } finally {
@@ -134,7 +137,7 @@ async function openAuthUrl(url) {
 async function handleAppUrl(url) {
   if (!url || !isNativeApp) return;
   const callbackUrl = String(url);
-  if (!callbackUrl.startsWith(AUTH_REDIRECT_URL) || processedNativeAuthUrls.has(callbackUrl)) return;
+  if (!isExpectedAndroidAuthCallback(callbackUrl, AUTH_REDIRECT_URL) || processedNativeAuthUrls.has(callbackUrl)) return;
   if (nativeAuthSessionActive) {
     nativeAuthSessionEventUrl = callbackUrl;
     return;
