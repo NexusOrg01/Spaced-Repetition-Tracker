@@ -14,7 +14,6 @@ Run these checks on both debug APKs. CI verifies static wiring and Gradle compil
 - Use the existing Import Backup action and select a JSON file from Downloads through Android's system document picker.
 - Test a valid full schema-4 backup, a legacy backup and malformed JSON.
 - Confirm the existing REPLACE/MERGE confirmation flow is unchanged.
-- Select a CSV topic file and confirm the current CSV importer handles it.
 - Cancel the picker and confirm no data changes.
 
 ## Backup export and sharing
