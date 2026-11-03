@@ -13,6 +13,7 @@ def generatedResources = layout.buildDirectory.dir("generated/fdroidResources")
 // cloud-sync.js is deliberately excluded: it downloads the Supabase SDK at runtime.
 def webAssetPaths = [
     "index.html",
+    "LICENSE",
     "manifest.webmanifest",
     "icon.svg",
     "icon-192.png",
@@ -110,7 +111,26 @@ tasks.register("prepareFdroidAssets") {
         }
         String nativeScripts = '<script>window.NexusAndroidEdition = true;</script>\n  <script src="./nexus-native-bridge.js"></script>\n  '
         html = html.replace(bootstrapTag, nativeScripts + bootstrapTag)
+
+        String settingsButton = 'id="menuSettings">⚙ Settings & setup</button>'
+        if (html.count(settingsButton) != 1) {
+            throw new GradleException("Could not add the Android licence item to the menu.")
+        }
+        String licenseButton = '<button type="button" onclick="location.href=&quot;./license.html&quot;">License &amp; copyright</button>'
+        html = html.replace(settingsButton, settingsButton + licenseButton)
         indexFile.setText(html, "UTF-8")
+
+        File licensePage = new File(webDir, "license.html")
+        licensePage.setText(
+            '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Nexus licence</title></head>' +
+            '<body style="font:16px/1.6 system-ui,sans-serif;max-width:760px;margin:0 auto;padding:24px;background:#0F1117;color:#f5f4ff">' +
+            '<main><h1>Nexus: Spaced Repetition Tracker</h1><p>Copyright (C) 2026 NexusOrg01.</p>' +
+            '<p>This program is free software: you may redistribute it and/or modify it under the terms of the GNU General Public License, version 3 only.</p>' +
+            '<p>This program is distributed WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.</p>' +
+            '<p><a style="color:#b8afff" href="./LICENSE">Read the full GNU GPL-3.0-only licence text</a></p>' +
+            '<p><a style="color:#b8afff" href="./index.html">Return to Nexus</a></p></main></body></html>',
+            "UTF-8"
+        )
 
         // PWA screenshots point to externally hosted images; they are not needed inside this APK.
         File manifestFile = new File(webDir, "manifest.webmanifest")
@@ -149,6 +169,12 @@ tasks.register("verifyFdroidAssets") {
         }
         if (html.contains("/_vercel/insights/script.js") || html.contains("window.vaq")) {
             throw new GradleException("The F-Droid asset set must not include Vercel Analytics.")
+        }
+        if (!html.contains('id="menuLicense"') && !html.contains('License &amp; copyright')) {
+            throw new GradleException("The visible Android licence entry is missing.")
+        }
+        if (!new File(webDir, "LICENSE").isFile() || !new File(webDir, "license.html").isFile()) {
+            throw new GradleException("The Android licence page or full licence text is missing.")
         }
         if (!html.contains("window.NexusAndroidEdition = true;") ||
             !html.contains("./nexus-native-bridge.js")) {
