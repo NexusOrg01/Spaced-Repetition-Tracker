@@ -20,6 +20,7 @@ public class NexusAuthBrowserPlugin extends Plugin {
     private PluginCall pendingCall;
     private String expectedScheme;
     private String expectedHost;
+    private String expectedPath;
     private boolean browserWasOpened;
 
     private final Runnable timeoutRunnable = () ->
@@ -47,6 +48,10 @@ public class NexusAuthBrowserPlugin extends Plugin {
             authorizationUri.getHost() == null ||
             redirectUri.getScheme() == null ||
             redirectUri.getHost() == null ||
+            redirectUri.getUserInfo() != null ||
+            redirectUri.getPort() != -1 ||
+            redirectUri.getQuery() != null ||
+            redirectUri.getFragment() != null ||
             requestedRedirect == null ||
             !redirectUrl.equals(requestedRedirect)) {
             call.reject("The authorization request does not match the configured Nexus callback.");
@@ -72,6 +77,7 @@ public class NexusAuthBrowserPlugin extends Plugin {
         getBridge().saveCall(call);
         expectedScheme = redirectUri.getScheme();
         expectedHost = redirectUri.getHost();
+        expectedPath = redirectUri.getPath();
         browserWasOpened = false;
 
         try {
@@ -96,7 +102,10 @@ public class NexusAuthBrowserPlugin extends Plugin {
         Uri callbackUri = intent.getData();
         if (callbackUri == null ||
             !expectedScheme.equalsIgnoreCase(callbackUri.getScheme()) ||
-            !expectedHost.equalsIgnoreCase(callbackUri.getHost())) {
+            !expectedHost.equalsIgnoreCase(callbackUri.getHost()) ||
+            !expectedPath.equals(callbackUri.getPath()) ||
+            callbackUri.getPort() != -1 ||
+            callbackUri.getUserInfo() != null) {
             return;
         }
 
@@ -139,6 +148,7 @@ public class NexusAuthBrowserPlugin extends Plugin {
         pendingCall = null;
         expectedScheme = null;
         expectedHost = null;
+        expectedPath = null;
         browserWasOpened = false;
     }
 }
