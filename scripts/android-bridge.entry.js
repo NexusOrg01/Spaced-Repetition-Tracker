@@ -33,7 +33,7 @@ function dispatchAuthUrl(url) {
 
 async function pickBackupFile() {
   const result = await FilePicker.pickFiles({
-    types: ['application/json', 'text/csv', 'application/octet-stream'],
+    types: ['application/json', 'application/octet-stream'],
     limit: 1
   });
   const selected = result.files && result.files[0];
