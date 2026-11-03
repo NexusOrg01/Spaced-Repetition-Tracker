@@ -1,7 +1,6 @@
 package io.github.nexusorg01.nexus;
 
 import android.annotation.SuppressLint;
-import android.app.Activity;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.content.ActivityNotFoundException;
@@ -21,6 +20,8 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.widget.FrameLayout;
 
+import androidx.activity.ComponentActivity;
+import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.Nullable;
 import androidx.webkit.ServiceWorkerClientCompat;
 import androidx.webkit.ServiceWorkerControllerCompat;
@@ -30,7 +31,7 @@ import androidx.webkit.WebViewClientCompat;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 
-public final class MainActivity extends Activity {
+public final class MainActivity extends ComponentActivity {
     private static final String TAG = "NexusAndroid";
     private static final String APP_HOST = "appassets.androidplatform.net";
     private static final String START_URL =
@@ -115,6 +116,7 @@ public final class MainActivity extends Activity {
             }
         });
 
+        registerBackNavigation();
         webView.loadUrl(START_URL);
     }
 
@@ -182,14 +184,18 @@ public final class MainActivity extends Activity {
         fileChooserCallback = null;
     }
 
-    @Override
-    @SuppressWarnings("deprecation")
-    public void onBackPressed() {
-        if (webView != null && webView.canGoBack()) {
-            webView.goBack();
-        } else {
-            super.onBackPressed();
-        }
+    private void registerBackNavigation() {
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (webView != null && webView.canGoBack()) {
+                    webView.goBack();
+                } else {
+                    setEnabled(false);
+                    getOnBackPressedDispatcher().onBackPressed();
+                }
+            }
+        });
     }
 
     @Override
