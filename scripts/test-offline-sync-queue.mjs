@@ -16,6 +16,23 @@ class QuotaStorage extends MemoryStorage {
 }
 const payload=id=>({app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:'2026-10-20T00:00:00.000Z',state:{schema:3,streams:[],subjects:[],topics:[{id,name:id}],history:[],exams:[],settings:{}},featureState:{version:1,journal:[{id,text:id}],papers:[],goals:[],studyLogs:[]}});
 const stateKey='recall.study.tracker.v1';
+function withFacadeAtomic(storage,callback){
+ const previous=globalThis.window;
+ globalThis.window={
+  NexusBackupRestoreUtils:globalThis.NexusBackupRestoreUtils,
+  NexusStorage:{
+   isFacade:value=>value===storage,
+   commitLocalStorageEntries(entries){
+    const value=storage;
+    const before=entries.map(entry=>({key:entry.key,value:value.getItem(entry.key)}));
+    let attempted=-1;
+    try{for(let i=0;i<entries.length;i++){attempted=i;const entry=entries[i];if(entry.value===null)value.removeItem(entry.key);else value.setItem(entry.key,entry.value);}}
+    catch(error){for(let i=attempted;i>=0;i--){const entry=before[i];if(entry.value===null)value.removeItem(entry.key);else value.setItem(entry.key,entry.value);}throw error;}
+   }
+  }
+ };
+ try{return callback();}finally{if(previous===undefined)delete globalThis.window;else globalThis.window=previous;}
+}
 {
  const s=new MemoryStorage({[queue.OWNER]:'account-A'});queue.rememberStamp(s,'account-A','rev-1');
  const first=queue.commitWorkspace(s,[{key:stateKey,value:JSON.stringify(payload('first').state)}],payload('first'));
@@ -196,4 +213,55 @@ const stateKey='recall.study.tracker.v1';
  assert.deepEqual(queue.getBase(hydrationStorage,'large-account'),{state:quotaState,featureState:quotaFeatures,serverVersion:'rev-base'},'preflight compaction must preserve the common merge base exactly');
 }
 
+{
+ const s=new MemoryStorage({[queue.OWNER]:'account-A',[stateKey]:JSON.stringify(payload('A').state),['recall.study.features.v1']:JSON.stringify(payload('A').featureState)});
+ queue.rememberStamp(s,'account-A','rev-A');
+ queue.rememberBase(s,'account-A',payload('base-A'),'rev-base-A');
+ queue.commitWorkspace(s,[{key:stateKey,value:JSON.stringify(payload('pending-A').state)},{key:'recall.study.features.v1',value:JSON.stringify(payload('pending-A').featureState)}],payload('pending-A'));
+ queue.archiveConflicts(s,'account-A',[{path:'state.topics[A].notes',local:'A-local',remote:'A-cloud'}]);
+ queue.archive(s,'account-A','account-deletion-test');
+ queue.commitWorkspace(s,[{key:stateKey,value:JSON.stringify(payload('latest-A').state)},{key:'recall.study.features.v1',value:JSON.stringify(payload('latest-A').featureState)}],payload('latest-A'));
+ s.setItem(queue.OWNER,'account-B');
+ queue.rememberStamp(s,'account-B','rev-B');
+ queue.rememberBase(s,'account-B',payload('base-B'),'rev-base-B');
+ queue.commitWorkspace(s,[{key:stateKey,value:JSON.stringify(payload('pending-B').state)},{key:'recall.study.features.v1',value:JSON.stringify(payload('pending-B').featureState)}],payload('pending-B'));
+ queue.archiveConflicts(s,'account-B',[{path:'state.topics[B].notes',local:'B-local',remote:'B-cloud'}]);
+ s.setItem(queue.OWNER,'account-A');
+ const result=withFacadeAtomic(s,()=>queue.forgetAccount(s,'account-A',[
+  {key:stateKey,value:null},
+  {key:'recall.study.features.v1',value:null},
+  {key:'nexus.fsrs.cards.v1',value:null},
+  {key:'nexus.fsrs.settings.v1',value:null}
+ ]));
+ assert.deepEqual(result,{pendingRemoved:true,archivedRemoved:1,baseRemoved:true,conflictsRemoved:true,stampRemoved:true,quarantineRetained:false},'account cleanup reports the local metadata removed for the selected user');
+ assert.equal(s.getItem(stateKey),null,'account deletion cleanup removes the active tracker workspace');
+ assert.equal(s.getItem('recall.study.features.v1'),null,'account deletion cleanup removes Study Hub workspace data');
+ assert.equal(s.getItem('nexus.fsrs.cards.v1'),null,'account deletion cleanup removes the local FSRS card cache');
+ assert.equal(s.getItem(queue.OWNER),'account-A','the owner marker stays intact until the storage layer has deleted that owner’s workspace projection');
+ assert.equal(queue.getPending(s,'account-A'),null,'deleted account pending snapshots are removed');
+ assert.equal(queue.getBase(s,'account-A'),null,'deleted account merge bases are removed');
+ assert.deepEqual(queue.getConflictHistory(s,'account-A'),[],'deleted account conflict archives are removed');
+ assert.equal(queue.getStamp(s,'account-A'),null,'deleted account remote revision stamps are removed');
+ assert.equal(queue.getPending(s,'account-B').payload.state.topics[0].id,'pending-B','another account’s pending snapshot is preserved');
+ assert.deepEqual(queue.getBase(s,'account-B'),{state:payload('base-B').state,featureState:payload('base-B').featureState,serverVersion:'rev-base-B'},'another account’s merge base is preserved');
+ assert.equal(queue.getConflictHistory(s,'account-B').length,1,'another account’s conflict recovery records are preserved');
+ const savedQueue=JSON.parse(s.getItem(queue.KEY));
+ assert.ok(savedQueue.archived.every(item=>item.ownerUserId!=='account-A'),'deleted account archived snapshots are removed without deleting other owners’ entries');
+ s.removeItem(queue.OWNER);
+ assert.equal(s.getItem(queue.OWNER),null,'the active owner marker can be cleared after the IndexedDB workspace transaction');
+}
+{
+ const s=new MemoryStorage({[queue.OWNER]:'account-A',[queue.QUARANTINE]:'unreadable-recovery-record'});
+ const result=withFacadeAtomic(s,()=>queue.forgetAccount(s,'account-A',[
+  {key:stateKey,value:null},
+  {key:'recall.study.features.v1',value:null}
+ ]));
+ assert.equal(result.quarantineRetained,true,'unreadable quarantined data must be reported instead of silently discarded');
+ assert.equal(s.getItem(queue.QUARANTINE),'unreadable-recovery-record','cleanup must not destroy an unreadable recovery record that may require manual review');
+}
+{
+ const s=new MemoryStorage({[queue.OWNER]:'account-A'});
+ assert.throws(()=>queue.forgetAccount(s,'account-A',[{key:stateKey,value:null}]),/Both tracker and Study Hub/,'account cleanup must require both workspace parts before committing');
+ assert.equal(s.getItem(stateKey),null,'incomplete account cleanup must not partially delete tracker data');
+}
 console.log('Account-bound offline sync queue tests passed.');

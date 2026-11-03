@@ -1014,7 +1014,7 @@ body :not(dialog):not(.standalone-screen):not(.menu-pop){overscroll-behavior-y:a
         
       </div>
 
-      <section class="panel danger-entry-panel" style="margin-top:15px"><div class="panel-head"><div><h3><span aria-hidden="true">⚠</span> Danger Zone: Review History / Account Reset</h3><p>Review-history deletion and full workspace reset are high-impact actions. Read the warnings before continuing.</p></div><button class="btn btn-danger" id="openDangerZoneBtn" type="button">Open Danger Zone →</button></div></section>
+      <section class="panel danger-entry-panel" style="margin-top:15px"><div class="panel-head"><div><h3><span aria-hidden="true">⚠</span> Danger Zone: Review History / Data Deletion</h3><p>Review-history deletion, workspace reset, and account deletion are permanent or high-impact actions. Read each option carefully before continuing.</p></div><button class="btn btn-danger" id="openDangerZoneBtn" type="button">Open Danger Zone →</button></div></section>
       <section class="panel" style="margin-top:15px"><div class="panel-head"><div><h3>Review schedule</h3><p>The schedule adjusts to each rating and the topic's previous interval.</p></div></div><div class="panel-body"><div class="form-grid"><div class="helper"><strong>1 — Again</strong><br>A lapse; FSRS updates memory and schedules a short interval.</div><div class="helper"><strong>2 — Hard</strong><br>Difficult recall; FSRS schedules a shorter interval.</div><div class="helper"><strong>3 — Good</strong><br>Successful recall; FSRS calculates the next interval.</div><div class="helper"><strong>4 — Very good</strong><br>Uses Good’s memory update with an interval between Good and Easy.</div><div class="helper"><strong>5 — Easy</strong><br>Easy recall; mapped to FSRS’s Easy grade.</div><div class="helper"><strong>Maximum interval</strong><br>FSRS-6 uses memory stability, difficulty, elapsed time, and desired retention. The maximum interval is controlled above (30–120 days).</div></div></div></section>
       
     </section>
@@ -1044,7 +1044,7 @@ body :not(dialog):not(.standalone-screen):not(.menu-pop){overscroll-behavior-y:a
     <div id="analyticsScreenContent" class="standalone-content"></div>
   </div>
   <div id="dangerZoneStandalone" class="standalone-screen danger-screen" hidden>
-    <header class="standalone-topbar danger-topbar"><button type="button" class="btn standalone-back" id="dangerBackBtn"><span aria-hidden="true">←</span> Back</button><div class="standalone-heading"><strong>Danger Zone</strong><small>Review History / Account Reset</small></div></header>
+    <header class="standalone-topbar danger-topbar"><button type="button" class="btn standalone-back" id="dangerBackBtn"><span aria-hidden="true">←</span> Back</button><div class="standalone-heading"><strong>Danger Zone</strong><small>Review History / Workspace / Account Deletion</small></div></header>
     <div class="danger-screen-body">
       <section class="danger-warning panel"><div class="danger-warning-icon" aria-hidden="true">!</div><div><h2>Deleting review history changes your analytics</h2><p>Every saved review is an input to your rating graphs, review counts, averages and detailed PDF/CSV history. Deleting one entry removes that event from future analytics. Clearing all history removes every saved review event.</p><p><strong>Topic schedules and next-due dates may remain unchanged.</strong> Use Undo immediately after an accidental deletion, or restore a backup that contains the records. Do not delete history just to reset a chart.</p></div></section>
       <section id="view-history" class="danger-history-content">
@@ -1055,12 +1055,21 @@ body :not(dialog):not(.standalone-screen):not(.menu-pop){overscroll-behavior-y:a
       <div class="toolbar" style="margin-top:12px"><button class="btn btn-danger" id="clearHistoryBtn">Clear history</button></div>
     </section>
       <section class="danger-account-reset-section" aria-labelledby="dangerAccountResetTitle">
-        <div class="section-head danger-account-reset-heading"><div><h2 id="dangerAccountResetTitle">Account reset</h2><p>Reset the full Nexus workspace when you need to start over.</p></div></div>
+        <div class="section-head danger-account-reset-heading"><div><h2 id="dangerAccountResetTitle">Workspace and account deletion</h2><p>Choose between resetting study data and permanently deleting your signed-in Nexus account.</p></div></div>
         <section class="danger-warning danger-account-reset-warning panel" aria-labelledby="dangerAccountResetWarningTitle">
           <div class="danger-warning-icon" aria-hidden="true">!</div>
-          <div><h2 id="dangerAccountResetWarningTitle">Before you reset your workspace</h2><p>Resetting removes your saved study data from this device, including topics, review history, exams, Study Hub notes, papers, goals, FSRS memory, and scheduler preferences.</p><p>When you are signed in and cloud sync is active, the reset may sync to your account and remove this workspace from your other devices too. Download a full JSON backup first. You may need that backup to recover your data.</p></div>
+          <div><h2 id="dangerAccountResetWarningTitle">Before deleting data</h2><p><strong>Delete workspace only</strong> clears tracker and Study Hub data from this device and queues the empty workspace for cloud sync when signed in. Your Nexus account remains active.</p><p><strong>Delete account and workspace</strong> permanently deletes the signed-in Supabase account and its cloud data, then clears this device’s Nexus workspace and account-specific sync recovery data. You must sign in again immediately before deletion. This cannot be undone.</p><p>Neither option can remotely erase offline copies on other devices or JSON/CSV files you previously downloaded. Those copies must be cleared separately. Download a full JSON backup first if you may need your study records.</p></div>
         </section>
-        <div class="panel danger-reset-card" style="margin-top:15px"><div class="panel-head"><div><h3>Reset workspace data</h3><p>Removes tracker and Study Hub data on this device. When signed in, the reset can sync to your account and remove the workspace on other devices. Export a full JSON backup first.</p></div><button class="btn btn-danger" id="resetBtn">Reset all data</button></div></div>
+        <div class="panel danger-reset-card" style="margin-top:15px"><div class="panel-head"><div><h3>Choose a deletion action</h3><p>Workspace reset keeps your account. Account deletion permanently closes it.</p></div><button class="btn btn-danger" id="resetBtn" type="button">Choose deletion option</button></div></div>
+        <dialog id="workspaceDeletionDialog" aria-labelledby="workspaceDeletionDialogTitle">
+          <div class="dialog-head"><h2 id="workspaceDeletionDialogTitle">Choose what to delete</h2><p>These actions have different effects. Select only the one you intend.</p></div>
+          <div class="dialog-body">
+            <section class="helper" style="margin-bottom:12px"><strong>Delete workspace only</strong><p style="margin:6px 0 0">Removes study records and resets this device. When signed in, the empty workspace syncs to your cloud account. Your account and sign-in remain active.</p><button class="btn btn-danger" id="workspaceResetOnlyBtn" type="button" style="margin-top:10px">Delete workspace only</button></section>
+            <section id="accountDeletionChoice" class="helper" hidden style="margin-bottom:12px"><strong>Delete account and workspace</strong><p id="deletionSignedInAccount" style="margin:6px 0 0;overflow-wrap:anywhere"></p><p id="accountDeletionStatusText" style="margin:6px 0 0">Checking account readiness…</p><p class="small" style="margin:6px 0 0"><a href="./delete-account.html" target="_blank" rel="noopener">Account &amp; Data Deletion instructions</a></p><button class="btn btn-danger" id="accountDeleteChoiceBtn" type="button" style="margin-top:10px">Permanently delete account</button></section>
+            <p id="accountDeletionSignInHint" class="muted small">Sign in to the account you want to delete. Account deletion is unavailable while signed out.</p>
+            <div class="dialog-actions"><button class="btn" id="cancelWorkspaceDeletionBtn" type="button">Cancel</button></div>
+          </div>
+        </dialog>
       </section>
     </div>
   </div>
