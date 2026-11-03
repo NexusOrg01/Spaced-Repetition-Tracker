@@ -84,7 +84,7 @@ await patchFile('index.html', html => {
     '  <script src="./nexus-android-bridge.js"></script>\n' +
     '  <script src="./nexus-app-bootstrap.js"></script>';
   next = replaceExactlyOnce(next, currentScripts, androidScripts, 'Android script injection');
-  return next.replace('accept=".json,application/json"', 'accept=".json,.csv,application/json,text/csv,application/octet-stream"');
+  return next.replace('accept=".json,application/json"', 'accept=".json,application/json,application/octet-stream"');
 }, 'Android HTML preparation');
 
 await patchFile('cloud-sync.js', source => {
