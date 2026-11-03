@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { createRequire } from 'node:module';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(root, 'dist');
+const requireAndroid = createRequire(join(root, 'android', 'package.json'));
+const { build } = requireAndroid('esbuild');
 const cloudEnabled = process.env.NEXUS_ANDROID_CLOUD_MODE === 'enabled';
 const allowProductionCloud = process.env.NEXUS_ANDROID_ALLOW_PRODUCTION_CLOUD === 'true';
 const liveSupabaseHost = 'txugbdavblpettcnhcxl.supabase.co';
@@ -52,7 +54,7 @@ async function patchFile(name, transform, label) {
 }
 
 await mkdir(join(dist, 'vendor'), { recursive: true });
-const supabasePackage = join(root, 'node_modules', '@supabase', 'supabase-js');
+const supabasePackage = join(root, 'android', 'node_modules', '@supabase', 'supabase-js');
 await copyFile(join(supabasePackage, 'dist', 'umd', 'supabase.js'), join(dist, 'vendor', 'supabase.js'));
 await copyFile(join(supabasePackage, 'LICENSE'), join(dist, 'vendor', 'SUPABASE-LICENSE'));
 
