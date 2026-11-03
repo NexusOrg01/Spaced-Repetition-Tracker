@@ -20,6 +20,8 @@ assert.ok(gradle.includes('cloud-sync.js'), 'The build task must explicitly mana
 assert.ok(gradle.includes('_vercel') && gradle.includes('insights'), 'The build task must explicitly strip Vercel analytics.');
 assert.ok(activity.includes('MediaStore.Downloads.EXTERNAL_CONTENT_URI'), 'Exports must use Android Downloads.');
 assert.ok(activity.includes('Intent.ACTION_OPEN_DOCUMENT'), 'Imports must use the Android system document picker.');
+assert.ok(activity.includes('ActivityResultLauncher<Intent>') && !activity.includes('onActivityResult('), 'File imports must use the modern AndroidX Activity Result API.');
+assert.ok(!activity.includes('setDatabaseEnabled('), 'WebView must not enable the deprecated database setting.');
 assert.ok(activity.includes('WebViewAssetLoader'), 'The app must load packaged assets from a secure local origin.');
 assert.ok(activity.includes('ServiceWorkerControllerCompat'), 'Service-worker requests must be routed through the local asset loader.');
 assert.ok(activity.includes('OnBackPressedDispatcher') && activity.includes('webView.goBack()'), 'Android Back must use the predictive-back-compatible dispatcher.');
