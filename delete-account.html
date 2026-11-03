@@ -22,9 +22,16 @@
   <p class="eyebrow">Nexus · Account controls</p>
   <h1>Account and Data Deletion</h1>
   <p class="muted">Last updated: 3 November 2026</p>
-  <p>You can request deletion of your Nexus cloud account and the study workspace associated with it. Account deletion is currently processed manually by the Nexus maintainer; there is not yet an automated in-app deletion control.</p>
+  <p>You can permanently delete your Nexus cloud account and its associated cloud workspace from the in-app Danger Zone when the authenticated account-deletion service is enabled for your deployment. The action requires a recently authenticated session. If the in-app option is unavailable, you can request deletion by email using the fallback process below.</p>
 
-  <h2>How to request deletion</h2>
+  <h2>Delete from within Nexus</h2>
+  <ol>
+    <li>Sign in to the Nexus account you want to delete and open the Danger Zone in the account controls.</li>
+    <li>Choose the permanent account-deletion option, not the workspace-only reset. Read the confirmation carefully; account deletion is irreversible.</li>
+    <li>The app requires a recent sign-in and a working account-deletion service. If the option is unavailable, use the email fallback below.</li>
+  </ol>
+
+  <h2>Email fallback</h2>
   <ol>
     <li>Send an email from the email address associated with your Nexus sign-in account, where possible.</li>
     <li>Use the subject line <strong>Nexus account deletion request</strong>.</li>
@@ -47,7 +54,7 @@
   </ul>
 
   <h2>Before you request deletion</h2>
-  <p>Cloud account deletion is intended to be permanent. Download a full JSON backup first if you want to retain your study records. Signing out is not the same as deleting an account. Resetting the local workspace is not the same as deleting cloud account data.</p>
+  <p>Cloud account deletion is permanent. Download a full JSON backup first if you want to retain your study records. Signing out is not the same as deleting an account. The workspace-only reset is separate from permanent account deletion. Local copies on other devices and downloaded backups are not remotely erased.</p>
 
   <h2>Contact</h2>
   <p>Requests and questions: <a href="mailto:nexusorg.contact01@gmail.com">nexusorg.contact01@gmail.com</a>.</p>
