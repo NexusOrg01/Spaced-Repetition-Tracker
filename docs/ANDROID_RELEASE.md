@@ -26,7 +26,9 @@ CI and default debug APK builds set `NEXUS_ANDROID_CLOUD_MODE=disabled`. In this
 
 To build a cloud-enabled internal test APK intentionally, set `NEXUS_ANDROID_CLOUD_MODE=enabled`, `NEXUS_SUPABASE_URL` and `NEXUS_SUPABASE_ANON_KEY` during `npm run android:sync`. The asset builder rejects the production Supabase project and secret/service-role keys. Use a separate staging project and never use production for destructive Android testing. The preview OAuth callback is `org.nexus.tracker.preview://auth-callback`; it must be allow-listed in the test project's redirect URLs before OAuth testing. This PR changes no Supabase configuration.
 
-Example staging build: `NEXUS_ANDROID_CLOUD_MODE=enabled NEXUS_SUPABASE_URL=https://YOUR-STAGING-REF.supabase.co NEXUS_SUPABASE_ANON_KEY=YOUR-STAGING-PUBLISHABLE-KEY npm run android:sync`. The values are embedded as client-visible publishable configuration, so never pass a service-role/secret key.\n\nThe callback scheme and package IDs are temporary. Final values must be selected after the project has an approved, project-controlled domain and the store-signing strategy is decided.
+Example staging build: `NEXUS_ANDROID_CLOUD_MODE=enabled NEXUS_SUPABASE_URL=https://YOUR-STAGING-REF.supabase.co NEXUS_SUPABASE_ANON_KEY=YOUR-STAGING-PUBLISHABLE-KEY npm run android:sync`. The values are embedded as client-visible publishable configuration, so never pass a service-role/secret key.
+
+The callback scheme and package IDs are temporary. Final values must be selected after the project has an approved, project-controlled domain and the store-signing strategy is decided.
 
 ## Toolchain pins
 
