@@ -144,3 +144,7 @@ The following describes repository state and the limits of what source review ca
 - The retirement migration is `supabase/migrations/20261018_retire_community_wishlist.sql`. Run it only after verifying the Google-Forms-based app is live in Production and the old API is absent. Do not run the deprecated wishlist setup/privilege SQL files.
 - A successful CI run or Vercel deployment does not independently prove live Supabase RLS permissions, authentication-provider settings, response headers, or cross-device restore behavior. Verify those separately when needed.
 - The repository currently has open pull requests that must be reviewed against current `main`; do not merge stale or superseded PRs without rechecking their changes.
+
+## Licence
+
+The proposed licence for original Nexus application source code is the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0). See [LICENSE](LICENSE) and [the licensing and release policy](docs/LICENSING.md) for scope, third-party material, contributor, trademark, and F-Droid compliance notes. Third-party assets and dependencies retain their own licence terms.
