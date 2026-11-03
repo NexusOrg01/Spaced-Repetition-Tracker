@@ -22,6 +22,8 @@ import android.widget.FrameLayout;
 
 import androidx.activity.ComponentActivity;
 import androidx.activity.OnBackPressedCallback;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.Nullable;
 import androidx.webkit.ServiceWorkerClientCompat;
 import androidx.webkit.ServiceWorkerControllerCompat;
@@ -36,16 +38,31 @@ public final class MainActivity extends ComponentActivity {
     private static final String APP_HOST = "appassets.androidplatform.net";
     private static final String START_URL =
             "https://appassets.androidplatform.net/assets/www/index.html";
-    private static final int FILE_CHOOSER_REQUEST = 4101;
     private static final int MAX_EXPORT_CHARS = 25 * 1024 * 1024;
 
     private WebView webView;
     private ValueCallback<Uri[]> fileChooserCallback;
+    private ActivityResultLauncher<Intent> filePickerLauncher;
 
     @SuppressLint({"SetJavaScriptEnabled", "JavascriptInterface"})
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        filePickerLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    if (fileChooserCallback == null) return;
+                    Uri[] selection = null;
+                    if (result.getResultCode() == RESULT_OK
+                            && result.getData() != null
+                            && result.getData().getData() != null) {
+                        selection = new Uri[] { result.getData().getData() };
+                    }
+                    fileChooserCallback.onReceiveValue(selection);
+                    fileChooserCallback = null;
+                }
+        );
 
         webView = new WebView(this);
         webView.setLayoutParams(new FrameLayout.LayoutParams(
@@ -57,7 +74,6 @@ public final class MainActivity extends ComponentActivity {
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
-        settings.setDatabaseEnabled(true);
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
@@ -158,9 +174,8 @@ public final class MainActivity extends ComponentActivity {
         picker.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false);
 
         try {
-            startActivityForResult(
-                    Intent.createChooser(picker, "Choose a Nexus backup or CSV file"),
-                    FILE_CHOOSER_REQUEST
+            filePickerLauncher.launch(
+                    Intent.createChooser(picker, "Choose a Nexus backup or CSV file")
             );
             return true;
         } catch (ActivityNotFoundException error) {
@@ -169,19 +184,6 @@ public final class MainActivity extends ComponentActivity {
             Log.e(TAG, "Android file picker is unavailable.", error);
             return false;
         }
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != FILE_CHOOSER_REQUEST || fileChooserCallback == null) return;
-
-        Uri[] result = null;
-        if (resultCode == RESULT_OK && data != null && data.getData() != null) {
-            result = new Uri[] { data.getData() };
-        }
-        fileChooserCallback.onReceiveValue(result);
-        fileChooserCallback = null;
     }
 
     private void registerBackNavigation() {
