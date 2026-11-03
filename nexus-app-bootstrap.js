@@ -16,7 +16,10 @@
     'cloud-sync.js',
     'nexus-app-inline.js',
     'workspace-isolation-guard.js'
-  ].filter(asset => !(window.NexusAndroidEdition === true && asset === 'cloud-sync.js'));
+  ];
+  const RUNTIME_ASSETS_TO_LOAD = window.NexusAndroidEdition === true
+    ? RUNTIME_ASSETS.filter(asset => asset !== 'cloud-sync.js')
+    : RUNTIME_ASSETS;
 
   // Capture Chromium's installability event before asynchronous storage setup and
   // sequential app-module loading can delay registration of the main app listeners.
@@ -102,7 +105,7 @@
     }
 
     try {
-      for (const asset of RUNTIME_ASSETS) await loadScript(asset);
+      for (const asset of RUNTIME_ASSETS_TO_LOAD) await loadScript(asset);
       applyAndroidEditionNotice();
     } catch (error) {
       console.error('Nexus application startup stopped before all required modules loaded.', error);
