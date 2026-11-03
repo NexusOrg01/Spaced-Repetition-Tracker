@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import vm from 'node:vm';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const read = path => readFileSync(resolve(root, path), 'utf8');
@@ -41,6 +42,16 @@ assert.ok(!existsSync(resolve(root, 'dist/android')), 'Android Gradle project mu
 assert.ok(existsSync(resolve(root, 'dist/vendor/supabase.js')));
 assert.ok(existsSync(resolve(root, 'dist/vendor/SUPABASE-LICENSE')));
 assert.ok(existsSync(resolve(root, 'dist/nexus-android-bridge.js')));
+
+for (const file of [
+  'dist/cloud-sync.js',
+  'dist/nexus-app-bootstrap.js',
+  'dist/app-core.js',
+  'dist/study-hub.js',
+  'dist/nexus-android-bridge.js'
+]) {
+  new vm.Script(read(file), { filename: file });
+}
 
 const distCloud = read('dist/cloud-sync.js');
 assert.match(distCloud, /NexusAndroidBridge/);
