@@ -114,6 +114,17 @@ for (const expected of ['feature parity', 'reproducible', 'Anti-Feature', 'esbui
   assert.ok(fdroidDocs.toLowerCase().includes(expected.toLowerCase()), 'F-Droid release guide is missing ' + expected);
 }
 
+const androidLauncherArtworkPath = 'android/app/src/main/res/drawable-nodpi/nexus_launcher.png';
+const androidLauncherArtwork = readFileSync(resolve(root, androidLauncherArtworkPath));
+assert.equal(androidLauncherArtwork.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', 'Android launcher artwork must be a PNG file.');
+assert.equal(androidLauncherArtwork.readUInt32BE(16), 512, 'Android launcher artwork must be 512 pixels wide.');
+assert.equal(androidLauncherArtwork.readUInt32BE(20), 512, 'Android launcher artwork must be 512 pixels high.');
+const androidLauncherForeground = read('android/app/src/main/res/drawable/splash_icon.xml');
+assert.ok(androidLauncherForeground.includes('@drawable/nexus_launcher'), 'Launcher and splash icon must use the original Nexus artwork.');
+assert.ok(androidLauncherForeground.includes('96dp'), 'Adaptive icon artwork must stay within the Android foreground safe zone.');
+const launcherColors = read('android/app/src/main/res/values/colors.xml');
+assert.ok(launcherColors.includes('<color name="launcher_background">#141D31</color>'), 'Adaptive icon background must match the original Nexus artwork.');
+
 const shortDescription = read('fastlane/metadata/android/en-US/short_description.txt').trim();
 assert.ok(shortDescription.length <= 80, 'Store short description must be 80 characters or less.');
 
