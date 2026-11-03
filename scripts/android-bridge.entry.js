@@ -6,10 +6,10 @@ import { Share } from '@capacitor/share';
 import { FilePicker } from '@capawesome/capacitor-file-picker';
 
 const isNativeApp = Capacitor.isNativePlatform();
-const cloudSyncEnabled = Boolean(__NEXUS_ANDROID_CLOUD_ENABLED__);
+const cloudSyncEnabled = Boolean(__NEXUS_ANDROID_CLOUD_ENABLED__);\nconst androidCloudConfig = __NEXUS_ANDROID_CLOUD_CONFIG__;
 const AUTH_REDIRECT_URL = 'org.nexus.tracker.preview://auth-callback';
 
-if (typeof window !== 'undefined') window.Capacitor = Capacitor;
+if (typeof window !== 'undefined') {\n  window.Capacitor = Capacitor;\n  if (isNativeApp && cloudSyncEnabled && androidCloudConfig) {\n    try { window.localStorage.setItem('nexus.cloud.config.v1', JSON.stringify(androidCloudConfig)); }\n    catch (error) { console.error('Nexus Android could not store its explicit test cloud configuration.', error); }\n  }\n}
 
 function dispatchAuthUrl(url) {
   if (!url || !isNativeApp) return;
