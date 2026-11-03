@@ -80,7 +80,7 @@ Do not submit until:
 3. Gradle dependency-verification checksums generated in CI are reviewed and committed; strict dependency verification is enabled for release builds.
 4. F-Droid's buildserver successfully builds the APK from the tagged public source, including the esbuild-from-source recipe where required, and the build passes F-Droid metadata/lint and binary checks. Run an APK reproducibility comparison and investigate unexplained differences. Reproducible builds are strongly recommended, but F-Droid's Inclusion How-To describes them as best practice rather than an absolute inclusion requirement.
 5. A cloud-enabled F-Droid APK is physically tested for fresh install, offline use, email sign-in, browser OAuth if configured, cloud sync, sign-out, account switching, account deletion, backup/restore, file picker and sharing.
-6. Final screenshots and release metadata are published, including a changelog. F-Droid Anti-Feature classification is agreed with maintainers.
+6. Final store assets and release metadata are complete. The 512x512 icon and English short/full descriptions are now included in fastlane; add real-device screenshots and a release changelog before submission. F-Droid Anti-Feature classification is agreed with maintainers.
 7. Privacy policy, account deletion, store identity and final package signing have been checked.
 
 The preview APKs and unsigned release APK/AAB files are validation artefacts, not store-ready releases.
