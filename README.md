@@ -144,3 +144,20 @@ The following describes repository state and the limits of what source review ca
 - The retirement migration is `supabase/migrations/20261018_retire_community_wishlist.sql`. Run it only after verifying the Google-Forms-based app is live in Production and the old API is absent. Do not run the deprecated wishlist setup/privilege SQL files.
 - A successful CI run or Vercel deployment does not independently prove live Supabase RLS permissions, authentication-provider settings, response headers, or cross-device restore behavior. Verify those separately when needed.
 - The repository currently has open pull requests that must be reviewed against current `main`; do not merge stale or superseded PRs without rechecking their changes.
+
+
+## Android and F-Droid edition
+
+A separate Android project is available in `android/`. It packages the app files locally and does not open the Vercel production website. The F-Droid build is intentionally offline-only: it has no Android Internet permission, excludes the Supabase cloud-sync module and its runtime SDK download, and strips Vercel Analytics from the packaged HTML. Local review scheduling, study tracking, Study Hub data, curriculum packs, JSON backups and CSV exports remain available. Backups and CSV files are saved to `Downloads/Nexus`; restore/import uses the Android document picker.
+
+This does not change the normal PWA edition or its existing optional cloud-sync behavior.
+
+Build the Android project with JDK 17, Gradle 8.13 and Android SDK Platform 36:
+
+```sh
+gradle -p android --no-daemon :app:assembleDebug :app:assembleRelease :app:verifyFdroidAssets
+```
+
+See [the F-Droid readiness notes](docs/fdroid-readiness.md) for the Android package identity, build requirements and remaining submission checks. The Android build is a preparation branch until its APK is installed and tested on a physical device and F-Droid maintainers approve the listing.
+
+Project-authored source code is released under GNU GPL-3.0-only; see [LICENSE](LICENSE). Third-party components and any separately licensed content remain subject to their own notices.
