@@ -147,4 +147,4 @@ The following describes repository state and the limits of what source review ca
 
 ## Licence
 
-The proposed licence for original Nexus application source code is the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0). See [LICENSE](LICENSE) and [the licensing and release policy](docs/LICENSING.md) for scope, third-party material, contributor, trademark, and F-Droid compliance notes. Third-party assets and dependencies retain their own licence terms.
+Original Nexus application source code is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0), subject to the scope and third-party material notes in [the licensing and release policy](docs/LICENSING.md). The full licence text is in [LICENSE](LICENSE). Third-party assets and dependencies retain their own licence terms.
