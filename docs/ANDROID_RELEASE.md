@@ -46,14 +46,13 @@ The callback scheme and package IDs are temporary. Final values must be selected
 - Gradle wrapper: 8.14.3
 - CI JDK: 21; CI Node: 22
 
-Direct npm dependencies are pinned to exact versions. A committed npm lockfile and full Gradle dependency-verification metadata are still required before claiming a fully reproducible source build. F-Droid submission must independently verify the final build recipe and APK.
+Android-only npm dependencies are isolated in `android/package.json`, so the existing root PWA build does not install Capacitor. Direct Android npm dependencies are pinned to exact versions. A committed Android npm lockfile and full Gradle dependency-verification metadata are still required before claiming a fully reproducible source build. F-Droid submission must independently verify the final build recipe and APK.
 
 ## Build locally
 
 Install Node.js 22, JDK 21, Android SDK Platform 36 and Build Tools 36.0.0:
 
 ```sh
-npm install --no-audit --no-fund --package-lock=false
 npm run android:sync
 npm run test:android
 cd android
