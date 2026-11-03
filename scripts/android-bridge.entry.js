@@ -6,10 +6,20 @@ import { Share } from '@capacitor/share';
 import { FilePicker } from '@capawesome/capacitor-file-picker';
 
 const isNativeApp = Capacitor.isNativePlatform();
-const cloudSyncEnabled = Boolean(__NEXUS_ANDROID_CLOUD_ENABLED__);\nconst androidCloudConfig = __NEXUS_ANDROID_CLOUD_CONFIG__;
+const cloudSyncEnabled = Boolean(__NEXUS_ANDROID_CLOUD_ENABLED__);
+const androidCloudConfig = __NEXUS_ANDROID_CLOUD_CONFIG__;
 const AUTH_REDIRECT_URL = 'org.nexus.tracker.preview://auth-callback';
 
-if (typeof window !== 'undefined') {\n  window.Capacitor = Capacitor;\n  if (isNativeApp && cloudSyncEnabled && androidCloudConfig) {\n    try { window.localStorage.setItem('nexus.cloud.config.v1', JSON.stringify(androidCloudConfig)); }\n    catch (error) { console.error('Nexus Android could not store its explicit test cloud configuration.', error); }\n  }\n}
+if (typeof window !== 'undefined') {
+  window.Capacitor = Capacitor;
+  if (isNativeApp && cloudSyncEnabled && androidCloudConfig) {
+    try {
+      window.localStorage.setItem('nexus.cloud.config.v1', JSON.stringify(androidCloudConfig));
+    } catch (error) {
+      console.error('Nexus Android could not store its explicit test cloud configuration.', error);
+    }
+  }
+}
 
 function dispatchAuthUrl(url) {
   if (!url || !isNativeApp) return;
@@ -42,6 +52,7 @@ async function pickBackupFile() {
   });
   const input = document.getElementById('importFile');
   if (!input) throw new Error('Nexus backup import control is unavailable.');
+
   const transfer = new DataTransfer();
   transfer.items.add(file);
   input.files = transfer.files;
@@ -78,6 +89,7 @@ async function shareTextFile(filename, text, mimeType) {
     recursive: true
   });
   if (!written.uri) throw new Error('Android could not prepare the export file.');
+
   await Share.share({
     title: 'Share Nexus export',
     text: mimeType === 'text/csv' ? 'Nexus CSV export' : 'Nexus full backup',
@@ -88,7 +100,9 @@ async function shareTextFile(filename, text, mimeType) {
 }
 
 async function openAuthUrl(url) {
-  if (!isNativeApp || !cloudSyncEnabled) throw new Error('Cloud sign-in is disabled in this Android build.');
+  if (!isNativeApp || !cloudSyncEnabled) {
+    throw new Error('Cloud sign-in is disabled in this Android build.');
+  }
   await Browser.open({ url });
 }
 
@@ -111,11 +125,13 @@ function installAndroidNavigation() {
       dialog.close();
       return;
     }
+
     const menu = document.querySelector('details[open]');
     if (menu) {
       menu.open = false;
       return;
     }
+
     const activeView = document.querySelector('.view.active');
     if (activeView && activeView.id !== 'view-overview') {
       const homeTab = document.querySelector('.tab[data-view="overview"]');
@@ -131,8 +147,10 @@ function installAndroidNavigation() {
 if (isNativeApp) {
   installNativeFilePicker();
   installAndroidNavigation();
+
   App.addListener('appUrlOpen', event => handleAppUrl(event && event.url))
     .catch(error => console.warn('Nexus Android link handling could not be registered.', error));
+
   App.getLaunchUrl().then(result => {
     if (result && result.url) return handleAppUrl(result.url);
     return undefined;
