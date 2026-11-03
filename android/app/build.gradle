@@ -180,7 +180,7 @@ tasks.register("verifyFdroidAssets") {
             !html.contains("./nexus-native-bridge.js")) {
             throw new GradleException("The native Android build flags or native export bridge are missing.")
         }
-        if (!bootstrap.contains("asset === 'cloud-sync.js'") ||
+        if (!bootstrap.contains("asset !== 'cloud-sync.js'") ||
             !worker.contains("path === './cloud-sync.js'")) {
             throw new GradleException("Cloud sync must be excluded from the Android runtime and service-worker cache.")
         }
