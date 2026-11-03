@@ -109,6 +109,21 @@ for (const expected of [
   assert.ok(buildScript.includes(expected), 'Android build script is missing ' + expected);
 }
 
+for (const part of [
+  'Browser.close()', 'String(url).startsWith(AUTH_REDIRECT_URL)',
+  'App.addListener(\'appUrlOpen\'', 'App.getLaunchUrl()'
+]) {
+  assert.ok(bridge.includes(part), 'Android deep-link bridge is missing ' + part);
+}
+for (const expected of [
+  'skipBrowserRedirect:true', 'openAuthUrl(data.url)',
+  'exchangeCodeForSession(code)', 'verifyOtp({token_hash:',
+  'setSession({access_token:accessToken,refresh_token:refreshToken})',
+  'window.NexusHandleAndroidAuthUrl=handleAndroidAuthUrl'
+]) {
+  assert.ok(buildScript.includes(expected), 'Android OAuth flow is missing ' + expected);
+}
+
 const fdroidDocs = read('docs/FDROID_RELEASE.md');
 for (const expected of ['feature parity', 'reproducible', 'Anti-Feature', 'esbuild', 'cloud sync']) {
   assert.ok(fdroidDocs.toLowerCase().includes(expected.toLowerCase()), 'F-Droid release guide is missing ' + expected);

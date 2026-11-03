@@ -33,5 +33,8 @@ Run these checks on both debug APKs. CI verifies static wiring and Gradle compil
 - Confirm the CI APK is configured for the isolated staging Supabase project, never the production project.
 - Confirm optional sign-in controls and cloud sync are available in both store flavours; no Google Play Services installation should be required.
 - Verify the staging callback URI (`org.nexus.tracker.preview://auth-callback` for the default preview ID) is allow-listed before testing email or OAuth sign-in.
+- In the staging Supabase dashboard, add `org.nexus.tracker.preview://auth-callback` under Authentication → URL Configuration → Additional Redirect URLs. This is the app's final redirect target, not Google's OAuth client callback.
+- Keep the Google OAuth provider's authorised redirect URI pointed at the staging Supabase Auth callback: `https://xuwfzibxhxzxxupprxsq.supabase.co/auth/v1/callback`. Do not substitute the custom Android URI in Google Cloud Console.
+- Expected successful flow: Google sign-in opens the system browser tab; Supabase redirects to the custom Android URI; Nexus resumes, exchanges the returned code for a session, and closes the browser tab.
 - Test sign-in, account isolation, offline queued changes, sync, sign-out and account deletion only with staging accounts. Do not use production accounts in preview APKs.
 - For release testing, ensure the Supabase redirect allow-list contains the exact final URI derived from the final application ID, and test the F-Droid APK with that same ID.
