@@ -7,14 +7,14 @@ import vm from 'node:vm';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const source = readFileSync(resolve(root, 'sw.js'), 'utf8');
 const ORIGIN = 'https://nexus.test/';
-const CACHE_NAME = 'nexus-rating-analytics-v28';
+const CACHE_NAME = 'nexus-rating-analytics-v29';
 const CACHE_PREFIX = 'nexus-rating-analytics-';
 
 function response(status = 200, type = 'basic', label = '') {
   return { status, type, label, clone() { return response(status, type, label); } };
 }
 
-function createHarness(networkHandler = async () => response()) {
+function createHarness(networkHandler = async () => response(), workerUrl = ORIGIN + 'sw.js') {
   const listeners = Object.create(null);
   const store = new Map();
   let networkCalls = 0;
@@ -71,7 +71,7 @@ function createHarness(networkHandler = async () => response()) {
   }
 
   const self = {
-    location: { origin: new URL(ORIGIN).origin },
+    location: { origin: new URL(ORIGIN).origin, href: new URL(workerUrl, ORIGIN).href },
     clients: { claim: async () => undefined },
     addEventListener(name, handler) { listeners[name] = handler; },
     skipWaiting() { skipWaitingCalled = true; return Promise.resolve(); }
@@ -197,8 +197,19 @@ async function settle(event) {
     'query-bearing authentication callback URLs must not be written to the cache');
 }
 
+{
+  const h = createHarness(async () => response(), ORIGIN + 'sw.js?edition=fdroid');
+  const event = eventFor(undefined);
+  h.listeners.install(event);
+  await settle(event);
+  const cache = await h.caches.open(CACHE_NAME);
+  assert.ok(await cache.match('./index.html'), 'the F-Droid service worker must cache the local app shell');
+  assert.equal(await cache.match('./cloud-sync.js'), undefined,
+    'the F-Droid edition must not cache the Supabase cloud-sync runtime');
+}
+
 assert.ok(source.includes('keys.filter(k=>k.startsWith(CACHE_PREFIX)&&k!==CACHE_NAME)'),
   'the activation handler must scope cache cleanup to Nexus-owned cache names');
-assert.ok(source.includes('const CACHE_NAME=CACHE_PREFIX+\'v28\';'),
+assert.ok(source.includes('const CACHE_NAME=CACHE_PREFIX+\'v29\';'),
   'the app-shell cache version must advance after service-worker behavior changes');
 console.log('Service-worker reliability tests passed.');

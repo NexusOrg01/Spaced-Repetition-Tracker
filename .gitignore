@@ -11,3 +11,10 @@
 node_modules/
 .DS_Store
 *.log
+
+# Android / Gradle local build output and signing material
+.gradle/
+**/build/
+local.properties
+*.jks
+*.keystore

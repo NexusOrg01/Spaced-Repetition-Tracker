@@ -1,0 +1,1 @@
+Initial F-Droid Android edition. Offline study tracking, FSRS-6 reviews, local backups, CSV exports and Android file-picker integration.

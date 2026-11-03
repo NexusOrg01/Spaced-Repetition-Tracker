@@ -1,0 +1,196 @@
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+
+plugins {
+    id "com.android.application"
+}
+
+def repositoryRoot = rootProject.projectDir.parentFile
+def generatedAssets = layout.buildDirectory.dir("generated/fdroidAssets")
+def generatedResources = layout.buildDirectory.dir("generated/fdroidResources")
+
+// Only the files needed by the offline app are copied into the APK.
+// cloud-sync.js is deliberately excluded: it downloads the Supabase SDK at runtime.
+def webAssetPaths = [
+    "index.html",
+    "LICENSE",
+    "manifest.webmanifest",
+    "icon.svg",
+    "icon-192.png",
+    "icon-512.png",
+    "nexus-storage.js",
+    "nexus-app-bootstrap.js",
+    "nexus-app-inline.js",
+    "nexus-native-bridge.js",
+    "app-core.js",
+    "study-hub.js",
+    "fsrs-bundle.js",
+    "backup-restore-utils.js",
+    "offline-sync-queue.js",
+    "curriculum-integrity.js",
+    "explore-curriculum.js",
+    "workspace-isolation-guard.js",
+    "cloud-sync-recovery.js",
+    "workspace-sync-merge.js",
+    "sw.js",
+    "curricula/catalog.json"
+]
+
+android {
+    namespace "io.github.nexusorg01.nexus"
+    compileSdk 36
+
+    defaultConfig {
+        applicationId "io.github.nexusorg01.nexus"
+        minSdk 29
+        targetSdk 36
+        versionCode 1
+        versionName "1.0.0"
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix ".debug"
+            versionNameSuffix "-debug"
+        }
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main {
+            assets.srcDir(generatedAssets)
+            res.srcDir(generatedResources)
+        }
+    }
+}
+
+dependencies {
+    implementation "androidx.webkit:webkit:1.18.0"
+    implementation "androidx.activity:activity:1.13.0"
+}
+
+tasks.register("prepareFdroidAssets") {
+    inputs.files(webAssetPaths.collect { new File(repositoryRoot, it) })
+    outputs.dir(generatedAssets)
+    outputs.dir(generatedResources)
+
+    doLast {
+        File webDir = new File(generatedAssets.get().asFile, "www")
+        project.delete(webDir)
+
+        webAssetPaths.each { relativePath ->
+            File source = new File(repositoryRoot, relativePath)
+            if (!source.isFile()) {
+                throw new GradleException("Required Nexus web asset is missing: " + relativePath)
+            }
+            File destination = new File(webDir, relativePath)
+            destination.parentFile.mkdirs()
+            destination.bytes = source.bytes
+        }
+
+        // Never ship Vercel Analytics in the F-Droid APK.
+        File indexFile = new File(webDir, "index.html")
+        String html = indexFile.getText("UTF-8")
+        def analyticsPattern = /(?s)\s*<!-- Vercel Web Analytics -->\s*<script>.*?<\/script>\s*<script defer src="\/_vercel\/insights\/script\.js"><\/script>/
+        String withoutAnalytics = html.replaceFirst(analyticsPattern, "")
+        if (withoutAnalytics == html || withoutAnalytics.contains("/_vercel/insights/script.js")) {
+            throw new GradleException("Could not reliably remove the Vercel Analytics snippet from the F-Droid build.")
+        }
+        html = withoutAnalytics
+
+        // Select the offline-only runtime and install the native file-export bridge.
+        String bootstrapTag = '<script src="./nexus-app-bootstrap.js"></script>'
+        if (html.count(bootstrapTag) != 1) {
+            throw new GradleException("Expected exactly one Nexus bootstrap script reference.")
+        }
+        String nativeScripts = '<script>window.NexusAndroidEdition = true;</script>\n  <script src="./nexus-native-bridge.js"></script>\n  '
+        html = html.replace(bootstrapTag, nativeScripts + bootstrapTag)
+
+        String settingsButton = 'id="menuSettings">⚙ Settings & setup</button>'
+        if (html.count(settingsButton) != 1) {
+            throw new GradleException("Could not add the Android licence item to the menu.")
+        }
+        String licenseButton = '<button type="button" onclick="location.href=&quot;./license.html&quot;">License &amp; copyright</button>'
+        html = html.replace(settingsButton, settingsButton + licenseButton)
+        indexFile.setText(html, "UTF-8")
+
+        File licensePage = new File(webDir, "license.html")
+        licensePage.setText(
+            '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Nexus licence</title></head>' +
+            '<body style="font:16px/1.6 system-ui,sans-serif;max-width:760px;margin:0 auto;padding:24px;background:#0F1117;color:#f5f4ff">' +
+            '<main><h1>Nexus: Spaced Repetition Tracker</h1><p>Copyright (C) 2026 NexusOrg01.</p>' +
+            '<p>This program is free software: you may redistribute it and/or modify it under the terms of the GNU General Public License, version 3 only.</p>' +
+            '<p>This program is distributed WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.</p>' +
+            '<p><a style="color:#b8afff" href="./LICENSE">Read the full GNU GPL-3.0-only licence text</a></p>' +
+            '<p><a style="color:#b8afff" href="./index.html">Return to Nexus</a></p></main></body></html>',
+            "UTF-8"
+        )
+
+        // PWA screenshots point to externally hosted images; they are not needed inside this APK.
+        File manifestFile = new File(webDir, "manifest.webmanifest")
+        def manifest = new JsonSlurper().parse(manifestFile)
+        manifest.remove("screenshots")
+        manifestFile.setText(JsonOutput.prettyPrint(JsonOutput.toJson(manifest)) + "\n", "UTF-8")
+
+        File buildConfig = new File(webDir, "nexus-build-config.js")
+        buildConfig.setText(
+            "/* Generated by the reproducible F-Droid asset task. */\n" +
+            "window.NexusBuildConfig = Object.freeze({ edition: 'fdroid', cloudSyncEnabled: false });\n",
+            "UTF-8"
+        )
+
+        // Reuse the project's existing icon without checking generated binaries into source control.
+        File sourceIcon = new File(repositoryRoot, "icon-192.png")
+        File iconDirectory = new File(generatedResources.get().asFile, "mipmap-xxxhdpi")
+        iconDirectory.mkdirs()
+        new File(iconDirectory, "ic_launcher.png").bytes = sourceIcon.bytes
+    }
+}
+
+tasks.register("verifyFdroidAssets") {
+    dependsOn("prepareFdroidAssets")
+    doLast {
+        File webDir = new File(generatedAssets.get().asFile, "www")
+        File indexFile = new File(webDir, "index.html")
+        File bootstrapFile = new File(webDir, "nexus-app-bootstrap.js")
+        File workerFile = new File(webDir, "sw.js")
+        String html = indexFile.getText("UTF-8")
+        String bootstrap = bootstrapFile.getText("UTF-8")
+        String worker = workerFile.getText("UTF-8")
+
+        if (new File(webDir, "cloud-sync.js").exists()) {
+            throw new GradleException("The F-Droid asset set must not contain cloud-sync.js.")
+        }
+        if (html.contains("/_vercel/insights/script.js") || html.contains("window.vaq")) {
+            throw new GradleException("The F-Droid asset set must not include Vercel Analytics.")
+        }
+        if (!html.contains('id="menuLicense"') && !html.contains('License &amp; copyright')) {
+            throw new GradleException("The visible Android licence entry is missing.")
+        }
+        if (!new File(webDir, "LICENSE").isFile() || !new File(webDir, "license.html").isFile()) {
+            throw new GradleException("The Android licence page or full licence text is missing.")
+        }
+        if (!html.contains("window.NexusAndroidEdition = true;") ||
+            !html.contains("./nexus-native-bridge.js")) {
+            throw new GradleException("The native Android build flags or native export bridge are missing.")
+        }
+        if (!bootstrap.contains("asset !== 'cloud-sync.js'") ||
+            !worker.contains("path === './cloud-sync.js'")) {
+            throw new GradleException("Cloud sync must be excluded from the Android runtime and service-worker cache.")
+        }
+        if (new File(webDir, "nexus-build-config.js").isFile() == false) {
+            throw new GradleException("The generated Nexus build configuration is missing.")
+        }
+    }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn("verifyFdroidAssets")
+}
