@@ -1,0 +1,60 @@
+name: Android F-Droid build
+
+on:
+  pull_request:
+    paths:
+      - "android/**"
+      - "nexus-native-bridge.js"
+      - "nexus-app-bootstrap.js"
+      - "app-core.js"
+      - "study-hub.js"
+      - "sw.js"
+      - "index.html"
+      - "manifest.webmanifest"
+      - "icon-192.png"
+      - "curricula/**"
+      - "scripts/test-fdroid-build.mjs"
+      - ".github/workflows/android-fdroid-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools platforms;android-36 build-tools;36.0.0"
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+
+      - name: Check F-Droid source configuration
+        run: node scripts/test-fdroid-build.mjs
+
+      - name: Build and lint Android editions
+        run: gradle --no-daemon --stacktrace -p android :app:assembleDebug :app:assembleRelease :app:lintRelease :app:verifyFdroidAssets
+
+      - name: Upload APK build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-fdroid-android-build
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
+          retention-days: 14
