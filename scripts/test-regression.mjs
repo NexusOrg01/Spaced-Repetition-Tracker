@@ -139,7 +139,12 @@ assert.ok(smoothnessStyle.includes('background-attachment: scroll !important') &
 assert.ok(inlineHelpers.includes('let positionFrame = 0;') &&
   inlineHelpers.includes('const startPositionTracking = () => {') &&
   inlineHelpers.includes('const stopPositionTracking = () => {') &&
-  inlineHelpers.includes('if (!isOpen() || positionFrame) return;'),
+  inlineHelpers.includes('if (!isOpen() || positionFrame) return;') &&
+  inlineHelpers.includes("document.addEventListener('touchstart', event => {") &&
+  inlineHelpers.includes("{ capture: true, passive: true });") &&
+  inlineHelpers.includes("document.addEventListener('touchmove', handleTwoFingerMove, { capture: true, passive: false });") &&
+  inlineHelpers.includes("document.removeEventListener('touchmove', handleTwoFingerMove, true);"),
+  'one-finger page scrolling must not keep a document-wide non-passive touchmove listener; the two-finger parent-scroll handler is attached only for that gesture'),
   'the floating menu must attach scroll tracking only while open and coalesce placement to one animation frame');
 
 console.log('FSRS and core feature regression tests passed.');
