@@ -1320,6 +1320,16 @@ dialog .dialog-inner,dialog>div{max-height:none}
       overflow-y: hidden !important;
       -webkit-overflow-scrolling: auto !important;
     }
+
+    /* Let Chromium skip layout/paint for off-screen records in genuinely long collections. */
+    .topic-grid > .topic-card {
+      content-visibility: auto;
+      contain-intrinsic-size: auto 220px;
+    }
+    .history-list > .history-entry {
+      content-visibility: auto;
+      contain-intrinsic-size: auto 88px;
+    }
   }
 </style>
 
