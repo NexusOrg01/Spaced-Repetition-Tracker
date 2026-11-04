@@ -1312,6 +1312,14 @@ dialog .dialog-inner,dialog>div{max-height:none}
       -webkit-overflow-scrolling: auto !important;
       scrollbar-gutter: auto !important;
     }
+
+    /* Preserve sideways table navigation without keeping a second vertical scroll area. */
+    .ra-count-table-wrap {
+      max-height: none !important;
+      overflow-x: auto !important;
+      overflow-y: hidden !important;
+      -webkit-overflow-scrolling: auto !important;
+    }
   }
 </style>
 
