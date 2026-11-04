@@ -134,7 +134,7 @@ const smoothnessStyle = smoothnessStart >= 0 && smoothnessEnd > smoothnessStart
 assert.ok(smoothnessStyle.includes('background-attachment: scroll !important') &&
   smoothnessStyle.includes('backdrop-filter: none !important') &&
   smoothnessStyle.includes('overflow-y: visible !important') &&
-  smoothnessStyle.includes('#topicGrid') && smoothnessStyle.includes('#exploreGrid'),
+  smoothnessStyle.includes('.topic-grid') && smoothnessStyle.includes('.ra-count-table-wrap') && smoothnessStyle.includes('#exploreGrid'),
   'touch layouts must avoid fixed-background repaints, heavy glass layers, and nested vertical list scrollers');
 assert.ok(inlineHelpers.includes('let positionFrame = 0;') &&
   inlineHelpers.includes('const startPositionTracking = () => {') &&
