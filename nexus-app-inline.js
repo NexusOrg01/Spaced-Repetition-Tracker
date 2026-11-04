@@ -37,7 +37,36 @@
       pop.style.left = left + 'px';
       pop.style.top = (top + offsetTop) + 'px';
     };
+    let positionFrame = 0;
+    const reposition = () => {
+      if (!isOpen() || positionFrame) return;
+      positionFrame = requestAnimationFrame(() => {
+        positionFrame = 0;
+        if (isOpen()) place();
+      });
+    };
+    const startPositionTracking = () => {
+      window.addEventListener('resize', reposition, {passive:true});
+      window.addEventListener('scroll', reposition, {passive:true, capture:true});
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', reposition, {passive:true});
+        window.visualViewport.addEventListener('scroll', reposition, {passive:true});
+      }
+    };
+    const stopPositionTracking = () => {
+      window.removeEventListener('resize', reposition);
+      window.removeEventListener('scroll', reposition, true);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', reposition);
+        window.visualViewport.removeEventListener('scroll', reposition);
+      }
+      if (positionFrame) {
+        cancelAnimationFrame(positionFrame);
+        positionFrame = 0;
+      }
+    };
     const close = () => {
+      stopPositionTracking();
       pop.style.display = 'none';
       details.open = false;
       summary.setAttribute('aria-expanded', 'false');
@@ -47,7 +76,8 @@
       pop.style.display = 'block';
       summary.setAttribute('aria-expanded', 'true');
       place();
-      requestAnimationFrame(place);
+      startPositionTracking();
+      reposition();
     };
 
     summary.setAttribute('aria-haspopup', 'true');
@@ -70,13 +100,7 @@
         summary.focus();
       }
     });
-    const reposition = () => { if (isOpen()) place(); };
-    window.addEventListener('resize', reposition, {passive:true});
-    window.addEventListener('scroll', reposition, {passive:true, capture:true});
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener('resize', reposition, {passive:true});
-      window.visualViewport.addEventListener('scroll', reposition, {passive:true});
-    }
+
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, {once:true});
   else init();
