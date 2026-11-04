@@ -114,7 +114,7 @@ async function shareTextFile(filename, text, mimeType) {
 
 async function printHtml(title, html) {
   if (!isNativeApp) return false;
-  const safeTitle = String(title || 'Nexus report').replace(/[\\r\\n\\t]+/g, ' ').trim().slice(0, 80) || 'Nexus report';
+  const safeTitle = String(title || 'Nexus report').replace(/\\s+/g, ' ').trim().slice(0, 80) || 'Nexus report';
   await NexusPrint.printHtml({
     title: safeTitle,
     html: String(html || '')
