@@ -126,7 +126,11 @@ assert.ok(bundle.includes('const candidates = state.topics.filter((t) => !t.fsrs
 assert.ok(appSource.includes('id="nexus-mobile-render-performance"') && appSource.includes('@media (hover: none) and (pointer: coarse)') && appSource.includes('backdrop-filter: none !important') && appSource.includes('animation: none !important'),
   'touch-first layouts must reduce sticky-tab blur and per-item entrance animations without changing native scrolling behavior');
 
-const smoothnessStyle = html.match(/<style id="nexus-touch-scroll-performance">([\\s\\S]*?)<\\/style>/)?.[1] || '';
+const smoothnessStart = html.indexOf('<style id="nexus-touch-scroll-performance">');
+const smoothnessEnd = html.indexOf('</style>', smoothnessStart);
+const smoothnessStyle = smoothnessStart >= 0 && smoothnessEnd > smoothnessStart
+  ? html.slice(smoothnessStart, smoothnessEnd)
+  : '';
 assert.ok(smoothnessStyle.includes('background-attachment: scroll !important') &&
   smoothnessStyle.includes('backdrop-filter: none !important') &&
   smoothnessStyle.includes('overflow-y: visible !important') &&
