@@ -2,6 +2,7 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
 import { isExpectedAndroidAuthCallback } from './android-auth-callback.mjs';
 
 const NexusAuthBrowser = registerPlugin('NexusAuthBrowser');
+const NexusPrint = registerPlugin('NexusPrint');
 import { App } from '@capacitor/app';
 import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
@@ -111,6 +112,16 @@ async function shareTextFile(filename, text, mimeType) {
   return true;
 }
 
+async function printHtml(title, html) {
+  if (!isNativeApp) return false;
+  const safeTitle = String(title || 'Nexus report').replace(/[\\r\\n\\t]+/g, ' ').trim().slice(0, 80) || 'Nexus report';
+  await NexusPrint.printHtml({
+    title: safeTitle,
+    html: String(html || '')
+  });
+  return true;
+}
+
 async function openAuthUrl(url) {
   if (!isNativeApp || !cloudSyncEnabled) {
     throw new Error('Cloud sign-in is disabled in this Android build.');
@@ -194,5 +205,6 @@ window.NexusAndroidBridge = Object.freeze({
   isCloudSyncEnabled: () => isNativeApp && cloudSyncEnabled,
   authRedirectUrl: AUTH_REDIRECT_URL,
   openAuthUrl,
-  shareTextFile
+  shareTextFile,
+  printHtml
 });
