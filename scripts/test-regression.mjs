@@ -13,6 +13,7 @@ const appSource = html + '\n' + appCore + '\n' + studyHub;
 const bundle = readFileSync(resolve(root, 'fsrs-bundle.js'), 'utf8');
 const backupUtils = readFileSync(resolve(root, 'backup-restore-utils.js'), 'utf8');
 const serviceWorker = readFileSync(resolve(root, 'sw.js'), 'utf8');
+const inlineHelpers = readFileSync(resolve(root, 'nexus-app-inline.js'), 'utf8');
 const manifest = JSON.parse(readFileSync(resolve(root, 'manifest.webmanifest'), 'utf8'));
 
 const integrationAt = bundle.indexOf('nexus-fsrs.js — glue between Nexus topics');
@@ -98,7 +99,7 @@ assert.ok(appSource.includes("const restoreFocusUi=()=>{if(focusStart)openFocusM
 assert.ok(appSource.includes('focusStart=Date.now();focusPausedAt=null;fsState.focusStartedAt=new Date(focusStart).toISOString();fsState.focusActualStartedAt=new Date(focusStart).toISOString();fsState.focusPausedAt=null;saveFs();'), 'starting a new focus session must clear stale pause state and initialize the original wall-clock start before persisting');
 assert.ok(serviceWorker.includes("'./nexus-storage.js'") && serviceWorker.includes("'./nexus-app-bootstrap.js'") && serviceWorker.includes("'./nexus-app-inline.js'") && serviceWorker.includes("'./fsrs-bundle.js'") && serviceWorker.includes("'./explore-curriculum.js'") && serviceWorker.includes("'./backup-restore-utils.js'") && serviceWorker.includes("'./offline-sync-queue.js'") && serviceWorker.includes("'./workspace-isolation-guard.js'") && serviceWorker.includes("'./nexus-build-config.js'") && serviceWorker.includes("'./cloud-sync-recovery.js'") && serviceWorker.includes("'./workspace-sync-merge.js'") && serviceWorker.includes("'./cloud-sync.js'"),
   'offline app shell must cache the storage bootstrap, scheduler, and backup safety helpers');
-assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v29';"), 'the service-worker cache must be versioned and scoped to Nexus-owned caches');
+assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v30';"), 'the service-worker cache must be versioned and scoped to Nexus-owned caches');
 const networkFirstSources = serviceWorker.split('const networkFirst=')[1]?.split(';')[0] || '';
 assert.ok(networkFirstSources.includes("url.pathname.endsWith('/nexus-storage.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-app-bootstrap.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-app-inline.js')") && networkFirstSources.includes("url.pathname.endsWith('/explore-curriculum.js')") && networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/offline-sync-queue.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-isolation-guard.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-build-config.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync-recovery.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-sync-merge.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync.js')"), 'online loads must refresh the durable storage/bootstrap and coupled FSRS/sync helpers while preserving offline cache fallback');
 assert.equal(manifest.theme_color, manifest.background_color, 'installed app chrome should blend with the PWA launch surface');
@@ -124,4 +125,17 @@ assert.ok(bundle.includes('const candidates = state.topics.filter((t) => !t.fsrs
   'normal render/save cycles must skip FSRS migration history scans after every reviewed topic has a scheduler card');
 assert.ok(appSource.includes('id="nexus-mobile-render-performance"') && appSource.includes('@media (hover: none) and (pointer: coarse)') && appSource.includes('backdrop-filter: none !important') && appSource.includes('animation: none !important'),
   'touch-first layouts must reduce sticky-tab blur and per-item entrance animations without changing native scrolling behavior');
+
+const smoothnessStyle = html.match(/<style id="nexus-touch-scroll-performance">([\\s\\S]*?)<\\/style>/)?.[1] || '';
+assert.ok(smoothnessStyle.includes('background-attachment: scroll !important') &&
+  smoothnessStyle.includes('backdrop-filter: none !important') &&
+  smoothnessStyle.includes('overflow-y: visible !important') &&
+  smoothnessStyle.includes('#topicGrid') && smoothnessStyle.includes('#exploreGrid'),
+  'touch layouts must avoid fixed-background repaints, heavy glass layers, and nested vertical list scrollers');
+assert.ok(inlineHelpers.includes('let positionFrame = 0;') &&
+  inlineHelpers.includes('const startPositionTracking = () => {') &&
+  inlineHelpers.includes('const stopPositionTracking = () => {') &&
+  inlineHelpers.includes('if (!isOpen() || positionFrame) return;'),
+  'the floating menu must attach scroll tracking only while open and coalesce placement to one animation frame');
+
 console.log('FSRS and core feature regression tests passed.');
