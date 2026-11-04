@@ -1270,7 +1270,7 @@ dialog .dialog-inner,dialog>div{max-height:none}
 
 
 <style id="nexus-touch-scroll-performance">
-  /* Keep touch scrolling on the browser-owned page scroller and avoid repaint-heavy glass layers. */
+  /* Keep the existing layout while avoiding repaint-heavy work on touch-first devices. */
   @media (hover: none) and (pointer: coarse) {
     body { background-attachment: scroll !important; }
 
@@ -1293,35 +1293,7 @@ dialog .dialog-inner,dialog>div{max-height:none}
       -webkit-backdrop-filter: none !important;
     }
 
-    /* On phones, long content should extend the page rather than create nested vertical scrollers. */
-    .history-list,
-    .due-list,
-    .progress-list,
-    #structureList,
-    .hub-scroll-list,
-    .hub-list,
-    .hub-heatmap,
-    .global-search-results,
-    .topic-grid,
-    #exploreGrid,
-    #communityRequestList,
-    #hubStudyLogHistory,
-    .analytics-log-scroll {
-      max-height: none !important;
-      overflow-y: visible !important;
-      -webkit-overflow-scrolling: auto !important;
-      scrollbar-gutter: auto !important;
-    }
-
-    /* Preserve sideways table navigation without keeping a second vertical scroll area. */
-    .ra-count-table-wrap {
-      max-height: none !important;
-      overflow-x: auto !important;
-      overflow-y: hidden !important;
-      -webkit-overflow-scrolling: auto !important;
-    }
-
-    /* Let Chromium skip layout/paint for off-screen records in genuinely long collections. */
+    /* Keep off-screen records cheap without changing their list dimensions or scroll areas. */
     .topic-grid > .topic-card {
       content-visibility: auto;
       contain-intrinsic-size: auto 220px;
