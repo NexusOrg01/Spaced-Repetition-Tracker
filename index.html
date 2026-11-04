@@ -1268,6 +1268,43 @@ dialog .dialog-inner,dialog>div{max-height:none}
   }
 </style>
 
+
+<style id="nexus-touch-scroll-performance">
+  /* Keep the existing layout while avoiding repaint-heavy work on touch-first devices. */
+  @media (hover: none) and (pointer: coarse) {
+    body { background-attachment: scroll !important; }
+
+    .app .topbar,
+    .app .tabs,
+    .app .stat,
+    .app .panel,
+    .app .topic-card,
+    .app .history-card,
+    .app .history-entry,
+    .app .hub-card,
+    .app .insight-metric,
+    .app .exam-card,
+    .app .hub-kpi,
+    .app .section-head-premium,
+    .app .home-analytics-launch,
+    .standalone-screen .standalone-topbar,
+    .standalone-screen .hub-card {
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+    }
+
+    /* Keep off-screen records cheap without changing their list dimensions or scroll areas. */
+    .topic-grid > .topic-card {
+      content-visibility: auto;
+      contain-intrinsic-size: auto 220px;
+    }
+    .history-list > .history-entry {
+      content-visibility: auto;
+      contain-intrinsic-size: auto 88px;
+    }
+  }
+</style>
+
 <div id="workspaceIsolationLock" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="workspaceIsolationTitle" aria-describedby="workspaceIsolationMessage" data-state="offline">
   <div class="workspace-isolation-card">
     <h2 id="workspaceIsolationTitle">Loading this account’s workspace…</h2>
