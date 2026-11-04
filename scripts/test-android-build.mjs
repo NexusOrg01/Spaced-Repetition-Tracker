@@ -141,6 +141,31 @@ assert.ok(
   'Android deep links must be rejected unless scheme, host and path exactly match the configured callback.'
 );
 
+const nativePrintPlugin = read('android/app/src/main/java/org/nexus/tracker/preview/NexusPrintPlugin.java');
+for (const part of [
+  '@CapacitorPlugin(name = "NexusPrint")',
+  'PrintManager',
+  'createPrintDocumentAdapter',
+  'PrintAttributes.MediaSize.ISO_A4',
+  'PrintAttributes.Resolution',
+  'printManager.print(',
+  'setBlockNetworkLoads(true)',
+  'handleOnDestroy'
+]) {
+  assert.ok(nativePrintPlugin.includes(part), 'Native Android PDF printing is missing ' + part);
+}
+assert.ok(read('android/app/src/main/java/org/nexus/tracker/preview/MainActivity.java').includes('registerPlugin(NexusPrintPlugin.class)'), 'Register the native Android print plugin before bridge initialization.');
+assert.ok(bridge.includes("registerPlugin('NexusPrint')") && bridge.includes('NexusPrint.printHtml({'), 'Android JavaScript bridge must expose the native print plugin.');
+const nativePdfSource = read('dist/study-hub.js');
+const pdfExportStart = nativePdfSource.indexOf('function exportAnalyticsPdf()');
+const pdfExportEnd = nativePdfSource.indexOf('function paperScoreTrendsMarkup', pdfExportStart);
+assert.ok(pdfExportStart >= 0 && pdfExportEnd > pdfExportStart, 'Analytics PDF export function must be present in the Android bundle.');
+const pdfExportSource = nativePdfSource.slice(pdfExportStart, pdfExportEnd);
+assert.ok(pdfExportSource.includes('window.NexusAndroidBridge.printHtml('), 'Android Analytics PDF export must call the native PrintManager bridge.');
+assert.ok(pdfExportSource.indexOf('window.NexusAndroidBridge.printHtml(') < pdfExportSource.indexOf("const reportWindow=window.open"), 'Native Android printing must run before the browser popup fallback.');
+assert.ok(pdfExportSource.includes('reportWindow.print()'), 'The normal browser/PWA print fallback must remain available.');
+assert.ok(pdfExportSource.includes('reader.readAsDataURL(imageBlob)'), 'The report logo must be embedded for the isolated native print WebView.');
+
 const nativeAuthPlugin = read('android/app/src/main/java/org/nexus/tracker/preview/NexusAuthBrowserPlugin.java');
 for (const part of [
   '@CapacitorPlugin(name = "NexusAuthBrowser")', 'CustomTabsIntent',
