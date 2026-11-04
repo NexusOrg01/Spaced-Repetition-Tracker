@@ -25,6 +25,15 @@ Run these checks on both debug APKs. CI verifies static wiring and Gradle compil
 - Export a Study Hub report and CSV and confirm the extension and content type.
 - Dismiss the share sheet and confirm the app remains usable.
 
+## Analytics PDF export
+
+- Open Study Hub → Analytics → Export detailed PDF in each debug flavour.
+- Confirm the Android system print interface opens directly; Nexus must not navigate to a second report page or remain in a browser-style report WebView.
+- Choose **Save as PDF**, save the report, and open it from Downloads.
+- Verify the A4 layout, Nexus cover artwork, charts, tables, review history and page breaks. Check both a small dataset and a large history.
+- Cancel the print interface, return to Nexus, and repeat the export to confirm the app remains responsive.
+- Test while offline; the report is generated from local Nexus data and must not require external assets or a network connection.
+
 ## Navigation and safety
 
 - Open each main section and verify Android Back returns to Home.
