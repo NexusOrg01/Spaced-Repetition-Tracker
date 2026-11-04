@@ -47,3 +47,26 @@ Run these checks on both debug APKs. CI verifies static wiring and Gradle compil
 - Expected successful flow: Google sign-in opens an Android Custom Tab; the native auth-session plugin captures the exact custom URI callback and returns it to the waiting app call; Nexus exchanges the returned code for a session. Returning to Nexus without a callback cancels the sign-in instead of leaving an unresolved browser session.
 - Test sign-in, account isolation, offline queued changes, sync, sign-out and account deletion only with staging accounts. Do not use production accounts in preview APKs.
 - For release testing, ensure the Supabase redirect allow-list contains the exact final URI derived from the final application ID, and test the F-Droid APK with that same ID.
+
+## Physical-device acceptance report — 2026-11-04
+
+A maintainer tested an installed Android debug APK on a Samsung Galaxy A32. The distribution flavour was not recorded in the test report, so this result must not be treated as separate acceptance of both F-Droid and Play variants.
+
+### Passed on device
+
+- Google sign-in completed and returned to Nexus; cloud sync completed successfully.
+- Created test streams and subjects, marked items reviewed, force-closed the app and relaunched it; the changes remained.
+- Exported the Analytics detailed PDF, opened the resulting PDF and confirmed the PDF flow and output worked.
+- Privacy-policy pages and Gmail redirections opened successfully.
+- Made changes to Account A while offline, closed and relaunched the app offline, and confirmed the changes remained locally.
+- While Account A had pending offline changes, signed out, restored connectivity and signed into Account B. Account B loaded its own data without Account A's data appearing.
+- Signed back into Account A; its offline changes synchronised successfully and Account B's data was no longer shown in the active workspace.
+
+### Still requiring explicit verification
+
+- Repeat the relevant acceptance tests on the other distribution flavour; the tested flavour was not identified in the report.
+- Complete backup import, backup export/share-sheet, CSV export and Android Back-navigation checks if not already covered separately.
+- Exercise PDF cancellation, a large report and PDF export while offline. The successful PDF export above confirms the normal on-device print path but does not by itself establish these edge cases.
+- Complete release-identity, licence/SBOM, dependency-verification enforcement, F-Droid buildserver/reproducibility and store-signing work described in the release documentation.
+
+This report records user-observed physical-device results. CI success and manual acceptance are separate evidence; neither is a store approval. Only staging/test accounts were used for this Android preview test. No production configuration or data was changed.
