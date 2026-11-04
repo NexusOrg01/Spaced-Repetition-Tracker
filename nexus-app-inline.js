@@ -145,9 +145,10 @@
 
   // Detect the real scroll container instead of relying on a list of class names.
   // A two-finger gesture beginning in an inner scroller should move the document;
-  // a one-finger gesture remains under the browser's native scroll handling.
+  // a one-finger gesture remains under the browser's compositor-driven native scroll.
   let active = false;
   let previousY = 0;
+  let moveListenerAttached = false;
   const pageScrollClass = 'nexus-touch-page-scroll';
 
   const style = document.createElement('style');
@@ -179,9 +180,26 @@
     return false;
   };
 
+  const handleTwoFingerMove = event => {
+    if (!active || event.touches.length < 2) return;
+    if (event.cancelable) event.preventDefault();
+
+    const nextY = centerY(event.touches);
+    const scrollingElement = document.scrollingElement || document.documentElement;
+    scrollingElement.scrollTop += previousY - nextY;
+    previousY = nextY;
+  };
+
+  const detachTwoFingerMove = () => {
+    if (!moveListenerAttached) return;
+    document.removeEventListener('touchmove', handleTwoFingerMove, true);
+    moveListenerAttached = false;
+  };
+
   document.addEventListener('touchstart', event => {
     active = false;
     if (event.touches.length < 2 || !touchesScrollableBox(event.touches)) {
+      detachTwoFingerMove();
       document.documentElement.classList.remove(pageScrollClass);
       return;
     }
@@ -190,23 +208,18 @@
     previousY = centerY(event.touches);
     document.documentElement.classList.add(pageScrollClass);
 
-    // Cancel the inner scroller's native gesture before it takes ownership.
-    if (event.cancelable) event.preventDefault();
-  }, { capture: true, passive: false });
-
-  document.addEventListener('touchmove', event => {
-    if (!active || event.touches.length < 2) return;
-    if (event.cancelable) event.preventDefault();
-
-    const nextY = centerY(event.touches);
-    const scrollingElement = document.scrollingElement || document.documentElement;
-    scrollingElement.scrollTop += previousY - nextY;
-    previousY = nextY;
-  }, { capture: true, passive: false });
+    // Normal one-finger swipes never encounter a non-passive touchmove listener.
+    // Attach the blocking handler only after this specific two-finger gesture is detected.
+    if (!moveListenerAttached) {
+      document.addEventListener('touchmove', handleTwoFingerMove, { capture: true, passive: false });
+      moveListenerAttached = true;
+    }
+  }, { capture: true, passive: true });
 
   const reset = event => {
     if (!event.touches || event.touches.length < 2) {
       active = false;
+      detachTwoFingerMove();
       document.documentElement.classList.remove(pageScrollClass);
     }
   };
