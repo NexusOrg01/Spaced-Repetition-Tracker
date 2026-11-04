@@ -133,9 +133,13 @@ const smoothnessStyle = smoothnessStart >= 0 && smoothnessEnd > smoothnessStart
   : '';
 assert.ok(smoothnessStyle.includes('background-attachment: scroll !important') &&
   smoothnessStyle.includes('backdrop-filter: none !important') &&
-  smoothnessStyle.includes('overflow-y: visible !important') &&
-  smoothnessStyle.includes('.topic-grid') && smoothnessStyle.includes('.ra-count-table-wrap') && smoothnessStyle.includes('#exploreGrid') && smoothnessStyle.includes('content-visibility: auto') && smoothnessStyle.includes('contain-intrinsic-size: auto 220px'),
-  'touch layouts must avoid repaint-heavy surfaces, nested vertical scrolling, and unnecessary off-screen record rendering');
+  smoothnessStyle.includes('content-visibility: auto') &&
+  smoothnessStyle.includes('contain-intrinsic-size: auto 220px') &&
+  smoothnessStyle.includes('.topic-grid > .topic-card') &&
+  smoothnessStyle.includes('.history-list > .history-entry') &&
+  !smoothnessStyle.includes('overflow-y: visible') &&
+  !smoothnessStyle.includes('max-height: none'),
+  'touch optimizations must reduce repaint/off-screen rendering work without changing existing list geometry or nested scroll areas');
 assert.ok(inlineHelpers.includes('let positionFrame = 0;') &&
   inlineHelpers.includes('const startPositionTracking = () => {') &&
   inlineHelpers.includes('const stopPositionTracking = () => {') &&
