@@ -1268,6 +1268,53 @@ dialog .dialog-inner,dialog>div{max-height:none}
   }
 </style>
 
+
+<style id="nexus-touch-scroll-performance">
+  /* Keep touch scrolling on the browser-owned page scroller and avoid repaint-heavy glass layers. */
+  @media (hover: none) and (pointer: coarse) {
+    body { background-attachment: scroll !important; }
+
+    .app .topbar,
+    .app .tabs,
+    .app .stat,
+    .app .panel,
+    .app .topic-card,
+    .app .history-card,
+    .app .history-entry,
+    .app .hub-card,
+    .app .insight-metric,
+    .app .exam-card,
+    .app .hub-kpi,
+    .app .section-head-premium,
+    .app .home-analytics-launch,
+    .standalone-screen .standalone-topbar,
+    .standalone-screen .hub-card {
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+    }
+
+    /* On phones, long content should extend the page rather than create nested vertical scrollers. */
+    .history-list,
+    .due-list,
+    .progress-list,
+    #structureList,
+    .hub-scroll-list,
+    .hub-list,
+    .hub-heatmap,
+    .global-search-results,
+    .topic-grid,
+    #exploreGrid,
+    #communityRequestList,
+    #hubStudyLogHistory,
+    .analytics-log-scroll {
+      max-height: none !important;
+      overflow-y: visible !important;
+      -webkit-overflow-scrolling: auto !important;
+      scrollbar-gutter: auto !important;
+    }
+  }
+</style>
+
 <div id="workspaceIsolationLock" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="workspaceIsolationTitle" aria-describedby="workspaceIsolationMessage" data-state="offline">
   <div class="workspace-isolation-card">
     <h2 id="workspaceIsolationTitle">Loading this account’s workspace…</h2>
