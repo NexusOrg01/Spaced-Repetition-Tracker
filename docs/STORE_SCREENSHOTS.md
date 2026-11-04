@@ -1,6 +1,6 @@
 # Store screenshots
 
-The first Nexus store screenshot pair is maintained in Fastlane's Android metadata layout:
+The first Nexus store screenshot pair has been prepared in a local package using Fastlane's Android metadata layout. The binary images are not yet committed to this branch; copy the package's `fastlane/` directory into the repository before treating these assets as part of the source release:
 
 | File | Purpose | Dimensions | Suggested listing text |
 | --- | --- | ---: | --- |
