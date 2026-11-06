@@ -249,6 +249,15 @@ for (const expected of [
   assert.ok(esbuildSourceScript.includes(expected), 'esbuild source build script is missing ' + expected);
 }
 
+const nodeBuildScript = read('scripts/build-nodejs-from-source.sh');
+assert.ok(nodeBuildScript.includes('27f213124280b4db4cd1e3dd42f6f8afd01ceff7'), 'Node.js source must be pinned to the verified 22.23.4 release commit.');
+assert.ok(nodeBuildScript.includes('make install'), 'F-Droid must build and install Node.js from source.');
+assert.ok(nodeBuildScript.includes('EXPECTED_NPM_VERSION="10.9.9"'), 'The source-built Node.js npm toolchain must be version-checked.');
+assert.ok(androidWorkflow.includes('Check out pinned Node.js 22 source'), 'Android CI must test the Node.js source checkout.');
+assert.ok(androidWorkflow.includes('Build and verify Node.js 22 from pinned source'), 'Android CI must compile and verify Node.js 22 from source.');
+const fdroidMetadata = read('contrib/fdroiddata/metadata-template.yml');
+assert.ok(fdroidMetadata.includes('nodejs@27f213124280b4db4cd1e3dd42f6f8afd01ceff7'), 'F-Droid metadata must pin the Node.js source library.');
+assert.ok(fdroidMetadata.includes('build-nodejs-from-source.sh'), 'F-Droid metadata must build Node.js from source.');
 const fdroidDocs = read('docs/FDROID_RELEASE.md');
 for (const expected of ['feature parity', 'reproducible', 'Anti-Feature', 'esbuild', 'cloud sync']) {
   assert.ok(fdroidDocs.toLowerCase().includes(expected.toLowerCase()), 'F-Droid release guide is missing ' + expected);

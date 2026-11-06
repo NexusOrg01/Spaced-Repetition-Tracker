@@ -11,10 +11,11 @@ Copy the supplied files in `contrib/fdroiddata/srclibs/` into the fdroiddata rep
 - `contrib/fdroiddata/srclibs/esbuild.yml` → `fdroiddata/srclibs/esbuild.yml`
 - `contrib/fdroiddata/srclibs/golang-sys.yml` → `fdroiddata/srclibs/golang-sys.yml`
 
-Both definitions point to public Git repositories; the app metadata pins the exact source commit for each build.
+Both definitions point to public Git repositories; the app metadata pins the exact source commit for each build. The build also uses a third source library, Node.js 22.23.4, pinned to `27f213124280b4db4cd1e3dd42f6f8afd01ceff7`; copy `contrib/fdroiddata/srclibs/nodejs.yml` to `fdroiddata/srclibs/nodejs.yml`.
 
 The metadata template pins both revisions by full commit hash:
 
+- Node.js 22.23.4: `nodejs/node` commit `27f213124280b4db4cd1e3dd42f6f8afd01ceff7` (signed upstream release tag `v22.23.4`; includes npm 10.9.9)
 - esbuild 0.28.2: `609683d892977362a0f99026cb74b96263d728a9`
 - golang.org/x/sys: `c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf`
 
@@ -27,4 +28,4 @@ The metadata template is a handoff aid, not a validated submission. It must be u
 
 ## Buildserver toolchain blocker
 
-Capacitor 8 requires Node.js 22+. F-Droid's documented minimum buildserver base is Debian Trixie, currently shipping Node.js 20.19.2. Do not submit this template until the build recipe provisions and validates a compliant Node 22+ toolchain using an approach acceptable to F-Droid maintainers. This repository does not currently claim that an F-Droid buildserver run has passed.
+Capacitor 8 requires Node.js 22+. Debian Trixie provides Node.js 20.19.2, so the metadata now compiles Node.js 22.23.4 from its pinned upstream source library and uses its bundled npm 10.9.9. The same source-build script is exercised on the GitHub Actions runner. An actual isolated F-Droid buildserver run is still required before this recipe can be called validated.

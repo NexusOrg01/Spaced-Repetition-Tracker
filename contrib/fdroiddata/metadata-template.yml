@@ -27,10 +27,13 @@ Builds:
     versionCode: 1
     commit: REPLACE_WITH_FULL_RELEASE_COMMIT
     subdir: android
-    srclibs: esbuild@609683d892977362a0f99026cb74b96263d728a9,golang-sys@c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf
+    srclibs: nodejs@27f213124280b4db4cd1e3dd42f6f8afd01ceff7,esbuild@609683d892977362a0f99026cb74b96263d728a9,golang-sys@c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf
+    sudo: apt-get update && apt-get install -y build-essential python3
     build: |
       cd ..
-      ESBUILD_SOURCE_DIR=$$esbuild$$ GO_SYS_SOURCE_DIR=$$golang-sys$$ NEXUS_ESBUILD_BINARY=.build/bin/esbuild NEXUS_ANDROID_APPLICATION_ID=REPLACE_WITH_FINAL_APPLICATION_ID NEXUS_ANDROID_CLOUD_MODE=source NEXUS_ANDROID_ALLOW_PRODUCTION_CLOUD=true npm run android:sync:fdroid
+      bash scripts/build-nodejs-from-source.sh "$nodejs$" "$PWD/.build/nodejs-install"
+      export PATH="$PWD/.build/nodejs-install/bin:$PATH"
+      ESBUILD_SOURCE_DIR=$esbuild$ GO_SYS_SOURCE_DIR=$golang-sys$ NEXUS_ESBUILD_BINARY=.build/bin/esbuild NEXUS_ANDROID_APPLICATION_ID=REPLACE_WITH_FINAL_APPLICATION_ID NEXUS_ANDROID_CLOUD_MODE=source NEXUS_ANDROID_ALLOW_PRODUCTION_CLOUD=true npm run android:sync:fdroid
     gradle: fdroid
     output: app/build/outputs/apk/fdroid/release/app-fdroid-release-unsigned.apk
     gradleprops: nexusApplicationId=REPLACE_WITH_FINAL_APPLICATION_ID,nexusVersionCode=1,nexusVersionName=REPLACE_WITH_RELEASE_VERSION

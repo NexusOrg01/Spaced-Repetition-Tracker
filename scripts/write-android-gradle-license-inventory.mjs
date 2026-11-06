@@ -226,7 +226,7 @@ const markdown = [
   '- Cached JAR/AAR archives: ' + report.archivesFoundCount,
   '- Archives containing conventional licence/notice entries: ' + report.archivesWithLicenceEntries,
   '',
-  'This report reads the resolved F-Droid debug and release runtime dependency trees, matching cached Maven artifacts and exact-coordinate POM metadata fetched from the configured public Google Maven and Maven Central repositories when raw POMs are not retained in Gradle's cache. It records upstream licence declarations and licence/notice filenames found inside cached JAR/AAR archives. SPDX labels are only emitted as conservative name mappings; ambiguous names remain unclassified. This is an audit aid, not a legal opinion or proof that every distributed asset has been cleared.',
+  'This report reads the resolved F-Droid debug and release runtime dependency trees, matching cached Maven artifacts and exact-coordinate POM metadata fetched from the configured public Google Maven and Maven Central repositories when raw POMs are not retained in the Gradle cache. It records upstream licence declarations and licence/notice filenames found inside cached JAR/AAR archives. SPDX labels are only emitted as conservative name mappings; ambiguous names remain unclassified. This is an audit aid, not a legal opinion or proof that every distributed asset has been cleared.',
   '',
   '| Resolved module | POM licence declaration | Project / SCM URL | Cached archives | Archive licence/notice entries |',
   '|---|---|---|---:|---:|',
