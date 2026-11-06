@@ -48,3 +48,10 @@ Strict Gradle dependency verification now passes through the F-Droid runtime dep
 ## Generated npm dependency inventory
 
 After the F-Droid npm installation, CI runs `npm run android:sbom` and uploads `android/build/reports/third-party/npm-dependencies.json` plus the corresponding Markdown report. The inventory is tied to the reconstructed npm lockfile SHA-256 and source commit, and records resolved URLs, integrity values, package licences, licence-file presence and provenance links. The existing Android static test requires this report to cover the full installed dependency tree. Missing or non-allow-listed declared licences continue to fail the static audit. This does not yet complete the separate Gradle/Maven licence and binary audit, nor prove that each package's declared licence is legally correct.
+
+
+## Generated Gradle/Maven runtime inventory
+
+After strict F-Droid debug/release dependency resolution and the APK/AAB build, Android CI runs `scripts/write-android-gradle-license-inventory.mjs`. It parses both resolved runtime dependency reports, locates the corresponding cached Maven POMs, records declared licence names and project/SCM URLs, and lists conventional licence/notice entries present inside cached JAR/AAR archives. The JSON and Markdown reports are uploaded beside the npm inventory in the same validation artifact. Missing POMs, missing licence declarations and archives without licence/notice entries are review findings, not silently treated as cleared. The inventory does not cover Gradle build plugins, test-only dependencies, SDK tooling, source-build tools or every bundled asset.
+
+Capacitor 8.6.0 officially requires Node.js 22 or newer. The documented F-Droid buildserver baseline is Debian Trixie, whose current stable `nodejs` package is 20.19.2. This toolchain mismatch blocks a validated F-Droid buildserver recipe until an acceptable Node 22+ source-built or distribution-packaged solution is tested.

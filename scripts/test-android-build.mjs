@@ -59,6 +59,8 @@ assert.ok(!existsSync(resolve(root, 'android/app/src/main/assets/public/.build')
 const androidWorkflow = read('.github/workflows/android-build.yml');
 assert.ok(androidWorkflow.includes('npm run android:sbom'), 'Android CI must generate the installed npm dependency inventory.');
 assert.ok(androidWorkflow.includes('android/build/reports/third-party/'), 'Android CI must retain third-party audit reports.');
+assert.ok(androidWorkflow.includes('scripts/write-android-gradle-license-inventory.mjs'), 'Android CI must generate the resolved Gradle/Maven licence inventory.');
+assert.ok(read('scripts/write-android-gradle-license-inventory.mjs').includes('nexus-android-gradle-license-inventory'), 'Gradle/Maven licence inventory generator must be present.');
 const npmInventory = JSON.parse(read('android/build/reports/third-party/npm-dependencies.json'));
 assert.equal(npmInventory.schema, 'nexus-android-npm-dependency-inventory');
 assert.equal(npmInventory.packageCount, npmInventory.packages.length);

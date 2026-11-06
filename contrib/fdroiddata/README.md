@@ -6,21 +6,12 @@ The permanent Android application ID, release version/code, signed Git tag and s
 
 ## Source-library definitions
 
-Copy these definitions into the fdroiddata repository:
+Copy the supplied files in `contrib/fdroiddata/srclibs/` into the fdroiddata repository's `srclibs/` directory:
 
-`srclibs/esbuild.yml`:
+- `contrib/fdroiddata/srclibs/esbuild.yml` → `fdroiddata/srclibs/esbuild.yml`
+- `contrib/fdroiddata/srclibs/golang-sys.yml` → `fdroiddata/srclibs/golang-sys.yml`
 
-```yaml
-RepoType: git
-Repo: https://github.com/evanw/esbuild.git
-```
-
-`srclibs/golang-sys.yml`:
-
-```yaml
-RepoType: git
-Repo: https://github.com/golang/sys.git
-```
+Both definitions point to public Git repositories; the app metadata pins the exact source commit for each build.
 
 The metadata template pins both revisions by full commit hash:
 
@@ -32,3 +23,8 @@ The metadata template pins both revisions by full commit hash:
 Copy `metadata-template.yml` to `fdroiddata/metadata/<FINAL_APPLICATION_ID>.yml`, replace every placeholder, and run `fdroid rewritemeta` and `fdroid lint` in a current fdroidserver checkout. The likely `NonFreeNet` Anti-Feature question is intentionally left for review with F-Droid maintainers because cloud sync is optional but currently targets a fixed hosted Supabase endpoint.
 
 The metadata template is a handoff aid, not a validated submission. It must be updated to the final tagged release commit and version before use.
+
+
+## Buildserver toolchain blocker
+
+Capacitor 8 requires Node.js 22+. F-Droid's documented minimum buildserver base is Debian Trixie, currently shipping Node.js 20.19.2. Do not submit this template until the build recipe provisions and validates a compliant Node 22+ toolchain using an approach acceptable to F-Droid maintainers. This repository does not currently claim that an F-Droid buildserver run has passed.

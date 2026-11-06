@@ -32,4 +32,5 @@ Builds:
       cd ..
       ESBUILD_SOURCE_DIR=$$esbuild$$ GO_SYS_SOURCE_DIR=$$golang-sys$$ NEXUS_ESBUILD_BINARY=.build/bin/esbuild NEXUS_ANDROID_APPLICATION_ID=REPLACE_WITH_FINAL_APPLICATION_ID NEXUS_ANDROID_CLOUD_MODE=source NEXUS_ANDROID_ALLOW_PRODUCTION_CLOUD=true npm run android:sync:fdroid
     gradle: fdroid
+    output: app/build/outputs/apk/fdroid/release/app-fdroid-release-unsigned.apk
     gradleprops: nexusApplicationId=REPLACE_WITH_FINAL_APPLICATION_ID,nexusVersionCode=1,nexusVersionName=REPLACE_WITH_RELEASE_VERSION

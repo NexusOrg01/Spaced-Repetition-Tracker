@@ -89,6 +89,9 @@ jobs:
           ./gradlew --no-daemon --stacktrace --dependency-verification strict assembleFdroidDebug assemblePlayDebug assembleFdroidRelease bundleFdroidRelease bundlePlayRelease
           git diff --exit-code -- gradle/verification-metadata.xml
 
+      - name: Generate Gradle/Maven dependency licence inventory
+        run: node scripts/write-android-gradle-license-inventory.mjs
+
       - name: Upload Android preview artifacts
         if: always()
         uses: actions/upload-artifact@v4

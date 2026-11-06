@@ -59,7 +59,7 @@ The current lock resolves 114 unique npm packages, all with declared MIT, ISC, 0
 
 The Android CI job also writes a machine-readable JSON and Markdown inventory for every installed npm package. Each row records the lockfile path, resolved package URL, integrity digest, declared licence, conventional licence files, repository/homepage and direct/transitive relationship. The report is attached to the CI validation artifact. It is an auditable dependency inventory, not a legal opinion or a substitute for the outstanding Gradle/Maven and final APK licence review.
 
-The F-Droid path now avoids npm's prebuilt esbuild platform binary. `android:sync:fdroid` installs Android dependencies with `--omit=optional`, requires `NEXUS_ESBUILD_BINARY`, and checks that the Linux x64 npm binary is absent. `scripts/build-esbuild-from-source.sh` builds esbuild 0.28.2 from source commit `609683d892977362a0f99026cb74b96263d728a9`, using `golang.org/x/sys` source commit `c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf`, with Go module network access disabled. GitHub Actions exercises this path. The actual fdroidserver buildserver recipe still needs its `srclibs` metadata and a successful isolated buildserver run.
+The F-Droid path now avoids npm's prebuilt esbuild platform binary. `android:sync:fdroid` installs Android dependencies with `--omit=optional`, requires `NEXUS_ESBUILD_BINARY`, and checks that the Linux x64 npm binary is absent. `scripts/build-esbuild-from-source.sh` builds esbuild 0.28.2 from source commit `609683d892977362a0f99026cb74b96263d728a9`, using `golang.org/x/sys` source commit `c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf`, with Go module network access disabled. GitHub Actions exercises this path. The actual fdroidserver buildserver recipe still needs a successful isolated buildserver run and a compatible Node 22+ toolchain. The pinned esbuild and golang/sys srclib YAML definitions are supplied under `contrib/fdroiddata/srclibs/`.
 
 ## Release build outline
 
@@ -94,3 +94,10 @@ The preview APKs and unsigned release APK/AAB files are validation artefacts, no
 - [F-Droid Anti-Features](https://f-droid.org/en/docs/Anti-Features/)
 - [F-Droid Reproducible Builds](https://f-droid.org/en/docs/Reproducible_Builds/)
 - [Submitting to F-Droid: Quick Start Guide](https://f-droid.org/en/docs/Submitting_to_F-Droid_Quick_Start_Guide/)
+
+
+## Toolchain compatibility gate (not yet resolved)
+
+The current native project uses Capacitor 8.6.0. Capacitor's official requirements specify Node.js 22 or newer. F-Droid's documented buildserver baseline is Debian Trixie, whose current stable Node.js package is 20.19.2. Therefore, the present metadata template is not yet a validated buildserver recipe: installing the default Trixie `nodejs` package will not satisfy Capacitor 8's supported toolchain. Before submission, choose and test a source-compliant Node 22+ toolchain on the actual F-Droid buildserver. Options to investigate are building Node from pinned public source or using a carefully pinned Debian testing package set; do not silently use an unpinned binary installer or claim this gate is passed.
+
+The latest GitHub Android CI job now emits a Gradle/Maven runtime licence inventory alongside the npm package inventory. It records the resolved F-Droid debug/release modules, cached POM licence declarations, project/SCM links and licence/notice file names found in cached JAR/AAR archives. Modules without metadata or archive notices remain explicit review items. This is still not a complete audit of build plugins, test-only dependencies, SDK tooling, Go, or all assets.
