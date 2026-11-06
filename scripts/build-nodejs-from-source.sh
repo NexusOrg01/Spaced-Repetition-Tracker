@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SOURCE_DIR="\${1:?Usage: build-nodejs-from-source.sh <pinned-node-source-dir> <install-prefix>}"
-INSTALL_PREFIX="\${2:?Usage: build-nodejs-from-source.sh <pinned-node-source-dir> <install-prefix>}"
+SOURCE_DIR="${1:?Usage: build-nodejs-from-source.sh <pinned-node-source-dir> <install-prefix>}"
+INSTALL_PREFIX="${2:?Usage: build-nodejs-from-source.sh <pinned-node-source-dir> <install-prefix>}"
 EXPECTED_COMMIT="27f213124280b4db4cd1e3dd42f6f8afd01ceff7"
 EXPECTED_VERSION="v22.23.4"
 EXPECTED_NPM_VERSION="10.9.9"
@@ -33,7 +33,7 @@ if [[ "$node_npm_version" != "$EXPECTED_NPM_VERSION" ]]; then
   exit 1
 fi
 
-jobs="\${NEXUS_NODE_BUILD_JOBS:-2}"
+jobs="${NEXUS_NODE_BUILD_JOBS:-2}"
 case "$jobs" in
   ''|*[!0-9]*) echo "NEXUS_NODE_BUILD_JOBS must be a positive integer." >&2; exit 1 ;;
 esac
