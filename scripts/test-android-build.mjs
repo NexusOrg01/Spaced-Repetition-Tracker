@@ -57,6 +57,15 @@ assert.ok(staticBuildScript.includes("'.build'"), 'Static web build must exclude
 assert.ok(!existsSync(resolve(root, 'dist', '.build')), 'Build tool source checkouts must not be copied into dist.');
 assert.ok(!existsSync(resolve(root, 'android/app/src/main/assets/public/.build')), 'Build tool source checkouts must not be packaged as Android web assets.');
 const androidWorkflow = read('.github/workflows/android-build.yml');
+assert.ok(androidWorkflow.includes('npm run android:sbom'), 'Android CI must generate the installed npm dependency inventory.');
+assert.ok(androidWorkflow.includes('android/build/reports/third-party/'), 'Android CI must retain third-party audit reports.');
+const npmInventory = JSON.parse(read('android/build/reports/third-party/npm-dependencies.json'));
+assert.equal(npmInventory.schema, 'nexus-android-npm-dependency-inventory');
+assert.equal(npmInventory.packageCount, npmInventory.packages.length);
+assert.ok(npmInventory.packageCount >= 100, 'The npm inventory must cover the complete installed dependency tree.');
+assert.ok(npmInventory.lockfileSha256 && npmInventory.sourceCommit, 'The npm inventory must be bound to its lockfile and source commit.');
+assert.ok(npmInventory.packages.every(item => item.name && item.version && item.purl && item.integrity && item.resolved), 'Every installed package must be traceable to lockfile provenance.');
+
 assert.ok(androidWorkflow.includes('contents: read'), 'Android CI must use read-only repository permissions.');
 assert.ok(!androidWorkflow.includes('contents: write'), 'Android CI must not receive write access to repository contents.');
 assert.ok((androidWorkflow.match(/--dependency-verification strict/g) || []).length >= 3, 'Strict Gradle dependency verification must cover dependency reports and all build variants.');
