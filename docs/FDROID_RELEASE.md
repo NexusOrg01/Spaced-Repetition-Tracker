@@ -57,6 +57,8 @@ The Android npm lockfile is stored as 12 Base64 fragments containing one gzip-co
 
 The current lock resolves 114 unique npm packages, all with declared MIT, ISC, 0BSD, Unlicense, BlueOak-1.0.0 or Apache-2.0 licence identifiers in the normal install. CI rejects missing/unknown licence identifiers. The F-Droid install omits optional platform binaries and runs the same licence scan against the installed package tree. The complete resolved Gradle/Maven dependency licence and binary scan remains a submission blocker.
 
+The Android CI job also writes a machine-readable JSON and Markdown inventory for every installed npm package. Each row records the lockfile path, resolved package URL, integrity digest, declared licence, conventional licence files, repository/homepage and direct/transitive relationship. The report is attached to the CI validation artifact. It is an auditable dependency inventory, not a legal opinion or a substitute for the outstanding Gradle/Maven and final APK licence review.
+
 The F-Droid path now avoids npm's prebuilt esbuild platform binary. `android:sync:fdroid` installs Android dependencies with `--omit=optional`, requires `NEXUS_ESBUILD_BINARY`, and checks that the Linux x64 npm binary is absent. `scripts/build-esbuild-from-source.sh` builds esbuild 0.28.2 from source commit `609683d892977362a0f99026cb74b96263d728a9`, using `golang.org/x/sys` source commit `c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf`, with Go module network access disabled. GitHub Actions exercises this path. The actual fdroidserver buildserver recipe still needs its `srclibs` metadata and a successful isolated buildserver run.
 
 ## Release build outline
