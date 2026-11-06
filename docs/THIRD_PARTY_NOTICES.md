@@ -61,4 +61,4 @@ THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Bundled runtime client
 
-The Android asset build copies the MIT licence supplied by `@supabase/supabase-js` 2.117.3 to `dist/vendor/SUPABASE-LICENSE`. This notice is retained as a source-tree reference; final APK contents must be checked after each release build.
+The Android asset build copies the MIT licence supplied by `@supabase/supabase-js` 2.117.3 to `dist/vendor/SUPABASE-LICENSE`. This notice is retained as a source-tree reference; final APK contents must be checked after each release build. CI additionally generates an npm package inventory with lockfile integrity and licence-file presence details. That report is a review aid, not a replacement for preserving the complete applicable notices in the distributed APK.
