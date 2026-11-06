@@ -73,7 +73,7 @@ async function listFiles(directory, maximumDepth = 3, currentDepth = 0) {
   return output;
 }
 function moduleCacheDirectory(module) {
-  return join(modulesCache, ...module.group.split('.'), module.artifact, module.version);
+  return join(modulesCache, module.group, module.artifact, module.version);
 }
 async function archiveLicenceEntries(archivePath) {
   try {
@@ -87,20 +87,37 @@ async function archiveLicenceEntries(archivePath) {
 }
 function likelySpdx(name) {
   const compact = String(name || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ').trim();
-  const mappings = new Map([
-    ['apache license version 2.0', 'Apache-2.0'],
-    ['apache license 2.0', 'Apache-2.0'],
-    ['the apache software license version 2.0', 'Apache-2.0'],
-    ['apache 2.0', 'Apache-2.0'],
-    ['mit license', 'MIT'],
-    ['mit', 'MIT'],
-    ['bsd 3 clause', 'BSD-3-Clause'],
-    ['bsd 2 clause', 'BSD-2-Clause'],
-    ['eclipse public license version 1.0', 'EPL-1.0'],
-    ['eclipse public license version 2.0', 'EPL-2.0'],
-    ['mozilla public license version 2.0', 'MPL-2.0']
-  ]);
-  return mappings.get(compact) || null;
+  if (/apache.*2[.]?0/.test(compact)) return 'Apache-2.0';
+  if (compact === 'mit' || compact === 'mit license') return 'MIT';
+  if (/bsd.*3.*clause/.test(compact)) return 'BSD-3-Clause';
+  if (/bsd.*2.*clause/.test(compact)) return 'BSD-2-Clause';
+  if (/eclipse.*2[.]?0/.test(compact)) return 'EPL-2.0';
+  if (/eclipse.*1[.]?0/.test(compact)) return 'EPL-1.0';
+  if (/mozilla.*2[.]?0/.test(compact)) return 'MPL-2.0';
+  return null;
+}
+
+async function fetchPublicPom(module) {
+  const groupPath = module.group.replace(/\./g, '/');
+  const filename = module.artifact + '-' + module.version + '.pom';
+  const repositories = [
+    'https://dl.google.com/dl/android/maven2/',
+    'https://repo.maven.apache.org/maven2/',
+    'https://repo1.maven.org/maven2/'
+  ];
+  for (const repository of repositories) {
+    const url = repository + groupPath + '/' + module.artifact + '/' + module.version + '/' + filename;
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(12000) });
+      if (!response.ok) continue;
+      const body = await response.text();
+      if (!/<project(?:\s|>)/i.test(body) || !/<modelVersion>/i.test(body)) continue;
+      return { xml: body, source: url };
+    } catch {
+      // Try the next configured public Maven repository.
+    }
+  }
+  return null;
 }
 
 assert.ok(existsSync(modulesCache), 'Gradle module cache is unavailable; run the strict Android dependency resolution/build first.');
@@ -127,9 +144,19 @@ for (const [coordinate, module] of [...coordinates.entries()].sort(([a], [b]) =>
   let licenses = [];
   let projectUrl = null;
   let scmUrl = null;
-  let pomSha256 = null;
+  let pomSource = null;
+  let pom = null;
   if (pomPath) {
-    const pom = await readFile(pomPath, 'utf8');
+    pom = await readFile(pomPath, 'utf8');
+    pomSource = 'Gradle cache: ' + relative(cacheRoot, pomPath).split(sep).join('/');
+  } else {
+    const fetched = await fetchPublicPom(module);
+    if (fetched) {
+      pom = fetched.xml;
+      pomSource = fetched.source;
+    }
+  }
+  if (pom) {
     licenses = parsePomLicences(pom);
     projectUrl = tagValue(pom, 'url');
     const scm = /<scm(?:\s[^>]*)?>([\s\S]*?)<\/scm>/.exec(pom)?.[1] || '';
@@ -147,8 +174,8 @@ for (const [coordinate, module] of [...coordinates.entries()].sort(([a], [b]) =>
   modules.push({
     coordinate,
     purl: 'pkg:maven/' + module.group + '/' + module.artifact + '@' + module.version,
-    pomFound: Boolean(pomPath),
-    pomCachePath: pomPath ? relative(cacheRoot, pomPath).split(sep).join('/') : null,
+    pomFound: Boolean(pom),
+    pomSource,
     licenses,
     spdxGuesses: licenses.map(item => ({ declaredName: item.name, likelySpdx: likelySpdx(item.name) })),
     projectUrl,
@@ -199,7 +226,7 @@ const markdown = [
   '- Cached JAR/AAR archives: ' + report.archivesFoundCount,
   '- Archives containing conventional licence/notice entries: ' + report.archivesWithLicenceEntries,
   '',
-  'This report reads the resolved F-Droid debug and release runtime dependency trees and the matching locally cached Maven POMs. It records upstream licence declarations and licence/notice filenames found inside cached JAR/AAR archives. SPDX labels are only emitted as conservative name mappings; ambiguous names remain unclassified. This is an audit aid, not a legal opinion or proof that every distributed asset has been cleared.',
+  'This report reads the resolved F-Droid debug and release runtime dependency trees, matching cached Maven artifacts and exact-coordinate POM metadata fetched from the configured public Google Maven and Maven Central repositories when raw POMs are not retained in Gradle's cache. It records upstream licence declarations and licence/notice filenames found inside cached JAR/AAR archives. SPDX labels are only emitted as conservative name mappings; ambiguous names remain unclassified. This is an audit aid, not a legal opinion or proof that every distributed asset has been cleared.',
   '',
   '| Resolved module | POM licence declaration | Project / SCM URL | Cached archives | Archive licence/notice entries |',
   '|---|---|---|---:|---:|',
