@@ -71,6 +71,11 @@ jobs:
           NEXUS_ANDROID_CLOUD_MODE: staging
         run: npm run android:sync:fdroid
 
+      - name: Generate npm dependency and licence inventory
+        env:
+          NEXUS_ANDROID_CLOUD_MODE: staging
+        run: npm run android:sbom
+
       - name: Verify Android asset isolation and native feature wiring
         run: npm run test:android
 
@@ -99,4 +104,5 @@ jobs:
             android/app/build/outputs/bundle/playRelease/*.aab
             android/gradle/verification-metadata.xml
             android/build/reports/fdroid-dependencies/*.txt
+            android/build/reports/third-party/*
             android/build/reports/dependency-verification/**/*.html
