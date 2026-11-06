@@ -59,9 +59,11 @@ assert.ok((androidWorkflow.match(/--dependency-verification strict/g) || []).len
 assert.ok(!androidWorkflow.includes('--write-verification-metadata'), 'Android CI must never regenerate verification metadata implicitly.');
 assert.ok(!androidWorkflow.includes('git push origin'), 'Android CI must never push generated checksum changes.');
 assert.ok(androidWorkflow.includes('git diff --exit-code -- gradle/verification-metadata.xml'), 'CI must fail if Gradle changes committed verification metadata.');
+assert.ok(androidWorkflow.includes('if: always()') && androidWorkflow.includes('android/build/reports/dependency-verification/**/*.html'), 'CI must retain Gradle verification reports when a build fails.');
 const gradleVerification = read('android/gradle/verification-metadata.xml');
 assert.ok(gradleVerification.includes('<verify-metadata>true</verify-metadata>'), 'Gradle metadata files must also be verified.');
 assert.ok(gradleVerification.includes('de23b114b3e4119a8fe6eb17bed5a3852816698bace67071579d6d927ebb080a'), 'Pin the JUnit BOM Gradle module metadata.');
+assert.ok(gradleVerification.includes('1239e9dbe1397cd5971342956b2511bc3ace7b641842e4372a088dcfa8b9ad55'), 'Pin the Kotlin coroutines BOM POM metadata.');
 assert.ok(gradleVerification.includes('55441db27e8869dfefe053059bdf478bdc7e95585642bf391f0023345fd56287'), 'Pin the Guava parent POM metadata.');
 
 const pkg = JSON.parse(read('android/package.json'));

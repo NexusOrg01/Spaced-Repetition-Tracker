@@ -85,10 +85,11 @@ jobs:
           git diff --exit-code -- gradle/verification-metadata.xml
 
       - name: Upload Android preview artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: nexus-android-release-validation
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
           path: |
             android/app/build/outputs/apk/fdroid/debug/*.apk
@@ -98,3 +99,4 @@ jobs:
             android/app/build/outputs/bundle/playRelease/*.aab
             android/gradle/verification-metadata.xml
             android/build/reports/fdroid-dependencies/*.txt
+            android/build/reports/dependency-verification/**/*.html
