@@ -53,19 +53,16 @@ This implementation is designed around F-Droid's current Inclusion Policy and Re
 - Use stable, unique package identity and tagged source revisions for release.
 - Submit a separate build recipe and metadata to F-Droid's fdroiddata repository. Its metadata file belongs in fdroiddata/metadata/, not this application repository.
 
-The Android npm lockfile is stored as 12 Base64 fragments containing one gzip-compressed, minified JSON npm v3 lockfile under android/package-lock-source/. scripts/restore-android-lock.mjs joins the fragments, checks the compressed SHA-256 digest, and deterministically reconstructs the standard npm lockfile before npm ci. It does not resolve or change dependency versions. CI and the F-Droid build recipe must use this restore step before installing npm packages.
+The Android npm lockfile is stored as 12 Base64 fragments containing one gzip-compressed, minified JSON npm v3 lockfile under android/package-lock-source/. scripts/restore-android-lock.mjs joins the fragments, checks the compressed SHA-256 digest, and deterministically reconstructs the standard npm lockfile before npm ci. It does not resolve or change dependency versions. CI and the F-Droid build recipe must use this restore step before installing npm packages. The F-Droid-specific `android:sync:fdroid` command then uses `npm ci --omit=optional` and the pinned source-built esbuild executable.
 
-The current lock resolves 114 unique packages, all with declared MIT, ISC, 0BSD, Unlicense, BlueOak-1.0.0 or Apache-2.0 licence identifiers. CI rejects missing/unknown licence identifiers. The complete resolved Gradle/Maven dependency licence and binary scan remains a submission blocker.
+The current lock resolves 114 unique npm packages, all with declared MIT, ISC, 0BSD, Unlicense, BlueOak-1.0.0 or Apache-2.0 licence identifiers in the normal install. CI rejects missing/unknown licence identifiers. The F-Droid install omits optional platform binaries and runs the same licence scan against the installed package tree. The complete resolved Gradle/Maven dependency licence and binary scan remains a submission blocker.
 
-The F-Droid build recipe must not silently trust an npm-provided native executable. Build esbuild from its matching public source release with an approved FLOSS toolchain, or obtain explicit F-Droid maintainer acceptance for the exact pinned prebuilt binary. The current recipe outline is not yet a tested fdroidserver build; verify the selected approach in F-Droid's isolated buildserver before submission.
+The F-Droid path now avoids npm's prebuilt esbuild platform binary. `android:sync:fdroid` installs Android dependencies with `--omit=optional`, requires `NEXUS_ESBUILD_BINARY`, and checks that the Linux x64 npm binary is absent. `scripts/build-esbuild-from-source.sh` builds esbuild 0.28.2 from source commit `609683d892977362a0f99026cb74b96263d728a9`, using `golang.org/x/sys` source commit `c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf`, with Go module network access disabled. GitHub Actions exercises this path. The actual fdroidserver buildserver recipe still needs its `srclibs` metadata and a successful isolated buildserver run.
 
 ## Release build outline
 
-    node scripts/restore-android-lock.mjs
-    npm ci --prefix android --ignore-scripts --no-audit --no-fund
-    # F-Droid buildserver: build the locked esbuild source and replace the npm binary here.
-    npm run build
-    NEXUS_ANDROID_APPLICATION_ID=REPLACE_WITH_FINAL_ID NEXUS_ANDROID_CLOUD_MODE=source NEXUS_ANDROID_ALLOW_PRODUCTION_CLOUD=true node scripts/build-android-assets.mjs
+    # fdroiddata srclibs must provide the exact esbuild and golang/sys source commits documented in contrib/fdroiddata/.
+    ESBUILD_SOURCE_DIR=$esbuild$ GO_SYS_SOURCE_DIR=$golang-sys$ NEXUS_ESBUILD_BINARY=.build/bin/esbuild NEXUS_ANDROID_APPLICATION_ID=REPLACE_WITH_FINAL_ID NEXUS_ANDROID_CLOUD_MODE=source NEXUS_ANDROID_ALLOW_PRODUCTION_CLOUD=true npm run android:sync:fdroid
     cd android
     ./node_modules/.bin/cap telemetry off
     ./node_modules/.bin/cap sync android
@@ -81,8 +78,8 @@ Do not submit until:
 
 1. Final package ID, release version and signing approach are selected; create a matching signed Git tag.
 2. The full npm and Gradle/Maven dependency licence and binary scan is complete.
-3. Gradle dependency-verification checksums generated in CI are reviewed and committed; strict dependency verification is enabled for release builds.
-4. F-Droid's buildserver successfully builds the APK from the tagged public source, including the esbuild-from-source recipe where required, and the build passes F-Droid metadata/lint and binary checks. Run an APK reproducibility comparison and investigate unexplained differences. Reproducible builds are strongly recommended, but F-Droid's Inclusion How-To describes them as best practice rather than an absolute inclusion requirement.
+3. Gradle dependency verification is committed and strict mode is enforced in CI. The initial SHA-256 values are generated by Gradle (`origin="Generated by Gradle"`) and are trust-on-first-use, not independent upstream authentication. Independently verify upstream checksums/signatures where available before submission; do not regenerate existing entries without reviewing the diff.
+4. F-Droid's buildserver successfully builds the APK from the tagged public source using the pinned esbuild/golang-sys source libraries, and the build passes F-Droid metadata/lint and binary checks. Run an APK reproducibility comparison and investigate unexplained differences. Reproducible builds are strongly recommended, but F-Droid's Inclusion How-To describes them as best practice rather than an absolute inclusion requirement.
 5. A cloud-enabled F-Droid APK is physically tested for fresh install, offline use, email sign-in, browser OAuth if configured, cloud sync, sign-out, account switching, account deletion, backup/restore, file picker and sharing.
 6. Final store assets and release metadata are complete. The 512x512 icon and English short/full descriptions are included under `fastlane/metadata/android/en-US/`. An initial portrait phone screenshot and a wide-screen overview screenshot are prepared in a local package for `phoneScreenshots/1.jpg` and `tenInchScreenshots/1.jpg`; copy these files into the repository before source release. Add further feature screenshots as consecutive numbered files (for example, `phoneScreenshots/2.jpg` for Analytics), and add a release changelog before submission. Provide suitable screenshot alt text in the Google Play listing. F-Droid Anti-Feature classification is still pending maintainer review.
 7. Privacy policy, account deletion, store identity and final package signing have been checked.

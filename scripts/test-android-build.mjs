@@ -47,6 +47,10 @@ assert.equal(
   rootPackage.scripts['android:deps'],
   'node scripts/restore-android-lock.mjs && npm ci --prefix android --ignore-scripts --no-audit --no-fund'
 );
+const fdroidSyncScript = rootPackage.scripts['android:sync:fdroid'] || '';
+assert.ok(fdroidSyncScript.includes('--omit=optional'), 'F-Droid npm installation must omit optional prebuilt binaries.');
+assert.ok(fdroidSyncScript.includes('build-esbuild-from-source.sh'), 'F-Droid build must compile esbuild from source.');
+assert.ok(fdroidSyncScript.includes('NEXUS_REQUIRE_SOURCE_ESBUILD=1'), 'F-Droid build must require the source-built esbuild binary.');
 assert.deepEqual(rootPackage.dependencies || {}, {}, 'The PWA root package must remain dependency-free.');
 
 const pkg = JSON.parse(read('android/package.json'));
@@ -186,7 +190,8 @@ for (const expected of [
   "process.env.NEXUS_ANDROID_CLOUD_MODE || 'staging'",
   "join(supabasePackage, 'dist', 'umd', 'supabase.js')",
   'SUPABASE-LICENSE', 'NEXUS_ANDROID_APPLICATION_ID',
-  '__NEXUS_ANDROID_AUTH_REDIRECT_URL__', 'NEXUS_ANDROID_ALLOW_PRODUCTION_CLOUD'
+  '__NEXUS_ANDROID_AUTH_REDIRECT_URL__', 'NEXUS_ANDROID_ALLOW_PRODUCTION_CLOUD',
+  'NEXUS_ESBUILD_BINARY', 'NEXUS_REQUIRE_SOURCE_ESBUILD', '--legal-comments=', 'NODE_PATH', '@esbuild/linux-x64'
 ]) {
   assert.ok(buildScript.includes(expected), 'Android build script is missing ' + expected);
 }
@@ -204,6 +209,16 @@ for (const expected of [
   'window.NexusHandleAndroidAuthUrl=handleAndroidAuthUrl'
 ]) {
   assert.ok(buildScript.includes(expected), 'Android OAuth flow is missing ' + expected);
+}
+
+const esbuildSourceScript = read('scripts/build-esbuild-from-source.sh');
+for (const expected of [
+  '609683d892977362a0f99026cb74b96263d728a9',
+  'c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf',
+  'GOPROXY=off', 'GOSUMDB=off', 'GOTOOLCHAIN=local',
+  '-trimpath', '-buildvcs=false', '-buildid=', '0.28.2'
+]) {
+  assert.ok(esbuildSourceScript.includes(expected), 'esbuild source build script is missing ' + expected);
 }
 
 const fdroidDocs = read('docs/FDROID_RELEASE.md');

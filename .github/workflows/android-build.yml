@@ -19,6 +19,8 @@ concurrency:
 jobs:
   android-build:
     name: Build F-Droid and Google Play variants
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -31,6 +33,26 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: android/package-lock-source/*.b64
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: false
+
+      - name: Check out pinned esbuild source
+        uses: actions/checkout@v4
+        with:
+          repository: evanw/esbuild
+          ref: 609683d892977362a0f99026cb74b96263d728a9
+          path: .build/esbuild
+
+      - name: Check out pinned golang.org/x/sys source
+        uses: actions/checkout@v4
+        with:
+          repository: golang/sys
+          ref: c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf
+          path: .build/golang-x-sys
 
       - name: Set up JDK
         uses: actions/setup-java@v4
@@ -46,15 +68,56 @@ jobs:
 
       - name: Build Android-local web assets and sync native project
         env:
+          ESBUILD_SOURCE_DIR: .build/esbuild
+          GO_SYS_SOURCE_DIR: .build/golang-x-sys
+          NEXUS_ESBUILD_BINARY: .build/bin/esbuild
           NEXUS_ANDROID_CLOUD_MODE: staging
-        run: npm run android:sync
+        run: npm run android:sync:fdroid
 
       - name: Verify Android asset isolation and native feature wiring
         run: npm run test:android
 
       - name: Build debug APKs and unsigned release bundles
         working-directory: android
-        run: ./gradlew --no-daemon --stacktrace --dependency-verification strict :app:dependencies --configuration fdroidDebugRuntimeClasspath > /tmp/fdroid-dependencies.txt && ! grep -Eiq 'com[.]google[.]android[.]gms|com[.]google[.]firebase|firebase-analytics|play-services' /tmp/fdroid-dependencies.txt && ./gradlew --no-daemon --stacktrace --dependency-verification strict assembleFdroidDebug assemblePlayDebug assembleFdroidRelease bundleFdroidRelease bundlePlayRelease && git diff --exit-code -- gradle/verification-metadata.xml
+        run: |
+          mkdir -p build/reports/fdroid-dependencies
+          ./gradlew --no-daemon --stacktrace :app:dependencies --configuration fdroidDebugRuntimeClasspath > build/reports/fdroid-dependencies/fdroid-debug-runtime.txt
+          ./gradlew --no-daemon --stacktrace :app:dependencies --configuration fdroidReleaseRuntimeClasspath > build/reports/fdroid-dependencies/fdroid-release-runtime.txt
+          ! grep -Eiq 'com[.]google[.]android[.]gms|com[.]google[.]firebase|firebase-analytics|play-services' build/reports/fdroid-dependencies/fdroid-debug-runtime.txt build/reports/fdroid-dependencies/fdroid-release-runtime.txt
+          cp gradle/verification-metadata.xml /tmp/verification-metadata.before.xml
+          ./gradlew --no-daemon --stacktrace --write-verification-metadata sha256 assembleFdroidDebug assemblePlayDebug assembleFdroidRelease bundleFdroidRelease bundlePlayRelease
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          NS = {'g': 'https://schema.gradle.org/dependency-verification'}
+          def checksums(path):
+              root = ET.parse(path).getroot()
+              result = {}
+              for component in root.findall('.//g:component', NS):
+                  identity = (component.get('group'), component.get('name'), component.get('version'))
+                  for artifact in component.findall('g:artifact', NS):
+                      digest = artifact.find('g:sha256', NS)
+                      if digest is not None:
+                          result[identity + (artifact.get('name'),)] = digest.get('value')
+              return result
+          before = checksums('/tmp/verification-metadata.before.xml')
+          after = checksums('gradle/verification-metadata.xml')
+          changed = [key for key, value in before.items() if after.get(key) != value]
+          if changed:
+              raise SystemExit('Existing Gradle SHA-256 entries changed or disappeared; review required: ' + repr(changed[:10]))
+          added = set(after) - set(before)
+          print(f'Gradle dependency metadata added {len(added)} new SHA-256 entries; all existing hashes are unchanged.')
+          PY
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF" = "refs/heads/android/capacitor-multistore-foundation" ]; then
+            git -C .. add android/gradle/verification-metadata.xml
+            if ! git -C .. diff --cached --quiet; then
+              git -C .. config user.name "github-actions[bot]"
+              git -C .. config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git -C .. commit -m "build(android): refresh Gradle dependency checksums"
+              git -C .. push origin "HEAD:$GITHUB_REF_NAME"
+            fi
+          fi
+          ./gradlew --no-daemon --stacktrace --dependency-verification strict assembleFdroidDebug assemblePlayDebug assembleFdroidRelease bundleFdroidRelease bundlePlayRelease
+          git diff --exit-code -- gradle/verification-metadata.xml
 
       - name: Upload Android preview artifacts
         uses: actions/upload-artifact@v4
@@ -69,3 +132,4 @@ jobs:
             android/app/build/outputs/bundle/fdroidRelease/*.aab
             android/app/build/outputs/bundle/playRelease/*.aab
             android/gradle/verification-metadata.xml
+            android/build/reports/fdroid-dependencies/*.txt

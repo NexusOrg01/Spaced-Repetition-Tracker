@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(root, 'dist');
 const requireAndroid = createRequire(join(root, 'android', 'package.json'));
-const { build } = requireAndroid('esbuild');
+const execFileAsync = promisify(execFile);
 const cloudMode = String(process.env.NEXUS_ANDROID_CLOUD_MODE || 'staging').trim().toLowerCase();
 const cloudEnabled = cloudMode !== 'disabled';
 const allowProductionCloud = process.env.NEXUS_ANDROID_ALLOW_PRODUCTION_CLOUD === 'true';
@@ -99,7 +102,7 @@ const supabasePackage = join(root, 'android', 'node_modules', '@supabase', 'supa
 await copyFile(join(supabasePackage, 'dist', 'umd', 'supabase.js'), join(dist, 'vendor', 'supabase.js'));
 await copyFile(join(supabasePackage, 'LICENSE'), join(dist, 'vendor', 'SUPABASE-LICENSE'));
 
-await build({
+const bridgeBuildOptions = {
   entryPoints: [join(root, 'scripts', 'android-bridge.entry.js')],
   outfile: join(dist, 'nexus-android-bridge.js'),
   bundle: true,
@@ -114,7 +117,52 @@ await build({
     __NEXUS_ANDROID_AUTH_REDIRECT_URL__: JSON.stringify(androidApplicationId + '://auth-callback')
   },
   legalComments: 'eof'
-});
+};
+
+async function buildAndroidBridge() {
+  const binarySetting = String(process.env.NEXUS_ESBUILD_BINARY || '').trim();
+  const requireSourceBuild = process.env.NEXUS_REQUIRE_SOURCE_ESBUILD === '1';
+  if (!binarySetting) {
+    if (requireSourceBuild) {
+      throw new Error('F-Droid builds require NEXUS_ESBUILD_BINARY from scripts/build-esbuild-from-source.sh.');
+    }
+    const { build } = requireAndroid('esbuild');
+    await build(bridgeBuildOptions);
+    return;
+  }
+
+  const binaryPath = resolve(root, binarySetting);
+  if (!existsSync(binaryPath)) throw new Error('Configured source-built esbuild binary does not exist: ' + binaryPath);
+  if (requireSourceBuild && existsSync(join(root, 'android', 'node_modules', '@esbuild', 'linux-x64', 'bin', 'esbuild'))) {
+    throw new Error('F-Droid npm installation must omit the prebuilt @esbuild/linux-x64 binary.');
+  }
+
+  const esbuildPackage = JSON.parse(await readFile(join(root, 'android', 'node_modules', 'esbuild', 'package.json'), 'utf8'));
+  const versionResult = await execFileAsync(binaryPath, ['--version'], { cwd: root });
+  if (String(versionResult.stdout).trim() !== esbuildPackage.version) {
+    throw new Error('Source-built esbuild version does not match pinned npm wrapper version ' + esbuildPackage.version + '.');
+  }
+
+  const args = [
+    bridgeBuildOptions.entryPoints[0],
+    '--bundle',
+    '--outfile=' + bridgeBuildOptions.outfile,
+    '--platform=' + bridgeBuildOptions.platform,
+    '--format=' + bridgeBuildOptions.format,
+    '--target=' + bridgeBuildOptions.target.join(','),
+    '--minify',
+    '--legal-comments=' + bridgeBuildOptions.legalComments
+  ];
+  for (const [key, value] of Object.entries(bridgeBuildOptions.define)) {
+    args.push('--define:' + key + '=' + value);
+  }
+  await execFileAsync(binaryPath, args, {
+    cwd: root,
+    env: { ...process.env, NODE_PATH: bridgeBuildOptions.nodePaths.join(delimiter) }
+  });
+}
+
+await buildAndroidBridge();
 
 await patchFile('index.html', html => {
   const analytics = /\s*<!-- Vercel Web Analytics -->\s*<script>[\s\S]*?<\/script>\s*<script defer src="\/_vercel\/insights\/script\.js"><\/script>/;
