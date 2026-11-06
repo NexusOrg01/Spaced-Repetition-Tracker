@@ -52,6 +52,17 @@ assert.ok(fdroidSyncScript.includes('--omit=optional'), 'F-Droid npm installatio
 assert.ok(fdroidSyncScript.includes('build-esbuild-from-source.sh'), 'F-Droid build must compile esbuild from source.');
 assert.ok(fdroidSyncScript.includes('NEXUS_REQUIRE_SOURCE_ESBUILD=1'), 'F-Droid build must require the source-built esbuild binary.');
 assert.deepEqual(rootPackage.dependencies || {}, {}, 'The PWA root package must remain dependency-free.');
+const androidWorkflow = read('.github/workflows/android-build.yml');
+assert.ok(androidWorkflow.includes('permissions:\\n  contents: read'), 'Android CI must use read-only repository permissions.');
+assert.ok(!androidWorkflow.includes('contents: write'), 'Android CI must not receive write access to repository contents.');
+assert.ok((androidWorkflow.match(/--dependency-verification strict/g) || []).length >= 3, 'Strict Gradle dependency verification must cover dependency reports and all build variants.');
+assert.ok(!androidWorkflow.includes('--write-verification-metadata'), 'Android CI must never regenerate verification metadata implicitly.');
+assert.ok(!androidWorkflow.includes('git push origin'), 'Android CI must never push generated checksum changes.');
+assert.ok(androidWorkflow.includes('git diff --exit-code -- gradle/verification-metadata.xml'), 'CI must fail if Gradle changes committed verification metadata.');
+const gradleVerification = read('android/gradle/verification-metadata.xml');
+assert.ok(gradleVerification.includes('<verify-metadata>true</verify-metadata>'), 'Gradle metadata files must also be verified.');
+assert.ok(gradleVerification.includes('de23b114b3e4119a8fe6eb17bed5a3852816698bace67071579d6d927ebb080a'), 'Pin the JUnit BOM Gradle module metadata.');
+assert.ok(gradleVerification.includes('55441db27e8869dfefe053059bdf478bdc7e95585642bf391f0023345fd56287'), 'Pin the Guava parent POM metadata.');
 
 const pkg = JSON.parse(read('android/package.json'));
 assert.equal(pkg.dependencies['@capacitor/core'], '8.6.0');
