@@ -53,7 +53,7 @@ assert.ok(fdroidSyncScript.includes('build-esbuild-from-source.sh'), 'F-Droid bu
 assert.ok(fdroidSyncScript.includes('NEXUS_REQUIRE_SOURCE_ESBUILD=1'), 'F-Droid build must require the source-built esbuild binary.');
 assert.deepEqual(rootPackage.dependencies || {}, {}, 'The PWA root package must remain dependency-free.');
 const androidWorkflow = read('.github/workflows/android-build.yml');
-assert.ok(/permissions:\\s+contents: read/.test(androidWorkflow), 'Android CI must use read-only repository permissions.');
+assert.ok(androidWorkflow.includes('contents: read'), 'Android CI must use read-only repository permissions.');
 assert.ok(!androidWorkflow.includes('contents: write'), 'Android CI must not receive write access to repository contents.');
 assert.ok((androidWorkflow.match(/--dependency-verification strict/g) || []).length >= 3, 'Strict Gradle dependency verification must cover dependency reports and all build variants.');
 assert.ok(!androidWorkflow.includes('--write-verification-metadata'), 'Android CI must never regenerate verification metadata implicitly.');
