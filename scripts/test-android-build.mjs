@@ -52,6 +52,10 @@ assert.ok(fdroidSyncScript.includes('--omit=optional'), 'F-Droid npm installatio
 assert.ok(fdroidSyncScript.includes('build-esbuild-from-source.sh'), 'F-Droid build must compile esbuild from source.');
 assert.ok(fdroidSyncScript.includes('NEXUS_REQUIRE_SOURCE_ESBUILD=1'), 'F-Droid build must require the source-built esbuild binary.');
 assert.deepEqual(rootPackage.dependencies || {}, {}, 'The PWA root package must remain dependency-free.');
+const staticBuildScript = read('scripts/build.mjs');
+assert.ok(staticBuildScript.includes("'.build'"), 'Static web build must exclude Android build-only source checkouts.');
+assert.ok(!existsSync(resolve(root, 'dist', '.build')), 'Build tool source checkouts must not be copied into dist.');
+assert.ok(!existsSync(resolve(root, 'android/app/src/main/assets/public/.build')), 'Build tool source checkouts must not be packaged as Android web assets.');
 const androidWorkflow = read('.github/workflows/android-build.yml');
 assert.ok(androidWorkflow.includes('contents: read'), 'Android CI must use read-only repository permissions.');
 assert.ok(!androidWorkflow.includes('contents: write'), 'Android CI must not receive write access to repository contents.');
