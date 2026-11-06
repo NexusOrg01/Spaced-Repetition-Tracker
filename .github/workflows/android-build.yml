@@ -85,7 +85,7 @@ jobs:
           ./gradlew --no-daemon --stacktrace :app:dependencies --configuration fdroidReleaseRuntimeClasspath > build/reports/fdroid-dependencies/fdroid-release-runtime.txt
           ! grep -Eiq 'com[.]google[.]android[.]gms|com[.]google[.]firebase|firebase-analytics|play-services' build/reports/fdroid-dependencies/fdroid-debug-runtime.txt build/reports/fdroid-dependencies/fdroid-release-runtime.txt
           cp gradle/verification-metadata.xml /tmp/verification-metadata.before.xml
-          ./gradlew --no-daemon --stacktrace --write-verification-metadata sha256 assembleFdroidDebug assemblePlayDebug assembleFdroidRelease bundleFdroidRelease bundlePlayRelease
+          ./gradlew --no-daemon --stacktrace --refresh-dependencies --write-verification-metadata sha256 assembleFdroidDebug assemblePlayDebug assembleFdroidRelease bundleFdroidRelease bundlePlayRelease
           python3 - <<'PY'
           import xml.etree.ElementTree as ET
           NS = {'g': 'https://schema.gradle.org/dependency-verification'}
