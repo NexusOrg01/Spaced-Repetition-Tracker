@@ -9,6 +9,7 @@
     "build": "node scripts/build.mjs",
     "android:deps": "node scripts/restore-android-lock.mjs && npm ci --prefix android --ignore-scripts --no-audit --no-fund",
     "android:assets": "node scripts/build-android-assets.mjs",
+    "android:sbom": "node scripts/write-android-npm-sbom.mjs",
     "android:sync": "npm run build && npm run android:deps && npm run android:assets && cd android && ./node_modules/.bin/cap telemetry off && ./node_modules/.bin/cap sync android",
     "android:debug": "npm run android:sync && cd android && ./gradlew assembleFdroidDebug assemblePlayDebug",
     "test:android": "node scripts/test-android-build.mjs",
