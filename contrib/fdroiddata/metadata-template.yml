@@ -34,9 +34,9 @@ Builds:
     sudo: apt-get update && apt-get install -y build-essential python3 golang-go
     build: |
       cd ..
-      bash scripts/build-nodejs-from-source.sh "$nodejs$" "$PWD/.build/nodejs-install"
+      bash scripts/build-nodejs-from-source.sh "$$nodejs$$" "$PWD/.build/nodejs-install"
       export PATH="$PWD/.build/nodejs-install/bin:$PATH"
-      ESBUILD_SOURCE_DIR=$esbuild$ GO_SYS_SOURCE_DIR=$golang-sys$ NEXUS_ESBUILD_BINARY=.build/bin/esbuild NEXUS_ANDROID_APPLICATION_ID=REPLACE_WITH_FINAL_APPLICATION_ID NEXUS_ANDROID_CLOUD_MODE=source NEXUS_ANDROID_ALLOW_PRODUCTION_CLOUD=true npm run android:sync:fdroid
+      ESBUILD_SOURCE_DIR=$$esbuild$$ GO_SYS_SOURCE_DIR=$$golang-sys$$ NEXUS_ESBUILD_BINARY=.build/bin/esbuild NEXUS_ANDROID_APPLICATION_ID=REPLACE_WITH_FINAL_APPLICATION_ID NEXUS_ANDROID_CLOUD_MODE=source NEXUS_ANDROID_ALLOW_PRODUCTION_CLOUD=true npm run android:sync:fdroid
     gradle: fdroid
     # The F-Droid build uses system Gradle; the checked-in wrapper JAR is not required.
     scandelete: android/gradle/wrapper/gradle-wrapper.jar
