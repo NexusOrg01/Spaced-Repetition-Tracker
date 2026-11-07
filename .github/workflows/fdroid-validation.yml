@@ -1,0 +1,96 @@
+name: F-Droid recipe validation
+
+on:
+  push:
+    branches:
+      - "android/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fdroid-recipe-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fdroid-validation:
+    name: Validate metadata and build in F-Droid toolchain container
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out Nexus source
+        uses: actions/checkout@v4
+
+      - name: Prepare temporary F-Droid metadata workspace
+        env:
+          APP_ID: org.nexus.tracker.preview
+          VALIDATION_VERSION: 0.1.0-fdroidtest
+          VALIDATION_VERSION_CODE: "1"
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://gitlab.com/fdroid/fdroidserver.git .build/fdroidserver
+          mkdir -p .build/fdroiddata/metadata .build/fdroiddata/srclibs
+          cp .build/fdroidserver/examples/config.yml .build/fdroiddata/config.yml
+          cp contrib/fdroiddata/srclibs/*.yml .build/fdroiddata/srclibs/
+          sed \
+            -e "s|REPLACE_WITH_RELEASE_VERSION|${VALIDATION_VERSION}|g" \
+            -e "s|REPLACE_WITH_FULL_RELEASE_COMMIT|${GITHUB_SHA}|g" \
+            -e "s|REPLACE_WITH_FINAL_APPLICATION_ID|${APP_ID}|g" \
+            contrib/fdroiddata/metadata-template.yml \
+            > ".build/fdroiddata/metadata/${APP_ID}.yml"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          app_id = os.environ["APP_ID"]
+          version = os.environ["VALIDATION_VERSION"]
+          path = Path(".build/fdroiddata/metadata") / f"{app_id}.yml"
+          text = path.read_text()
+          marker = "Builds:\\n"
+          if marker not in text:
+              raise SystemExit("F-Droid metadata template has no Builds block")
+          text = text.replace(
+              marker,
+              f"CurrentVersion: {version}\\n"
+              f"CurrentVersionCode: {os.environ['VALIDATION_VERSION_CODE']}\\n"
+              "UpdateCheckMode: Static\\n"
+              + marker,
+              1,
+          )
+          path.write_text(text)
+          PY
+          git -C .build/fdroiddata init
+          git -C .build/fdroiddata config user.name "Nexus CI"
+          git -C .build/fdroiddata config user.email "nexus-ci@example.invalid"
+          git -C .build/fdroiddata add config.yml metadata srclibs
+          git -C .build/fdroiddata commit -m "Prepare temporary F-Droid validation metadata"
+          chmod -R a+rwX .build/fdroiddata
+
+      - name: Run fdroid readmeta, lint and source build
+        run: |
+          set -euo pipefail
+          docker pull registry.gitlab.com/fdroid/fdroidserver:buildserver
+          docker run --rm -i --user vagrant \
+            -v "$GITHUB_WORKSPACE/.build/fdroiddata:/build" \
+            -v "$GITHUB_WORKSPACE/.build/fdroidserver:/home/vagrant/fdroidserver:ro" \
+            --entrypoint /bin/bash \
+            registry.gitlab.com/fdroid/fdroidserver:buildserver -lc '
+              . /etc/profile
+              export PATH="/home/vagrant/fdroidserver:$PATH"
+              export PYTHONPATH="/home/vagrant/fdroidserver"
+              cd /build
+              fdroid readmeta
+              fdroid lint org.nexus.tracker.preview
+              fdroid build --verbose org.nexus.tracker.preview
+            '
+
+      - name: Upload unsigned F-Droid validation APK and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-fdroid-recipe-validation
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            .build/fdroiddata/unsigned/*.apk
+            .build/fdroiddata/logs/*
