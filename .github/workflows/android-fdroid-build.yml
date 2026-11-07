@@ -14,6 +14,10 @@ on:
       - "icon-192.png"
       - "curricula/**"
       - "scripts/test-fdroid-build.mjs"
+      - "LICENSE"
+      - "README.md"
+      - "docs/LICENSING.md"
+      - "docs/fdroid-readiness.md"
       - ".github/workflows/android-fdroid-build.yml"
   workflow_dispatch:
 
