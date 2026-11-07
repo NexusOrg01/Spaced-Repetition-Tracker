@@ -72,6 +72,11 @@ jobs:
           git -C .build/fdroiddata commit -m "Prepare temporary F-Droid validation metadata"
           chmod -R a+rwX .build/fdroiddata
 
+      - name: Stage pinned source libraries for the buildserver
+        run: |
+          set -euo pipefail
+          bash scripts/prepare-fdroid-srclibs.sh .build/fdroiddata/build/srclib
+
       - name: Run fdroid readmeta, lint and source build
         run: |
           set -euo pipefail
@@ -87,6 +92,16 @@ jobs:
               export PYTHONPATH="/home/vagrant/fdroidserver"
               git config --global --add safe.directory /build
               git config --global --add safe.directory /home/vagrant/fdroidserver
+              for entry in \
+                "nodejs:27f213124280b4db4cd1e3dd42f6f8afd01ceff7" \
+                "esbuild:609683d892977362a0f99026cb74b96263d728a9" \
+                "golang-sys:c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf"; do
+                name="${entry%%:*}"
+                revision="${entry#*:}"
+                git config --global --add safe.directory "/build/build/srclib/$name"
+                test "$(git -C "/build/build/srclib/$name" rev-parse HEAD)" = "$revision"
+                test -z "$(git -C "/build/build/srclib/$name" status --porcelain)"
+              done
               cd /build
               fdroid readmeta
               fdroid lint org.nexus.tracker.preview

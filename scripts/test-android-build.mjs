@@ -123,6 +123,12 @@ for (const expected of [
   'test -s .build/fdroiddata/config/categories.yml',
   'test -s .build/fdroiddata/config/antiFeatures.yml',
   'test -s .build/fdroiddata/config/ic_antifeature_ads.png'
+  'Stage pinned source libraries for the buildserver',
+  'bash scripts/prepare-fdroid-srclibs.sh .build/fdroiddata/build/srclib',
+  'nodejs:27f213124280b4db4cd1e3dd42f6f8afd01ceff7',
+  'esbuild:609683d892977362a0f99026cb74b96263d728a9',
+  'golang-sys:c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf',
+  'git -C "/build/build/srclib/$name" rev-parse HEAD',
 ]) {
   assert.ok(fdroidWorkflow.includes(expected), 'F-Droid CI must enforce a real build and APK output: ' + expected);
 }
