@@ -104,7 +104,11 @@ for (const expected of [
   'fdroid lint org.nexus.tracker.preview',
   'fdroid build --on-server --verbose org.nexus.tracker.preview',
   'test -s unsigned/org.nexus.tracker.preview_1.apk',
-  'if-no-files-found: error'
+  'if-no-files-found: error',
+  'git clone --depth 1 --filter=blob:none --sparse https://gitlab.com/fdroid/fdroiddata.git .build/fdroiddata-upstream',
+  'git -C .build/fdroiddata-upstream sparse-checkout set config',
+  'cp .build/fdroiddata-upstream/config/categories.yml .build/fdroiddata/config/categories.yml',
+  'cp .build/fdroiddata-upstream/config/antiFeatures.yml .build/fdroiddata/config/antiFeatures.yml'
 ]) {
   assert.ok(fdroidWorkflow.includes(expected), 'F-Droid CI must enforce a real build and APK output: ' + expected);
 }
