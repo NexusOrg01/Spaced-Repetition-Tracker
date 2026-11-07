@@ -99,6 +99,7 @@ jobs:
         working-directory: android
         run: |
           mkdir -p build/reports/fdroid-dependencies
+          ./gradlew --no-daemon --stacktrace --dependency-verification strict buildEnvironment :app:buildEnvironment > build/reports/fdroid-dependencies/fdroid-build-environment.txt
           ./gradlew --no-daemon --stacktrace --dependency-verification strict :app:dependencies --configuration fdroidDebugRuntimeClasspath > build/reports/fdroid-dependencies/fdroid-debug-runtime.txt
           ./gradlew --no-daemon --stacktrace --dependency-verification strict :app:dependencies --configuration fdroidReleaseRuntimeClasspath > build/reports/fdroid-dependencies/fdroid-release-runtime.txt
           ! grep -Eiq 'com[.]google[.]android[.]gms|com[.]google[.]firebase|firebase-analytics|play-services' build/reports/fdroid-dependencies/fdroid-debug-runtime.txt build/reports/fdroid-dependencies/fdroid-release-runtime.txt
