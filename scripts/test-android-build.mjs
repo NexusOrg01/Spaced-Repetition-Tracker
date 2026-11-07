@@ -89,8 +89,20 @@ assert.ok(fdroidMetadata.includes('AutoName: "Nexus: Spaced Repetition Tracker"'
 assert.ok(fdroidMetadata.includes('  - Science & Education'), 'F-Droid metadata must use the canonical Science & Education category.');
 assert.ok(fdroidMetadata.includes('build-essential python3 golang-go'),
   'F-Droid source build must install the Go compiler required by the esbuild source build.');
-assert.ok(fdroidMetadata.includes('scandelete: android/gradle/wrapper/gradle-wrapper.jar'),
-  'F-Droid source scanning must remove the unused Gradle wrapper binary.');
+assert.ok(fdroidMetadata.includes('prebuild: python3 ../scripts/restore-android-lock.py'),
+  'F-Droid must reconstruct the Android npm lockfile before scanning the source tree.');
+assert.ok(!fdroidMetadata.includes('scandelete: android/gradle/wrapper/gradle-wrapper.jar'),
+  'Do not add an unused scandelete entry for a Gradle wrapper that F-Droid removes automatically.');
+const rootNpmLock = JSON.parse(read('package-lock.json'));
+assert.equal(rootNpmLock.lockfileVersion, 3, 'The root npm manifest must have a committed npm v3 lockfile.');
+assert.equal(rootNpmLock.packages[''].name, 'nexus-spaced-repetition-tracker');
+const androidLockRestore = read('scripts/restore-android-lock.py');
+for (const expected of [
+  'fcff97ebdfb728268ad432c360d5812f94c5558cb1b25c9703d17e1080049880',
+  'base64.b64decode', 'gzip.decompress', 'android/package-lock.json'
+]) {
+  assert.ok(androidLockRestore.includes(expected), 'Pre-scan Android lockfile restoration is missing ' + expected);
+}
 assert.ok(fdroidMetadata.includes('gradle: fdroid'),
   'F-Droid metadata must build only the dedicated fdroid Gradle flavour.');
 assert.ok(fdroidMetadata.includes('output: app/build/outputs/apk/fdroid/release/app-fdroid-release-unsigned.apk'),
