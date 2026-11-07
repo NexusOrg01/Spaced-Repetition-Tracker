@@ -14,6 +14,7 @@ const reportDirectory = join(androidRoot, 'build', 'reports', 'third-party');
 const cacheRoot = resolve(process.env.GRADLE_USER_HOME || join(homedir(), '.gradle'));
 const modulesCache = join(cacheRoot, 'caches', 'modules-2', 'files-2.1');
 const sourceReports = [
+  join(androidRoot, 'build', 'reports', 'fdroid-dependencies', 'fdroid-build-environment.txt'),
   join(androidRoot, 'build', 'reports', 'fdroid-dependencies', 'fdroid-debug-runtime.txt'),
   join(androidRoot, 'build', 'reports', 'fdroid-dependencies', 'fdroid-release-runtime.txt')
 ];
@@ -129,7 +130,8 @@ for (const path of sourceReports) {
     const module = coordinateFromLine(line);
     if (!module) continue;
     const key = module.group + ':' + module.artifact + ':' + module.version;
-    if (!coordinates.has(key)) coordinates.set(key, module);
+    if (!coordinates.has(key)) coordinates.set(key, { ...module, reports: [] });
+    coordinates.get(key).reports.push(relative(root, path).split(sep).join('/'));
   }
 }
 assert.ok(coordinates.size >= 25, 'Resolved Gradle inventory is unexpectedly small: ' + coordinates.size);
@@ -173,6 +175,7 @@ for (const [coordinate, module] of [...coordinates.entries()].sort(([a], [b]) =>
   }
   modules.push({
     coordinate,
+    configurations: [...new Set(module.reports)].sort(),
     purl: 'pkg:maven/' + module.group + '/' + module.artifact + '@' + module.version,
     pomFound: Boolean(pom),
     pomSource,
@@ -191,6 +194,7 @@ const report = {
   project: 'Nexus: Spaced Repetition Tracker',
   sourceCommit: process.env.GITHUB_SHA || null,
   gradleDependencyReports: sourceReports.map(path => relative(root, path).split(sep).join('/')),
+  includesBuildscriptAndRuntimeConfigurations: true,
   gradleVerificationMetadata: 'android/gradle/verification-metadata.xml',
   moduleCount: modules.length,
   pomFoundCount: modules.filter(item => item.pomFound).length,
@@ -218,7 +222,7 @@ const markdown = [
   '# Android Gradle/Maven runtime dependency licence inventory',
   '',
   '- Source commit: ' + (report.sourceCommit || 'not supplied'),
-  '- Runtime modules: ' + report.moduleCount,
+  '- Resolved build/runtime modules: ' + report.moduleCount,
   '- POM files found: ' + report.pomFoundCount,
   '- POM files missing: ' + report.pomMissingCount,
   '- Modules with declared POM licences: ' + report.modulesWithDeclaredLicences,
