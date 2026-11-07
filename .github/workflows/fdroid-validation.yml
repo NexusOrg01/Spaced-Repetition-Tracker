@@ -33,8 +33,10 @@ jobs:
           git clone --depth 1 --filter=blob:none --sparse https://gitlab.com/fdroid/fdroiddata.git .build/fdroiddata-upstream
           git -C .build/fdroiddata-upstream sparse-checkout set config
           mkdir -p .build/fdroiddata/config .build/fdroiddata/metadata .build/fdroiddata/srclibs
-          cp .build/fdroiddata-upstream/config/categories.yml .build/fdroiddata/config/categories.yml
-          cp .build/fdroiddata-upstream/config/antiFeatures.yml .build/fdroiddata/config/antiFeatures.yml
+          cp -a .build/fdroiddata-upstream/config/. .build/fdroiddata/config/
+          test -s .build/fdroiddata/config/categories.yml
+          test -s .build/fdroiddata/config/antiFeatures.yml
+          test -s .build/fdroiddata/config/ic_antifeature_ads.png
           cp .build/fdroidserver/examples/config.yml .build/fdroiddata/config.yml
           cp contrib/fdroiddata/srclibs/*.yml .build/fdroiddata/srclibs/
           sed \

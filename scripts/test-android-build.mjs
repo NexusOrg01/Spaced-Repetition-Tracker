@@ -107,8 +107,10 @@ for (const expected of [
   'if-no-files-found: error',
   'git clone --depth 1 --filter=blob:none --sparse https://gitlab.com/fdroid/fdroiddata.git .build/fdroiddata-upstream',
   'git -C .build/fdroiddata-upstream sparse-checkout set config',
-  'cp .build/fdroiddata-upstream/config/categories.yml .build/fdroiddata/config/categories.yml',
-  'cp .build/fdroiddata-upstream/config/antiFeatures.yml .build/fdroiddata/config/antiFeatures.yml'
+  'cp -a .build/fdroiddata-upstream/config/. .build/fdroiddata/config/',
+  'test -s .build/fdroiddata/config/categories.yml',
+  'test -s .build/fdroiddata/config/antiFeatures.yml',
+  'test -s .build/fdroiddata/config/ic_antifeature_ads.png'
 ]) {
   assert.ok(fdroidWorkflow.includes(expected), 'F-Droid CI must enforce a real build and APK output: ' + expected);
 }
