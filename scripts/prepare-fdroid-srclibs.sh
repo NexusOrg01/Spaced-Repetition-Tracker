@@ -38,4 +38,9 @@ stage_srclib "nodejs" "https://github.com/nodejs/node.git" "27f213124280b4db4cd1
 stage_srclib "esbuild" "https://github.com/evanw/esbuild.git" "609683d892977362a0f99026cb74b96263d728a9"
 stage_srclib "golang-sys" "https://github.com/golang/sys.git" "c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf"
 
-echo "All pinned F-Droid source libraries are staged and verified."
+# The buildserver runs as the unprivileged vagrant user. The host-created
+# build/ directory must be writable by that user so fdroid can clone the app
+# source beside these pre-staged srclibs.
+chmod -R a+rwX "$(dirname "$DEST_ROOT")"
+
+echo "All pinned F-Droid source libraries are staged, verified and writable by the buildserver."
