@@ -86,6 +86,7 @@ assert.ok(gradleVerification.includes('55441db27e8869dfefe053059bdf478bdc7e95585
 
 const fdroidMetadata = read('contrib/fdroiddata/metadata-template.yml');
 assert.ok(fdroidMetadata.includes('AutoName: "Nexus: Spaced Repetition Tracker"'), 'F-Droid AutoName values containing a colon must be YAML-quoted.');
+assert.ok(fdroidMetadata.includes('  - Science & Education'), 'F-Droid metadata must use the canonical Science & Education category.');
 assert.ok(fdroidMetadata.includes('build-essential python3 golang-go'),
   'F-Droid source build must install the Go compiler required by the esbuild source build.');
 assert.ok(fdroidMetadata.includes('scandelete: android/gradle/wrapper/gradle-wrapper.jar'),
