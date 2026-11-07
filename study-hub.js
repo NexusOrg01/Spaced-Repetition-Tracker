@@ -320,6 +320,34 @@
       '<h2 id="report-paper-records">10. Paper / practice results <span class="muted">('+paperList.length+' records)</span></h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Paper / practice</th><th>Subject</th><th class="num">Score</th><th class="num">Percent</th><th>Notes / weak areas</th></tr></thead><tbody>'+paperRows+'</tbody></table></div>'+
       '<h2 id="report-journal">11. Mistakes and lesson journal <span class="muted">('+journals.length+' records)</span></h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Category</th><th>Subject</th><th>Topic</th><th>Issue</th><th>Correction / fix</th><th>Status</th></tr></thead><tbody>'+journalRows+'</tbody></table></div>'+
       '<div class="footer"><span>Nexus · Spaced Repetition Tracker</span><span>Private report generated locally in your browser</span></div></body></html>';
+    if(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp){
+      (async()=>{
+        let nativeReport=report;
+        const escapedLogoUrl=esc(logoUrl);
+        try{
+          const imageResponse=await fetch(logoUrl);
+          if(!imageResponse.ok)throw new Error('The Nexus report logo could not be loaded.');
+          const imageBlob=await imageResponse.blob();
+          const logoDataUrl=await new Promise((resolve,reject)=>{
+            const reader=new FileReader();
+            reader.onload=()=>resolve(String(reader.result||''));
+            reader.onerror=()=>reject(reader.error||new Error('The Nexus report logo could not be embedded.'));
+            reader.readAsDataURL(imageBlob);
+          });
+          if(!logoDataUrl.startsWith('data:image/'))throw new Error('The Nexus report logo has an unsupported image format.');
+          nativeReport=nativeReport.replace('src="'+escapedLogoUrl+'"','src="'+logoDataUrl+'"');
+        }catch(error){
+          console.warn('Nexus could not embed the report logo for native printing; continuing without it.',error);
+          nativeReport=nativeReport.replace('<img class="cover-logo" src="'+escapedLogoUrl+'" alt="Nexus logo">','<span class="cover-logo" aria-hidden="true"></span>');
+        }
+        await window.NexusAndroidBridge.printHtml('Nexus Study and Review Difficulty Report',nativeReport);
+        notify('Android print dialog opened. Select Save as PDF to save your report.');
+      })().catch(error=>{
+        console.error('Nexus Android PDF export failed.',error);
+        notify(error&&error.message?'Android could not open the print dialog: '+error.message:'Android could not open the print dialog. Please try again.');
+      });
+      return;
+    }
     const reportWindow=window.open('','_blank');
     if(!reportWindow){notify('Allow pop-ups for Nexus to open the print-ready report, then choose Save as PDF.');return;}
     try{reportWindow.document.open();reportWindow.document.write(report);reportWindow.document.close();setTimeout(function(){try{reportWindow.focus();reportWindow.print();}catch(e){notify('The report opened, but printing was blocked. Use the browser menu to Print / Save as PDF.');}},450);}catch(e){try{reportWindow.close();}catch(_){}notify('Could not open the PDF report. Try allowing pop-ups and retry.');}

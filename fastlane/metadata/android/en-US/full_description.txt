@@ -1,0 +1,14 @@
+Nexus is an offline-first study tracker designed around spaced repetition.
+
+Organize study material into streams, subjects and topics. Review material with FSRS scheduling, follow your review history, plan study sessions and manage your goals, journals and exam papers in Study Hub.
+
+Features:
+- Organize study content into streams, subjects and topics
+- Schedule reviews with FSRS spaced repetition
+- Track review history and study progress
+- Plan study sessions, goals, journals and exam papers
+- Work offline, with local changes retained on the device
+- Export and restore JSON and CSV backups
+- Optionally sign in and sync your workspace across devices
+
+Core study and review features work without an account. Cloud sync requires an internet connection and an account. The Android build bundles its cloud-sync client locally and does not require Google Play Services.

@@ -125,7 +125,7 @@ async function copySiteFiles() {
   await verifyStorageBootstrap();
   await rm(output, { recursive: true, force: true });
   await mkdir(output, { recursive: true });
-  const excluded = new Set(['.git', '.github', 'node_modules', 'dist', 'scripts', 'supabase', '.gitignore', 'package.json', 'vercel.json', 'netlify.toml']);
+  const excluded = new Set(['.git', '.github', '.build', 'node_modules', 'dist', 'scripts', 'supabase', 'android', '.gitignore', 'package.json', 'vercel.json', 'netlify.toml']);
   for (const entry of await readdir(root, { withFileTypes: true })) {
     if (excluded.has(entry.name)) continue;
     await cp(join(root, entry.name), join(output, entry.name), { recursive: true });
