@@ -292,6 +292,9 @@ assert.ok(androidWorkflow.includes('Build and verify Node.js 22 from pinned sour
 const fdroidMetadata = read('contrib/fdroiddata/metadata-template.yml');
 assert.ok(fdroidMetadata.includes('nodejs@27f213124280b4db4cd1e3dd42f6f8afd01ceff7'), 'F-Droid metadata must pin the Node.js source library.');
 assert.ok(fdroidMetadata.includes('build-nodejs-from-source.sh'), 'F-Droid metadata must build Node.js from source.');
+assert.ok(fdroidMetadata.includes('bash scripts/build-nodejs-from-source.sh "$nodejs$"'), 'F-Droid must substitute the pinned Node.js source-library directory.');
+assert.ok(fdroidMetadata.includes('ESBUILD_SOURCE_DIR=$esbuild$ GO_SYS_SOURCE_DIR=$golang-sys$'), 'F-Droid must substitute the pinned esbuild and golang.org/x/sys source-library directories.');
+assert.ok(!fdroidMetadata.includes('bash scripts/build-nodejs-from-source.sh "$nodejs$"'), 'Do not use shell variables where F-Droid source-library substitution is required.');
 const fdroidDocs = read('docs/FDROID_RELEASE.md');
 for (const expected of ['feature parity', 'reproducible', 'Anti-Feature', 'esbuild', 'cloud sync']) {
   assert.ok(fdroidDocs.toLowerCase().includes(expected.toLowerCase()), 'F-Droid release guide is missing ' + expected);
