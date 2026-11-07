@@ -45,19 +45,19 @@ jobs:
           app_id = os.environ["APP_ID"]
           version = os.environ["VALIDATION_VERSION"]
           path = Path(".build/fdroiddata/metadata") / f"{app_id}.yml"
-          text = path.read_text()
-          marker = "Builds:\\n"
-          if marker not in text:
+          lines = path.read_text().splitlines()
+          try:
+              index = lines.index("Builds:")
+          except ValueError:
               raise SystemExit("F-Droid metadata template has no Builds block")
-          text = text.replace(
-              marker,
-              f"CurrentVersion: {version}\\n"
-              f"CurrentVersionCode: {os.environ['VALIDATION_VERSION_CODE']}\\n"
-              "UpdateCheckMode: Static\\n"
-              + marker,
-              1,
-          )
-          path.write_text(text)
+          lines[index:index + 1] = [
+              f"CurrentVersion: {version}",
+              f"CurrentVersionCode: {os.environ['VALIDATION_VERSION_CODE']}",
+              "UpdateCheckMode: Static",
+              "Builds:",
+          ]
+          newline = chr(10)
+          path.write_text(newline.join(lines) + newline)
           PY
           git -C .build/fdroiddata init
           git -C .build/fdroiddata config user.name "Nexus CI"
