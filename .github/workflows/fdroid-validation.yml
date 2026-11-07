@@ -75,6 +75,7 @@ jobs:
             -v "$GITHUB_WORKSPACE/.build/fdroidserver:/home/vagrant/fdroidserver:ro" \
             --entrypoint /bin/bash \
             registry.gitlab.com/fdroid/fdroidserver:buildserver -lc '
+              set -euo pipefail
               . /etc/profile
               export PATH="/home/vagrant/fdroidserver:$PATH"
               export PYTHONPATH="/home/vagrant/fdroidserver"
@@ -83,7 +84,9 @@ jobs:
               cd /build
               fdroid readmeta
               fdroid lint org.nexus.tracker.preview
-              fdroid build --verbose org.nexus.tracker.preview
+              fdroid build --on-server --verbose org.nexus.tracker.preview
+              test -s unsigned/org.nexus.tracker.preview_1.apk
+              sha256sum unsigned/org.nexus.tracker.preview_1.apk
             '
 
       - name: Upload unsigned F-Droid validation APK and logs
@@ -91,7 +94,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nexus-fdroid-recipe-validation
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
           path: |
             .build/fdroiddata/unsigned/*.apk

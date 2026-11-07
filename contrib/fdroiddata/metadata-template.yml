@@ -27,7 +27,10 @@ Builds:
     versionCode: 1
     commit: REPLACE_WITH_FULL_RELEASE_COMMIT
     subdir: android
-    srclibs: nodejs@27f213124280b4db4cd1e3dd42f6f8afd01ceff7,esbuild@609683d892977362a0f99026cb74b96263d728a9,golang-sys@c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf
+    srclibs:
+      - nodejs@27f213124280b4db4cd1e3dd42f6f8afd01ceff7
+      - esbuild@609683d892977362a0f99026cb74b96263d728a9
+      - golang-sys@c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf
     sudo: apt-get update && apt-get install -y build-essential python3 golang-go
     build: |
       cd ..

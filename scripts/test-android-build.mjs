@@ -95,10 +95,19 @@ assert.ok(fdroidMetadata.includes('gradle: fdroid'),
   'F-Droid metadata must build only the dedicated fdroid Gradle flavour.');
 assert.ok(fdroidMetadata.includes('output: app/build/outputs/apk/fdroid/release/app-fdroid-release-unsigned.apk'),
   'F-Droid metadata must point at the unsigned F-Droid release APK output.');
-assert.ok(fdroidMetadata.includes('nodejs@27f213124280b4db4cd1e3dd42f6f8afd01ceff7') &&
-  fdroidMetadata.includes('esbuild@609683d892977362a0f99026cb74b96263d728a9') &&
-  fdroidMetadata.includes('golang-sys@c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf'),
-  'F-Droid source library revisions must remain pinned to full commit hashes.');
+assert.ok(fdroidMetadata.includes('    srclibs:\n      - nodejs@27f213124280b4db4cd1e3dd42f6f8afd01ceff7\n      - esbuild@609683d892977362a0f99026cb74b96263d728a9\n      - golang-sys@c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf'),
+  'F-Droid source libraries must be distinct YAML list entries pinned to full commit hashes.');
+const fdroidWorkflow = read('.github/workflows/fdroid-validation.yml');
+for (const expected of [
+  'set -euo pipefail',
+  'fdroid readmeta',
+  'fdroid lint org.nexus.tracker.preview',
+  'fdroid build --on-server --verbose org.nexus.tracker.preview',
+  'test -s unsigned/org.nexus.tracker.preview_1.apk',
+  'if-no-files-found: error'
+]) {
+  assert.ok(fdroidWorkflow.includes(expected), 'F-Droid CI must enforce a real build and APK output: ' + expected);
+}
 
 const pkg = JSON.parse(read('android/package.json'));
 assert.equal(pkg.dependencies['@capacitor/core'], '8.6.0');
