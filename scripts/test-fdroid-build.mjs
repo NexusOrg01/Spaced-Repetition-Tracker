@@ -28,7 +28,9 @@ assert.ok(activity.includes('OnBackPressedDispatcher') && activity.includes('web
 assert.ok(bootstrap.includes("asset !== 'cloud-sync.js'"), 'Runtime bootstrap must skip online sync in the Android edition.');
 assert.ok(serviceWorker.includes("path === './cloud-sync.js'"), 'Service-worker install must skip online sync in the Android edition.');
 assert.ok(bridge.includes('saveTextFile'), 'The native JavaScript bridge must expose the export action.');
-assert.ok(license.includes('GNU GENERAL PUBLIC LICENSE') && license.includes('Version 3'), 'The root GPL-3.0-only licence is missing.');
+assert.ok(license.includes('Apache License') && license.includes('Version 2.0') && !license.includes('GNU GENERAL PUBLIC LICENSE'), 'The root Apache-2.0 licence is missing or inconsistent.');
+const licensePolicy = await read('docs/LICENSING.md');
+assert.ok(licensePolicy.includes('Apache License 2.0') && licensePolicy.includes('Third-party materials'), 'The project licensing scope and third-party material policy must be present.');
 assert.ok(gradle.includes('"LICENSE"'), 'The full licence text must be copied into the APK assets.');
 assert.ok(gradle.includes('license.html') && gradle.includes('License &amp; copyright'), 'The Android app must expose its copyright and warranty notice.');
 
