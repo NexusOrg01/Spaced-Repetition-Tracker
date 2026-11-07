@@ -85,6 +85,7 @@ assert.ok(gradleVerification.includes('1239e9dbe1397cd5971342956b2511bc3ace7b641
 assert.ok(gradleVerification.includes('55441db27e8869dfefe053059bdf478bdc7e95585642bf391f0023345fd56287'), 'Pin the Guava parent POM metadata.');
 
 const fdroidMetadata = read('contrib/fdroiddata/metadata-template.yml');
+assert.ok(fdroidMetadata.includes('AutoName: "Nexus: Spaced Repetition Tracker"'), 'F-Droid AutoName values containing a colon must be YAML-quoted.');
 assert.ok(fdroidMetadata.includes('build-essential python3 golang-go'),
   'F-Droid source build must install the Go compiler required by the esbuild source build.');
 assert.ok(fdroidMetadata.includes('scandelete: android/gradle/wrapper/gradle-wrapper.jar'),
