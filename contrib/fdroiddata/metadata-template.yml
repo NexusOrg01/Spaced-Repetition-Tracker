@@ -1,6 +1,6 @@
 # TEMPLATE ONLY. Replace the application ID, version, versionCode and commit before copying
 # to fdroiddata/metadata/<FINAL_APPLICATION_ID>.yml. Do not submit this file as-is.
-AutoName: Nexus: Spaced Repetition Tracker
+AutoName: "Nexus: Spaced Repetition Tracker"
 Categories:
   - Education
 License: Apache-2.0
