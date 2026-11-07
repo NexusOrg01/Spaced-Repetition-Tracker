@@ -25,6 +25,8 @@ Copy `metadata-template.yml` to `fdroiddata/metadata/<FINAL_APPLICATION_ID>.yml`
 
 The metadata template is a handoff aid, not a validated submission. It must be updated to the final tagged release commit and version before use.
 
+The build block installs `golang-go` from Debian because the pinned esbuild source must be compiled with `go build`; the GitHub Actions Go setup is not part of the F-Droid buildserver. The recipe also uses `scandelete` for `android/gradle/wrapper/gradle-wrapper.jar`: F-Droid invokes its system Gradle through the `gradle: fdroid` metadata setting, so the repository's wrapper JAR is not needed by that build. Both details are asserted by `scripts/test-android-build.mjs`.
+
 
 ## Buildserver toolchain blocker
 
