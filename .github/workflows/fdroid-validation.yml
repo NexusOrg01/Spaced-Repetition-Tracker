@@ -79,6 +79,7 @@ jobs:
               export PATH="/home/vagrant/fdroidserver:$PATH"
               export PYTHONPATH="/home/vagrant/fdroidserver"
               git config --global --add safe.directory /build
+              git config --global --add safe.directory /home/vagrant/fdroidserver
               cd /build
               fdroid readmeta
               fdroid lint org.nexus.tracker.preview
