@@ -160,4 +160,4 @@ gradle -p android --no-daemon :app:assembleDebug :app:assembleRelease :app:verif
 
 See [the F-Droid readiness notes](docs/fdroid-readiness.md) for the Android package identity, build requirements and remaining submission checks. The Android build is a preparation branch until its APK is installed and tested on a physical device and F-Droid maintainers approve the listing.
 
-Project-authored source code is released under GNU GPL-3.0-only; see [LICENSE](LICENSE). Third-party components and any separately licensed content remain subject to their own notices.
+Original Nexus application source code is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0), subject to the scope and third-party material notes in [the licensing and release policy](docs/LICENSING.md). The full licence text is in [LICENSE](LICENSE). Third-party assets and dependencies retain their own licence terms.
