@@ -17,6 +17,12 @@ The F-Droid edition is deliberately offline-only:
 
 The regular PWA build is not changed to this offline-only mode. Its existing cloud-sync configuration and hosting behavior remain separate.
 
+## Licensing scope
+
+The project's selected licence for original Nexus application source code is Apache License 2.0 (`Apache-2.0`), within the scope described in [the licensing and release policy](LICENSING.md). The root [LICENSE](../LICENSE) file is the full Apache-2.0 text.
+
+This declaration does not automatically relicense third-party libraries, fonts, icons, artwork, screenshots, or curriculum material. Those items retain their own terms unless the relevant rights holder has granted compatible permission. The Android release must retain required notices and attributions, and the complete APK still needs a separate F-Droid licence/provenance review. CI can verify consistency of the project's own licence declarations; it cannot establish ownership or redistribution rights for every included asset.
+
 ## Build requirements
 
 - JDK 17
