@@ -122,7 +122,7 @@ for (const expected of [
   'cp -a .build/fdroiddata-upstream/config/. .build/fdroiddata/config/',
   'test -s .build/fdroiddata/config/categories.yml',
   'test -s .build/fdroiddata/config/antiFeatures.yml',
-  'test -s .build/fdroiddata/config/ic_antifeature_ads.png'
+  'test -s .build/fdroiddata/config/ic_antifeature_ads.png',
   'Stage pinned source libraries for the buildserver',
   'bash scripts/prepare-fdroid-srclibs.sh .build/fdroiddata/build/srclib',
   'chmod -R a+rwX "$(dirname "$DEST_ROOT")"',
