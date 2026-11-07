@@ -81,6 +81,20 @@ assert.ok(gradleVerification.includes('de23b114b3e4119a8fe6eb17bed5a3852816698ba
 assert.ok(gradleVerification.includes('1239e9dbe1397cd5971342956b2511bc3ace7b641842e4372a088dcfa8b9ad55'), 'Pin the Kotlin coroutines BOM POM metadata.');
 assert.ok(gradleVerification.includes('55441db27e8869dfefe053059bdf478bdc7e95585642bf391f0023345fd56287'), 'Pin the Guava parent POM metadata.');
 
+const fdroidMetadata = read('contrib/fdroiddata/metadata-template.yml');
+assert.ok(fdroidMetadata.includes('build-essential python3 golang-go'),
+  'F-Droid source build must install the Go compiler required by the esbuild source build.');
+assert.ok(fdroidMetadata.includes('scandelete: android/gradle/wrapper/gradle-wrapper.jar'),
+  'F-Droid source scanning must remove the unused Gradle wrapper binary.');
+assert.ok(fdroidMetadata.includes('gradle: fdroid'),
+  'F-Droid metadata must build only the dedicated fdroid Gradle flavour.');
+assert.ok(fdroidMetadata.includes('output: app/build/outputs/apk/fdroid/release/app-fdroid-release-unsigned.apk'),
+  'F-Droid metadata must point at the unsigned F-Droid release APK output.');
+assert.ok(fdroidMetadata.includes('nodejs@27f213124280b4db4cd1e3dd42f6f8afd01ceff7') &&
+  fdroidMetadata.includes('esbuild@609683d892977362a0f99026cb74b96263d728a9') &&
+  fdroidMetadata.includes('golang-sys@c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf'),
+  'F-Droid source library revisions must remain pinned to full commit hashes.');
+
 const pkg = JSON.parse(read('android/package.json'));
 assert.equal(pkg.dependencies['@capacitor/core'], '8.6.0');
 assert.equal(pkg.dependencies['@capacitor/android'], '8.6.0');
