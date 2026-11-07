@@ -18,6 +18,12 @@ case "$OUTPUT_PATH" in
 esac
 mkdir -p "$(dirname "$OUTPUT_PATH")"
 
+if ! command -v go >/dev/null 2>&1; then
+  echo "Go compiler is required to build esbuild from source; install the Debian golang-go package." >&2
+  exit 1
+fi
+go version
+
 actual_esbuild_commit="$(git -C "$ESBUILD_SOURCE_DIR" rev-parse HEAD)"
 actual_go_sys_commit="$(git -C "$GO_SYS_SOURCE_DIR" rev-parse HEAD)"
 if [[ "$actual_esbuild_commit" != "$EXPECTED_ESBUILD_COMMIT" ]]; then
