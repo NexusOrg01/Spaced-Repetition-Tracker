@@ -2,7 +2,7 @@
 # to fdroiddata/metadata/<FINAL_APPLICATION_ID>.yml. Do not submit this file as-is.
 AutoName: "Nexus: Spaced Repetition Tracker"
 Categories:
-  - Education
+  - Science & Education
 License: Apache-2.0
 AuthorName: NexusOrg01
 AuthorWebSite: https://github.com/NexusOrg01
