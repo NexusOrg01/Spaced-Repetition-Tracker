@@ -11,7 +11,10 @@ function syncDiagSummary(payload){
  const deleted=Array.isArray(settings.curriculumTombstones)?settings.curriculumTombstones:[];
  const packInstalled=installed.filter(x=>typeof x==='string'&&(x==='installed:pack:sl-al-commerce-si'||x.startsWith('installed:subject:sl-al-commerce-si:')||x.startsWith('installed:topic:sl-al-commerce-si:')));
  const packDeleted=deleted.filter(x=>typeof x==='string'&&x.startsWith('deleted:')&&x.includes(':sl-al-commerce-si:')||x==='deleted:pack:sl-al-commerce-si');
- return {hasPackInstallIntent:packInstalled.length>0,packInstallMarkerCount:packInstalled.length,packDeletionMarkerCount:packDeleted.length,streamCount:Array.isArray(s.streams)?s.streams.length:0,subjectCount:Array.isArray(s.subjects)?s.subjects.length:0,topicCount:Array.isArray(s.topics)?s.topics.length:0,hasSettings:!!s.settings};
+ const features=payload&&payload.featureState&&typeof payload.featureState==='object'?payload.featureState:{};
+ const counts={streamCount:Array.isArray(s.streams)?s.streams.length:0,subjectCount:Array.isArray(s.subjects)?s.subjects.length:0,topicCount:Array.isArray(s.topics)?s.topics.length:0,reviewHistoryCount:Array.isArray(s.history)?s.history.length:0,examCount:Array.isArray(s.exams)?s.exams.length:0,journalCount:Array.isArray(features.journal)?features.journal.length:0,paperCount:Array.isArray(features.papers)?features.papers.length:0,goalCount:Array.isArray(features.goals)?features.goals.length:0,studyLogCount:Array.isArray(features.studyLogs)?features.studyLogs.length:0};
+ counts.totalRecordCount=Object.values(counts).reduce((total,count)=>total+count,0);
+ return {hasPackInstallIntent:packInstalled.length>0,packInstallMarkerCount:packInstalled.length,packDeletionMarkerCount:packDeleted.length,...counts,hasSettings:!!s.settings};
 }
 function syncDiag(stage,payload,extra){
  if(!SYNC_DIAG_ENABLED)return;
@@ -20,7 +23,7 @@ function syncDiag(stage,payload,extra){
 function downloadSyncDiagnostics(){
  if(!SYNC_DIAG_ENABLED)return;
  let events=[];try{events=JSON.parse(localStorage.getItem(SYNC_DIAG_KEY)||'[]');}catch(_){}
- const report={app:'Nexus sync diagnostic',schema:1,generatedAt:new Date().toISOString(),note:'Contains only stage names, booleans and aggregate workspace counts. No account identifiers, credentials, topic names or study content.',events};
+ const report={app:'Nexus sync diagnostic',schema:1,generatedAt:new Date().toISOString(),note:'Contains stage names, aggregate workspace record counts, serialized-character estimates, timings and safe error codes/messages. No account identifiers, credentials, topic names or study content.',events};
  const blob=new Blob([JSON.stringify(report,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');
  link.href=url;link.download='nexus-sync-diagnostics.json';document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
 }
@@ -104,7 +107,40 @@ function nextCloudStamp(previous){
  return new Date(Number.isFinite(prior)?Math.max(now,prior+1):now).toISOString();
 }
 async function assertActiveUser(userId){const {data,error}=await client.auth.getSession();if(error)throw error;const activeId=data&&data.session&&data.session.user?data.session.user.id:null;if(activeId!==userId||!session||session.user.id!==userId)throw new Error('The active account changed during sync. No cloud data was applied or written. Retry the account connection.');}
-async function fetchRemote(userId){const uid=userId||(session&&session.user&&session.user.id);if(!client||!uid)throw new Error('No active account is available for cloud sync.');const {data,error}=await client.from('nexus_user_data').select('payload,updated_at').eq('user_id',uid).maybeSingle();if(error){syncDiag('cloud-read-error',null,{errorCode:String(error.code||'unknown')});throw error;}syncDiag('cloud-read',data&&data.payload,{hasPayload:!!(data&&data.payload),hasUpdatedAt:!!(data&&data.updated_at)});return data;}
+async function fetchRemote(userId){
+ const uid=userId||(session&&session.user&&session.user.id),startedAt=Date.now();
+ if(!client||!uid)throw new Error('No active account is available for cloud sync.');
+ const {data,error}=await client.from('nexus_user_data').select('payload,updated_at').eq('user_id',uid).maybeSingle();
+ const durationMs=Date.now()-startedAt;
+ if(error){syncDiag('cloud-read-error',null,{errorCode:String(error.code||'unknown'),durationMs});throw error;}
+ syncDiag('cloud-read',data&&data.payload,{hasPayload:!!(data&&data.payload),hasUpdatedAt:!!(data&&data.updated_at),durationMs});
+ return data;
+}
+async function writeRemoteSnapshot(userId,payload,expectedStamp,stamp){
+ const startedAt=Date.now();
+ try{
+  const result=await window.NexusBackupRestoreUtils.writeCloudSnapshot(client,userId,payload,expectedStamp,stamp);
+  syncDiag('cloud-write-complete',payload,{durationMs:Date.now()-startedAt});
+  return result;
+ }catch(error){
+  syncDiag('cloud-write-error',payload,{durationMs:Date.now()-startedAt,errorCode:String(error&&error.code||'unknown'),errorMessage:String(error&&error.message||'unknown').slice(0,120)});
+  throw error;
+ }
+}
+function rebuildOversizedOfflineQueue(queue,ownerId,payload,baseServerVersion,reason){
+ if(!queue||typeof queue.commitWorkspace!=='function'||typeof queue.getPending!=='function'||!window.NexusStorageKey||!window.NexusFeatureStorageKey)throw new Error('Safe offline queue recovery is unavailable.');
+ if(localStorage.getItem(OWNER_KEY)!==ownerId)throw new Error('The active account no longer owns this workspace. Offline queue recovery stopped.');
+ const features=payload&&payload.featureState?payload.featureState:{};
+ queue.commitWorkspace(localStorage,[
+  {key:window.NexusStorageKey,value:JSON.stringify(payload.state)},
+  {key:window.NexusFeatureStorageKey,value:JSON.stringify(features)}
+ ],{app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:clone(payload.state),featureState:clone(features)},
+ {baseServerVersion:baseServerVersion||null,returnOperationPayload:false});
+ const pending=queue.getPending(localStorage,ownerId);
+ if(!pending||pending.ownerUserId!==ownerId)throw new Error('The rebuilt offline snapshot could not be verified for this account.');
+ syncDiag('offline-queue-rebuilt-after-size-limit',pending.payload,{reason:reason||'sync',priorQueueRetainedForRecovery:true});
+ return pending;
+}
 function emptyState(){return {schema:3,streams:[{id:'stream-general',name:'General'}],subjects:[{id:'subject-general',name:'General',streamId:'stream-general',order:0}],topics:[],exams:[],history:[],settings:{theme:'system',intervalCap:120,installedCurricula:[],curriculumTombstones:[]}};}
 function mergeState(local,remote){
  const l=normalizeState(local),r=normalizeState(remote);
@@ -143,8 +179,9 @@ function hasUnassignedWorkspaceChanges(owner,newUserId,localPayload){
 }
 function chooseLocalData(){return new Promise(resolve=>{const dlg=el('accountChoiceDialog');if(!dlg){resolve('cancel');return;}let done=false;const onCancel=e=>e.preventDefault();const finish=v=>{if(done)return;done=true;dlg.removeEventListener('cancel',onCancel);if(dlg.open)dlg.close();resolve(v);};dlg.addEventListener('cancel',onCancel);dlg.querySelectorAll('[data-account-choice]').forEach(b=>b.onclick=()=>finish(b.dataset.accountChoice));if(!dlg.open)dlg.showModal();});}
 async function flushDurableLocalWrites(){
- const storage=window.NexusStorage;
+ const storage=window.NexusStorage,startedAt=Date.now();
  if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function')await storage.flush();
+ syncDiag('local-storage-flush',null,{durationMs:Date.now()-startedAt,storageEnabled:!!(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled())});
 }
 async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
   if(!window.NexusBackupRestoreUtils||!window.NexusStorageKey||!window.NexusFeatureStorageKey||!window.NexusNormalizeFeatureState||!window.NexusSetFeatureState)throw new Error('Safe local workspace storage is unavailable. Cloud data was not applied.');
