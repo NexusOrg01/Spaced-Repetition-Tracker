@@ -107,10 +107,10 @@ assert.ok(fdroidMetadata.includes('gradle: fdroid'),
   'F-Droid metadata must build only the dedicated fdroid Gradle flavour.');
 assert.ok(fdroidMetadata.includes('output: app/build/outputs/apk/fdroid/release/app-fdroid-release-unsigned.apk'),
   'F-Droid metadata must point at the unsigned F-Droid release APK output.');
-const gradlePropsBlock = fdroidMetadata.match(/^    gradleprops:\\s*\\n((?:      - .*(?:\\n|$))+)/m);
+const gradlePropsBlock = fdroidMetadata.match(/^    gradleprops:\s*\n((?:      - .*(?:\n|$))+)/m);
 assert.ok(gradlePropsBlock, 'F-Droid Gradle properties must use a YAML list, not a combined scalar.');
 assert.deepEqual(
-  gradlePropsBlock[1].trim().split(/\\r?\\n/).map(line => line.trim().replace(/^- /, '')),
+  gradlePropsBlock[1].trim().split(/\r?\n/).map(line => line.trim().replace(/^- /, '')),
   [
     'nexusApplicationId=REPLACE_WITH_FINAL_APPLICATION_ID',
     'nexusVersionCode=1',
