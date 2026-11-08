@@ -9,8 +9,8 @@ android {
     compileSdk rootProject.ext.compileSdkVersion
 
     defaultConfig {
-        // Temporary development identity only. Replace both store IDs once the
-        // domain and final distribution/signing strategy are confirmed.
+        // Temporary development identity only. Replace it after the final
+        // project-controlled domain and release-signing strategy are confirmed.
         applicationId (nexusReleaseApplicationId ?: 'org.nexus.tracker.preview')
         manifestPlaceholders = [nexusAuthScheme: (nexusReleaseApplicationId ?: 'org.nexus.tracker.preview')]
         minSdkVersion rootProject.ext.minSdkVersion
@@ -29,11 +29,6 @@ android {
             dimension 'distribution'
             if (!nexusReleaseApplicationId) applicationIdSuffix '.fdroidpreview'
             if (!nexusReleaseApplicationId) versionNameSuffix '-fdroid-preview'
-        }
-        play {
-            dimension 'distribution'
-            if (!nexusReleaseApplicationId) applicationIdSuffix '.playpreview'
-            if (!nexusReleaseApplicationId) versionNameSuffix '-play-preview'
         }
     }
 
