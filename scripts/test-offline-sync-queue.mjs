@@ -282,4 +282,25 @@ function withFacadeAtomic(storage,callback){
   'the full oversized queue must remain readable and preserve its payload');
 }
 
+{
+ // Simulate an older compact queue whose expansion exceeds the decoder limit.
+ // Sequential LZW dictionary references grow the decoded byte count without
+ // requiring a 25 MiB compressed test fixture.
+ const packed= 'NEXUS_LZW_UTF8_V1:' + String.fromCharCode(97,...Array.from({length:8000},(_,i)=>256+i));
+ const s=new MemoryStorage({[queue.OWNER]:'legacy-large-account',[queue.KEY]:packed});
+ assert.throws(
+  ()=>queue.getPending(s,'legacy-large-account'),
+  error=>error&&error.code==='NEXUS_OFFLINE_QUEUE_TOO_LARGE',
+  'a legacy over-limit compact queue must be classified distinctly from corruption'
+ );
+ queue.commitWorkspace(s,[
+  {key:stateKey,value:JSON.stringify(payload('rebuilt').state)},
+  {key:'recall.study.features.v1',value:JSON.stringify(payload('rebuilt').featureState)}
+ ],payload('rebuilt'),{returnOperationPayload:false});
+ assert.equal(s.getItem(queue.QUARANTINE),packed,
+  'the unreadable old queue must be retained in the local recovery slot');
+ assert.equal(queue.getPending(s,'legacy-large-account').payload.state.topics[0].id,'rebuilt',
+  'a fresh queue built from the current local workspace must remain readable');
+}
+
 console.log('Account-bound offline sync queue tests passed.');
