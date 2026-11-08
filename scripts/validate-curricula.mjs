@@ -88,7 +88,7 @@ assert(appSource.includes("document.addEventListener('click',e=>{\n    const ope
 assert(!appSource.includes('data-hub-tab="analytics"'), 'Analytics must not remain a Study Hub tab.');
 assert(!appSource.includes('data-view="history"') && appSource.includes('id="dangerZoneStandalone"'), 'Review history must be moved out of the main navigation and into Danger Zone.');
 assert(appSource.includes('DANGER ZONE — Clear every saved review-history entry?'), 'History deletion must warn users that analytics records will be lost.');
-assert(appSource.includes('function exportAnalyticsPdf()') && appSource.includes('data-hub-action="analytics-export-pdf"'), 'Analytics must include the detailed printable PDF report action.');
+assert(appSource.includes('async function exportAnalyticsPdf(options={})') && appSource.includes('data-hub-action="analytics-export-pdf"'), 'Analytics must include the configurable detailed printable PDF report action.');
 assert(!appSource.includes("downloadBlob('nexus-study-review-report.html'") && !appSource.includes("const fallbackReport='<!doctype html>"), 'PDF export must use the clean live-app print flow, not the preview-only HTML fallback.');
 assert(appSource.includes('function paperScoreTrendsMarkup') && appSource.includes('paper-trend-line') && appSource.includes('paper-trend-area'), 'Paper analytics must retain its smooth subject-separated trend charts in the app.');
 assert(!appSource.includes('reviewHeatmapMarkup') && !appSource.includes('pdf-heatmap-cell'), 'Preview-only PDF heatmap code must be removed when restoring the live report.');
@@ -378,7 +378,7 @@ assert(appSource.includes('Practice & paper records') && appSource.includes('Stu
 assert(appSource.includes('color-mix(in srgb,var(--surface) 91%,#8978f8 9%)') && appSource.includes("4:'#84cc16',5:'#059669'"), 'Summary card tint and distinct green rating palette must be present.');
 
 
-assert(appSource.includes("window.open('','_blank')") && appSource.includes('Could not open the PDF report') && !appSource.includes('Nexus PDF export failed'), 'PDF export must match the clean live print-window flow.');
+assert(appSource.includes("window.open('','_blank')") && appSource.includes('window.NexusAndroidBridge.printHtml') && appSource.includes('reportWindow.document.write(report)') && appSource.includes('Allow pop-ups for Nexus'), 'PDF export must retain the browser print-window and Android native print flows with a clear popup-blocked message.');
 assert(appSource.includes('function exportAnalyticsCsv()') && appSource.includes("if(action==='analytics-export'){exportAnalyticsCsv();return;}") && appSource.includes('text/csv;charset=utf-8'), 'Analytics CSV export must use the shared timeframe and produce a downloadable UTF-8 CSV.');
 assert(appSource.includes(".join(',')).join('\\\\r\\\\n')"), 'Analytics CSV rows must be comma-separated with CRLF row endings.');
 assert(appSource.includes("const toggle=e.target.closest('[data-home-collapse]')") && appSource.includes('data-home-collapse="dueQueue"') && appSource.includes('data-home-collapse="progressList"') && appSource.includes('data-home-collapse="upcomingQueue"') && appSource.includes('data-home-collapse="overviewAnalytics"'), 'Overview list cards must use labelled Collapse/Expand buttons.');
