@@ -41,4 +41,7 @@ Builds:
     gradle: fdroid
     # The F-Droid build uses system Gradle; the checked-in wrapper JAR is not required.
     output: app/build/outputs/apk/fdroid/release/app-fdroid-release-unsigned.apk
-    gradleprops: nexusApplicationId=REPLACE_WITH_FINAL_APPLICATION_ID,nexusVersionCode=1,nexusVersionName=REPLACE_WITH_RELEASE_VERSION
+    gradleprops:
+      - nexusApplicationId=REPLACE_WITH_FINAL_APPLICATION_ID
+      - nexusVersionCode=1
+      - nexusVersionName=REPLACE_WITH_RELEASE_VERSION
