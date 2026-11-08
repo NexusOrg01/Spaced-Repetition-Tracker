@@ -585,7 +585,7 @@
     const groupTable=groups.length?groups.map(g=>'<tr><td>'+esc(g.label)+'</td>'+g.counts.map(n=>'<td class="num">'+n+'</td>').join('')+'<td class="num"><b>'+g.total+'</b></td></tr>').join(''):'<tr><td colspan="7">No rating groups in this period.</td></tr>';
     const ratingCounts=[1,2,3,4,5].map(r=>records.filter(h=>Number(h.rating)===r).length),maxRating=Math.max(1,...ratingCounts);
     const ratingDistribution=graphs.ratingDistribution?ratingCounts.map((count,i)=>'<div class="pdf-dist-row"><span class="pdf-dist-label"><b>'+(i+1)+' · '+esc(RATING_LABELS[i+1])+'</b></span><div class="pdf-dist-track"><span data-rating="'+(i+1)+'" style="width:'+(count/maxRating*100)+'%"></span></div><strong>'+count+'</strong></div>').join(''):'';
-    const activityMarkupForPdf=(graphs.reviewActivity||graphs.studyTime)?renderActivityAnalytics(selection,options.scope):'';
+    const activityMarkupForPdf=(graphs.reviewActivity||graphs.studyTime)?renderActivityAnalytics({...selection,pdfScope:options.scope}):'';
     const activityGraphsForPdf=String(activityMarkupForPdf||'').match(/<div class="nexus-activity-graph-wrap">[\s\S]*?<\/div>/g)||[];
     const activityChart=graphs.reviewActivity?(activityGraphsForPdf[0]||'<p class="pdf-empty">No saved review activity in this timeframe.</p>'):'';
     const studyTimeChart=graphs.studyTime?(activityGraphsForPdf[1]||'<p class="pdf-empty">No saved study time in this timeframe.</p>'):'';
@@ -719,7 +719,8 @@
     target.innerHTML=intelligence+'<div class="home-heatmap-head"><div><strong>Review activity heatmap</strong><small>Each square represents a day. Darker squares indicate more saved reviews.</small></div><div class="ra-field"><label for="homeHeatmapPeriod">Heatmap period</label><select class="hub-input" id="homeHeatmapPeriod">'+selectOptions([['7','7 days'],['30','30 days'],['84','12 weeks'],['180','6 months'],['365','12 months']],String(heatDays))+'</select></div></div><div class="hub-heatmap analytics-heatmap home-activity-heatmap">'+heat+'</div>';
   }
   window.NexusRefreshHomeConsistencySummary=renderHomeConsistencySummary;
-  function renderActivityAnalytics(selection,pdfScope){
+  function renderActivityAnalytics(selection){
+    const pdfScope=selection?.pdfScope||null;
      const studyLogMinutes=record=>{const seconds=record&&record.durationSeconds;if(seconds!==undefined&&seconds!==null&&Number.isFinite(Number(seconds)))return Math.max(0,Number(seconds))/60;return Math.max(0,Number(record&&record.minutes)||0);};
      const formatStudyDuration=seconds=>{const total=Math.max(0,Math.round(Number(seconds)||0)),minutes=Math.floor(total/60),remainder=total%60;return minutes?`${minutes} min${remainder?' '+remainder+' sec':''}`:`${remainder} sec`;};
     // This renderer owns every date, aggregation, and SVG helper it needs.
