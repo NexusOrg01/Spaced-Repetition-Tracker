@@ -282,10 +282,10 @@
     const native=Boolean(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp);
     const memory=Number(navigator.deviceMemory)||0;
     if(native)return {maxPages:80,maxChars:1500000,warnPages:30,warnChars:600000,label:'Android app'};
-    if(memory>0&&memory<=2)return {maxPages:90,maxChars:1600000,warnPages:30,warnChars:600000,label:'low-memory browser'};
-    if(memory>0&&memory<=4)return {maxPages:180,maxChars:3500000,warnPages:55,warnChars:1100000,label:'mobile browser'};
-    if(memory>=8)return {maxPages:300,maxChars:7000000,warnPages:90,warnChars:1800000,label:'higher-memory browser'};
-    return {maxPages:180,maxChars:3500000,warnPages:55,warnChars:1100000,label:'browser'};
+    if(memory>0&&memory<=2)return {maxPages:80,maxChars:1500000,warnPages:30,warnChars:600000,label:'low-memory browser'};
+    if(memory>0&&memory<=4)return {maxPages:120,maxChars:2500000,warnPages:40,warnChars:800000,label:'mobile browser'};
+    if(memory>=8)return {maxPages:240,maxChars:5000000,warnPages:70,warnChars:1300000,label:'higher-memory browser'};
+    return {maxPages:120,maxChars:2500000,warnPages:40,warnChars:800000,label:'browser'};
   }
   function pdfTableConfigMarkup(key,label,defaultLimit){
     return '<div class="nexus-pdf-table-option"><label class="nexus-pdf-check"><input type="checkbox" data-pdf-table="'+key+'" checked><span>'+label+'</span></label><div><select class="field" data-pdf-limit="'+key+'" aria-label="'+label+' record limit"><option value="50">Last 50</option><option value="100" '+(defaultLimit==='100'?'selected':'')+'>Last 100</option><option value="300">Last 300</option><option value="all">All records</option><option value="custom">Custom count</option></select><input class="field nexus-pdf-custom-count" type="number" min="1" max="100000" step="1" value="500" data-pdf-custom="'+key+'" aria-label="'+label+' custom record count" hidden></div><small data-pdf-count="'+key+'">Checking records…</small></div>';
