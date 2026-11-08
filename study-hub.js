@@ -290,12 +290,25 @@
   function pdfTableConfigMarkup(key,label,defaultLimit){
     return '<div class="nexus-pdf-table-option"><label class="nexus-pdf-check"><input type="checkbox" data-pdf-table="'+key+'" checked><span>'+label+'</span></label><div><select class="field" data-pdf-limit="'+key+'" aria-label="'+label+' record limit"><option value="50">Last 50</option><option value="100" '+(defaultLimit==='100'?'selected':'')+'>Last 100</option><option value="300">Last 300</option><option value="all">All records</option><option value="custom">Custom count</option></select><input class="field nexus-pdf-custom-count" type="number" min="1" max="100000" step="1" value="500" data-pdf-custom="'+key+'" aria-label="'+label+' custom record count" hidden></div><small data-pdf-count="'+key+'">Checking records…</small></div>';
   }
+  function pdfScopeOptionsMarkup(){
+    const streams=Array.isArray(state.streams)?state.streams:[],subjects=Array.isArray(state.subjects)?state.subjects:[];
+    const streamRows=streams.map(stream=>'<label class="nexus-pdf-check nexus-pdf-scope-stream"><input type="checkbox" data-pdf-stream="'+esc(stream.id)+'" checked><span>'+esc(stream.name||'Untitled stream')+'</span></label>').join('');
+    const subjectRows=subjects.map(subject=>{
+      const stream=streams.find(item=>String(item.id)===String(subject.streamId));
+      return '<label class="nexus-pdf-check nexus-pdf-scope-subject" data-pdf-subject-row="'+esc(subject.id)+'" data-pdf-subject-stream="'+esc(subject.streamId||'')+'"><input type="checkbox" data-pdf-subject="'+esc(subject.id)+'" checked><span>'+esc(subject.name||'Untitled subject')+' <small>· '+esc(stream?.name||'Unassigned stream')+'</small></span></label>';
+    }).join('');
+    return '<fieldset class="nexus-pdf-fieldset"><legend>Streams</legend><p class="nexus-pdf-hint">Choose which streams belong in this report. All are selected by default.</p>'+
+      (streamRows||'<p class="nexus-pdf-hint">No streams are configured.</p>')+
+      '</fieldset><fieldset class="nexus-pdf-fieldset"><legend>Subjects</legend><p class="nexus-pdf-hint">Choose subjects from the selected streams. Unmatched or unassigned records are excluded when using a restricted scope.</p>'+
+      (subjectRows||'<p class="nexus-pdf-hint">No subjects are configured.</p>')+'</fieldset>';
+  }
   function pdfExportDialogMarkup(){
     return '<dialog id="nexusPdfExportDialog" class="nexus-pdf-export-dialog" aria-labelledby="nexusPdfExportTitle">'+
       '<div class="nexus-pdf-export-shell"><div class="nexus-pdf-export-head"><div><span class="eyebrow">REPORT CONFIGURATION</span><h2 id="nexusPdfExportTitle">Export analytics PDF</h2><p>Choose one timeframe for the report, then decide which graphs and detailed records to include.</p></div><button type="button" class="btn btn-icon" data-pdf-action="close" aria-label="Close export settings">×</button></div>'+
       '<div class="nexus-pdf-export-body">'+
       '<label class="nexus-pdf-field"><span>Common timeframe</span><select id="nexusPdfTimeframe" class="field"><option value="selected">Current Analytics timeframe</option><option value="all">All time</option><option value="last30">Last 30 days</option><option value="last90">Last 90 days</option><option value="year">This year</option><option value="custom">Custom date range</option></select></label>'+
       '<div class="nexus-pdf-date-range" id="nexusPdfCustomDates" hidden><label class="nexus-pdf-field"><span>From</span><input id="nexusPdfDateFrom" class="field" type="date"></label><label class="nexus-pdf-field"><span>To</span><input id="nexusPdfDateTo" class="field" type="date"></label></div>'+
+      pdfScopeOptionsMarkup()+
       '<fieldset class="nexus-pdf-fieldset"><legend>Analytics graphs</legend><p class="nexus-pdf-hint">All graphs are included by default. Deselect only the ones you do not need.</p>'+
       PDF_EXPORT_GRAPH_OPTIONS.map(([key,label])=>'<label class="nexus-pdf-check"><input type="checkbox" data-pdf-graph="'+key+'" checked><span>'+label+'</span></label>').join('')+
       '</fieldset>'+
@@ -377,20 +390,40 @@
     }
     return {range,from,to,records,label,valid};
   }
+  function getPdfExportScope(dialog){
+    const streamIds=Array.from(dialog.querySelectorAll('[data-pdf-stream]:checked')).map(input=>String(input.dataset.pdfStream));
+    const subjectIds=Array.from(dialog.querySelectorAll('[data-pdf-subject]:checked')).map(input=>String(input.dataset.pdfSubject));
+    const allStreams=streamIds.length===(state.streams||[]).length,allSubjects=subjectIds.length===(state.subjects||[]).length;
+    return {streamIds,subjectIds,all:allStreams&&allSubjects};
+  }
+  function pdfRecordMatchesScope(record,scope){
+    if(!scope||scope.all)return true;
+    const subjectId=String(record?.subjectId||'');
+    let subject=subjectId?state.subjects.find(item=>String(item.id)===subjectId):null;
+    if(!subject&&record?.topicId){const topic=getTopic(record.topicId);if(topic)subject=state.subjects.find(item=>String(item.id)===String(topic.subjectId))||null;}
+    if(!subject&&record?.subjectName){
+      const name=String(record.subjectName),streamName=String(record.streamName||'');
+      const matches=state.subjects.filter(item=>String(item.name||'')===name&&(!streamName||String(streamFor(item)?.name||'')===streamName));
+      if(matches.length===1)subject=matches[0];
+    }
+    if(!subject)return false;
+    return scope.streamIds.includes(String(subject.streamId||''))&&scope.subjectIds.includes(String(subject.id));
+  }
   function collectPdfExportOptions(dialog,selection){
+    const scope=getPdfExportScope(dialog),scopedSelection={...selection,records:selection.records.filter(record=>pdfRecordMatchesScope(record,scope))};
     const graphs={};
     PDF_EXPORT_GRAPH_OPTIONS.forEach(([key])=>{graphs[key]=Boolean(dialog.querySelector('[data-pdf-graph="'+key+'"]')?.checked);});
     const tables={};
     ['reviews','sessions','papers','journal'].forEach(key=>{tables[key]={include:Boolean(dialog.querySelector('[data-pdf-table="'+key+'"]')?.checked),limit:dialog.querySelector('[data-pdf-limit="'+key+'"]')?.value||'100',custom:Math.max(1,Math.min(100000,Math.floor(Number(dialog.querySelector('[data-pdf-custom="'+key+'"]')?.value)||500)))};});
-    return {selection,graphs,tables};
+    return {selection:scopedSelection,graphs,tables,scope};
   }
-  function getPdfExportDatasets(selection){
+  function getPdfExportDatasets(selection,scope){
     const inRange=date=>safeDate(date)&&date>=selection.from&&date<=selection.to,sort=(a,b)=>String(b.date||b.reviewedAt||'').localeCompare(String(a.date||a.reviewedAt||''));
     return {
       reviews:selection.records.slice().sort((a,b)=>String(b.reviewedAt||'').localeCompare(String(a.reviewedAt||''))),
-      sessions:fsState.studyLogs.filter(x=>inRange(x.date)).slice().sort(sort),
-      papers:fsState.papers.filter(x=>inRange(x.date)).slice().sort(sort),
-      journal:fsState.journal.filter(x=>inRange(x.date)).slice().sort(sort)
+      sessions:fsState.studyLogs.filter(x=>inRange(x.date)&&pdfRecordMatchesScope(x,scope)).slice().sort(sort),
+      papers:fsState.papers.filter(x=>inRange(x.date)&&pdfRecordMatchesScope(x,scope)).slice().sort(sort),
+      journal:fsState.journal.filter(x=>inRange(x.date)&&pdfRecordMatchesScope(x,scope)).slice().sort(sort)
     };
   }
   function pdfLimitedRecords(records,config){
@@ -405,12 +438,13 @@
     return [record.date,record.category,record.subjectId,record.topicId,record.issue,record.fix,record.solved].map(x=>String(x??'')).join(' ');
   }
   function estimatePdfExport(options,dialog){
-    const cacheKey=options.selection.from+'|'+options.selection.to;
+    const scopeKey=options.scope?options.scope.streamIds.join(',')+'|'+options.scope.subjectIds.join(','):'all';
+    const cacheKey=options.selection.from+'|'+options.selection.to+'|'+scopeKey;
     let datasets,groupCount;
     if(dialog&&dialog._pdfDatasetCache&&dialog._pdfDatasetCache.key===cacheKey){
       datasets=dialog._pdfDatasetCache.datasets;groupCount=dialog._pdfDatasetCache.groupCount;
     }else{
-      datasets=getPdfExportDatasets(options.selection);
+      datasets=getPdfExportDatasets(options.selection,options.scope);
       groupCount=getRatingAnalyticsGroups(options.selection.records,fsState.analyticsRatingGrouping||'topic').length;
       if(dialog)dialog._pdfDatasetCache={key:cacheKey,datasets,groupCount};
     }
@@ -442,6 +476,8 @@
   function updatePdfExportEstimate(dialog){
     const preset=dialog.querySelector('#nexusPdfTimeframe').value;
     dialog.querySelector('#nexusPdfCustomDates').hidden=preset!=='custom';
+    const selectedStreams=new Set(Array.from(dialog.querySelectorAll('[data-pdf-stream]:checked')).map(input=>String(input.dataset.pdfStream)));
+    dialog.querySelectorAll('[data-pdf-subject-row]').forEach(row=>{row.hidden=!selectedStreams.has(String(row.dataset.pdfSubjectStream||''));});
     ['reviews','sessions','papers','journal'].forEach(key=>{
       const limit=dialog.querySelector('[data-pdf-limit="'+key+'"]'),custom=dialog.querySelector('[data-pdf-custom="'+key+'"]'),included=dialog.querySelector('[data-pdf-table="'+key+'"]').checked;
       custom.hidden=limit.value!=='custom';limit.disabled=!included;custom.disabled=!included||limit.value!=='custom';
@@ -469,6 +505,8 @@
     const dialog=ensurePdfExportDialog(),selection=getRatingAnalyticsSelection();
     dialog._pdfInitialSelection=selection;
     dialog._pdfRangeSelectionCache=new Map([[selection.from+'|'+selection.to,selection.records]]);
+    dialog.querySelectorAll('[data-pdf-stream],[data-pdf-subject]').forEach(input=>{input.checked=true;});
+    dialog.querySelectorAll('[data-pdf-subject-row]').forEach(row=>{row.hidden=false;});
     dialog._pdfDatasetCache=null;dialog._pdfAllTimeRange=null;
     dialog.querySelector('#nexusPdfTimeframe').value='selected';
     dialog.querySelector('#nexusPdfDateFrom').value=selection.from;
@@ -523,7 +561,10 @@
     const level=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic';
     const entityOptions=getRatingAnalyticsEntityOptions(level),entityId=getRatingAnalyticsEntityId(level,entityOptions);
     const timeline=graphs.ratingTimeline?getRatingAnalyticsTimeline(selection,level,entityId):{bins:[],records:[],totals:[0,0,0,0,0]};
-    const rangeText=selection.label+' · '+fmtDate(selection.from)+' – '+fmtDate(selection.to);
+    const scopeStreams=(options.scope?.streamIds||[]).map(id=>state.streams.find(item=>String(item.id)===String(id))?.name).filter(Boolean);
+    const scopeSubjects=(options.scope?.subjectIds||[]).map(id=>state.subjects.find(item=>String(item.id)===String(id))?.name).filter(Boolean);
+    const scopeText='Streams: '+(options.scope?.all?'All':scopeStreams.join(', ')||'None')+' · Subjects: '+(options.scope?.all?'All':scopeSubjects.join(', ')||'None');
+    const rangeText=selection.label+' · '+fmtDate(selection.from)+' – '+fmtDate(selection.to)+' · '+scopeText;
     const timelineSvg=graphs.ratingTimeline?ratingAnalyticsSvgMarkup(selection,level,entityId,timeline):'';
     const timelineTable=graphs.ratingTimeline?ratingAnalyticsTimelineTableMarkup(selection,level,entityId,timeline):'';
     const entityLabel=getRatingAnalyticsEntityLabel(level,entityId,entityOptions);
@@ -544,7 +585,7 @@
     const groupTable=groups.length?groups.map(g=>'<tr><td>'+esc(g.label)+'</td>'+g.counts.map(n=>'<td class="num">'+n+'</td>').join('')+'<td class="num"><b>'+g.total+'</b></td></tr>').join(''):'<tr><td colspan="7">No rating groups in this period.</td></tr>';
     const ratingCounts=[1,2,3,4,5].map(r=>records.filter(h=>Number(h.rating)===r).length),maxRating=Math.max(1,...ratingCounts);
     const ratingDistribution=graphs.ratingDistribution?ratingCounts.map((count,i)=>'<div class="pdf-dist-row"><span class="pdf-dist-label"><b>'+(i+1)+' · '+esc(RATING_LABELS[i+1])+'</b></span><div class="pdf-dist-track"><span data-rating="'+(i+1)+'" style="width:'+(count/maxRating*100)+'%"></span></div><strong>'+count+'</strong></div>').join(''):'';
-    const activityMarkupForPdf=(graphs.reviewActivity||graphs.studyTime)?renderActivityAnalytics(selection):'';
+    const activityMarkupForPdf=(graphs.reviewActivity||graphs.studyTime)?renderActivityAnalytics(selection,options.scope):'';
     const activityGraphsForPdf=String(activityMarkupForPdf||'').match(/<div class="nexus-activity-graph-wrap">[\s\S]*?<\/div>/g)||[];
     const activityChart=graphs.reviewActivity?(activityGraphsForPdf[0]||'<p class="pdf-empty">No saved review activity in this timeframe.</p>'):'';
     const studyTimeChart=graphs.studyTime?(activityGraphsForPdf[1]||'<p class="pdf-empty">No saved study time in this timeframe.</p>'):'';
@@ -678,7 +719,7 @@
     target.innerHTML=intelligence+'<div class="home-heatmap-head"><div><strong>Review activity heatmap</strong><small>Each square represents a day. Darker squares indicate more saved reviews.</small></div><div class="ra-field"><label for="homeHeatmapPeriod">Heatmap period</label><select class="hub-input" id="homeHeatmapPeriod">'+selectOptions([['7','7 days'],['30','30 days'],['84','12 weeks'],['180','6 months'],['365','12 months']],String(heatDays))+'</select></div></div><div class="hub-heatmap analytics-heatmap home-activity-heatmap">'+heat+'</div>';
   }
   window.NexusRefreshHomeConsistencySummary=renderHomeConsistencySummary;
-  function renderActivityAnalytics(selection){
+  function renderActivityAnalytics(selection,pdfScope){
      const studyLogMinutes=record=>{const seconds=record&&record.durationSeconds;if(seconds!==undefined&&seconds!==null&&Number.isFinite(Number(seconds)))return Math.max(0,Number(seconds))/60;return Math.max(0,Number(record&&record.minutes)||0);};
      const formatStudyDuration=seconds=>{const total=Math.max(0,Math.round(Number(seconds)||0)),minutes=Math.floor(total/60),remainder=total%60;return minutes?`${minutes} min${remainder?' '+remainder+' sec':''}`:`${remainder} sec`;};
     // This renderer owns every date, aggregation, and SVG helper it needs.
@@ -711,9 +752,9 @@
     const subjects=Array.isArray(state&&state.subjects)?state.subjects:[];
     const subjectNameById=new Map(subjects.map(subject=>[String(subject.id),String(subject.name||'Unnamed subject')]));
     const reviews=history.map(record=>({record,date:activityDate(record&&record.reviewedAt)}))
-      .filter(item=>item.record&&item.date&&item.date>=from&&item.date<=to);
+      .filter(item=>item.record&&item.date&&item.date>=from&&item.date<=to&&(!pdfScope||pdfRecordMatchesScope(item.record,pdfScope)));
     const sessions=studyLogs.map(record=>({record,date:activityDate(record&&record.date),minutes:studyLogMinutes(record)}))
-      .filter(item=>item.record&&item.date&&item.date>=from&&item.date<=to);
+      .filter(item=>item.record&&item.date&&item.date>=from&&item.date<=to&&(!pdfScope||pdfRecordMatchesScope(item.record,pdfScope)));
     const reviewsByDate=new Map(),minutesByDate=new Map(),reviewsBySubject=new Map(),minutesBySubject=new Map();
     const activeDates=new Set();
     const subjectLabel=record=>{
