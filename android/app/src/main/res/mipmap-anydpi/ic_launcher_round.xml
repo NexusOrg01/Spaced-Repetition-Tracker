@@ -3,7 +3,7 @@
     <item android:drawable="@color/launcher_background" />
     <item
         android:drawable="@drawable/nexus_launcher"
-        android:width="48dp"
-        android:height="48dp"
+        android:width="76dp"
+        android:height="76dp"
         android:gravity="center" />
 </layer-list>

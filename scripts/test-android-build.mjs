@@ -341,10 +341,20 @@ assert.ok(androidLauncherForeground.includes('76dp'), 'Launcher artwork must be 
 assert.ok(read('android/app/src/main/res/drawable/splash_icon.xml').includes('64dp'), 'The existing splash-screen artwork sizing must remain unchanged.');
 assert.ok(read('android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml').includes('@drawable/launcher_icon_foreground'), 'Adaptive launcher icon must use its padded foreground resource.');
 assert.ok(read('android/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml').includes('@drawable/launcher_icon_foreground'), 'Round adaptive launcher icon must use its padded foreground resource.');
-const packageListingIcon = read('android/app/src/main/res/mipmap-anydpi/ic_launcher.xml');
-const packageListingRoundIcon = read('android/app/src/main/res/mipmap-anydpi/ic_launcher_round.xml');
-assert.ok(packageListingIcon.includes('48dp') && packageListingRoundIcon.includes('48dp'),
-  'Legacy APK package-listing icons must use a substantially smaller centered logo.');
+const applicationIcon = read('android/app/src/main/res/mipmap-anydpi/ic_launcher_package.xml');
+const adaptiveApplicationIcon = read('android/app/src/main/res/mipmap-anydpi-v26/ic_launcher_package.xml');
+const packageIconForeground = read('android/app/src/main/res/drawable/package_icon_foreground.xml');
+const launcherFallbackIcon = read('android/app/src/main/res/mipmap-anydpi/ic_launcher.xml');
+const launcherFallbackRoundIcon = read('android/app/src/main/res/mipmap-anydpi/ic_launcher_round.xml');
+assert.ok(applicationIcon.includes('44dp') && adaptiveApplicationIcon.includes('package_icon_foreground') && packageIconForeground.includes('44dp'),
+  'The package and APK-listing icon must use a substantially reduced, separately padded logo.');
+assert.ok(launcherFallbackIcon.includes('76dp') && launcherFallbackRoundIcon.includes('76dp'),
+  'The launcher activity fallback must retain the slightly reduced home-screen logo size.');
+const androidManifest = read('android/app/src/main/AndroidManifest.xml');
+assert.ok(androidManifest.includes('android:icon="@mipmap/ic_launcher_package"') &&
+  androidManifest.includes('android:roundIcon="@mipmap/ic_launcher_package"') &&
+  androidManifest.includes('android:icon="@mipmap/ic_launcher"'),
+  'The Android package icon must be separate from the launcher activity icon.');
 const launcherColors = read('android/app/src/main/res/values/colors.xml');
 assert.ok(launcherColors.includes('<color name="launcher_background">#141D31</color>'), 'Adaptive icon background must match the original Nexus artwork.');
 
