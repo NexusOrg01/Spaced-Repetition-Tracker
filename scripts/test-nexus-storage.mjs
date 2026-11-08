@@ -323,6 +323,20 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(await loaded.api.bootstrap(), true);
   const storage = loaded.context.window.localStorage;
 
+  const unsafeOwnerOnlySwitch = loaded.api.commitLocalStorageEntries([
+    { key: 'nexus.cloud.last-user-id', value: 'account-b' }
+  ]);
+  assert.equal(storage.getItem('nexus.cloud.last-user-id'), 'account-a',
+    'an owner-only account switch must not expose a staged owner');
+  await assert.rejects(unsafeOwnerOnlySwitch, /transaction was aborted/i,
+    'IndexedDB must reject changing a non-empty owner without both workspace components');
+  assert.equal(storage.getItem('nexus.cloud.last-user-id'), 'account-a',
+    'the owner-only switch must roll back to the committed account');
+  assert.equal(loaded.api.getStatus().pendingEntries, 0,
+    'the rejected owner-only switch must not remain queued for a later retry');
+  assert.equal(await loaded.api.getWorkspace('account-b'), null,
+    'an owner-only switch must not create a second account projection');
+
   idb.failNextWrite = true;
   const handoff = loaded.api.commitLocalStorageEntries([
     { key: 'nexus.cloud.last-user-id', value: 'account-b' },
