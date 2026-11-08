@@ -240,15 +240,94 @@ assert.ok(studyHub.includes('getPdfExportDatasets(selection,scope)') &&
   studyHub.includes('pdfRecordMatchesScope(x,scope)') &&
   studyHub.includes('selection.records.filter(record=>pdfRecordMatchesScope(record,scope))'),
   'review, session, paper and journal datasets must all respect the selected stream/subject scope');
-assert.ok(studyHub.includes('renderActivityAnalytics({...selection,pdfScope:options.scope})') &&
+assert.ok(studyHub.includes('renderActivityAnalytics({...selection,pdfScope:scope,pdfDatasets:datasets})') &&
   studyHub.includes('function renderActivityAnalytics(selection)') &&
   studyHub.includes('const pdfScope=selection?.pdfScope||null;') &&
+  studyHub.includes('selection?.pdfDatasets?.reviews') &&
+  studyHub.includes('selection?.pdfDatasets?.sessions') &&
   studyHub.includes('(!pdfScope||pdfRecordMatchesScope(item.record,pdfScope))'),
-  'review activity and study-time graphs must use the same report scope as the detailed tables');
+  'review activity and study-time graphs must consume the exact scoped PDF datasets');
 assert.ok(studyHub.includes('const entityOptions=getRatingAnalyticsEntityOptions(level),entityId=\'ALL\';') &&
   studyHub.includes('Streams: \'+(options.scope?.all?\'All\''),
   'the PDF rating graph and report header must describe the full selected scope rather than an unrelated Analytics entity filter');
 assert.ok(studyHub.includes('const scopeKey=options.scope?options.scope.streamIds.join(\',\')+\'|\'+options.scope.subjectIds.join(\',\'):\'all\';'),
   'PDF estimate dataset caching must be invalidated when stream or subject selections change');
+
+
+assert.ok(studyHub.includes('const initialSelection=options.selection||getRatingAnalyticsSelection();') &&
+  studyHub.includes('records:(initialSelection.records||[]).filter(record=>pdfRecordMatchesScope(record,scope))') &&
+  studyHub.includes('estimatePdfExport({selection,graphs,tables,scope})'),
+  'PDF generation must apply the selected stream/subject intersection before estimating or rendering any report content');
+assert.ok(studyHub.includes('reviews:selection.records.filter(x=>pdfRecordMatchesScope(x,scope))') &&
+  studyHub.includes('getRatingAnalyticsGroups(datasets.reviews,fsState.analyticsRatingGrouping||\'topic\')') &&
+  studyHub.includes('const studyLogs=datasets.sessions;') &&
+  studyHub.includes('const paperList=datasets.papers;') &&
+  studyHub.includes('const journals=datasets.journal;'),
+  'all PDF summaries, graphs and detailed tables must derive from the same four scoped datasets');
+
+// Exercise the actual PDF scope matcher and central dataset collector with records
+// that belong to different subjects, including another subject in the same stream.
+const pdfScopeStart=studyHub.indexOf('function pdfRecordMatchesScope(record,scope){');
+const pdfScopeEnd=studyHub.indexOf('  function collectPdfExportOptions',pdfScopeStart);
+const pdfDatasetsStart=studyHub.indexOf('function getPdfExportDatasets(selection,scope){');
+const pdfDatasetsEnd=studyHub.indexOf('  function pdfLimitedRecords',pdfDatasetsStart);
+assert.ok(pdfScopeStart>=0&&pdfScopeEnd>pdfScopeStart&&pdfDatasetsStart>=0&&pdfDatasetsEnd>pdfDatasetsStart,
+  'PDF scope and data collection helpers must remain independently testable');
+const pdfScopeSandbox={
+  state:{
+    streams:[{id:'stream-a',name:'Stream A'},{id:'stream-b',name:'Stream B'}],
+    subjects:[
+      {id:'subject-a',name:'Subject A',streamId:'stream-a'},
+      {id:'subject-a2',name:'Subject A2',streamId:'stream-a'},
+      {id:'subject-b',name:'Subject B',streamId:'stream-b'}
+    ]
+  },
+  fsState:{
+    studyLogs:[
+      {id:'session-a',date:'2026-05-01',subjectId:'subject-a'},
+      {id:'session-a2',date:'2026-05-02',subjectId:'subject-a2'},
+      {id:'session-b',date:'2026-05-03',subjectId:'subject-b'}
+    ],
+    papers:[
+      {id:'paper-a',date:'2026-05-01',subjectId:'subject-a'},
+      {id:'paper-a2',date:'2026-05-02',subjectId:'subject-a2'},
+      {id:'paper-b',date:'2026-05-03',subjectId:'subject-b'}
+    ],
+    journal:[
+      {id:'journal-a',date:'2026-05-01',subjectId:'subject-a'},
+      {id:'journal-a2',date:'2026-05-02',subjectId:'subject-a2'},
+      {id:'journal-b',date:'2026-05-03',subjectId:'subject-b'}
+    ]
+  },
+  safeDate:value=>/^\\d{4}-\\d{2}-\\d{2}$/.test(String(value||'')),
+  getTopic:()=>null,
+  streamFor:subject=>pdfScopeSandbox.state.streams.find(stream=>stream.id===subject?.streamId)||null
+};
+vm.createContext(pdfScopeSandbox);
+vm.runInContext(
+  studyHub.slice(pdfScopeStart,pdfScopeEnd)+'\\n'+
+  studyHub.slice(pdfDatasetsStart,pdfDatasetsEnd)+'\\n'+
+  'this.collectScopedPdfDatasets=getPdfExportDatasets;',
+  pdfScopeSandbox
+);
+const scopeFixture={
+  streamIds:['stream-a'],
+  subjectIds:['subject-a'],
+  all:false
+};
+const scopedFixture=pdfScopeSandbox.collectScopedPdfDatasets({
+  from:'2026-01-01',to:'2026-12-31',
+  records:[
+    {id:'review-a',reviewedAt:'2026-05-01',subjectId:'subject-a'},
+    {id:'review-a2',reviewedAt:'2026-05-02',subjectId:'subject-a2'},
+    {id:'review-b',reviewedAt:'2026-05-03',subjectId:'subject-b'}
+  ]
+},scopeFixture);
+for(const [kind,expectedId] of [
+  ['reviews','review-a'],['sessions','session-a'],['papers','paper-a'],['journal','journal-a']
+]){
+  assert.deepEqual(Array.from(scopedFixture[kind],record=>record.id),[expectedId],
+    'PDF '+kind+' must include only the selected subject within the selected stream');
+}
 
 console.log('FSRS and core feature regression tests passed.');
