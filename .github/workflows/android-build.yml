@@ -37,13 +37,6 @@ jobs:
           go-version: '1.24.x'
           cache: false
 
-      - name: Check out pinned Node.js 22 source
-        uses: actions/checkout@v4
-        with:
-          repository: nodejs/node
-          ref: 27f213124280b4db4cd1e3dd42f6f8afd01ceff7
-          path: .build/nodejs
-
       - name: Check out pinned esbuild source
         uses: actions/checkout@v4
         with:
@@ -69,15 +62,6 @@ jobs:
 
       - name: Install Android SDK 36
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
-
-      - name: Build and verify Node.js 22 from pinned source
-        env:
-          NEXUS_NODE_BUILD_JOBS: 2
-        run: |
-          bash scripts/build-nodejs-from-source.sh .build/nodejs .build/nodejs-install
-          echo "$PWD/.build/nodejs-install/bin" >> "$GITHUB_PATH"
-          node --version
-          npm --version
 
       - name: Build Android-local web assets and sync native project
         env:
