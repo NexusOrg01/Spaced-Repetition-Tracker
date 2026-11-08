@@ -337,10 +337,14 @@ assert.equal(androidLauncherArtwork.readUInt32BE(16), 512, 'Android launcher art
 assert.equal(androidLauncherArtwork.readUInt32BE(20), 512, 'Android launcher artwork must be 512 pixels high.');
 const androidLauncherForeground = read('android/app/src/main/res/drawable/launcher_icon_foreground.xml');
 assert.ok(androidLauncherForeground.includes('@drawable/nexus_launcher'), 'Adaptive launcher icon must use the original Nexus artwork.');
-assert.ok(androidLauncherForeground.includes('80dp'), 'Launcher artwork must be scaled down to preserve the outer ring within Android icon masks.');
-assert.ok(read('android/app/src/main/res/drawable/splash_icon.xml').includes('96dp'), 'The existing splash-screen artwork sizing must remain unchanged.');
+assert.ok(androidLauncherForeground.includes('76dp'), 'Launcher artwork must be scaled down to preserve the outer ring within Android icon masks.');
+assert.ok(read('android/app/src/main/res/drawable/splash_icon.xml').includes('64dp'), 'The existing splash-screen artwork sizing must remain unchanged.');
 assert.ok(read('android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml').includes('@drawable/launcher_icon_foreground'), 'Adaptive launcher icon must use its padded foreground resource.');
 assert.ok(read('android/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml').includes('@drawable/launcher_icon_foreground'), 'Round adaptive launcher icon must use its padded foreground resource.');
+const packageListingIcon = read('android/app/src/main/res/mipmap-anydpi/ic_launcher.xml');
+const packageListingRoundIcon = read('android/app/src/main/res/mipmap-anydpi/ic_launcher_round.xml');
+assert.ok(packageListingIcon.includes('48dp') && packageListingRoundIcon.includes('48dp'),
+  'Legacy APK package-listing icons must use a substantially smaller centered logo.');
 const launcherColors = read('android/app/src/main/res/values/colors.xml');
 assert.ok(launcherColors.includes('<color name="launcher_background">#141D31</color>'), 'Adaptive icon background must match the original Nexus artwork.');
 
@@ -352,7 +356,12 @@ assert.equal(storeIcon.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', 'Stor
 assert.equal(storeIcon.readUInt32BE(16), 512, 'Store icon must be 512 pixels wide.');
 assert.equal(storeIcon.readUInt32BE(20), 512, 'Store icon must be 512 pixels high.');
 
+const sourceHtml = read('index.html');
 const distHtml = read('dist/index.html');
+assert.ok(!sourceHtml.includes('nexus-android-native-install-controls'),
+  'The hosted web/PWA source must not hide its Install button with an Android-only rule.');
+assert.ok(distHtml.includes('<style id="nexus-android-native-install-controls">#installBtn,#pwaInstallOption{display:none!important}</style>'),
+  'The Android-only build must hide both install controls before the first screen paint.');
 assert.ok(distHtml.includes('.menu-pop{display:none;position:absolute;'), 'The three-dot overflow menu must be hidden before the first user interaction.');
 assert.ok(!distHtml.includes('Commerce Pack. Continue?'), 'Email sign-in must not show the obsolete Commerce-specific warning.');
 assert.ok(!distHtml.includes('_vercel/insights/script.js'), 'Android HTML must not include Vercel Analytics.');

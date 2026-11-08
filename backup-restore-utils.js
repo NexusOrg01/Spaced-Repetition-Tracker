@@ -285,7 +285,7 @@
         }
       }
       const error = new Error('Could not save the complete restore to this browser. ' +
-        (rollbackErrors.length ? 'Automatic rollback was not fully successful; do not close or reload Nexus yet.' :
+        (rollbackErrors.length ? 'Automatic rollback was not fully successful. Do not close or reload Nexus yet.' :
           'The previous saved data has been restored. Check available browser storage and try again.'));
       error.cause = cause;
       error.rollbackSucceeded = rollbackErrors.length === 0;
@@ -295,7 +295,7 @@
   }
 
   function cloudConflict(message) {
-    const error = new Error(message || 'Cloud data changed on another device. Local changes were preserved; reload and merge before syncing again.');
+    const error = new Error(message || 'Cloud data changed on another device. Local changes were preserved. Reload and merge before syncing again.');
     error.code = 'NEXUS_CLOUD_CONFLICT';
     return error;
   }

@@ -74,7 +74,7 @@ function installNativeFilePicker() {
     pickBackupFile().catch(error => {
       if (error && ['canceled', 'USER_CANCELED'].includes(String(error.code || '')) ||
           error && ['User cancelled', 'Canceled'].includes(String(error.message || ''))) return;
-      console.error('Nexus native backup selection failed; trying the WebView file chooser.', error);
+      console.error('Nexus native backup selection failed. Trying the WebView file chooser.', error);
       try {
         window.HTMLInputElement.prototype.click.call(input);
       } catch (fallbackError) {

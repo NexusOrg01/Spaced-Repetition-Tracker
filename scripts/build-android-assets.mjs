@@ -174,6 +174,8 @@ await patchFile('index.html', html => {
     '  <script src="./nexus-android-bridge.js"></script>\n' +
     '  <script src="./nexus-app-bootstrap.js"></script>';
   next = replaceExactlyOnce(next, currentScripts, androidScripts, 'Android script injection');
+  const nativeInstallRule = "<style id=\"nexus-android-native-install-controls\">#installBtn,#pwaInstallOption{display:none!important}</style>\n</head>";
+  next = replaceExactlyOnce(next, '</head>', nativeInstallRule, 'Android native install-control visibility');
   return next.replace('accept=".json,application/json"', 'accept=".json,application/json,application/octet-stream"');
 }, 'Android HTML preparation');
 

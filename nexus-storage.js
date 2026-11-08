@@ -170,7 +170,7 @@
       }
       const error = new Error('Could not save the complete storage change. ' +
         (rollbackErrors.length
-          ? 'Automatic rollback was incomplete; keep Nexus open and export a backup.'
+          ? 'Automatic rollback was incomplete. Keep Nexus open and export a backup.'
           : 'Previous browser values were restored.'));
       error.cause = cause;
       error.rollbackSucceeded = rollbackErrors.length === 0;

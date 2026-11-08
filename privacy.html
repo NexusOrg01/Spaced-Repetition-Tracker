@@ -20,50 +20,54 @@
 <main>
   <p class="eyebrow">Nexus · Spaced Repetition Tracker</p>
   <h1>Privacy Policy</h1>
-  <p class="muted">Effective date: 3 November 2026</p>
-  <p>This policy explains how Nexus handles information when you use the Nexus Progressive Web App (PWA), including its offline study tools and optional cloud synchronization.</p>
+  <p class="muted">Effective date: 8 November 2026</p>
+  <p>This policy explains how Nexus handles information in its two editions: the hosted web and Progressive Web App (PWA), and the installable Android APK. Both editions provide offline study tools and optional account-based cloud synchronization.</p>
 
   <h2>1. Information you create</h2>
-  <p>Nexus is designed to work offline. Information you enter can include study streams, subjects, topics, notes, review ratings and dates, review history, exams, study plans, journals, past-paper records, goals, study-time logs, preferences and scheduler data. This information is your workspace content.</p>
-  <p>By default, your workspace is saved on the device and browser where you use Nexus. Nexus uses browser storage, including IndexedDB and a compatibility layer for existing local data. Browser authentication sessions may also be stored by the sign-in provider's client library.</p>
+  <p>Information you enter can include streams, subjects, topics, notes, review ratings and dates, review history, exams, study plans, journals, past-paper records, goals, study-time logs, preferences, and scheduler data. This is your workspace content.</p>
+  <p><strong>Web/PWA edition:</strong> by default, the workspace is saved in the browser profile on the device you use. Nexus uses browser storage, including IndexedDB and a compatibility layer for existing local data. Browser authentication sessions may also be stored by the sign-in provider's client library.</p>
+  <p><strong>Android APK edition:</strong> the app's web assets are bundled inside the APK and run in the Android WebView. The workspace is stored in the app's private on-device storage using browser storage APIs such as IndexedDB. Android's private app storage is separate from the browser profile used by the web/PWA edition.</p>
 
   <h2>2. Optional account and cloud synchronization</h2>
   <p>You can use Nexus without signing in. If you choose Google sign-in or email magic-link sign-in, Nexus uses Supabase authentication to establish your account session. Supabase receives the information needed to authenticate you, which can include your email address and provider account identifier.</p>
-  <p>When you are signed in and cloud synchronization is available, Nexus sends a workspace snapshot to the Nexus Supabase project so that the same account can access its study data on other devices. The cloud workspace includes the study and Study Hub records described above, together with relevant preferences and scheduler state. The cloud record is associated with the authenticated account. The application uses Supabase row-level access controls intended to restrict each account to its own workspace record.</p>
-  <p>Cloud synchronization is optional. Signing out stops the signed-in session; it does not itself delete the local workspace or request deletion of the cloud account. Keep your own JSON backups for recovery.</p>
+  <p>When you are signed in and cloud synchronization is available, Nexus sends a workspace snapshot to the Nexus Supabase project so the same account can access its study data on other devices. The cloud workspace includes the study and Study Hub records described above, together with relevant preferences and scheduler state. The cloud record is associated with the authenticated account. The application uses Supabase row-level access controls intended to restrict each account to its own workspace record.</p>
+  <p>Cloud synchronization is optional. It requires an internet connection and a successful signed-in session. Signing out stops the signed-in session. It does not itself delete local workspace data or request deletion of the cloud account. Keep your own JSON backups for recovery.</p>
 
-  <h2>3. Service providers and external services</h2>
+  <h2>3. App editions, service providers, and external services</h2>
+  <p><strong>Web/PWA edition:</strong> Vercel hosts the public web application and may process technical request and site-usage information under its own policies. The hosted web/PWA build includes Vercel Web Analytics for site-usage measurement. Study workspace content is not intentionally sent to that analytics feature. The Supabase JavaScript client is loaded from the jsDelivr public CDN when cloud features are initialized. Those providers may process ordinary network request metadata.</p>
+  <p><strong>Android APK edition:</strong> the app's interface assets and Supabase JavaScript client are bundled locally in the APK. The Android build excludes Vercel Web Analytics and does not load the hosted website as its application interface. Android's document picker, share sheet, and print interface are used when you select backup files, export files, or print a PDF report. These Android system components operate under the privacy terms and settings of Android and the apps you choose to use with them.</p>
   <ul>
-    <li><strong>Supabase:</strong> provides authentication and optional cloud database synchronization. Supabase processes data under its own terms and privacy documentation: <a href="https://supabase.com/privacy">Supabase Privacy Policy</a>.</li>
-    <li><strong>Google:</strong> if you choose Google sign-in, Google participates in the authentication process under Google's privacy terms: <a href="https://policies.google.com/privacy">Google Privacy Policy</a>.</li>
-    <li><strong>Vercel:</strong> hosts the public Nexus web application. Hosting infrastructure may process technical request information such as IP address, browser information and request logs to deliver and secure the site: <a href="https://vercel.com/legal/privacy-policy">Vercel Privacy Policy</a>.</li>
-    <li><strong>jsDelivr:</strong> the app loads the Supabase JavaScript client library from this public CDN when cloud features are initialized. The CDN may process ordinary network request metadata: <a href="https://www.jsdelivr.com/terms/privacy-policy-jsdelivr-net">jsDelivr Privacy Policy</a>.</li>
+    <li><strong>Supabase:</strong> provides authentication and optional cloud database synchronization in both editions. See the <a href="https://supabase.com/privacy">Supabase Privacy Policy</a>.</li>
+    <li><strong>Google:</strong> participates in authentication if you choose Google sign-in. See the <a href="https://policies.google.com/privacy">Google Privacy Policy</a>.</li>
+    <li><strong>Vercel:</strong> hosts the web/PWA edition and provides its web analytics service. See the <a href="https://vercel.com/legal/privacy-policy">Vercel Privacy Policy</a>.</li>
+    <li><strong>jsDelivr:</strong> serves the Supabase JavaScript client to the web/PWA edition. See the <a href="https://www.jsdelivr.com/terms/privacy-policy-jsdelivr-net">jsDelivr Privacy Policy</a>.</li>
   </ul>
-  <p>Nexus does not currently include in-app advertising or a third-party behavioural advertising SDK. The application does not intentionally send your study content to an analytics service. If you manually enable the optional sync diagnostic mode, Nexus stores a limited diagnostic summary in your browser and provides a manual download; it is not automatically uploaded as part of that diagnostic feature.</p>
+  <p>Nexus does not currently include in-app advertising or a third-party behavioural advertising SDK. The application does not intentionally send your study content to an analytics service. If you manually enable the optional sync diagnostic mode, Nexus stores a limited diagnostic summary on your device and provides a manual download. That diagnostic summary is not automatically uploaded by the diagnostic feature.</p>
 
   <h2>4. Sharing and disclosure</h2>
-  <p>Nexus does not sell your study workspace content. Workspace data is shared with the cloud service only when you choose to sign in and use cloud synchronization. Service providers may process technical information as described above to operate their services. Information may also be disclosed when required by applicable law or to protect the security of the service.</p>
+  <p>Nexus does not sell your study workspace content. Workspace data is shared with the cloud service only when you choose to sign in and use cloud synchronization. When you export a file or use Android's share sheet, the file is provided to the destination or application you select. Service providers may process technical information as described above to operate their services. Information may also be disclosed when required by applicable law or to protect service security.</p>
 
   <h2>5. Retention and your choices</h2>
   <ul>
-    <li><strong>Local workspace:</strong> remains in your browser/device until you reset it, clear the site's browser storage, or otherwise remove it. Uninstalling a PWA may not remove all browser-origin data on every device.</li>
-    <li><strong>Downloaded backups:</strong> JSON/CSV files you export are saved under your control. Nexus cannot delete copies stored in your downloads, other folders, backups or other devices.</li>
+    <li><strong>Web/PWA local workspace:</strong> remains in the browser profile until you reset it, clear the site's browser storage, or otherwise remove it. Uninstalling a PWA may not remove all browser-origin data on every device.</li>
+    <li><strong>Android local workspace:</strong> remains in the app's private storage until you clear the app's storage, reset the workspace, or uninstall the app.</li>
+    <li><strong>Downloaded or shared backups:</strong> JSON and CSV files you export are under your control. Nexus cannot delete copies stored in Downloads, other folders, backup services, other applications, or other devices.</li>
     <li><strong>Cloud workspace and account:</strong> remain in the cloud account until you request account deletion and the request is verified and processed.</li>
-    <li><strong>Hosting and provider logs:</strong> may be retained by the relevant infrastructure provider under its own policies and operational requirements.</li>
+    <li><strong>Provider logs:</strong> may be retained by the relevant infrastructure provider under its own policies and operational requirements.</li>
   </ul>
-  <p>You can use the in-app backup and restore controls to export or manage your workspace. To request deletion of your Nexus cloud account and associated cloud workspace, follow the instructions on the <a href="./delete-account.html">Account and Data Deletion page</a>. Where the secure deletion service is enabled, Nexus provides an in-app option to permanently delete your account and associated cloud workspace. If the service is unavailable, you can use the email fallback described on the Account and Data Deletion page. Deleting the cloud account does not automatically erase offline copies on your other devices or files you exported.</p>
+  <p>Use the in-app backup and restore controls to export or manage your workspace. On Android, file selection uses the Android document picker and exports use the Android share sheet. To request deletion of your Nexus cloud account and associated cloud workspace, follow the <a href="./delete-account.html">Account and Data Deletion instructions</a>. Where the secure deletion service is enabled, Nexus provides an in-app option to permanently delete your account and associated cloud workspace. If that service is unavailable, use the email fallback described on the deletion page. Deleting the cloud account does not automatically erase offline copies on your devices or files you exported.</p>
 
   <h2>6. Security</h2>
-  <p>Nexus uses HTTPS for its hosted application and cloud connections. The Supabase database is configured to use row-level access controls intended to restrict workspace access to the authenticated account owner. No internet-connected service or local device can be guaranteed completely secure. Protect your device, email account and downloaded backups, and do not share sign-in links or credentials.</p>
+  <p>Nexus uses HTTPS for hosted application and cloud connections. The Supabase database is configured to use row-level access controls intended to restrict workspace access to the authenticated account owner. No internet-connected service or local device can be guaranteed completely secure. Protect your device, email account, and downloaded backups. Do not share sign-in links or credentials.</p>
 
   <h2>7. Children's privacy</h2>
   <p>Nexus is a general-purpose study tool and is not designed to knowingly collect personal information from children through a separate child-directed service. If you believe a child has provided personal information through an account, contact the support address below so the request can be reviewed.</p>
 
   <h2>8. Changes to this policy</h2>
-  <p>This policy may be updated when Nexus features, infrastructure or legal requirements change. The effective date at the top will be updated when a revised policy is published.</p>
+  <p>This policy may be updated when Nexus features, infrastructure, or legal requirements change. The effective date at the top will be updated when a revised policy is published.</p>
 
   <h2>9. Contact</h2>
-  <p>For privacy questions, data requests or account-deletion requests, contact <a href="mailto:nexusorg.contact01@gmail.com">nexusorg.contact01@gmail.com</a>.</p>
+  <p>For privacy questions, data requests, or account-deletion requests, contact <a href="mailto:nexusorg.contact01@gmail.com">nexusorg.contact01@gmail.com</a>.</p>
   <nav class="links" aria-label="Nexus links">
     <a href="./index.html">Back to Nexus</a>
     <a href="./delete-account.html">Account and Data Deletion</a>
