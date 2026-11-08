@@ -23,7 +23,7 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 
 @CapacitorPlugin(name = "NexusPrint")
 public class NexusPrintPlugin extends Plugin {
-    private static final int MAX_HTML_LENGTH = 15 * 1024 * 1024;
+    private static final int MAX_HTML_LENGTH = 3 * 1024 * 1024;
     private static final long PAGE_LOAD_TIMEOUT_MS = 30_000L;
     private static final long PRINT_JOB_POLL_INTERVAL_MS = 1_000L;
     private static final long PRINT_JOB_MAX_LIFETIME_MS = 30L * 60L * 1_000L;

@@ -269,88 +269,340 @@
       notify('Analytics CSV exported for '+from+' to '+to+'.');
     }catch(error){console.error('Nexus analytics CSV export failed',error);notify('Could not export analytics CSV. Please try again.');}
   }
-  function exportAnalyticsPdf(){
+
+  const PDF_EXPORT_GRAPH_OPTIONS = [
+    ['ratingDistribution','Review difficulty distribution'],
+    ['ratingTimeline','Review ratings over time'],
+    ['reviewActivity','Review activity over time'],
+    ['studyTime','Study time over time'],
+    ['subjectTime','Study time by subject'],
+    ['paperTrends','Paper score trends']
+  ];
+  function pdfExportLimits(){
+    const native=Boolean(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp);
+    const memory=Number(navigator.deviceMemory)||0;
+    if(native)return {maxPages:140,maxChars:2500000,warnPages:45,warnChars:900000,label:'Android app'};
+    if(memory>0&&memory<=2)return {maxPages:90,maxChars:1600000,warnPages:30,warnChars:600000,label:'low-memory browser'};
+    if(memory>0&&memory<=4)return {maxPages:180,maxChars:3500000,warnPages:55,warnChars:1100000,label:'mobile browser'};
+    if(memory>=8)return {maxPages:300,maxChars:7000000,warnPages:90,warnChars:1800000,label:'higher-memory browser'};
+    return {maxPages:180,maxChars:3500000,warnPages:55,warnChars:1100000,label:'browser'};
+  }
+  function pdfTableConfigMarkup(key,label,defaultLimit){
+    return '<div class="nexus-pdf-table-option"><label class="nexus-pdf-check"><input type="checkbox" data-pdf-table="'+key+'" checked><span>'+label+'</span></label><div><select class="field" data-pdf-limit="'+key+'" aria-label="'+label+' record limit"><option value="50">Last 50</option><option value="100" '+(defaultLimit==='100'?'selected':'')+'>Last 100</option><option value="300">Last 300</option><option value="all">All records</option><option value="custom">Custom count</option></select><input class="field nexus-pdf-custom-count" type="number" min="1" max="100000" step="1" value="500" data-pdf-custom="'+key+'" aria-label="'+label+' custom record count" hidden></div><small data-pdf-count="'+key+'">Checking records…</small></div>';
+  }
+  function pdfExportDialogMarkup(){
+    return '<dialog id="nexusPdfExportDialog" class="nexus-pdf-export-dialog" aria-labelledby="nexusPdfExportTitle">'+
+      '<div class="nexus-pdf-export-shell"><div class="nexus-pdf-export-head"><div><span class="eyebrow">REPORT CONFIGURATION</span><h2 id="nexusPdfExportTitle">Export analytics PDF</h2><p>Choose one timeframe for the report, then decide which graphs and detailed records to include.</p></div><button type="button" class="btn btn-icon" data-pdf-action="close" aria-label="Close export settings">×</button></div>'+
+      '<div class="nexus-pdf-export-body">'+
+      '<label class="nexus-pdf-field"><span>Common timeframe</span><select id="nexusPdfTimeframe" class="field"><option value="selected">Current Analytics timeframe</option><option value="all">All time</option><option value="last30">Last 30 days</option><option value="last90">Last 90 days</option><option value="year">This year</option><option value="custom">Custom date range</option></select></label>'+
+      '<div class="nexus-pdf-date-range" id="nexusPdfCustomDates" hidden><label class="nexus-pdf-field"><span>From</span><input id="nexusPdfDateFrom" class="field" type="date"></label><label class="nexus-pdf-field"><span>To</span><input id="nexusPdfDateTo" class="field" type="date"></label></div>'+
+      '<fieldset class="nexus-pdf-fieldset"><legend>Analytics graphs</legend><p class="nexus-pdf-hint">All graphs are included by default. Deselect only the ones you do not need.</p>'+
+      PDF_EXPORT_GRAPH_OPTIONS.map(([key,label])=>'<label class="nexus-pdf-check"><input type="checkbox" data-pdf-graph="'+key+'" checked><span>'+label+'</span></label>').join('')+
+      '</fieldset>'+
+      '<fieldset class="nexus-pdf-fieldset"><legend>Detailed tables</legend><p class="nexus-pdf-hint">Limits apply to the newest records inside the common timeframe. Summary statistics and graphs still use all matching records.</p>'+
+      pdfTableConfigMarkup('reviews','Review history','100')+
+      pdfTableConfigMarkup('sessions','Study sessions','100')+
+      pdfTableConfigMarkup('papers','Paper / practice records','100')+
+      pdfTableConfigMarkup('journal','Mistakes journal','50')+
+      '</fieldset>'+
+      '<div class="nexus-pdf-estimate" id="nexusPdfEstimate" aria-live="polite"><strong>Estimating report size…</strong></div>'+
+      '<label class="nexus-pdf-confirm" id="nexusPdfLargeConfirm" hidden><input id="nexusPdfConfirmLarge" type="checkbox"><span>I understand this report is large and may take longer to prepare and print.</span></label>'+
+      '<p class="nexus-pdf-progress" id="nexusPdfBuildStatus" role="status" hidden></p>'+
+      '</div><div class="nexus-pdf-export-actions"><button type="button" class="btn btn-soft" data-pdf-action="close">Cancel</button><button type="button" class="btn btn-primary" id="nexusPdfGenerate" data-pdf-action="generate">Generate PDF</button></div></div></dialog>';
+  }
+  function ensurePdfExportDialog(){
+    let dialog=document.getElementById('nexusPdfExportDialog');
+    if(dialog)return dialog;
+    if(!document.getElementById('nexus-pdf-export-style')){
+      const style=document.createElement('style');
+      style.id='nexus-pdf-export-style';
+      style.textContent='.nexus-pdf-export-dialog{width:min(680px,calc(100vw - 24px));max-height:calc(100dvh - 28px);padding:0;border:1px solid var(--border);border-radius:20px;background:var(--surface);color:var(--text);box-shadow:0 24px 80px #0004}.nexus-pdf-export-shell{display:flex;flex-direction:column;max-height:calc(100dvh - 30px)}.nexus-pdf-export-head{display:flex;justify-content:space-between;gap:14px;padding:20px 20px 12px;border-bottom:1px solid var(--border)}.nexus-pdf-export-head h2{margin:5px 0;font-size:22px}.nexus-pdf-export-head p,.nexus-pdf-hint{margin:4px 0;color:var(--muted);font-size:13px}.nexus-pdf-export-body{padding:15px 20px;overflow:auto;overscroll-behavior:contain}.nexus-pdf-field{display:grid;gap:6px;font-weight:700;font-size:13px}.nexus-pdf-field .field,.nexus-pdf-table-option .field{width:100%;min-width:0}.nexus-pdf-date-range{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.nexus-pdf-fieldset{border:1px solid var(--border);border-radius:13px;padding:12px;margin:16px 0 0;min-width:0}.nexus-pdf-fieldset legend{font-size:14px;font-weight:800;padding:0 5px}.nexus-pdf-check{display:flex;align-items:center;gap:9px;font-size:13px;font-weight:600;min-width:0}.nexus-pdf-check input,.nexus-pdf-confirm input{width:17px;height:17px;flex:0 0 17px;accent-color:var(--accent)}.nexus-pdf-fieldset>.nexus-pdf-check{padding:6px 0}.nexus-pdf-table-option{display:grid;grid-template-columns:minmax(0,1fr) minmax(130px,180px);gap:4px 12px;align-items:center;padding:9px 0;border-top:1px solid var(--border)}.nexus-pdf-table-option:first-of-type{border-top:0}.nexus-pdf-table-option>div{display:grid;gap:5px}.nexus-pdf-table-option small{grid-column:1/-1;color:var(--muted);font-size:11px}.nexus-pdf-custom-count{max-width:180px}.nexus-pdf-estimate{border:1px solid var(--border);border-radius:13px;padding:13px;margin-top:15px;font-size:13px}.nexus-pdf-estimate strong{display:block;font-size:17px;margin-bottom:5px}.nexus-pdf-estimate p{margin:4px 0;color:var(--muted)}.nexus-pdf-estimate .is-warning{color:#a16207}.nexus-pdf-estimate .is-blocked{color:#b42318}.nexus-pdf-confirm{display:flex;gap:9px;align-items:flex-start;margin-top:12px;font-size:12px}.nexus-pdf-progress{margin:10px 0 0;color:var(--muted);font-size:12px}.nexus-pdf-export-actions{display:flex;justify-content:flex-end;gap:9px;padding:12px 20px 18px;border-top:1px solid var(--border)}.nexus-pdf-export-actions button{min-width:110px}@media(max-width:520px){.nexus-pdf-export-head,.nexus-pdf-export-body{padding-left:14px;padding-right:14px}.nexus-pdf-table-option{grid-template-columns:minmax(0,1fr) minmax(118px,145px);gap:4px 8px}.nexus-pdf-export-actions{padding-left:14px;padding-right:14px}.nexus-pdf-export-actions button{min-width:0;flex:1}}';
+      document.head.appendChild(style);
+    }
+    const holder=document.createElement('div');
+    holder.innerHTML=pdfExportDialogMarkup();
+    document.body.appendChild(holder.firstElementChild);
+    dialog=document.getElementById('nexusPdfExportDialog');
+    dialog.addEventListener('change',()=>updatePdfExportEstimate(dialog));
+    dialog.addEventListener('click',async event=>{
+      const action=event.target.closest('[data-pdf-action]')?.dataset.pdfAction;
+      if(action==='close'){dialog.close();return;}
+      if(action!=='generate')return;
+      const model=dialog._pdfExportModel;
+      if(!model||model.estimate.blocked){updatePdfExportEstimate(dialog);return;}
+      if(model.estimate.large&&!dialog.querySelector('#nexusPdfConfirmLarge')?.checked){
+        dialog.querySelector('#nexusPdfLargeConfirm').hidden=false;
+        dialog.querySelector('#nexusPdfConfirmLarge').focus();
+        return;
+      }
+      const button=dialog.querySelector('#nexusPdfGenerate');
+      button.disabled=true;
+      button.textContent='Preparing report…';
+      dialog.querySelector('#nexusPdfBuildStatus').hidden=false;
+      try{await exportAnalyticsPdf(model.options);}
+      catch(error){
+        console.error('Nexus PDF export failed.',error);
+        notify(error&&error.message?error.message:'Could not prepare the PDF report. Reduce the selected detail or try again.');
+        button.disabled=false;button.textContent='Try again';dialog.querySelector('#nexusPdfBuildStatus').hidden=true;
+      }
+    });
+    return dialog;
+  }
+  function resolvePdfExportSelection(dialog){
+    const preset=dialog.querySelector('#nexusPdfTimeframe').value,current=getRatingAnalyticsSelection();
+    let from=current.from,to=current.to,label=current.label,range=current.range;
+    if(preset==='all'){
+      const dates=[];
+      state.history.forEach(x=>{if(safeDate(x.reviewedAt))dates.push(x.reviewedAt);});
+      fsState.studyLogs.forEach(x=>{if(safeDate(x.date))dates.push(x.date);});
+      fsState.papers.forEach(x=>{if(safeDate(x.date))dates.push(x.date);});
+      fsState.journal.forEach(x=>{if(safeDate(x.date))dates.push(x.date);});
+      dates.sort();from=dates[0]||dateShift(today(),-29);to=dates.length&&dates[dates.length-1]>today()?dates[dates.length-1]:today();label='All time';range='custom';
+    }else if(preset==='last30'){from=dateShift(today(),-29);to=today();label='Last 30 days';range='custom';}
+    else if(preset==='last90'){from=dateShift(today(),-89);to=today();label='Last 90 days';range='custom';}
+    else if(preset==='year'){from=today().slice(0,4)+'-01-01';to=today().slice(0,4)+'-12-31';label='This year';range='year';}
+    else if(preset==='custom'){from=dialog.querySelector('#nexusPdfDateFrom').value||'';to=dialog.querySelector('#nexusPdfDateTo').value||'';label='Custom date range';range='custom';}
+    const valid=safeDate(from)&&safeDate(to)&&from<=to;
+    const records=valid?state.history.filter(h=>safeDate(h.reviewedAt)&&h.reviewedAt>=from&&h.reviewedAt<=to):[];
+    return {range,from,to,records,label,valid};
+  }
+  function collectPdfExportOptions(dialog,selection){
+    const graphs={};
+    PDF_EXPORT_GRAPH_OPTIONS.forEach(([key])=>{graphs[key]=Boolean(dialog.querySelector('[data-pdf-graph="'+key+'"]')?.checked);});
+    const tables={};
+    ['reviews','sessions','papers','journal'].forEach(key=>{tables[key]={include:Boolean(dialog.querySelector('[data-pdf-table="'+key+'"]')?.checked),limit:dialog.querySelector('[data-pdf-limit="'+key+'"]')?.value||'100',custom:Math.max(1,Math.min(100000,Math.floor(Number(dialog.querySelector('[data-pdf-custom="'+key+'"]')?.value)||500)))};});
+    return {selection,graphs,tables};
+  }
+  function getPdfExportDatasets(selection){
+    const inRange=date=>safeDate(date)&&date>=selection.from&&date<=selection.to,sort=(a,b)=>String(b.date||b.reviewedAt||'').localeCompare(String(a.date||a.reviewedAt||''));
+    return {
+      reviews:selection.records.slice().sort((a,b)=>String(b.reviewedAt||'').localeCompare(String(a.reviewedAt||''))),
+      sessions:fsState.studyLogs.filter(x=>inRange(x.date)).slice().sort(sort),
+      papers:fsState.papers.filter(x=>inRange(x.date)).slice().sort(sort),
+      journal:fsState.journal.filter(x=>inRange(x.date)).slice().sort(sort)
+    };
+  }
+  function pdfLimitedRecords(records,config){
+    if(!config.include)return [];
+    const limit=config.limit==='all'?records.length:config.limit==='custom'?config.custom:Math.max(1,Number(config.limit)||100);
+    return records.slice(0,limit);
+  }
+  function pdfRecordText(record,kind){
+    if(kind==='reviews')return [record.reviewedAt,record.streamName,record.subjectName,record.topicName,record.rating,record.intervalDays,record.dueDate,record.note].map(x=>String(x??'')).join(' ');
+    if(kind==='sessions')return [record.date,record.subjectName,record.topicName,record.type,record.note,record.durationSeconds,record.minutes].map(x=>String(x??'')).join(' ');
+    if(kind==='papers')return [record.date,record.name,record.subjectId,record.score,record.maxScore,record.notes,record.weakAreas].map(x=>String(x??'')).join(' ');
+    return [record.date,record.category,record.subjectId,record.topicId,record.issue,record.fix,record.solved].map(x=>String(x??'')).join(' ');
+  }
+  function estimatePdfExport(options){
+    const datasets=getPdfExportDatasets(options.selection),selected={
+      reviews:pdfLimitedRecords(datasets.reviews,options.tables.reviews),
+      sessions:pdfLimitedRecords(datasets.sessions,options.tables.sessions),
+      papers:pdfLimitedRecords(datasets.papers,options.tables.papers),
+      journal:pdfLimitedRecords(datasets.journal,options.tables.journal)
+    };
+    let estimatedChars=52000,tablePages=0;
+    const density={reviews:29,sessions:32,papers:31,journal:25};
+    for(const kind of Object.keys(selected)){
+      let rowUnits=0;
+      for(const row of selected[kind]){
+        const text=pdfRecordText(row,kind),longest=text.split(/\s+/).reduce((max,part)=>Math.max(max,part.length),0);
+        rowUnits+=1+Math.max(0,Math.ceil((longest-110)/170));
+        estimatedChars+=300+Math.ceil(text.length*1.25);
+      }
+      if(selected[kind].length)tablePages+=Math.ceil(rowUnits/density[kind]);
+    }
+    const graphCount=Object.values(options.graphs).filter(Boolean).length;
+    const groupCount=getRatingAnalyticsGroups(options.selection.records,fsState.analyticsRatingGrouping||'topic').length;
+    const graphPages=graphCount+(options.graphs.ratingTimeline?1:0)+Math.ceil(groupCount/45);
+    estimatedChars+=groupCount*180;
+    const estimatedPages=Math.ceil((2+graphPages+tablePages)*1.12),limits=pdfExportLimits();
+    const blocked=estimatedPages>limits.maxPages||estimatedChars>limits.maxChars;
+    const large=!blocked&&(estimatedPages>limits.warnPages||estimatedChars>limits.warnChars);
+    return {datasets,selected,estimatedPages,estimatedChars,limits,blocked,large};
+  }
+  function updatePdfExportEstimate(dialog){
+    const preset=dialog.querySelector('#nexusPdfTimeframe').value;
+    dialog.querySelector('#nexusPdfCustomDates').hidden=preset!=='custom';
+    ['reviews','sessions','papers','journal'].forEach(key=>{
+      const limit=dialog.querySelector('[data-pdf-limit="'+key+'"]'),custom=dialog.querySelector('[data-pdf-custom="'+key+'"]'),included=dialog.querySelector('[data-pdf-table="'+key+'"]').checked;
+      custom.hidden=limit.value!=='custom';limit.disabled=!included;custom.disabled=!included||limit.value!=='custom';
+    });
+    const selection=resolvePdfExportSelection(dialog),estimateBox=dialog.querySelector('#nexusPdfEstimate'),button=dialog.querySelector('#nexusPdfGenerate');
+    if(!selection.valid){estimateBox.innerHTML='<strong class="is-block">Choose a valid date range</strong><p>The start date must be on or before the end date.</p>';button.disabled=true;dialog._pdfExportModel=null;return;}
+    const options=collectPdfExportOptions(dialog,selection),estimate=estimatePdfExport(options),fmt=n=>Number(n).toLocaleString(),mb=(estimate.estimatedChars/1048576).toFixed(2);
+    Object.keys(estimate.datasets).forEach(key=>{
+      const label=dialog.querySelector('[data-pdf-count="'+key+'"]'),total=estimate.datasets[key].length,chosen=estimate.selected[key].length;
+      label.textContent=options.tables[key].include?('Including '+fmt(chosen)+' of '+fmt(total)+' records'):('Excluded · '+fmt(total)+' available');
+    });
+    if(estimate.blocked){
+      estimateBox.innerHTML='<strong class="is-block">This report exceeds the safe export limit</strong><p>Estimated '+fmt(estimate.estimatedPages)+' pages and '+mb+' MiB of report data. This '+estimate.limits.label+' is limited to about '+fmt(estimate.limits.maxPages)+' pages or '+(estimate.limits.maxChars/1048576).toFixed(1)+' MiB. Reduce table limits, narrow the timeframe, or export complete raw data as CSV / JSON.</p>';
+      dialog.querySelector('#nexusPdfLargeConfirm').hidden=true;button.disabled=true;
+    }else{
+      estimateBox.innerHTML='<strong>Approximately '+fmt(estimate.estimatedPages)+' pages</strong><p>Estimated report data: '+mb+' MiB · '+fmt(selection.records.length)+' reviews, '+fmt(estimate.datasets.sessions.length)+' study sessions, '+fmt(estimate.datasets.papers.length)+' papers and '+fmt(estimate.datasets.journal.length)+' journal entries in this timeframe.</p>'+
+        (estimate.large?'<p class="is-warning">Large report: preparation or printing may take longer on this device. Confirm below before continuing.</p>':'<p>Within the estimated safe range for this device.</p>');
+      dialog.querySelector('#nexusPdfLargeConfirm').hidden=!estimate.large;
+      if(!estimate.large)dialog.querySelector('#nexusPdfConfirmLarge').checked=false;
+      button.disabled=false;
+    }
+    dialog._pdfExportModel={options,estimate};
+  }
+  function openAnalyticsPdfDialog(){
+    const dialog=ensurePdfExportDialog(),selection=getRatingAnalyticsSelection();
+    dialog.querySelector('#nexusPdfTimeframe').value='selected';
+    dialog.querySelector('#nexusPdfDateFrom').value=selection.from;
+    dialog.querySelector('#nexusPdfDateTo').value=selection.to;
+    dialog.querySelectorAll('[data-pdf-graph]').forEach(input=>{input.checked=true;});
+    const defaults={reviews:'100',sessions:'100',papers:'100',journal:'50'};
+    Object.keys(defaults).forEach(key=>{
+      dialog.querySelector('[data-pdf-table="'+key+'"]').checked=true;
+      dialog.querySelector('[data-pdf-limit="'+key+'"]').value=defaults[key];
+      dialog.querySelector('[data-pdf-custom="'+key+'"]').value='500';
+    });
+    dialog.querySelector('#nexusPdfConfirmLarge').checked=false;
+    dialog.querySelector('#nexusPdfBuildStatus').hidden=true;
+    dialog.querySelector('#nexusPdfGenerate').disabled=false;
+    dialog.querySelector('#nexusPdfGenerate').textContent='Generate PDF';
+    updatePdfExportEstimate(dialog);
+    if(!dialog.open)dialog.showModal();
+  }
+  function setPdfExportProgress(message,reportWindow,dialog){
+    const line=dialog?.querySelector('#nexusPdfBuildStatus');
+    if(line){line.hidden=false;line.textContent=message;}
+    try{const target=reportWindow?.document?.getElementById('nexusPdfBuildProgress');if(target)target.textContent=message;}catch(_){}
+  }
+  async function buildPdfTableRows(items,renderRow,emptyRow,label,reportWindow,dialog){
+    if(!items.length)return emptyRow;
+    let html='';
+    for(let index=0;index<items.length;index++){
+      html+=renderRow(items[index]);
+      if((index+1)%200===0){
+        setPdfExportProgress('Preparing '+label+': '+(index+1).toLocaleString()+' of '+items.length.toLocaleString()+' records…',reportWindow,dialog);
+        await new Promise(resolve=>setTimeout(resolve,0));
+      }
+    }
+    return html||emptyRow;
+  }
+
+  async function exportAnalyticsPdf(options={}){
+    const isNative=Boolean(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp);
+    const reportWindow=isNative?null:window.open('','_blank');
+    if(!isNative&&!reportWindow){notify('Allow pop-ups for Nexus to open the print-ready report, then try again.');return;}
+    const dialog=document.getElementById('nexusPdfExportDialog');
+    if(reportWindow){reportWindow.document.open();reportWindow.document.write('<!doctype html><html><head><title>Preparing Nexus PDF</title></head><body style="font:15px Arial;padding:28px;color:#273047"><h2>Preparing your Nexus report…</h2><p id="nexusPdfBuildProgress">Preparing report data…</p></body></html>');reportWindow.document.close();}
+    setPdfExportProgress('Preparing report data…',reportWindow,dialog);
+    try{
     const logoUrl=new URL('icon-192.png',window.location.href).href;
-    const selection=getRatingAnalyticsSelection(),level=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic',entityOptions=getRatingAnalyticsEntityOptions(level),entityId=getRatingAnalyticsEntityId(level,entityOptions),timeline=getRatingAnalyticsTimeline(selection,level,entityId);
-    const records=selection.records.slice().sort((a,b)=>String(b.reviewedAt||'').localeCompare(String(a.reviewedAt||'')));
-    const rangeText=selection.label+' · '+fmtDate(selection.from)+' – '+fmtDate(selection.to),timelineSvg=ratingAnalyticsSvgMarkup(selection,level,entityId,timeline),timelineTable=ratingAnalyticsTimelineTableMarkup(selection,level,entityId,timeline),entityLabel=getRatingAnalyticsEntityLabel(level,entityId,entityOptions);
-    const inRange=d=>safeDate(d)&&d<=selection.to&&(!selection.from||d>=selection.from);
+    const selection=options.selection||getRatingAnalyticsSelection();
+    const graphs=options.graphs||Object.fromEntries(PDF_EXPORT_GRAPH_OPTIONS.map(([key])=>[key,true]));
+    const tables=options.tables||{reviews:{include:true,limit:'100'},sessions:{include:true,limit:'100'},papers:{include:true,limit:'100'},journal:{include:true,limit:'50'}};
+    const datasets=getPdfExportDatasets(selection),records=datasets.reviews;
+    const level=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic';
+    const entityOptions=getRatingAnalyticsEntityOptions(level),entityId=getRatingAnalyticsEntityId(level,entityOptions);
+    const timeline=graphs.ratingTimeline?getRatingAnalyticsTimeline(selection,level,entityId):{bins:[],records:[],totals:[0,0,0,0,0]};
+    const rangeText=selection.label+' · '+fmtDate(selection.from)+' – '+fmtDate(selection.to);
+    const timelineSvg=graphs.ratingTimeline?ratingAnalyticsSvgMarkup(selection,level,entityId,timeline):'';
+    const timelineTable=graphs.ratingTimeline?ratingAnalyticsTimelineTableMarkup(selection,level,entityId,timeline):'';
+    const entityLabel=getRatingAnalyticsEntityLabel(level,entityId,entityOptions);
+    const inRange=d=>safeDate(d)&&d>=selection.from&&d<=selection.to;
     const average=records.length?records.reduce((n,h)=>n+fNum(h.rating),0)/records.length:0;
     const successful=records.length?Math.round(records.filter(h=>Number(h.rating)>=3).length/records.length*100):0;
-    const ratingCounts=[1,2,3,4,5].map(r=>records.filter(h=>Number(h.rating)===r).length),maxRating=Math.max(1,...ratingCounts);
-    const ratingDistribution=ratingCounts.map((count,i)=>'<div class="pdf-dist-row"><span class="pdf-dist-label"><b>'+ (i+1)+' · '+esc(RATING_LABELS[i+1])+'</b></span><div class="pdf-dist-track"><span data-rating="'+(i+1)+'" style="width:'+(count/maxRating*100)+'%"></span></div><strong>'+count+'</strong></div>').join('');
-    const groups=getRatingAnalyticsGroups(records,level);
-        const groupTable=groups.length?groups.map(g=>'<tr><td>'+esc(g.label)+'</td>'+g.counts.map(n=>'<td class="num">'+n+'</td>').join('')+'<td class="num"><b>'+g.total+'</b></td></tr>').join(''):'<tr><td colspan="7">No rating groups in this period.</td></tr>';
-    // Reuse the Activity renderer's own graph markup so the print report stays aligned with the on-screen graphs.
-    // Keep the nexus-activity-graph-wrap class stable; it is the export boundary for the two chart elements.
-    const activityMarkupForPdf=renderActivityAnalytics(selection);
-    const activityGraphsForPdf=String(activityMarkupForPdf||'').match(/<div class="nexus-activity-graph-wrap">[\s\S]*?<\/div>/g)||[];
-    const activityChart=activityGraphsForPdf[0]||'<p class="pdf-empty">No saved review activity in this timeframe.</p>';
-    const studyTimeChart=activityGraphsForPdf[1]||'<p class="pdf-empty">No saved study time in this timeframe.</p>';
-    const studyLogs=fsState.studyLogs.filter(l=>inRange(l.date)).slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
+    const studyLogs=datasets.sessions;
     const studyMinutes=studyLogs.reduce((n,l)=>n+studyLogMinutes(l),0);
     const subjectTimeMap=new Map();
     studyLogs.forEach(l=>{const subject=state.subjects.find(s=>s.id===l.subjectId),name=String(subject?.name||l.subjectName||'Unassigned subject');subjectTimeMap.set(name,(subjectTimeMap.get(name)||0)+studyLogMinutes(l));});
     const subjectTime=Array.from(subjectTimeMap.entries()).sort((a,b)=>b[1]-a[1]);
-    const maxSubjectTime=Math.max(1,...subjectTime.map(x=>x[1]));
-    const subjectTimeChart=subjectTime.length?subjectTime.map(x=>'<div class="pdf-time-row"><span>'+esc(x[0])+'</span><div class="pdf-time-track"><i style="width:'+(x[1]/maxSubjectTime*100)+'%"></i></div><b>'+formatStudyDuration(x[1]*60)+'</b></div>').join(''):'<p class="pdf-empty">No logged focus sessions in this period.</p>';
-    const studyRows=studyLogs.length?studyLogs.map(l=>{const subject=state.subjects.find(s=>s.id===l.subjectId),topic=getTopic(l.topicId);return '<tr><td>'+esc(fmtDate(l.date))+'</td><td>'+esc(subject?.name||l.subjectName||'—')+'</td><td>'+esc(topic?.name||l.topicName||'—')+'</td><td class="num">'+formatStudyDuration(studyLogMinutes(l)*60)+'</td><td>'+esc(l.type||'Focus session')+'</td><td>'+esc(l.note||'')+'</td></tr>';}).join(''):'<tr><td colspan="6">No logged focus sessions in this period.</td></tr>';
-    const paperList=fsState.papers.filter(p=>inRange(p.date)).slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
+    const subjectTimeChart=graphs.subjectTime?(subjectTime.length?subjectTime.map(x=>'<div class="pdf-time-row"><span>'+esc(x[0])+'</span><div class="pdf-time-track"><i style="width:'+(x[1]/Math.max(1,...subjectTime.map(y=>y[1]))*100)+'%"></i></div><b>'+formatStudyDuration(x[1]*60)+'</b></div>').join(''):'<p class="pdf-empty">No logged focus sessions in this period.</p>'):'';
+    const paperList=datasets.papers;
     const scoredPapers=paperList.filter(p=>p.score!==null&&p.score!==undefined&&Number.isFinite(Number(p.score))&&Number(p.maxScore)>0);
-    const paperTrendChart=paperScoreTrendsMarkup(scoredPapers);
-    const paperRows=paperList.length?paperList.map(p=>'<tr><td>'+esc(fmtDate(p.date))+'</td><td>'+esc(p.name||'Untitled paper')+'</td><td>'+esc(state.subjects.find(s=>s.id===p.subjectId)?.name||'—')+'</td><td class="num">'+(p.score===null||p.maxScore===null?'—':esc(p.score)+' / '+esc(p.maxScore))+'</td><td class="num">'+(p.maxScore>0?Math.round(p.score/p.maxScore*100)+'%':'—')+'</td><td>'+esc(p.notes||p.weakAreas||'')+'</td></tr>').join(''):'<tr><td colspan="6">No saved paper results in this period.</td></tr>';
-    const journals=fsState.journal.filter(j=>inRange(j.date)).slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
-    const journalRows=journals.length?journals.map(j=>'<tr><td>'+esc(fmtDate(j.date))+'</td><td>'+esc(j.category||'Other')+'</td><td>'+esc(state.subjects.find(s=>s.id===j.subjectId)?.name||'—')+'</td><td>'+esc(getTopic(j.topicId)?.name||'—')+'</td><td>'+esc(j.issue||'')+'</td><td>'+esc(j.fix||'')+'</td><td>'+(j.solved?'Resolved':'Open')+'</td></tr>').join(''):'<tr><td colspan="7">No journal entries in this period.</td></tr>';
-    const historyRows=records.length?records.map(h=>'<tr><td>'+esc(fmtDate(h.reviewedAt))+'</td><td>'+esc(h.streamName||'—')+'</td><td>'+esc(h.subjectName||'—')+'</td><td>'+esc(h.topicName||'—')+'</td><td><span class="pdf-grade" data-rating="'+Number(h.rating)+'">'+Number(h.rating)+' · '+esc(RATING_LABELS[Number(h.rating)]||'Unknown')+'</span></td><td class="num">'+fNum(h.intervalDays)+'</td><td>'+esc(fmtDate(h.dueDate))+'</td><td class="note-cell">'+esc(h.note||'')+'</td></tr>').join(''):'<tr><td colspan="8">No saved review history in this period.</td></tr>';
+    const paperTrendChart=graphs.paperTrends?paperScoreTrendsMarkup(scoredPapers):'';
+    const journals=datasets.journal;
+    const groups=getRatingAnalyticsGroups(records,level);
+    const groupTable=groups.length?groups.map(g=>'<tr><td>'+esc(g.label)+'</td>'+g.counts.map(n=>'<td class="num">'+n+'</td>').join('')+'<td class="num"><b>'+g.total+'</b></td></tr>').join(''):'<tr><td colspan="7">No rating groups in this period.</td></tr>';
+    const ratingCounts=[1,2,3,4,5].map(r=>records.filter(h=>Number(h.rating)===r).length),maxRating=Math.max(1,...ratingCounts);
+    const ratingDistribution=graphs.ratingDistribution?ratingCounts.map((count,i)=>'<div class="pdf-dist-row"><span class="pdf-dist-label"><b>'+(i+1)+' · '+esc(RATING_LABELS[i+1])+'</b></span><div class="pdf-dist-track"><span data-rating="'+(i+1)+'" style="width:'+(count/maxRating*100)+'%"></span></div><strong>'+count+'</strong></div>').join(''):'';
+    const activityMarkupForPdf=(graphs.reviewActivity||graphs.studyTime)?renderActivityAnalytics(selection):'';
+    const activityGraphsForPdf=String(activityMarkupForPdf||'').match(/<div class="nexus-activity-graph-wrap">[\s\S]*?<\/div>/g)||[];
+    const activityChart=graphs.reviewActivity?(activityGraphsForPdf[0]||'<p class="pdf-empty">No saved review activity in this timeframe.</p>'):'';
+    const studyTimeChart=graphs.studyTime?(activityGraphsForPdf[1]||'<p class="pdf-empty">No saved study time in this timeframe.</p>'):'';
+    const tableRecords={
+      reviews:pdfLimitedRecords(records,tables.reviews),
+      sessions:pdfLimitedRecords(studyLogs,tables.sessions),
+      papers:pdfLimitedRecords(paperList,tables.papers),
+      journal:pdfLimitedRecords(journals,tables.journal)
+    };
+    const tableEmpty=(cols,message)=>'<tr><td colspan="'+cols+'">'+message+'</td></tr>';
+    const studyRows=tables.sessions.include?await buildPdfTableRows(tableRecords.sessions,l=>{
+      const subject=state.subjects.find(s=>s.id===l.subjectId),topic=getTopic(l.topicId);
+      return '<tr><td>'+esc(fmtDate(l.date))+'</td><td>'+esc(subject?.name||l.subjectName||'—')+'</td><td>'+esc(topic?.name||l.topicName||'—')+'</td><td class="num">'+formatStudyDuration(studyLogMinutes(l)*60)+'</td><td>'+esc(l.type||'Focus session')+'</td><td>'+esc(l.note||'')+'</td></tr>';
+    },tableEmpty(6,'No logged focus sessions in this period.'),'study sessions',reportWindow,dialog):'';
+    const paperRows=tables.papers.include?await buildPdfTableRows(tableRecords.papers,p=>{
+      return '<tr><td>'+esc(fmtDate(p.date))+'</td><td>'+esc(p.name||'Untitled paper')+'</td><td>'+esc(state.subjects.find(s=>s.id===p.subjectId)?.name||'—')+'</td><td class="num">'+(p.score===null||p.maxScore===null?'—':esc(p.score)+' / '+esc(p.maxScore))+'</td><td class="num">'+(p.maxScore>0?Math.round(p.score/p.maxScore*100)+'%':'—')+'</td><td>'+esc(p.notes||p.weakAreas||'')+'</td></tr>';
+    },tableEmpty(6,'No saved paper results in this period.'),'paper records',reportWindow,dialog):'';
+    const journalRows=tables.journal.include?await buildPdfTableRows(tableRecords.journal,j=>{
+      return '<tr><td>'+esc(fmtDate(j.date))+'</td><td>'+esc(j.category||'Other')+'</td><td>'+esc(state.subjects.find(s=>s.id===j.subjectId)?.name||'—')+'</td><td>'+esc(getTopic(j.topicId)?.name||'—')+'</td><td>'+esc(j.issue||'')+'</td><td>'+esc(j.fix||'')+'</td><td>'+(j.solved?'Resolved':'Open')+'</td></tr>';
+    },tableEmpty(7,'No journal entries in this period.'),'mistakes journal',reportWindow,dialog):'';
+    const historyRows=tables.reviews.include?await buildPdfTableRows(tableRecords.reviews,h=>{
+      return '<tr><td>'+esc(fmtDate(h.reviewedAt))+'</td><td>'+esc(h.streamName||'—')+'</td><td>'+esc(h.subjectName||'—')+'</td><td>'+esc(h.topicName||'—')+'</td><td><span class="pdf-grade" data-rating="'+Number(h.rating)+'">'+Number(h.rating)+' · '+esc(RATING_LABELS[Number(h.rating)]||'Unknown')+'</span></td><td class="num">'+fNum(h.intervalDays)+'</td><td>'+esc(fmtDate(h.dueDate))+'</td><td class="note-cell">'+esc(h.note||'')+'</td></tr>';
+    },tableEmpty(8,'No saved review history in this period.'),'review history',reportWindow,dialog):'';
+    setPdfExportProgress('Finalising report layout…',reportWindow,dialog);
     const titleGroup=level==='syllabus'?'Syllabus / stream':level==='subject'?'Subject':'Topic';
+    const reportSections=[];
+    const addPdfSection=(id,title,body)=>reportSections.push({id,title,body});
+    if(graphs.ratingDistribution)addPdfSection('report-rating-distribution','Review Difficulty distribution','<p class="section-note">Each record contributes once to its saved Review Difficulty rating. This graph includes all reviews in the selected timeframe.</p><div class="panel"><div class="legend">'+[1,2,3,4,5].map(r=>'<span><i class="dot" data-rating="'+r+'"></i>'+r+' · '+esc(RATING_LABELS[r])+'</span>').join('')+'</div>'+ratingDistribution+'</div>');
+    if(graphs.ratingTimeline)addPdfSection('report-rating-timeline','Review Difficulty Record over time · '+entityLabel,'<p class="section-note">Saved review counts by Review Difficulty rating across the selected timeframe.</p><div class="panel pdf-time-series">'+timelineSvg+'</div>'+timelineTable+'<div class="section-note">Table: exact count for each plotted day, week or month.</div>');
+    addPdfSection('report-rating-groups','Review Difficulty counts by '+titleGroup.toLowerCase(),'<p class="section-note">Exact Review Difficulty counts for each topic, subject or syllabus in the selected date range. This summary includes all matching records.</p><div class="table-wrap"><table><thead><tr><th>'+esc(titleGroup)+'</th><th class="num">1 Again</th><th class="num">2 Hard</th><th class="num">3 Good</th><th class="num">4 Very good</th><th class="num">5 Easy</th><th class="num">Total</th></tr></thead><tbody>'+groupTable+'</tbody></table></div>');
+    if(graphs.reviewActivity)addPdfSection('report-total-reviews','Total review activity','<p class="section-note">Total saved review count across the selected timeframe, grouped by day or aggregated intervals. All matching records are included.</p><div class="panel pdf-line-panel">'+activityChart+'</div>');
+    if(graphs.studyTime)addPdfSection('report-total-study-time','Total study time over time','<p class="section-note">Total logged focus-session minutes across the selected timeframe. All matching sessions are included.</p><div class="panel pdf-line-panel">'+studyTimeChart+'</div>');
+    if(graphs.subjectTime)addPdfSection('report-study-by-subject','Study time by subject','<p class="section-note">Subject totals from all saved focus sessions in the selected timeframe.</p><div class="panel">'+subjectTimeChart+'</div>');
+    if(graphs.paperTrends)addPdfSection('report-paper-trends','Paper marks and score trends','<p class="section-note">Subject-wise percentage trends for scored papers and practice attempts, using the same 0–100% scale and trend points as Paper analytics.</p><div class="panel pdf-paper-trends">'+(paperTrendChart||'<p class="pdf-empty">No scored papers or practice attempts in this timeframe.</p>')+'</div>');
+    const tableDescription=(key,allCount)=>'Newest records first. Showing '+tableRecords[key].length+' of '+allCount+' records that match this timeframe; all summary calculations remain based on the full matching dataset.';
+    if(tables.reviews.include)addPdfSection('report-review-records','Detailed Review Difficulty Record ('+tableRecords.reviews.length+' of '+records.length+')','<p class="section-note">'+tableDescription('reviews',records.length)+'</p><div class="table-wrap"><table><thead><tr><th>Date</th><th>Syllabus</th><th>Subject</th><th>Topic</th><th>Review difficulty</th><th class="num">Interval d</th><th>Next due</th><th>Review note</th></tr></thead><tbody>'+historyRows+'</tbody></table></div>');
+    if(tables.sessions.include)addPdfSection('report-study-sessions','Logged focus sessions ('+tableRecords.sessions.length+' of '+studyLogs.length+')','<p class="section-note">'+tableDescription('sessions',studyLogs.length)+'</p><div class="table-wrap"><table><thead><tr><th>Date</th><th>Subject</th><th>Topic</th><th class="num">Duration</th><th>Session type</th><th>Note</th></tr></thead><tbody>'+studyRows+'</tbody></table></div>');
+    if(tables.papers.include)addPdfSection('report-paper-records','Paper / practice results ('+tableRecords.papers.length+' of '+paperList.length+')','<p class="section-note">'+tableDescription('papers',paperList.length)+'</p><div class="table-wrap"><table><thead><tr><th>Date</th><th>Paper / practice</th><th>Subject</th><th class="num">Score</th><th class="num">Percent</th><th>Notes / weak areas</th></tr></thead><tbody>'+paperRows+'</tbody></table></div>');
+    if(tables.journal.include)addPdfSection('report-journal','Mistakes and lesson journal ('+tableRecords.journal.length+' of '+journals.length+')','<p class="section-note">'+tableDescription('journal',journals.length)+'</p><div class="table-wrap"><table><thead><tr><th>Date</th><th>Category</th><th>Subject</th><th>Topic</th><th>Issue</th><th>Correction / fix</th><th>Status</th></tr></thead><tbody>'+journalRows+'</tbody></table></div>');
+    const tocHtml=reportSections.map((section,index)=>'<a href="#'+section.id+'">'+(index+1)+'. '+esc(section.title)+'</a>').join('');
+    const sectionsHtml=reportSections.map((section,index)=>'<section class="pdf-report-section"><h2 id="'+section.id+'">'+(index+1)+'. '+esc(section.title)+'</h2>'+section.body+'</section>').join('');
     const report='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Nexus · Study &amp; Review Difficulty Report</title><style>'+
-      '@page{size:A4;margin:13mm}:root{--accent:#7769e8}*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;color:#18212e;font-size:10px;line-height:1.45;margin:0;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}h1{font-size:27px;letter-spacing:-.7px;line-height:1.1;margin:6px 0 8px;color:#121a2a}h2{font-size:16px;letter-spacing:-.25px;margin:24px 0 5px;padding-bottom:7px;border-bottom:1px solid #dfe5ef;color:#19243b;break-after:avoid}h3{font-size:11px;margin:14px 0 6px}p{margin:5px 0}.cover{padding:24px 24px 20px;border-radius:16px;background:linear-gradient(135deg,#17172d,#292354 62%,#14525a);color:white;margin:0 0 17px}.cover-brand{display:flex;align-items:center;gap:12px;margin:0 0 20px;padding:0 0 15px;border-bottom:1px solid #ffffff32}.cover-logo{display:block;width:48px;height:48px;object-fit:cover;flex:0 0 48px;border-radius:13px;border:1px solid #ffffff33;box-shadow:0 5px 18px #0003}.cover-brand-copy{display:flex;flex-direction:column;gap:3px;min-width:0}.cover-brand-copy strong{font-size:19px;line-height:1;font-weight:900;letter-spacing:3px;color:#fff}.cover-brand-copy span{font-size:7px;line-height:1.4;font-weight:800;letter-spacing:1.5px;color:#a5f3ed}.cover-brand-tag{margin-left:auto;padding:6px 9px;border:1px solid #a5f3ed66;border-radius:999px;color:#a5f3ed;font-size:7px;letter-spacing:1px;font-weight:800;white-space:nowrap}.kicker{font-size:9px;font-weight:800;letter-spacing:2px;color:#8af1e7}.cover h1{color:#fff}.cover p{color:#e6e9fb}.cover-meta{margin-top:18px;padding-top:12px;border-top:1px solid #ffffff35;display:flex;justify-content:space-between;gap:12px;font-size:9px}.report-toc{border:1px solid #dedaf8;border-radius:12px;padding:12px 14px;margin:14px 0 18px;background:#faf9ff;break-inside:avoid}.report-toc h2{font-size:14px;margin:0 0 8px;padding:0;border:0;color:#292553}.report-toc-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px 14px}.report-toc a{display:block;padding:4px 0;font-size:9px;line-height:1.35;color:#5147b8;text-decoration:none;overflow-wrap:anywhere}.report-toc a:hover{text-decoration:underline}.report-toc a:focus{outline:2px solid #7769e8;outline-offset:2px}@media(max-width:600px){.report-toc-grid{grid-template-columns:1fr}}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0}.metric{border:1px solid #e0e5ed;border-radius:9px;padding:11px;background:#f8faff}.metric b{display:block;font-size:20px;color:#28295c;line-height:1.2}.metric span{display:block;color:#68728a;font-size:8px;margin-top:4px}.panel{border:1px solid #e0e5ed;border-radius:12px;padding:12px;margin:12px 0;break-inside:avoid}.muted{color:#657188}.legend{display:flex;flex-wrap:wrap;gap:6px 12px;margin:8px 0 12px}.legend span{display:inline-flex;align-items:center;gap:5px;font-size:8px}.dot{width:8px;height:8px;border-radius:3px;display:inline-block}.pdf-rating,.pdf-dist-track span,.dot{background:#aaa}.pdf-rating[data-rating="1"],.pdf-dist-track span[data-rating="1"],.dot[data-rating="1"],.pdf-grade[data-rating="1"]{background:#ef4444}.pdf-rating[data-rating="2"],.pdf-dist-track span[data-rating="2"],.dot[data-rating="2"],.pdf-grade[data-rating="2"]{background:#f97316}.pdf-rating[data-rating="3"],.pdf-dist-track span[data-rating="3"],.dot[data-rating="3"],.pdf-grade[data-rating="3"]{background:#eab308}.pdf-rating[data-rating="4"],.pdf-dist-track span[data-rating="4"],.dot[data-rating="4"],.pdf-grade[data-rating="4"]{background:#22c55e}.pdf-rating[data-rating="5"],.pdf-dist-track span[data-rating="5"],.dot[data-rating="5"],.pdf-grade[data-rating="5"]{background:#10b981}.pdf-stack-row{display:grid;grid-template-columns:150px 1fr 25px;gap:8px;align-items:center;margin:10px 0}.pdf-stack-label{min-width:0;overflow-wrap:anywhere}.pdf-stack-label strong{display:block;font-size:9px}.pdf-stack-label small{display:block;color:#69738a;font-size:7px}.pdf-stack-track{height:12px;border-radius:7px;background:#edf1f7;display:flex;overflow:hidden}.pdf-rating{height:100%;display:block;min-width:0}.pdf-stack-row>b{font-size:9px;text-align:right}.pdf-dist-row{display:grid;grid-template-columns:100px 1fr 30px;gap:9px;align-items:center;margin:9px 0}.pdf-dist-label{font-size:9px}.pdf-dist-track,.pdf-time-track{height:10px;border-radius:6px;overflow:hidden;background:#edf1f7}.pdf-dist-track span{display:block;height:100%;border-radius:6px}.pdf-dist-row>strong{text-align:right}.pdf-columns{height:145px;display:flex;gap:3px;align-items:stretch;border-bottom:1px solid #d8deea;padding-top:6px}.pdf-col{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:3px;font-size:7px;color:#6c778d}.pdf-col-value{font-size:7px;height:9px}.pdf-col-track{height:112px;width:100%;display:flex;align-items:flex-end;justify-content:center}.pdf-col-track i{display:block;width:75%;background:linear-gradient(180deg,#51d9d0,#7169de);border-radius:3px 3px 0 0;min-height:2px}.pdf-time-row{display:grid;grid-template-columns:125px 1fr 48px;gap:8px;align-items:center;margin:8px 0;font-size:9px}.pdf-time-track i{display:block;background:linear-gradient(90deg,#6c63df,#31c7c3);height:100%;border-radius:6px}.pdf-time-row>b{text-align:right}.ra-svg{display:block;width:100%;height:auto;min-height:210px;overflow:visible}.ra-svg-dense{min-width:820px;max-width:none}@media print{.ra-svg-dense{min-width:0;max-width:100%;width:100%}.ra-count-table-wrap{overflow:visible;max-height:none}}.ra-svg-dense .ra-tick{font-size:10px}.ra-svg .ra-gridline{stroke:#dbe2ee;stroke-width:1}.ra-svg .ra-axis{stroke:#7b8495;stroke-width:1.3}.ra-svg .ra-tick{fill:#647084;font-size:12px}.ra-svg .ra-axis-title{fill:#20293a;font-size:13px;font-weight:700}.ra-svg .ra-line{fill:none;stroke-width:3.1;stroke-linecap:round;stroke-linejoin:round}.ra-svg .ra-point{stroke:#fff;stroke-width:1.8}.pdf-time-series{padding:12px}.pdf-line-panel{padding:10px 12px;break-inside:avoid}.pdf-line-chart-wrap{width:100%;overflow:hidden}.pdf-line-svg{display:block;width:100%;height:auto;max-width:100%}.nexus-activity-graph-wrap{width:100%;min-width:0;overflow:hidden;margin-top:0}.nexus-activity-svg{display:block;width:100%;min-width:0!important;max-width:100%;height:auto;overflow:visible}.nexus-activity-grid{stroke:#dbe2ee;stroke-width:1;stroke-dasharray:3 4}.nexus-activity-axis{stroke:#7b8495;stroke-width:1}.nexus-activity-line{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}.nexus-activity-area{stroke:none;pointer-events:none}.nexus-activity-point{stroke:#fff;stroke-width:1.8}.nexus-activity-tick{fill:#647084;font-size:11px;font-variant-numeric:tabular-nums}.nexus-activity-axis-title{fill:#20293a;font-size:11px;font-weight:650}.nexus-activity-empty-label{fill:#647084;font-size:13px}.pdf-paper-trends{padding:9px}.paper-trend-panel{padding:8px;margin:8px 0;border:1px solid #e0e5ed;border-radius:9px;break-inside:avoid}.paper-trend-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:7px}.paper-trend-head strong{font-size:9px;overflow-wrap:anywhere}.paper-trend-head span{font-size:8px;color:#657188;text-align:right}.paper-trend-chart{width:100%;overflow:visible}.paper-trend-svg{display:block;width:100%!important;min-width:0!important;max-width:100%!important;height:auto}.paper-trend-grid{stroke:#dbe2ee;stroke-width:1}.paper-trend-axis{stroke:#7b8495;stroke-width:1.3}.paper-trend-tick{fill:#647084;font-size:12px}.paper-trend-axis-title{fill:#20293a;font-size:13px;font-weight:700}.paper-trend-line{fill:none;stroke:var(--accent);stroke-width:3.1;stroke-linecap:round;stroke-linejoin:round}.paper-trend-point{fill:var(--accent);stroke:#fff;stroke-width:1.8}@media print{.paper-trend-svg{width:100%!important;min-width:0!important;max-width:100%!important}.pdf-line-panel,.paper-trend-panel{break-inside:avoid}}.ra-count-table-wrap{overflow-x:auto;max-height:none;margin:8px 0 14px}.ra-count-table{width:100%;border-collapse:collapse;font-size:8px}.ra-count-table th,.ra-count-table td{padding:5px 4px;border-bottom:1px solid #e5e9f0}.ra-count-table th{background:#eef1fb;color:#303b57;text-align:left}.ra-table-rating[data-rating="1"]{color:#ef4444}.ra-table-rating[data-rating="2"]{color:#f97316}.ra-table-rating[data-rating="3"]{color:#b78a00}.ra-table-rating[data-rating="4"]{color:#22c55e}.ra-table-rating[data-rating="5"]{color:#10b981}.pdf-empty{color:#66718a;padding:9px 0}.section-note{font-size:8px;color:#66718a;margin:4px 0 10px}.table-wrap{width:100%}table{width:100%;border-collapse:collapse;font-size:8px;table-layout:auto}thead{display:table-header-group}tr{break-inside:avoid}th{background:#eef1fb;color:#303b57;text-align:left;font-size:7.5px;text-transform:uppercase;letter-spacing:.3px;padding:6px 5px}td{padding:6px 5px;border-bottom:1px solid #e5e9f0;vertical-align:top;overflow-wrap:anywhere}tbody tr:nth-child(even){background:#fafbfe}.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.note-cell{white-space:pre-wrap;min-width:80px}.pdf-grade{display:inline-block;border-radius:5px;color:#fff;padding:3px 5px;white-space:nowrap;font-weight:700;font-size:7px}.footer{margin-top:24px;padding-top:8px;border-top:1px solid #e0e5ed;color:#788197;font-size:8px;display:flex;justify-content:space-between;gap:10px}.page-break{break-before:page}.no-break{break-inside:avoid}@media screen{body{max-width:920px;margin:24px auto;padding:0 18px;background:#f6f8fc}.cover{box-shadow:0 14px 35px #25265726}}@media(max-width:600px){.metrics{grid-template-columns:repeat(2,1fr)}.pdf-stack-row{grid-template-columns:110px 1fr 22px}.cover-meta{display:block}.cover-meta span{display:block;margin:3px 0}}'+
+      '@page{size:A4;margin:13mm}:root{--accent:#7769e8}*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;color:#18212e;font-size:10px;line-height:1.45;margin:0;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}h1{font-size:27px;letter-spacing:-.7px;line-height:1.1;margin:6px 0 8px;color:#121a2a}h2{font-size:16px;letter-spacing:-.25px;margin:24px 0 5px;padding-bottom:7px;border-bottom:1px solid #dfe5ef;color:#19243b;break-after:avoid}h3{font-size:11px;margin:14px 0 6px}p{margin:5px 0}.cover{padding:24px 24px 20px;border-radius:16px;background:linear-gradient(135deg,#17172d,#292354 62%,#14525a);color:white;margin:0 0 17px}.cover-brand{display:flex;align-items:center;gap:12px;margin:0 0 20px;padding:0 0 15px;border-bottom:1px solid #ffffff32}.cover-logo{display:block;width:48px;height:48px;object-fit:cover;flex:0 0 48px;border-radius:13px;border:1px solid #ffffff33;box-shadow:0 5px 18px #0003}.cover-brand-copy{display:flex;flex-direction:column;gap:3px;min-width:0}.cover-brand-copy strong{font-size:19px;line-height:1;font-weight:900;letter-spacing:3px;color:#fff}.cover-brand-copy span{font-size:7px;line-height:1.4;font-weight:800;letter-spacing:1.5px;color:#a5f3ed}.cover-brand-tag{margin-left:auto;padding:6px 9px;border:1px solid #a5f3ed66;border-radius:999px;color:#a5f3ed;font-size:7px;letter-spacing:1px;font-weight:800;white-space:nowrap}.kicker{font-size:9px;font-weight:800;letter-spacing:2px;color:#8af1e7}.cover h1{color:#fff}.cover p{color:#e6e9fb}.cover-meta{margin-top:18px;padding-top:12px;border-top:1px solid #ffffff35;display:flex;justify-content:space-between;gap:12px;font-size:9px}.report-toc{border:1px solid #dedaf8;border-radius:12px;padding:12px 14px;margin:14px 0 18px;background:#faf9ff;break-inside:avoid}.report-toc h2{font-size:14px;margin:0 0 8px;padding:0;border:0;color:#292553}.report-toc-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px 14px}.report-toc a{display:block;padding:4px 0;font-size:9px;line-height:1.35;color:#5147b8;text-decoration:none;overflow-wrap:anywhere}.report-toc a:hover{text-decoration:underline}.report-toc a:focus{outline:2px solid #7769e8;outline-offset:2px}@media(max-width:600px){.report-toc-grid{grid-template-columns:1fr}}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0}.metric{border:1px solid #e0e5ed;border-radius:9px;padding:11px;background:#f8faff}.metric b{display:block;font-size:20px;color:#28295c;line-height:1.2}.metric span{display:block;color:#68728a;font-size:8px;margin-top:4px}.panel{border:1px solid #e0e5ed;border-radius:12px;padding:12px;margin:12px 0;break-inside:avoid}.muted{color:#657188}.legend{display:flex;flex-wrap:wrap;gap:6px 12px;margin:8px 0 12px}.legend span{display:inline-flex;align-items:center;gap:5px;font-size:8px}.dot{width:8px;height:8px;border-radius:3px;display:inline-block}.pdf-rating,.pdf-dist-track span,.dot{background:#aaa}.pdf-rating[data-rating="1"],.pdf-dist-track span[data-rating="1"],.dot[data-rating="1"],.pdf-grade[data-rating="1"]{background:#ef4444}.pdf-rating[data-rating="2"],.pdf-dist-track span[data-rating="2"],.dot[data-rating="2"],.pdf-grade[data-rating="2"]{background:#f97316}.pdf-rating[data-rating="3"],.pdf-dist-track span[data-rating="3"],.dot[data-rating="3"],.pdf-grade[data-rating="3"]{background:#eab308}.pdf-rating[data-rating="4"],.pdf-dist-track span[data-rating="4"],.dot[data-rating="4"],.pdf-grade[data-rating="4"]{background:#22c55e}.pdf-rating[data-rating="5"],.pdf-dist-track span[data-rating="5"],.dot[data-rating="5"],.pdf-grade[data-rating="5"]{background:#10b981}.pdf-stack-row{display:grid;grid-template-columns:150px 1fr 25px;gap:8px;align-items:center;margin:10px 0}.pdf-stack-label{min-width:0;overflow-wrap:anywhere}.pdf-stack-label strong{display:block;font-size:9px}.pdf-stack-label small{display:block;color:#69738a;font-size:7px}.pdf-stack-track{height:12px;border-radius:7px;background:#edf1f7;display:flex;overflow:hidden}.pdf-rating{height:100%;display:block;min-width:0}.pdf-stack-row>b{font-size:9px;text-align:right}.pdf-dist-row{display:grid;grid-template-columns:100px 1fr 30px;gap:9px;align-items:center;margin:9px 0}.pdf-dist-label{font-size:9px}.pdf-dist-track,.pdf-time-track{height:10px;border-radius:6px;overflow:hidden;background:#edf1f7}.pdf-dist-track span{display:block;height:100%;border-radius:6px}.pdf-dist-row>strong{text-align:right}.pdf-columns{height:145px;display:flex;gap:3px;align-items:stretch;border-bottom:1px solid #d8deea;padding-top:6px}.pdf-col{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:3px;font-size:7px;color:#6c778d}.pdf-col-value{font-size:7px;height:9px}.pdf-col-track{height:112px;width:100%;display:flex;align-items:flex-end;justify-content:center}.pdf-col-track i{display:block;width:75%;background:linear-gradient(180deg,#51d9d0,#7169de);border-radius:3px 3px 0 0;min-height:2px}.pdf-time-row{display:grid;grid-template-columns:125px 1fr 48px;gap:8px;align-items:center;margin:8px 0;font-size:9px}.pdf-time-track i{display:block;background:linear-gradient(90deg,#6c63df,#31c7c3);height:100%;border-radius:6px}.pdf-time-row>b{text-align:right}.ra-svg{display:block;width:100%;height:auto;min-height:210px;overflow:visible}.ra-svg-dense{min-width:820px;max-width:none}@media print{.ra-svg-dense{min-width:0;max-width:100%;width:100%}.ra-count-table-wrap{overflow:visible;max-height:none}}.ra-svg-dense .ra-tick{font-size:10px}.ra-svg .ra-gridline{stroke:#dbe2ee;stroke-width:1}.ra-svg .ra-axis{stroke:#7b8495;stroke-width:1.3}.ra-svg .ra-tick{fill:#647084;font-size:12px}.ra-svg .ra-axis-title{fill:#20293a;font-size:13px;font-weight:700}.ra-svg .ra-line{fill:none;stroke-width:3.1;stroke-linecap:round;stroke-linejoin:round}.ra-svg .ra-point{stroke:#fff;stroke-width:1.8}.pdf-time-series{padding:12px}.pdf-line-panel{padding:10px 12px;break-inside:avoid}.pdf-line-chart-wrap{width:100%;overflow:hidden}.pdf-line-svg{display:block;width:100%;height:auto;max-width:100%}.nexus-activity-graph-wrap{width:100%;min-width:0;overflow:hidden;margin-top:0}.nexus-activity-svg{display:block;width:100%;min-width:0!important;max-width:100%;height:auto;overflow:visible}.nexus-activity-grid{stroke:#dbe2ee;stroke-width:1;stroke-dasharray:3 4}.nexus-activity-axis{stroke:#7b8495;stroke-width:1}.nexus-activity-line{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}.nexus-activity-area{stroke:none;pointer-events:none}.nexus-activity-point{stroke:#fff;stroke-width:1.8}.nexus-activity-tick{fill:#647084;font-size:11px;font-variant-numeric:tabular-nums}.nexus-activity-axis-title{fill:#20293a;font-size:11px;font-weight:650}.nexus-activity-empty-label{fill:#647084;font-size:13px}.pdf-paper-trends{padding:9px}.paper-trend-panel{padding:8px;margin:8px 0;border:1px solid #e0e5ed;border-radius:9px;break-inside:avoid}.paper-trend-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:7px}.paper-trend-head strong{font-size:9px;overflow-wrap:anywhere}.paper-trend-head span{font-size:8px;color:#657188;text-align:right}.paper-trend-chart{width:100%;overflow:visible}.paper-trend-svg{display:block;width:100%!important;min-width:0!important;max-width:100%!important;height:auto}.paper-trend-grid{stroke:#dbe2ee;stroke-width:1}.paper-trend-axis{stroke:#7b8495;stroke-width:1.3}.paper-trend-tick{fill:#647084;font-size:12px}.paper-trend-axis-title{fill:#20293a;font-size:13px;font-weight:700}.paper-trend-line{fill:none;stroke:var(--accent);stroke-width:3.1;stroke-linecap:round;stroke-linejoin:round}.paper-trend-point{fill:var(--accent);stroke:#fff;stroke-width:1.8}@media print{.paper-trend-svg{width:100%!important;min-width:0!important;max-width:100%!important}.pdf-line-panel,.paper-trend-panel{break-inside:avoid}}.ra-count-table-wrap{overflow-x:auto;max-height:none;margin:8px 0 14px}.ra-count-table{width:100%;border-collapse:collapse;font-size:8px}.ra-count-table th,.ra-count-table td{padding:5px 4px;border-bottom:1px solid #e5e9f0}.ra-count-table th{background:#eef1fb;color:#303b57;text-align:left}.ra-table-rating[data-rating="1"]{color:#ef4444}.ra-table-rating[data-rating="2"]{color:#f97316}.ra-table-rating[data-rating="3"]{color:#b78a00}.ra-table-rating[data-rating="4"]{color:#22c55e}.ra-table-rating[data-rating="5"]{color:#10b981}.pdf-empty{color:#66718a;padding:9px 0}.section-note{font-size:8px;color:#66718a;margin:4px 0 10px}.table-wrap{width:100%;break-inside:auto;page-break-inside:auto}.pdf-report-section{break-inside:auto;page-break-inside:auto}table{width:100%;border-collapse:collapse;font-size:8px;table-layout:auto}thead{display:table-header-group}tbody{display:table-row-group}tr{break-inside:avoid;page-break-inside:avoid}th{background:#eef1fb;color:#303b57;text-align:left;font-size:7.5px;text-transform:uppercase;letter-spacing:.3px;padding:6px 5px}td{padding:6px 5px;border-bottom:1px solid #e5e9f0;vertical-align:top;overflow-wrap:anywhere}tbody tr:nth-child(even){background:#fafbfe}.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.note-cell{white-space:pre-wrap;min-width:80px}.pdf-grade{display:inline-block;border-radius:5px;color:#fff;padding:3px 5px;white-space:nowrap;font-weight:700;font-size:7px}.footer{margin-top:24px;padding-top:8px;border-top:1px solid #e0e5ed;color:#788197;font-size:8px;display:flex;justify-content:space-between;gap:10px}.page-break{break-before:page}.no-break{break-inside:avoid}@media screen{body{max-width:920px;margin:24px auto;padding:0 18px;background:#f6f8fc}.cover{box-shadow:0 14px 35px #25265726}}@media(max-width:600px){.metrics{grid-template-columns:repeat(2,1fr)}.pdf-stack-row{grid-template-columns:110px 1fr 22px}.cover-meta{display:block}.cover-meta span{display:block;margin:3px 0}}'+
       '</style></head><body><header class="cover"><div class="cover-brand"><img class="cover-logo" src="'+esc(logoUrl)+'" alt="Nexus logo"><div class="cover-brand-copy"><strong>NEXUS</strong><span>SPACED REPETITION TRACKER</span></div><span class="cover-brand-tag">LEARNING INTELLIGENCE</span></div><h1>Study &amp; Review Difficulty Report</h1><p>A detailed record of your recall ratings, review schedule, focus sessions and study progress.</p><div class="cover-meta"><span><b>Coverage:</b> '+esc(rangeText)+'</span><span><b>Generated:</b> '+esc(fmtDate(today()))+'</span><span><b>Chart grouping:</b> '+esc(titleGroup)+'</span></div></header>'+
-      '<nav class="report-toc" aria-label="Report contents"><h2>Report contents</h2><div class="report-toc-grid"><a href="#report-rating-distribution">1. Review Difficulty distribution</a><a href="#report-rating-timeline">2. Review Difficulty Record over time</a><a href="#report-rating-groups">3. Review Difficulty counts by topic or subject</a><a href="#report-total-reviews">4. Total review activity</a><a href="#report-total-study-time">5. Total study time over time</a><a href="#report-study-by-subject">6. Study time by subject</a><a href="#report-paper-trends">7. Paper marks and score trends</a><a href="#report-review-records">8. Detailed Review Difficulty Record</a><a href="#report-study-sessions">9. Logged focus sessions</a><a href="#report-paper-records">10. Paper / practice records</a><a href="#report-journal">11. Mistakes and lesson journal</a></div></nav>'+
+      '<nav class="report-toc" aria-label="Report contents"><h2>Report contents</h2><div class="report-toc-grid">'+tocHtml+'</div></nav>'+
       '<div class="metrics"><div class="metric"><b>'+records.length+'</b><span>Review Difficulty Records</span></div><div class="metric"><b>'+(average?average.toFixed(2):'—')+' / 5</b><span>Mean review difficulty rating</span></div><div class="metric"><b>'+successful+'%</b><span>Ratings 3–5</span></div><div class="metric"><b>'+studyMinutes+'</b><span>Focus minutes logged</span></div></div>'+
-      '<h2 id="report-rating-distribution">1. Review Difficulty distribution</h2><p class="section-note">Each record contributes once to its saved Review Difficulty rating. Colour labels correspond to the saved Review Difficulty ratings in Nexus.</p><div class="panel"><div class="legend">'+[1,2,3,4,5].map(r=>'<span><i class="dot" data-rating="'+r+'"></i>'+r+' · '+esc(RATING_LABELS[r])+'</span>').join('')+'</div>'+ratingDistribution+'</div>'+
-      '<h2 id="report-rating-timeline">2. Review Difficulty Record over time · '+esc(entityLabel)+'</h2><p class="section-note">Saved review counts by Review Difficulty rating across the selected timeframe. The colours match the five Review Difficulty ratings used in Nexus.</p><div class="panel pdf-time-series">'+timelineSvg+'</div>'+timelineTable+'<div class="section-note">Table: exact count for each difficulty rating in every plotted day, week or month.</div>'+
-      '<h2 id="report-rating-groups">3. Review Difficulty counts by '+esc(titleGroup.toLowerCase())+'</h2><p class="section-note">Exact Review Difficulty counts for each topic, subject or syllabus in the selected date range.</p><div class="table-wrap"><table><thead><tr><th>'+esc(titleGroup)+'</th><th class="num">1 Again</th><th class="num">2 Hard</th><th class="num">3 Good</th><th class="num">4 Very good</th><th class="num">5 Easy</th><th class="num">Total</th></tr></thead><tbody>'+groupTable+'</tbody></table></div>'+
-      '<h2 id="report-total-reviews">4. Total review activity</h2><p class="section-note">Total saved review count across the selected timeframe, grouped by day for shorter ranges and aggregated intervals for longer ranges, using the same range logic as Analytics → Activity.</p><div class="panel pdf-line-panel">'+activityChart+'</div>'+
-      '<h2 id="report-total-study-time">5. Total study time over time</h2><p class="section-note">Total logged focus-session minutes across the selected timeframe, grouped by day for shorter ranges and aggregated intervals for longer ranges. Only recorded minutes are included.</p><div class="panel pdf-line-panel">'+studyTimeChart+'</div>'+
-      '<h2 id="report-study-by-subject">6. Study time by subject</h2><p class="section-note">Subject totals from the saved focus sessions in the selected timeframe. Only recorded minutes are included.</p><div class="panel">'+subjectTimeChart+'</div>'+
-      '<h2 id="report-paper-trends">7. Paper marks and score trends</h2><p class="section-note">Subject-wise percentage trends for scored papers and practice attempts, using the same 0–100% scale and trend points as Paper analytics. Exact raw scores remain in the records below.</p><div class="panel pdf-paper-trends">'+(paperTrendChart||'<p class="pdf-empty">No scored papers or practice attempts in this timeframe.</p>')+'</div>'+
-      '<h2 id="report-review-records">8. Detailed Review Difficulty Record <span class="muted">('+records.length+' records)</span></h2><p class="section-note">Newest records first. Includes the saved Review Difficulty rating, next interval, next due date and review note. Deleted topics remain visible when their historical details were saved.</p><div class="table-wrap"><table><thead><tr><th>Date</th><th>Syllabus</th><th>Subject</th><th>Topic</th><th>Review difficulty</th><th class="num">Interval d</th><th>Next due</th><th>Review note</th></tr></thead><tbody>'+historyRows+'</tbody></table></div>'+
-      '<h2 id="report-study-sessions">9. Logged focus sessions <span class="muted">('+studyLogs.length+' records)</span></h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Subject</th><th>Topic</th><th class="num">Duration</th><th>Session type</th><th>Note</th></tr></thead><tbody>'+studyRows+'</tbody></table></div>'+
-      '<h2 id="report-paper-records">10. Paper / practice results <span class="muted">('+paperList.length+' records)</span></h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Paper / practice</th><th>Subject</th><th class="num">Score</th><th class="num">Percent</th><th>Notes / weak areas</th></tr></thead><tbody>'+paperRows+'</tbody></table></div>'+
-      '<h2 id="report-journal">11. Mistakes and lesson journal <span class="muted">('+journals.length+' records)</span></h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Category</th><th>Subject</th><th>Topic</th><th>Issue</th><th>Correction / fix</th><th>Status</th></tr></thead><tbody>'+journalRows+'</tbody></table></div>'+
+      sectionsHtml+
       '<div class="footer"><span>Nexus · Spaced Repetition Tracker</span><span>Private report generated locally in your browser</span></div></body></html>';
-    if(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp){
-      (async()=>{
-        let nativeReport=report;
-        const escapedLogoUrl=esc(logoUrl);
-        try{
-          const imageResponse=await fetch(logoUrl);
-          if(!imageResponse.ok)throw new Error('The Nexus report logo could not be loaded.');
-          const imageBlob=await imageResponse.blob();
-          const logoDataUrl=await new Promise((resolve,reject)=>{
-            const reader=new FileReader();
-            reader.onload=()=>resolve(String(reader.result||''));
-            reader.onerror=()=>reject(reader.error||new Error('The Nexus report logo could not be embedded.'));
-            reader.readAsDataURL(imageBlob);
-          });
-          if(!logoDataUrl.startsWith('data:image/'))throw new Error('The Nexus report logo has an unsupported image format.');
-          nativeReport=nativeReport.replace('src="'+escapedLogoUrl+'"','src="'+logoDataUrl+'"');
-        }catch(error){
-          console.warn('Nexus could not embed the report logo for native printing; continuing without it.',error);
-          nativeReport=nativeReport.replace('<img class="cover-logo" src="'+escapedLogoUrl+'" alt="Nexus logo">','<span class="cover-logo" aria-hidden="true"></span>');
-        }
-        await window.NexusAndroidBridge.printHtml('Nexus Study and Review Difficulty Report',nativeReport);
-        notify('Android print dialog opened. Select Save as PDF to save your report.');
-      })().catch(error=>{
-        console.error('Nexus Android PDF export failed.',error);
-        notify(error&&error.message?'Android could not open the print dialog: '+error.message:'Android could not open the print dialog. Please try again.');
-      });
+    const activeLimits=pdfExportLimits();
+    if(report.length>activeLimits.maxChars)throw new Error('The finished report is larger than this device can safely send to its print service. Reduce the table limits or export complete raw data as CSV / JSON.');
+    if(isNative){
+      let nativeReport=report;
+      const escapedLogoUrl=esc(logoUrl);
+      try{
+        const imageResponse=await fetch(logoUrl);
+        if(!imageResponse.ok)throw new Error('The Nexus report logo could not be loaded.');
+        const imageBlob=await imageResponse.blob();
+        const logoDataUrl=await new Promise((resolve,reject)=>{
+          const reader=new FileReader();
+          reader.onload=()=>resolve(String(reader.result||''));
+          reader.onerror=()=>reject(reader.error||new Error('The Nexus report logo could not be embedded.'));
+          reader.readAsDataURL(imageBlob);
+        });
+        if(!logoDataUrl.startsWith('data:image/'))throw new Error('The Nexus report logo has an unsupported image format.');
+        nativeReport=nativeReport.replace('src="'+escapedLogoUrl+'"','src="'+logoDataUrl+'"');
+      }catch(error){
+        console.warn('Nexus could not embed the report logo for native printing; continuing without it.',error);
+        nativeReport=nativeReport.replace('<img class="cover-logo" src="'+escapedLogoUrl+'" alt="Nexus logo">','<span class="cover-logo" aria-hidden="true"></span>');
+      }
+      if(dialog?.open)dialog.close();
+      await window.NexusAndroidBridge.printHtml('Nexus Study and Review Difficulty Report',nativeReport);
+      notify('Android print dialog opened. Select Save as PDF to save your report.');
       return;
     }
-    const reportWindow=window.open('','_blank');
-    if(!reportWindow){notify('Allow pop-ups for Nexus to open the print-ready report, then choose Save as PDF.');return;}
-    try{reportWindow.document.open();reportWindow.document.write(report);reportWindow.document.close();setTimeout(function(){try{reportWindow.focus();reportWindow.print();}catch(e){notify('The report opened, but printing was blocked. Use the browser menu to Print / Save as PDF.');}},450);}catch(e){try{reportWindow.close();}catch(_){}notify('Could not open the PDF report. Try allowing pop-ups and retry.');}
+    reportWindow.document.open();reportWindow.document.write(report);reportWindow.document.close();
+    if(dialog?.open)dialog.close();
+    setTimeout(function(){try{reportWindow.focus();reportWindow.print();}catch(e){notify('The report opened, but printing was blocked. Use the browser menu to Print / Save as PDF.');}},450);
+    }catch(error){
+      try{if(reportWindow&&!reportWindow.closed)reportWindow.close();}catch(_){}
+      throw error;
+    }
+
   }
 
   function paperScoreTrendsMarkup(papers){
@@ -925,7 +1177,7 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
         if(!safeDate(from)||!safeDate(to)||from>to){notify('Choose valid dates. The From date must be on or before the To date.');return;}
         fsState.analyticsCustomStart=from;fsState.analyticsCustomEnd=to;fsState.analyticsPeriod='custom';saveFs();renderHub();return;
       }
-      if(action==='analytics-export-pdf'){exportAnalyticsPdf();return;}
+      if(action==='analytics-export-pdf'){openAnalyticsPdfDialog();return;}
       if(action==='analytics-export'){exportAnalyticsCsv();return;}
       if(action==='analytics-retry'){renderHub();return;}
     }catch(error){

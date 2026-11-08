@@ -183,4 +183,39 @@ assert.ok(offlineRecovery.includes("if(currentOwner===userId){") &&
   offlineRecovery.includes("if(oversizedQueueDetected){") &&
   offlineRecovery.includes("rebuildOversizedOfflineQueue(queue,userId,snapshot()"),
   'queue recovery must work for both the active account and a different account restored from its own IndexedDB/base workspace');
+
+assert.ok(studyHub.includes('function openAnalyticsPdfDialog()') &&
+  studyHub.includes('function resolvePdfExportSelection(dialog)') &&
+  studyHub.includes('function estimatePdfExport(options)') &&
+  studyHub.includes('function pdfExportLimits()'),
+  'PDF export must provide shared web/Android configuration, common timeframes and a device-aware safety estimate');
+assert.ok(studyHub.includes("['reviews','sessions','papers','journal']") &&
+  studyHub.includes('option value=\\"all\\">All records') &&
+  studyHub.includes('option value="custom">Custom count') &&
+  studyHub.includes('tableDescription=(key,allCount)'),
+  'PDF detail tables must support independent inclusion and record limits while clearly disclosing any reduced row count');
+assert.ok(studyHub.includes('PDF_EXPORT_GRAPH_OPTIONS') &&
+  studyHub.includes("dialog.querySelectorAll('[data-pdf-graph]').forEach(input=>{input.checked=true;})") &&
+  studyHub.includes("if(graphs.paperTrends)addPdfSection") &&
+  studyHub.includes("if(graphs.ratingTimeline)addPdfSection"),
+  'all existing report graphs must be selected by default and remain individually selectable');
+
+assert.ok(studyHub.includes("if(isNative){") &&
+  studyHub.includes("window.NexusAndroidBridge.printHtml('Nexus Study and Review Difficulty Report',nativeReport)") &&
+  studyHub.includes("reportWindow.document.write(report)"),
+  'the shared PDF exporter must retain both the browser print flow and Android native print bridge');
+assert.ok(studyHub.includes("dialog.addEventListener('change',()=>updatePdfExportEstimate(dialog));") &&
+  !studyHub.includes("dialog.addEventListener('input',()=>updatePdfExportEstimate(dialog));"),
+  'export estimates must update on committed control changes without repeatedly rescanning large datasets on each keystroke');
+
+assert.ok(studyHub.includes('async function buildPdfTableRows(') &&
+  studyHub.includes('if((index+1)%200===0)') &&
+  studyHub.includes('thead{display:table-header-group}') &&
+  studyHub.includes('page-break-inside:avoid'),
+  'large detailed tables must be built in yielding chunks and paginated with repeating headers and unbroken rows');
+assert.ok(studyHub.includes('const activeLimits=pdfExportLimits();') &&
+  studyHub.includes('report.length>activeLimits.maxChars') &&
+  studyHub.includes('estimatedPages>limits.maxPages||estimatedChars>limits.maxChars'),
+  'PDF generation must be blocked before native or browser rendering when estimated or final output exceeds device safety limits');
+
 console.log('FSRS and core feature regression tests passed.');
