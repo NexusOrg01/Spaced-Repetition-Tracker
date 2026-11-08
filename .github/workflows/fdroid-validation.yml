@@ -10,6 +10,13 @@ on:
       - "scripts/**"
       - "package.json"
       - "package-lock.json"
+      - "index.html"
+      - "*.js"
+      - "*.html"
+      - "icon-512.png"
+      - "icon.svg"
+      - "manifest.webmanifest"
+      - "fastlane/metadata/android/en-US/images/icon.png"
   workflow_dispatch:
 
 permissions:
