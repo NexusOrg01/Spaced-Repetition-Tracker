@@ -99,7 +99,7 @@ assert.equal(rootNpmLock.packages[''].name, 'nexus-spaced-repetition-tracker');
 const androidLockRestore = read('scripts/restore-android-lock.py');
 for (const expected of [
   'fcff97ebdfb728268ad432c360d5812f94c5558cb1b25c9703d17e1080049880',
-  'base64.b64decode', 'gzip.decompress', 'android/package-lock.json'
+  'base64.b64decode', 'gzip.decompress', 'OUTPUT = ROOT / "android" / "package-lock.json"'
 ]) {
   assert.ok(androidLockRestore.includes(expected), 'Pre-scan Android lockfile restoration is missing ' + expected);
 }
