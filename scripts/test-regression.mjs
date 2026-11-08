@@ -190,8 +190,8 @@ assert.ok(studyHub.includes('function openAnalyticsPdfDialog()') &&
   studyHub.includes('function pdfExportLimits()'),
   'PDF export must provide shared web/Android configuration, common timeframes and a device-aware safety estimate');
 assert.ok(studyHub.includes("['reviews','sessions','papers','journal']") &&
-  studyHub.includes('option value=\\"all\\">All records') &&
-  studyHub.includes('option value=\\"custom\\">Custom count') &&
+  studyHub.includes('option value="all">All records') &&
+  studyHub.includes('option value="custom">Custom count') &&
   studyHub.includes('tableDescription=(key,allCount)'),
   'PDF detail tables must support independent inclusion and record limits while clearly disclosing any reduced row count');
 assert.ok(studyHub.includes('PDF_EXPORT_GRAPH_OPTIONS') &&
