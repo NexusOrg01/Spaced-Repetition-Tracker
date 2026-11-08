@@ -151,4 +151,14 @@ assert.ok(inlineHelpers.includes("document.addEventListener('touchstart', event 
   inlineHelpers.includes("document.removeEventListener('touchmove', handleTwoFingerMove, true);"),
   'one-finger scrolling must not keep a document-wide non-passive touchmove listener; preserve custom two-finger parent scrolling');
 
+assert.ok(studyHub.includes('function ratingAnalyticsSvgMarkup(selection,level,entityId,timelineResult)') &&
+  studyHub.includes('function ratingAnalyticsTimelineTableMarkup(selection,level,entityId,timelineResult)') &&
+  studyHub.includes('ratingAnalyticsSvgMarkup(selection,level,entityId,timeline)') &&
+  studyHub.includes('ratingAnalyticsTimelineTableMarkup(selection,level,entityId,timeline)'),
+  'the analytics chart, SVG and count table must reuse one computed timeline rather than filtering a large review history repeatedly');
+assert.ok(studyHub.includes('function ratingAnalyticsEntityId(level,options)') === false ||
+  studyHub.includes('function getRatingAnalyticsEntityId(level,options)'),
+  'analytics entity selection must reuse its already-built entity options');
+assert.ok(studyHub.includes("ratingOptions=analyticsSection==='presses'?getRatingAnalyticsEntityOptions(ratingLevel):[]"),
+  'paper and activity analytics must not build the full review-history entity selector unnecessarily');
 console.log('FSRS and core feature regression tests passed.');
