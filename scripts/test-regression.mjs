@@ -9,6 +9,9 @@ const html = readFileSync(resolve(root, 'index.html'), 'utf8');
 const bootstrap = readFileSync(resolve(root, 'nexus-app-bootstrap.js'), 'utf8');
 const appCore = readFileSync(resolve(root, 'app-core.js'), 'utf8');
 const studyHub = readFileSync(resolve(root, 'study-hub.js'), 'utf8');
+const cloudSync = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
+const offlineQueue = readFileSync(resolve(root, 'offline-sync-queue.js'), 'utf8');
+const durableStorage = readFileSync(resolve(root, 'nexus-storage.js'), 'utf8');
 const appSource = html + '\n' + appCore + '\n' + studyHub;
 const bundle = readFileSync(resolve(root, 'fsrs-bundle.js'), 'utf8');
 const backupUtils = readFileSync(resolve(root, 'backup-restore-utils.js'), 'utf8');
@@ -160,4 +163,24 @@ assert.ok(studyHub.includes('function getRatingAnalyticsEntityId(level,options)'
   'analytics entity selection must reuse its already-built entity options');
 assert.ok(studyHub.includes("ratingOptions=analyticsSection==='presses'?getRatingAnalyticsEntityOptions(ratingLevel):[]"),
   'paper and activity analytics must not build the full review-history entity selector unnecessarily');
+
+assert.ok(durableStorage.includes('const ownerEntry = normalized.find(entry => entry.key === OWNER_KEY);') &&
+  durableStorage.includes('ownerEntry.value !== null && ownerEntry.value !== currentOwner') &&
+  durableStorage.includes('tx.abort();') &&
+  durableStorage.includes('const isOwnerMutation = normalized.some(entry => entry.key === OWNER_KEY);'),
+  'account-owner changes must be rejected unless both workspace components are part of the same transaction, with rollback on failure');
+assert.ok(offlineQueue.includes('if(value.length>MAX_COMPACT_DECODE_BYTES)return value;') &&
+  offlineQueue.includes("oversized.code='NEXUS_OFFLINE_QUEUE_TOO_LARGE'"),
+  'the offline queue must never write a compact stream that its decoder will later refuse');
+const offlineRecoveryStart = cloudSync.indexOf('async function recoverCachedWorkspaceForOfflineAccount(userId)');
+const offlineRecoveryEnd = cloudSync.indexOf('async function initializeSession(s)', offlineRecoveryStart);
+const offlineRecovery = offlineRecoveryStart >= 0 && offlineRecoveryEnd > offlineRecoveryStart
+  ? cloudSync.slice(offlineRecoveryStart, offlineRecoveryEnd)
+  : '';
+assert.ok(offlineRecovery.includes("if(currentOwner===userId){") &&
+  offlineRecovery.includes("error.code!=='NEXUS_OFFLINE_QUEUE_TOO_LARGE'") &&
+  offlineRecovery.includes("rebuildOversizedOfflineQueue(queue,userId,snapshot()") &&
+  offlineRecovery.includes("if(oversizedQueueDetected){") &&
+  offlineRecovery.includes("rebuildOversizedOfflineQueue(queue,userId,snapshot()"),
+  'queue recovery must work for both the active account and a different account restored from its own IndexedDB/base workspace');
 console.log('FSRS and core feature regression tests passed.');
