@@ -225,4 +225,29 @@ assert.ok(studyHub.includes('const activeLimits=pdfExportLimits();') &&
   studyHub.includes('maxPages:240,maxChars:5000000'),
   'PDF generation must be blocked before native or browser rendering when estimated or final output exceeds device safety limits');
 
+
+assert.ok(studyHub.includes('function pdfScopeOptionsMarkup()') &&
+  studyHub.includes('data-pdf-stream=') &&
+  studyHub.includes('data-pdf-subject=') &&
+  studyHub.includes('dialog.querySelectorAll(\'[data-pdf-stream],[data-pdf-subject]\').forEach(input=>{input.checked=true;})'),
+  'PDF export must expose stream and subject checkboxes and select the complete workspace by default');
+assert.ok(studyHub.includes('function getPdfExportScope(dialog)') &&
+  studyHub.includes('function pdfRecordMatchesScope(record,scope)') &&
+  studyHub.includes('scope.streamIds.includes(String(subject.streamId||\'\'))') &&
+  studyHub.includes('scope.subjectIds.includes(String(subject.id))'),
+  'PDF stream and subject filters must be applied together, with unmatched records excluded in restricted reports');
+assert.ok(studyHub.includes('getPdfExportDatasets(selection,scope)') &&
+  studyHub.includes('pdfRecordMatchesScope(x,scope)') &&
+  studyHub.includes('selection.records.filter(record=>pdfRecordMatchesScope(record,scope))'),
+  'review, session, paper and journal datasets must all respect the selected stream/subject scope');
+assert.ok(studyHub.includes('renderActivityAnalytics(selection,options.scope)') &&
+  studyHub.includes('function renderActivityAnalytics(selection,pdfScope)') &&
+  studyHub.includes('(!pdfScope||pdfRecordMatchesScope(item.record,pdfScope))'),
+  'review activity and study-time graphs must use the same report scope as the detailed tables');
+assert.ok(studyHub.includes('const entityOptions=getRatingAnalyticsEntityOptions(level),entityId=\'ALL\';') &&
+  studyHub.includes('Streams: \'+(options.scope?.all?\'All\''),
+  'the PDF rating graph and report header must describe the full selected scope rather than an unrelated Analytics entity filter');
+assert.ok(studyHub.includes('const scopeKey=options.scope?options.scope.streamIds.join(\',\')+\'|\'+options.scope.subjectIds.join(\',\'):\'all\';'),
+  'PDF estimate dataset caching must be invalidated when stream or subject selections change');
+
 console.log('FSRS and core feature regression tests passed.');
