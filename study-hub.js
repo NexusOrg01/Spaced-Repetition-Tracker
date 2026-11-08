@@ -555,7 +555,8 @@
     const selection=options.selection||getRatingAnalyticsSelection();
     const graphs=options.graphs||Object.fromEntries(PDF_EXPORT_GRAPH_OPTIONS.map(([key])=>[key,true]));
     const tables=options.tables||{reviews:{include:true,limit:'100'},sessions:{include:true,limit:'100'},papers:{include:true,limit:'100'},journal:{include:true,limit:'50'}};
-    const preflight=estimatePdfExport({selection,graphs,tables});
+    const scope=options.scope||{streamIds:(state.streams||[]).map(item=>String(item.id)),subjectIds:(state.subjects||[]).map(item=>String(item.id)),all:true};
+    const preflight=estimatePdfExport({selection,graphs,tables,scope});
     if(preflight.blocked)throw new Error('This report now exceeds the safe PDF export limit for this device. Reduce the selected table limits or narrow the timeframe. Complete raw data remains available through JSON / CSV backup exports.');
     const datasets=preflight.datasets,records=datasets.reviews;
     const level=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic';
@@ -585,7 +586,7 @@
     const groupTable=groups.length?groups.map(g=>'<tr><td>'+esc(g.label)+'</td>'+g.counts.map(n=>'<td class="num">'+n+'</td>').join('')+'<td class="num"><b>'+g.total+'</b></td></tr>').join(''):'<tr><td colspan="7">No rating groups in this period.</td></tr>';
     const ratingCounts=[1,2,3,4,5].map(r=>records.filter(h=>Number(h.rating)===r).length),maxRating=Math.max(1,...ratingCounts);
     const ratingDistribution=graphs.ratingDistribution?ratingCounts.map((count,i)=>'<div class="pdf-dist-row"><span class="pdf-dist-label"><b>'+(i+1)+' · '+esc(RATING_LABELS[i+1])+'</b></span><div class="pdf-dist-track"><span data-rating="'+(i+1)+'" style="width:'+(count/maxRating*100)+'%"></span></div><strong>'+count+'</strong></div>').join(''):'';
-    const activityMarkupForPdf=(graphs.reviewActivity||graphs.studyTime)?renderActivityAnalytics({...selection,pdfScope:options.scope}):'';
+    const activityMarkupForPdf=(graphs.reviewActivity||graphs.studyTime)?renderActivityAnalytics({...selection,pdfScope:scope,pdfDatasets:datasets}):'';
     const activityGraphsForPdf=String(activityMarkupForPdf||'').match(/<div class="nexus-activity-graph-wrap">[\s\S]*?<\/div>/g)||[];
     const activityChart=graphs.reviewActivity?(activityGraphsForPdf[0]||'<p class="pdf-empty">No saved review activity in this timeframe.</p>'):'';
     const studyTimeChart=graphs.studyTime?(activityGraphsForPdf[1]||'<p class="pdf-empty">No saved study time in this timeframe.</p>'):'';
@@ -748,8 +749,8 @@
     const rangeValid=valid&&from<=to;
     if(!rangeValid)return '<div class="hub-empty">Choose a valid timeframe to view saved activity.</div>';
 
-    const history=Array.isArray(state&&state.history)?state.history:[];
-    const studyLogs=Array.isArray(fsState&&fsState.studyLogs)?fsState.studyLogs:[];
+    const history=Array.isArray(selection?.pdfDatasets?.reviews)?selection.pdfDatasets.reviews:(Array.isArray(state&&state.history)?state.history:[]);
+    const studyLogs=Array.isArray(selection?.pdfDatasets?.sessions)?selection.pdfDatasets.sessions:(Array.isArray(fsState&&fsState.studyLogs)?fsState.studyLogs:[]);
     const subjects=Array.isArray(state&&state.subjects)?state.subjects:[];
     const subjectNameById=new Map(subjects.map(subject=>[String(subject.id),String(subject.name||'Unnamed subject')]));
     const reviews=history.map(record=>({record,date:activityDate(record&&record.reviewedAt)}))
