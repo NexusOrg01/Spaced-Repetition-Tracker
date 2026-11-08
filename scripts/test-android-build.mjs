@@ -197,12 +197,13 @@ assert.ok(packageLicenses.size >= 100, 'Dependency licence scan looks incomplete
 
 const gradle = read('android/app/build.gradle');
 for (const expected of [
-  'productFlavors {', 'fdroid {', 'play {',
-  "applicationIdSuffix '.fdroidpreview'", "applicationIdSuffix '.playpreview'",
+  'productFlavors {', 'fdroid {',
+  "applicationIdSuffix '.fdroidpreview'",
   'nexusApplicationId', 'nexusVersionCode', 'nexusVersionName', 'nexusAuthScheme'
 ]) {
   assert.ok(gradle.includes(expected), 'Gradle configuration is missing ' + expected);
 }
+assert.ok(!gradle.includes("play {") && !gradle.includes(".playpreview"), 'Android project must not define a Play Store flavour.');
 assert.ok(!gradle.includes('google-services') && !gradle.includes('com.google.gms'));
 
 const expectedAndroidApplicationId = process.env.NEXUS_ANDROID_APPLICATION_ID || 'org.nexus.tracker.preview';
@@ -336,7 +337,7 @@ assert.equal(androidLauncherArtwork.readUInt32BE(16), 512, 'Android launcher art
 assert.equal(androidLauncherArtwork.readUInt32BE(20), 512, 'Android launcher artwork must be 512 pixels high.');
 const androidLauncherForeground = read('android/app/src/main/res/drawable/splash_icon.xml');
 assert.ok(androidLauncherForeground.includes('@drawable/nexus_launcher'), 'Launcher and splash icon must use the original Nexus artwork.');
-assert.ok(androidLauncherForeground.includes('96dp'), 'Adaptive icon artwork must stay within the Android foreground safe zone.');
+assert.ok(androidLauncherForeground.includes('80dp'), 'Launcher artwork must be scaled down to preserve the outer ring within Android icon masks.');
 const launcherColors = read('android/app/src/main/res/values/colors.xml');
 assert.ok(launcherColors.includes('<color name="launcher_background">#141D31</color>'), 'Adaptive icon background must match the original Nexus artwork.');
 
@@ -349,6 +350,8 @@ assert.equal(storeIcon.readUInt32BE(16), 512, 'Store icon must be 512 pixels wid
 assert.equal(storeIcon.readUInt32BE(20), 512, 'Store icon must be 512 pixels high.');
 
 const distHtml = read('dist/index.html');
+assert.ok(distHtml.includes('.menu-pop{display:none;position:absolute;'), 'The three-dot overflow menu must be hidden before the first user interaction.');
+assert.ok(!distHtml.includes('Commerce Pack. Continue?'), 'Email sign-in must not show the obsolete Commerce-specific warning.');
 assert.ok(!distHtml.includes('_vercel/insights/script.js'), 'Android HTML must not include Vercel Analytics.');
 const scriptTags = distHtml.split('<script').slice(1).map(part => part.split('>')[0]);
 assert.ok(scriptTags.every(tag => !tag.includes('src="http') && !tag.includes("src='http")), 'Android HTML must not load executable JavaScript from a remote host.');
@@ -368,10 +371,16 @@ for (const file of [
 
 const distCloud = read('dist/cloud-sync.js');
 assert.ok(distCloud.includes('NexusAndroidBridge'));
+const emailSignInStart = distCloud.indexOf('async function emailSignIn()');
+const emailSignInEnd = distCloud.indexOf('async function checkAccountDeletionService', emailSignInStart);
+assert.ok(emailSignInStart >= 0 && emailSignInEnd > emailSignInStart, 'Email sign-in handler must be present.');
+const emailSignInSource = distCloud.slice(emailSignInStart, emailSignInEnd);
+assert.ok(!emailSignInSource.includes('confirm('), 'Email sign-in must not show a generic or outdated confirmation popup.');
+assert.ok(!emailSignInSource.includes('Commerce Pack'), 'Email sign-in must remain curriculum-neutral.');
 assert.ok(!distCloud.includes('cdn.jsdelivr.net/npm/@supabase'), 'Android bundle must not load Supabase from a CDN.');
 const bootstrap = read('dist/nexus-app-bootstrap.js');
 assert.ok(bootstrap.includes('NexusAndroidBridge') && bootstrap.includes('isNativeApp'));
 assert.ok(read('dist/app-core.js').includes('shareTextFile'));
 assert.ok(read('dist/study-hub.js').includes('shareTextFile'));
 
-console.log('Android bundle, F-Droid npm dependency licences (' + packageLicenses.size + ' packages), cloud guards, native features and store-flavour checks passed.');
+console.log('Android bundle, F-Droid npm dependency licences (' + packageLicenses.size + ' packages), cloud guards, native features and F-Droid-only checks passed.');
