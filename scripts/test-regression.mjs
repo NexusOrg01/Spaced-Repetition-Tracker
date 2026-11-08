@@ -191,7 +191,7 @@ assert.ok(studyHub.includes('function openAnalyticsPdfDialog()') &&
   'PDF export must provide shared web/Android configuration, common timeframes and a device-aware safety estimate');
 assert.ok(studyHub.includes("['reviews','sessions','papers','journal']") &&
   studyHub.includes('option value=\\"all\\">All records') &&
-  studyHub.includes('option value="custom">Custom count') &&
+  studyHub.includes('option value=\\"custom\\">Custom count') &&
   studyHub.includes('tableDescription=(key,allCount)'),
   'PDF detail tables must support independent inclusion and record limits while clearly disclosing any reduced row count');
 assert.ok(studyHub.includes('PDF_EXPORT_GRAPH_OPTIONS') &&
@@ -204,7 +204,7 @@ assert.ok(studyHub.includes("if(isNative){") &&
   studyHub.includes("window.NexusAndroidBridge.printHtml('Nexus Study and Review Difficulty Report',nativeReport)") &&
   studyHub.includes("reportWindow.document.write(report)"),
   'the shared PDF exporter must retain both the browser print flow and Android native print bridge');
-assert.ok(studyHub.includes("dialog.addEventListener('change',()=>updatePdfExportEstimate(dialog));") &&
+assert.ok(studyHub.includes("dialog.addEventListener('change',event=>{if(event.target?.id!=='nexusPdfConfirmLarge')") &&
   !studyHub.includes("dialog.addEventListener('input',()=>updatePdfExportEstimate(dialog));"),
   'export estimates must update on committed control changes without repeatedly rescanning large datasets on each keystroke');
 

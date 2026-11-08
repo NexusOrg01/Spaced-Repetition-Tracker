@@ -352,12 +352,13 @@
     const preset=dialog.querySelector('#nexusPdfTimeframe').value,current=getRatingAnalyticsSelection();
     let from=current.from,to=current.to,label=current.label,range=current.range;
     if(preset==='all'){
-      const dates=[];
-      state.history.forEach(x=>{if(safeDate(x.reviewedAt))dates.push(x.reviewedAt);});
-      fsState.studyLogs.forEach(x=>{if(safeDate(x.date))dates.push(x.date);});
-      fsState.papers.forEach(x=>{if(safeDate(x.date))dates.push(x.date);});
-      fsState.journal.forEach(x=>{if(safeDate(x.date))dates.push(x.date);});
-      dates.sort();from=dates[0]||dateShift(today(),-29);to=dates.length&&dates[dates.length-1]>today()?dates[dates.length-1]:today();label='All time';range='custom';
+      let firstDate='',lastDate='';
+      const includeDate=value=>{if(!safeDate(value))return;if(!firstDate||value<firstDate)firstDate=value;if(!lastDate||value>lastDate)lastDate=value;};
+      state.history.forEach(x=>includeDate(x.reviewedAt));
+      fsState.studyLogs.forEach(x=>includeDate(x.date));
+      fsState.papers.forEach(x=>includeDate(x.date));
+      fsState.journal.forEach(x=>includeDate(x.date));
+      from=firstDate||dateShift(today(),-29);to=lastDate&&lastDate>today()?lastDate:today();label='All time';range='custom';
     }else if(preset==='last30'){from=dateShift(today(),-29);to=today();label='Last 30 days';range='custom';}
     else if(preset==='last90'){from=dateShift(today(),-89);to=today();label='Last 90 days';range='custom';}
     else if(preset==='year'){from=today().slice(0,4)+'-01-01';to=today().slice(0,4)+'-12-31';label='This year';range='year';}
