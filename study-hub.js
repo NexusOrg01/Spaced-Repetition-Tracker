@@ -281,7 +281,7 @@
   function pdfExportLimits(){
     const native=Boolean(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp);
     const memory=Number(navigator.deviceMemory)||0;
-    if(native)return {maxPages:140,maxChars:2500000,warnPages:45,warnChars:900000,label:'Android app'};
+    if(native)return {maxPages:80,maxChars:1500000,warnPages:30,warnChars:600000,label:'Android app'};
     if(memory>0&&memory<=2)return {maxPages:90,maxChars:1600000,warnPages:30,warnChars:600000,label:'low-memory browser'};
     if(memory>0&&memory<=4)return {maxPages:180,maxChars:3500000,warnPages:55,warnChars:1100000,label:'mobile browser'};
     if(memory>=8)return {maxPages:300,maxChars:7000000,warnPages:90,warnChars:1800000,label:'higher-memory browser'};
@@ -323,7 +323,7 @@
     holder.innerHTML=pdfExportDialogMarkup();
     document.body.appendChild(holder.firstElementChild);
     dialog=document.getElementById('nexusPdfExportDialog');
-    dialog.addEventListener('change',()=>updatePdfExportEstimate(dialog));
+    dialog.addEventListener('change',event=>{if(event.target?.id!=='nexusPdfConfirmLarge')dialog.querySelector('#nexusPdfConfirmLarge').checked=false;updatePdfExportEstimate(dialog);});
     dialog.addEventListener('click',async event=>{
       const action=event.target.closest('[data-pdf-action]')?.dataset.pdfAction;
       if(action==='close'){dialog.close();return;}
@@ -405,16 +405,16 @@
     for(const kind of Object.keys(selected)){
       let rowUnits=0;
       for(const row of selected[kind]){
-        const text=pdfRecordText(row,kind),longest=text.split(/\s+/).reduce((max,part)=>Math.max(max,part.length),0);
-        rowUnits+=1+Math.max(0,Math.ceil((longest-110)/170));
-        estimatedChars+=300+Math.ceil(text.length*1.25);
+        const text=pdfRecordText(row,kind);
+        rowUnits+=Math.max(1,Math.ceil(text.length/180));
+        estimatedChars+=360+Math.ceil(text.length*6);
       }
       if(selected[kind].length)tablePages+=Math.ceil(rowUnits/density[kind]);
     }
     const graphCount=Object.values(options.graphs).filter(Boolean).length;
     const groupCount=getRatingAnalyticsGroups(options.selection.records,fsState.analyticsRatingGrouping||'topic').length;
-    const graphPages=graphCount+(options.graphs.ratingTimeline?1:0)+Math.ceil(groupCount/45);
-    estimatedChars+=groupCount*180;
+    const graphPages=graphCount+(options.graphs.ratingTimeline?1:0)+Math.ceil(groupCount/24);
+    estimatedChars+=groupCount*400;
     const estimatedPages=Math.ceil((2+graphPages+tablePages)*1.12),limits=pdfExportLimits();
     const blocked=estimatedPages>limits.maxPages||estimatedChars>limits.maxChars;
     const large=!blocked&&(estimatedPages>limits.warnPages||estimatedChars>limits.warnChars);
@@ -495,7 +495,9 @@
     const selection=options.selection||getRatingAnalyticsSelection();
     const graphs=options.graphs||Object.fromEntries(PDF_EXPORT_GRAPH_OPTIONS.map(([key])=>[key,true]));
     const tables=options.tables||{reviews:{include:true,limit:'100'},sessions:{include:true,limit:'100'},papers:{include:true,limit:'100'},journal:{include:true,limit:'50'}};
-    const datasets=getPdfExportDatasets(selection),records=datasets.reviews;
+    const preflight=estimatePdfExport({selection,graphs,tables});
+    if(preflight.blocked)throw new Error('This report now exceeds the safe PDF export limit for this device. Reduce the selected table limits or narrow the timeframe. Complete raw data remains available through JSON / CSV backup exports.');
+    const datasets=preflight.datasets,records=datasets.reviews;
     const level=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic';
     const entityOptions=getRatingAnalyticsEntityOptions(level),entityId=getRatingAnalyticsEntityId(level,entityOptions);
     const timeline=graphs.ratingTimeline?getRatingAnalyticsTimeline(selection,level,entityId):{bins:[],records:[],totals:[0,0,0,0,0]};

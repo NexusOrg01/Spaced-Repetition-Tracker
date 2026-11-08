@@ -215,7 +215,10 @@ assert.ok(studyHub.includes('async function buildPdfTableRows(') &&
   'large detailed tables must be built in yielding chunks and paginated with repeating headers and unbroken rows');
 assert.ok(studyHub.includes('const activeLimits=pdfExportLimits();') &&
   studyHub.includes('report.length>activeLimits.maxChars') &&
-  studyHub.includes('estimatedPages>limits.maxPages||estimatedChars>limits.maxChars'),
+  studyHub.includes('estimatedPages>limits.maxPages||estimatedChars>limits.maxChars') &&
+  studyHub.includes('if(preflight.blocked)throw new Error') &&
+  studyHub.includes('text.length*6') &&
+  studyHub.includes('maxPages:80,maxChars:1500000'),
   'PDF generation must be blocked before native or browser rendering when estimated or final output exceeds device safety limits');
 
 console.log('FSRS and core feature regression tests passed.');
