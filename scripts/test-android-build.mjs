@@ -136,7 +136,7 @@ for (const expected of [
   'test -s .build/fdroiddata/config/ic_antifeature_ads.png',
   'Stage pinned source libraries for the buildserver',
   'bash scripts/prepare-fdroid-srclibs.sh .build/fdroiddata/build/srclib',
-  'chmod -R a+rwX "$(dirname "$DEST_ROOT")"',
+  'chmod -R a+rwX .build/fdroiddata',
   'writable by the buildserver',
   'nodejs:27f213124280b4db4cd1e3dd42f6f8afd01ceff7',
   'esbuild:609683d892977362a0f99026cb74b96263d728a9',
