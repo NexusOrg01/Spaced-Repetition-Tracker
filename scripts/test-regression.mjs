@@ -156,8 +156,7 @@ assert.ok(studyHub.includes('function ratingAnalyticsSvgMarkup(selection,level,e
   studyHub.includes('ratingAnalyticsSvgMarkup(selection,level,entityId,timeline)') &&
   studyHub.includes('ratingAnalyticsTimelineTableMarkup(selection,level,entityId,timeline)'),
   'the analytics chart, SVG and count table must reuse one computed timeline rather than filtering a large review history repeatedly');
-assert.ok(studyHub.includes('function ratingAnalyticsEntityId(level,options)') === false ||
-  studyHub.includes('function getRatingAnalyticsEntityId(level,options)'),
+assert.ok(studyHub.includes('function getRatingAnalyticsEntityId(level,options)'),
   'analytics entity selection must reuse its already-built entity options');
 assert.ok(studyHub.includes("ratingOptions=analyticsSection==='presses'?getRatingAnalyticsEntityOptions(ratingLevel):[]"),
   'paper and activity analytics must not build the full review-history entity selector unnecessarily');
