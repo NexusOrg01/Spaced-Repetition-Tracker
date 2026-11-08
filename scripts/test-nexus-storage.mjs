@@ -310,4 +310,49 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'a fallback deletion must become a durable tombstone after recovery');
 }
 
+// A failed account-handoff write must never publish the new owner or leave the
+// target workspace in the optimistic compatibility cache. Retrying must be explicit.
+{
+  const native = new MemoryStorage([
+    ['recall.study.tracker.v1', '{"owner":"account-a"}'],
+    ['recall.study.features.v1', '{"owner":"account-a-hub"}'],
+    ['nexus.cloud.last-user-id', 'account-a']
+  ]);
+  const idb = new FakeIndexedDB();
+  const loaded = loadApi(makeWindow(native, idb));
+  assert.equal(await loaded.api.bootstrap(), true);
+  const storage = loaded.context.window.localStorage;
+
+  idb.failNextWrite = true;
+  const handoff = loaded.api.commitLocalStorageEntries([
+    { key: 'nexus.cloud.last-user-id', value: 'account-b' },
+    { key: 'recall.study.tracker.v1', value: '{"owner":"account-b"}' },
+    { key: 'recall.study.features.v1', value: '{"owner":"account-b-hub"}' }
+  ]);
+  assert.equal(storage.getItem('nexus.cloud.last-user-id'), 'account-a',
+    'the isolation owner must remain account A while account B is only staged');
+  await assert.rejects(handoff, /Synthetic IndexedDB quota\\/transaction failure/);
+  assert.equal(storage.getItem('nexus.cloud.last-user-id'), 'account-a',
+    'a failed account handoff must not publish account B as the local owner');
+  assert.equal(storage.getItem('recall.study.tracker.v1'), '{"owner":"account-a"}',
+    'a failed handoff must roll the optimistic tracker cache back to account A');
+  assert.equal(storage.getItem('recall.study.features.v1'), '{"owner":"account-a-hub"}',
+    'a failed handoff must roll the optimistic Study Hub cache back to account A');
+  assert.equal(loaded.api.getStatus().pendingEntries, 0,
+    'the failed target-account batch must not be silently retried later');
+  assert.equal(await loaded.api.getWorkspace('account-b'), null,
+    'a failed handoff must not create a durable workspace for account B');
+
+  await loaded.api.commitLocalStorageEntries([
+    { key: 'nexus.cloud.last-user-id', value: 'account-b' },
+    { key: 'recall.study.tracker.v1', value: '{"owner":"account-b"}' },
+    { key: 'recall.study.features.v1', value: '{"owner":"account-b-hub"}' }
+  ]);
+  assert.equal(storage.getItem('nexus.cloud.last-user-id'), 'account-b',
+    'the owner may change after the complete workspace transaction commits');
+  const accountB = await loaded.api.getWorkspace('account-b');
+  assert.equal(accountB.state.owner, 'account-b');
+  assert.equal(accountB.featureState.owner, 'account-b-hub');
+}
+
 console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, clear scoping, and failed-write recovery.');
