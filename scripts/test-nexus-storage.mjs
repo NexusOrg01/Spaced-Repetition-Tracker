@@ -287,6 +287,11 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const fallback = loadApi(makeWindow(native, idb));
   assert.equal(await fallback.api.bootstrap(), false, 'an IndexedDB open failure should activate a visible browser-storage fallback');
   const fallbackStorage = fallback.context.window.localStorage;
+  assert.throws(() => fallbackStorage.setItem('nexus.cloud.last-user-id', 'account-other'),
+    /Changing the active account requires the tracker and Study Hub workspaces/,
+    'the browser-storage fallback must also reject owner-only account switches');
+  assert.equal(fallbackStorage.getItem('nexus.cloud.last-user-id'), 'account-recovery',
+    'fallback mode must preserve the previously committed owner after a rejected switch');
   fallbackStorage.setItem('recall.study.tracker.v1', '{"revision":"fallback"}');
   fallbackStorage.removeItem('recall.study.features.v1');
   assert.equal(native.getItem('recall.study.tracker.v1'), '{"revision":"fallback"}',
