@@ -10,7 +10,6 @@ on:
       - "scripts/**"
       - "package.json"
       - "package-lock.json"
-      - "!scripts/test-android-build.mjs"
   workflow_dispatch:
 
 permissions:
