@@ -1,6 +1,6 @@
 # Nexus Android native test plan
 
-Run these checks on both debug APKs. CI verifies static wiring and Gradle compilation; it cannot replace physical-device acceptance testing.
+Run these checks on the F-Droid debug APK. CI verifies static wiring and Gradle compilation; it cannot replace physical-device acceptance testing.
 
 ## Offline and tracker
 
@@ -27,7 +27,7 @@ Run these checks on both debug APKs. CI verifies static wiring and Gradle compil
 
 ## Analytics PDF export
 
-- Open Study Hub → Analytics → Export detailed PDF in each debug flavour.
+- Open Study Hub → Analytics → Export detailed PDF in the F-Droid debug APK.
 - Confirm the Android system print interface opens directly; Nexus must not navigate to a second report page or remain in a browser-style report WebView.
 - Choose **Save as PDF**, save the report, and open it from Downloads.
 - Verify the A4 layout, Nexus cover artwork, charts, tables, review history and page breaks. Check both a small dataset and a large history.
@@ -40,7 +40,7 @@ Run these checks on both debug APKs. CI verifies static wiring and Gradle compil
 - Open a dialog or overflow menu and verify Back closes it before leaving the section.
 - Confirm app exit only occurs from Home with no dialog or menu open.
 - Confirm the CI APK is configured for the isolated staging Supabase project, never the production project.
-- Confirm optional sign-in controls and cloud sync are available in both store flavours; no Google Play Services installation should be required.
+- Confirm optional sign-in controls and cloud sync are available in the F-Droid build; no Google Play Services installation should be required.
 - Verify the staging callback URI (`org.nexus.tracker.preview://auth-callback` for the default preview ID) is allow-listed before testing email or OAuth sign-in.
 - In the staging Supabase dashboard, add `org.nexus.tracker.preview://auth-callback` under Authentication → URL Configuration → Additional Redirect URLs. This is the app's final redirect target, not Google's OAuth client callback.
 - Keep the Google OAuth provider's authorised redirect URI pointed at the staging Supabase Auth callback: `https://xuwfzibxhxzxxupprxsq.supabase.co/auth/v1/callback`. Do not substitute the custom Android URI in Google Cloud Console.
@@ -50,7 +50,7 @@ Run these checks on both debug APKs. CI verifies static wiring and Gradle compil
 
 ## Physical-device acceptance report — 2026-11-04
 
-A maintainer tested an installed Android debug APK on a Samsung Galaxy A32. The distribution flavour was not recorded in the test report, so this result must not be treated as separate acceptance of both F-Droid and Play variants.
+A maintainer tested an installed Android debug APK on a Samsung Galaxy A32. The distribution flavour was not recorded in the test report, so this result does not establish acceptance of the current F-Droid-only build.
 
 ### Passed on device
 
@@ -64,7 +64,7 @@ A maintainer tested an installed Android debug APK on a Samsung Galaxy A32. The 
 
 ### Still requiring explicit verification
 
-- Repeat the relevant acceptance tests on the other distribution flavour; the tested flavour was not identified in the report.
+- Repeat the relevant acceptance checks on the current F-Droid-only APK; the previous report used a build whose flavour was not recorded and predates the current changes.
 - Complete backup import, backup export/share-sheet, CSV export and Android Back-navigation checks if not already covered separately.
 - Exercise PDF cancellation, a large report and PDF export while offline. The successful PDF export above confirms the normal on-device print path but does not by itself establish these edge cases.
 - Complete release-identity, licence/SBOM, dependency-verification enforcement, F-Droid buildserver/reproducibility and store-signing work described in the release documentation.
