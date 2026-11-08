@@ -321,7 +321,6 @@ assert.ok(nodeBuildScript.includes('EXPECTED_NPM_VERSION="10.9.9"'), 'The source
 assert.ok(androidWorkflow.includes('node-version: 22'), 'Android preview CI must use Node.js 22.');
 assert.ok(androidWorkflow.includes('npm run android:sync:fdroid'), 'Android preview CI must build the F-Droid-flavour web bundle.');
 assert.ok(!androidWorkflow.includes('build-nodejs-from-source.sh'), 'Android preview CI must not duplicate the slower source build already validated by F-Droid buildserver.');
-const fdroidMetadata = read('contrib/fdroiddata/metadata-template.yml');
 assert.ok(fdroidMetadata.includes('nodejs@27f213124280b4db4cd1e3dd42f6f8afd01ceff7'), 'F-Droid metadata must pin the Node.js source library.');
 assert.ok(fdroidMetadata.includes('build-nodejs-from-source.sh'), 'F-Droid metadata must build Node.js from source.');
 assert.ok(fdroidMetadata.includes('bash scripts/build-nodejs-from-source.sh "$$nodejs$$"'), 'F-Droid must substitute the pinned Node.js source-library directory.');
