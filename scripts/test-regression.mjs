@@ -240,8 +240,9 @@ assert.ok(studyHub.includes('getPdfExportDatasets(selection,scope)') &&
   studyHub.includes('pdfRecordMatchesScope(x,scope)') &&
   studyHub.includes('selection.records.filter(record=>pdfRecordMatchesScope(record,scope))'),
   'review, session, paper and journal datasets must all respect the selected stream/subject scope');
-assert.ok(studyHub.includes('renderActivityAnalytics(selection,options.scope)') &&
-  studyHub.includes('function renderActivityAnalytics(selection,pdfScope)') &&
+assert.ok(studyHub.includes('renderActivityAnalytics({...selection,pdfScope:options.scope})') &&
+  studyHub.includes('function renderActivityAnalytics(selection)') &&
+  studyHub.includes('const pdfScope=selection?.pdfScope||null;') &&
   studyHub.includes('(!pdfScope||pdfRecordMatchesScope(item.record,pdfScope))'),
   'review activity and study-time graphs must use the same report scope as the detailed tables');
 assert.ok(studyHub.includes('const entityOptions=getRatingAnalyticsEntityOptions(level),entityId=\'ALL\';') &&
