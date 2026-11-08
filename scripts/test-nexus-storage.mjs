@@ -331,7 +331,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   ]);
   assert.equal(storage.getItem('nexus.cloud.last-user-id'), 'account-a',
     'the isolation owner must remain account A while account B is only staged');
-  await assert.rejects(handoff, /Synthetic IndexedDB quota\\/transaction failure/);
+  await assert.rejects(handoff, /Synthetic IndexedDB quota\/transaction failure/);
   assert.equal(storage.getItem('nexus.cloud.last-user-id'), 'account-a',
     'a failed account handoff must not publish account B as the local owner');
   assert.equal(storage.getItem('recall.study.tracker.v1'), '{"owner":"account-a"}',
@@ -355,4 +355,4 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(accountB.featureState.owner, 'account-b-hub');
 }
 
-console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, clear scoping, and failed-write recovery.');
+console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, clear scoping, failed-write recovery, and account-handoff isolation.');
