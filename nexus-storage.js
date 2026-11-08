@@ -641,6 +641,12 @@
     if (normalized.some(entry => !isManagedKey(entry.key))) {
       throw new Error('This atomic operation included a key outside Nexus durable storage.');
     }
+    const ownerEntry = normalized.find(entry => entry.key === OWNER_KEY);
+    if (ownerEntry && ownerEntry.value !== null && ownerEntry.value !== committedOwnerId &&
+        (!normalized.some(entry => entry.key === TRACKER_KEY) ||
+         !normalized.some(entry => entry.key === FEATURE_KEY))) {
+      throw new Error('Changing the active account requires the tracker and Study Hub workspaces in the same atomic transaction.');
+    }
     const isOwnerMutation = normalized.some(entry => entry.key === OWNER_KEY);
     const previous = isOwnerMutation ? normalized.map(entry => ({
       key: entry.key,
