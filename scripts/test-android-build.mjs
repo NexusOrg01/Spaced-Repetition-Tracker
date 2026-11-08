@@ -335,9 +335,12 @@ const androidLauncherArtwork = readFileSync(resolve(root, androidLauncherArtwork
 assert.equal(androidLauncherArtwork.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', 'Android launcher artwork must be a PNG file.');
 assert.equal(androidLauncherArtwork.readUInt32BE(16), 512, 'Android launcher artwork must be 512 pixels wide.');
 assert.equal(androidLauncherArtwork.readUInt32BE(20), 512, 'Android launcher artwork must be 512 pixels high.');
-const androidLauncherForeground = read('android/app/src/main/res/drawable/splash_icon.xml');
-assert.ok(androidLauncherForeground.includes('@drawable/nexus_launcher'), 'Launcher and splash icon must use the original Nexus artwork.');
+const androidLauncherForeground = read('android/app/src/main/res/drawable/launcher_icon_foreground.xml');
+assert.ok(androidLauncherForeground.includes('@drawable/nexus_launcher'), 'Adaptive launcher icon must use the original Nexus artwork.');
 assert.ok(androidLauncherForeground.includes('80dp'), 'Launcher artwork must be scaled down to preserve the outer ring within Android icon masks.');
+assert.ok(read('android/app/src/main/res/drawable/splash_icon.xml').includes('96dp'), 'The existing splash-screen artwork sizing must remain unchanged.');
+assert.ok(read('android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml').includes('@drawable/launcher_icon_foreground'), 'Adaptive launcher icon must use its padded foreground resource.');
+assert.ok(read('android/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml').includes('@drawable/launcher_icon_foreground'), 'Round adaptive launcher icon must use its padded foreground resource.');
 const launcherColors = read('android/app/src/main/res/values/colors.xml');
 assert.ok(launcherColors.includes('<color name="launcher_background">#141D31</color>'), 'Adaptive icon background must match the original Nexus artwork.');
 
