@@ -554,7 +554,17 @@
             // Never attribute account A's records to account B just because the
             // owner marker changed by itself. Account handoff must write both
             // workspace components in the same atomic operation.
+            if (ownerChanged && owner !== null && !writesBothWorkspaceKeys) {
+              // A non-empty owner change without both workspace components would
+              // re-label the previous account's records. Abort the entire transaction;
+              // the facade will roll its staged owner marker back to the committed value.
+              try { tx.abort(); } catch (_) {}
+              return;
+            }
             if (ownerChanged && !writesBothWorkspaceKeys) {
+              // Clearing an owner marker is safe only as an unassigned/guest state.
+              // Account deletion clears the owner-scoped projection in its preceding
+              // tracker + feature transaction.
               set(nextRevision);
               return;
             }
@@ -631,11 +641,8 @@
     if (normalized.some(entry => !isManagedKey(entry.key))) {
       throw new Error('This atomic operation included a key outside Nexus durable storage.');
     }
-    const isWorkspaceHandoff =
-      normalized.some(entry => entry.key === OWNER_KEY) &&
-      normalized.some(entry => entry.key === TRACKER_KEY) &&
-      normalized.some(entry => entry.key === FEATURE_KEY);
-    const previous = isWorkspaceHandoff ? normalized.map(entry => ({
+    const isOwnerMutation = normalized.some(entry => entry.key === OWNER_KEY);
+    const previous = isOwnerMutation ? normalized.map(entry => ({
       key: entry.key,
       cacheHad: cache.has(entry.key),
       cacheValue: cache.get(entry.key),
@@ -653,11 +660,10 @@
       pending.set(entry.key, item);
     }
     const task = enqueuePersist();
-    if (!isWorkspaceHandoff) return task;
+    if (!isOwnerMutation) return task;
 
-    // If an account-handoff transaction fails, do not leave its optimistic owner
-    // marker or target workspace visible in memory. Keep any earlier pending values
-    // intact so a later ordinary save can still retry them safely.
+    // If any owner-marker transaction fails, do not leave its optimistic value visible.
+    // Keep earlier pending values intact so a later ordinary save can still retry them safely.
     return task.catch(error => {
       for (let i = 0; i < staged.length; i++) {
         const entry = normalized[i];
