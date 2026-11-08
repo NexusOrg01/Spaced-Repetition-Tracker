@@ -186,7 +186,9 @@ assert.ok(offlineRecovery.includes("if(currentOwner===userId){") &&
 
 assert.ok(studyHub.includes('function openAnalyticsPdfDialog()') &&
   studyHub.includes('function resolvePdfExportSelection(dialog)') &&
-  studyHub.includes('function estimatePdfExport(options)') &&
+  studyHub.includes('function estimatePdfExport(options,dialog)') &&
+  studyHub.includes('dialog._pdfDatasetCache') &&
+  studyHub.includes('dialog._pdfRangeSelectionCache') &&
   studyHub.includes('function pdfExportLimits()'),
   'PDF export must provide shared web/Android configuration, common timeframes and a device-aware safety estimate');
 assert.ok(studyHub.includes("['reviews','sessions','papers','journal']") &&

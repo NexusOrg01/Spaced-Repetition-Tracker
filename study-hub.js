@@ -349,22 +349,32 @@
     return dialog;
   }
   function resolvePdfExportSelection(dialog){
-    const preset=dialog.querySelector('#nexusPdfTimeframe').value,current=getRatingAnalyticsSelection();
+    const preset=dialog.querySelector('#nexusPdfTimeframe').value,current=dialog._pdfInitialSelection||getRatingAnalyticsSelection();
     let from=current.from,to=current.to,label=current.label,range=current.range;
     if(preset==='all'){
-      let firstDate='',lastDate='';
-      const includeDate=value=>{if(!safeDate(value))return;if(!firstDate||value<firstDate)firstDate=value;if(!lastDate||value>lastDate)lastDate=value;};
-      state.history.forEach(x=>includeDate(x.reviewedAt));
-      fsState.studyLogs.forEach(x=>includeDate(x.date));
-      fsState.papers.forEach(x=>includeDate(x.date));
-      fsState.journal.forEach(x=>includeDate(x.date));
-      from=firstDate||dateShift(today(),-29);to=lastDate&&lastDate>today()?lastDate:today();label='All time';range='custom';
+      let allRange=dialog._pdfAllTimeRange;
+      if(!allRange){
+        let firstDate='',lastDate='';
+        const includeDate=value=>{if(!safeDate(value))return;if(!firstDate||value<firstDate)firstDate=value;if(!lastDate||value>lastDate)lastDate=value;};
+        state.history.forEach(x=>includeDate(x.reviewedAt));
+        fsState.studyLogs.forEach(x=>includeDate(x.date));
+        fsState.papers.forEach(x=>includeDate(x.date));
+        fsState.journal.forEach(x=>includeDate(x.date));
+        allRange={from:firstDate||dateShift(today(),-29),to:lastDate&&lastDate>today()?lastDate:today()};
+        dialog._pdfAllTimeRange=allRange;
+      }
+      from=allRange.from;to=allRange.to;label='All time';range='custom';
     }else if(preset==='last30'){from=dateShift(today(),-29);to=today();label='Last 30 days';range='custom';}
     else if(preset==='last90'){from=dateShift(today(),-89);to=today();label='Last 90 days';range='custom';}
     else if(preset==='year'){from=today().slice(0,4)+'-01-01';to=today().slice(0,4)+'-12-31';label='This year';range='year';}
     else if(preset==='custom'){from=dialog.querySelector('#nexusPdfDateFrom').value||'';to=dialog.querySelector('#nexusPdfDateTo').value||'';label='Custom date range';range='custom';}
     const valid=safeDate(from)&&safeDate(to)&&from<=to;
-    const records=valid?state.history.filter(h=>safeDate(h.reviewedAt)&&h.reviewedAt>=from&&h.reviewedAt<=to):[];
+    const cache=dialog._pdfRangeSelectionCache||(dialog._pdfRangeSelectionCache=new Map()),key=from+'|'+to;
+    let records=[];
+    if(valid){
+      if(cache.has(key))records=cache.get(key);
+      else{records=state.history.filter(h=>safeDate(h.reviewedAt)&&h.reviewedAt>=from&&h.reviewedAt<=to);cache.set(key,records);}
+    }
     return {range,from,to,records,label,valid};
   }
   function collectPdfExportOptions(dialog,selection){
@@ -394,8 +404,17 @@
     if(kind==='papers')return [record.date,record.name,record.subjectId,record.score,record.maxScore,record.notes,record.weakAreas].map(x=>String(x??'')).join(' ');
     return [record.date,record.category,record.subjectId,record.topicId,record.issue,record.fix,record.solved].map(x=>String(x??'')).join(' ');
   }
-  function estimatePdfExport(options){
-    const datasets=getPdfExportDatasets(options.selection),selected={
+  function estimatePdfExport(options,dialog){
+    const cacheKey=options.selection.from+'|'+options.selection.to;
+    let datasets,groupCount;
+    if(dialog&&dialog._pdfDatasetCache&&dialog._pdfDatasetCache.key===cacheKey){
+      datasets=dialog._pdfDatasetCache.datasets;groupCount=dialog._pdfDatasetCache.groupCount;
+    }else{
+      datasets=getPdfExportDatasets(options.selection);
+      groupCount=getRatingAnalyticsGroups(options.selection.records,fsState.analyticsRatingGrouping||'topic').length;
+      if(dialog)dialog._pdfDatasetCache={key:cacheKey,datasets,groupCount};
+    }
+    const selected={
       reviews:pdfLimitedRecords(datasets.reviews,options.tables.reviews),
       sessions:pdfLimitedRecords(datasets.sessions,options.tables.sessions),
       papers:pdfLimitedRecords(datasets.papers,options.tables.papers),
@@ -413,7 +432,6 @@
       if(selected[kind].length)tablePages+=Math.ceil(rowUnits/density[kind]);
     }
     const graphCount=Object.values(options.graphs).filter(Boolean).length;
-    const groupCount=getRatingAnalyticsGroups(options.selection.records,fsState.analyticsRatingGrouping||'topic').length;
     const graphPages=graphCount+(options.graphs.ratingTimeline?1:0)+Math.ceil(groupCount/24);
     estimatedChars+=groupCount*400;
     const estimatedPages=Math.ceil((2+graphPages+tablePages)*1.12),limits=pdfExportLimits();
@@ -430,7 +448,7 @@
     });
     const selection=resolvePdfExportSelection(dialog),estimateBox=dialog.querySelector('#nexusPdfEstimate'),button=dialog.querySelector('#nexusPdfGenerate');
     if(!selection.valid){estimateBox.innerHTML='<strong class="is-block">Choose a valid date range</strong><p>The start date must be on or before the end date.</p>';button.disabled=true;dialog._pdfExportModel=null;return;}
-    const options=collectPdfExportOptions(dialog,selection),estimate=estimatePdfExport(options),fmt=n=>Number(n).toLocaleString(),mb=(estimate.estimatedChars/1048576).toFixed(2);
+    const options=collectPdfExportOptions(dialog,selection),estimate=estimatePdfExport(options,dialog),fmt=n=>Number(n).toLocaleString(),mb=(estimate.estimatedChars/1048576).toFixed(2);
     Object.keys(estimate.datasets).forEach(key=>{
       const label=dialog.querySelector('[data-pdf-count="'+key+'"]'),total=estimate.datasets[key].length,chosen=estimate.selected[key].length;
       label.textContent=options.tables[key].include?('Including '+fmt(chosen)+' of '+fmt(total)+' records'):('Excluded · '+fmt(total)+' available');
@@ -449,6 +467,9 @@
   }
   function openAnalyticsPdfDialog(){
     const dialog=ensurePdfExportDialog(),selection=getRatingAnalyticsSelection();
+    dialog._pdfInitialSelection=selection;
+    dialog._pdfRangeSelectionCache=new Map([[selection.from+'|'+selection.to,selection.records]]);
+    dialog._pdfDatasetCache=null;dialog._pdfAllTimeRange=null;
     dialog.querySelector('#nexusPdfTimeframe').value='selected';
     dialog.querySelector('#nexusPdfDateFrom').value=selection.from;
     dialog.querySelector('#nexusPdfDateTo').value=selection.to;
