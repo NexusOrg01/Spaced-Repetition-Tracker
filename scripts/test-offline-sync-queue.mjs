@@ -264,4 +264,22 @@ function withFacadeAtomic(storage,callback){
  assert.throws(()=>queue.forgetAccount(s,'account-A',[{key:stateKey,value:null}]),/Both tracker and Study Hub/,'account cleanup must require both workspace parts before committing');
  assert.equal(s.getItem(stateKey),null,'incomplete account cleanup must not partially delete tracker data');
 }
+{
+ const s=new MemoryStorage({[queue.OWNER]:'oversized-account'});
+ const large=payload('oversized');
+ const largeCharacters=25*1024*1024+1024;
+ large.featureState.largeTestFixture='x'.repeat(largeCharacters);
+ queue.commitWorkspace(s,[
+  {key:stateKey,value:JSON.stringify(large.state)},
+  {key:'recall.study.features.v1',value:JSON.stringify(large.featureState)}
+ ],large,{returnOperationPayload:false});
+ const savedQueue=s.getItem(queue.KEY);
+ assert.ok(savedQueue.length>25*1024*1024,'the regression fixture must exceed the compact decoder safety limit');
+ assert.ok(!savedQueue.startsWith('NEXUS_LZW_UTF8_V1:'),
+  'oversized queue snapshots must remain plain JSON instead of creating an unreadable compact stream');
+ const restored=queue.getPending(s,'oversized-account');
+ assert.equal(restored.payload.featureState.largeTestFixture.length,largeCharacters,
+  'the full oversized queue must remain readable and preserve its payload');
+}
+
 console.log('Account-bound offline sync queue tests passed.');
