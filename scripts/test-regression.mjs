@@ -299,14 +299,14 @@ const pdfScopeSandbox={
       {id:'journal-b',date:'2026-05-03',subjectId:'subject-b'}
     ]
   },
-  safeDate:value=>/^\\d{4}-\\d{2}-\\d{2}$/.test(String(value||'')),
+  safeDate:value=>/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(String(value||'')),
   getTopic:()=>null,
   streamFor:subject=>pdfScopeSandbox.state.streams.find(stream=>stream.id===subject?.streamId)||null
 };
 vm.createContext(pdfScopeSandbox);
 vm.runInContext(
-  studyHub.slice(pdfScopeStart,pdfScopeEnd)+'\\n'+
-  studyHub.slice(pdfDatasetsStart,pdfDatasetsEnd)+'\\n'+
+  studyHub.slice(pdfScopeStart,pdfScopeEnd)+String.fromCharCode(10)+
+  studyHub.slice(pdfDatasetsStart,pdfDatasetsEnd)+String.fromCharCode(10)+
   'this.collectScopedPdfDatasets=getPdfExportDatasets;',
   pdfScopeSandbox
 );
