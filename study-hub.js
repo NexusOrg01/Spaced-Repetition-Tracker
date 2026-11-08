@@ -559,7 +559,7 @@
     if(preflight.blocked)throw new Error('This report now exceeds the safe PDF export limit for this device. Reduce the selected table limits or narrow the timeframe. Complete raw data remains available through JSON / CSV backup exports.');
     const datasets=preflight.datasets,records=datasets.reviews;
     const level=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic';
-    const entityOptions=getRatingAnalyticsEntityOptions(level),entityId=getRatingAnalyticsEntityId(level,entityOptions);
+    const entityOptions=getRatingAnalyticsEntityOptions(level),entityId='ALL';
     const timeline=graphs.ratingTimeline?getRatingAnalyticsTimeline(selection,level,entityId):{bins:[],records:[],totals:[0,0,0,0,0]};
     const scopeStreams=(options.scope?.streamIds||[]).map(id=>state.streams.find(item=>String(item.id)===String(id))?.name).filter(Boolean);
     const scopeSubjects=(options.scope?.subjectIds||[]).map(id=>state.subjects.find(item=>String(item.id)===String(id))?.name).filter(Boolean);
