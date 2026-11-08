@@ -562,7 +562,7 @@
     const entityOptions=getRatingAnalyticsEntityOptions(level),entityId='ALL';
     const timeline=graphs.ratingTimeline?getRatingAnalyticsTimeline(selection,level,entityId):{bins:[],records:[],totals:[0,0,0,0,0]};
     const scopeStreams=(options.scope?.streamIds||[]).map(id=>state.streams.find(item=>String(item.id)===String(id))?.name).filter(Boolean);
-    const scopeSubjects=(options.scope?.subjectIds||[]).map(id=>state.subjects.find(item=>String(item.id)===String(id))?.name).filter(Boolean);
+    const scopeSubjects=(options.scope?.subjectIds||[]).map(id=>state.subjects.find(item=>String(item.id)===String(id))).filter(item=>item&&options.scope?.streamIds.includes(String(item.streamId||''))).map(item=>item.name).filter(Boolean);
     const scopeText='Streams: '+(options.scope?.all?'All':scopeStreams.join(', ')||'None')+' · Subjects: '+(options.scope?.all?'All':scopeSubjects.join(', ')||'None');
     const rangeText=selection.label+' · '+fmtDate(selection.from)+' – '+fmtDate(selection.to)+' · '+scopeText;
     const timelineSvg=graphs.ratingTimeline?ratingAnalyticsSvgMarkup(selection,level,entityId,timeline):'';
