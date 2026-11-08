@@ -254,12 +254,13 @@ for (const part of [
 assert.ok(read('android/app/src/main/java/org/nexus/tracker/preview/MainActivity.java').includes('registerPlugin(NexusPrintPlugin.class)'), 'Register the native Android print plugin before bridge initialization.');
 assert.ok(bridge.includes("registerPlugin('NexusPrint')") && bridge.includes('NexusPrint.printHtml({'), 'Android JavaScript bridge must expose the native print plugin.');
 const nativePdfSource = read('dist/study-hub.js');
-const pdfExportStart = nativePdfSource.indexOf('function exportAnalyticsPdf()');
+const pdfExportStart = nativePdfSource.indexOf('async function exportAnalyticsPdf(options={})');
 const pdfExportEnd = nativePdfSource.indexOf('function paperScoreTrendsMarkup', pdfExportStart);
-assert.ok(pdfExportStart >= 0 && pdfExportEnd > pdfExportStart, 'Analytics PDF export function must be present in the Android bundle.');
+assert.ok(pdfExportStart >= 0 && pdfExportEnd > pdfExportStart, 'Configurable analytics PDF export function must be present in the Android bundle.');
 const pdfExportSource = nativePdfSource.slice(pdfExportStart, pdfExportEnd);
 assert.ok(pdfExportSource.includes('window.NexusAndroidBridge.printHtml('), 'Android Analytics PDF export must call the native PrintManager bridge.');
-assert.ok(pdfExportSource.indexOf('window.NexusAndroidBridge.printHtml(') < pdfExportSource.indexOf("const reportWindow=window.open"), 'Native Android printing must run before the browser popup fallback.');
+assert.ok(pdfExportSource.includes("const reportWindow=isNative?null:window.open('','_blank')"), 'The shared PDF exporter must reserve a browser print window only for non-native users.');
+assert.ok(pdfExportSource.indexOf('window.NexusAndroidBridge.printHtml(') < pdfExportSource.indexOf('reportWindow.document.open();reportWindow.document.write(report)'), 'Native Android printing must finish through the native bridge while browser users retain the separate print-window fallback.');
 assert.ok(pdfExportSource.includes('reportWindow.print()'), 'The normal browser/PWA print fallback must remain available.');
 assert.ok(pdfExportSource.includes('reader.readAsDataURL(imageBlob)'), 'The report logo must be embedded for the isolated native print WebView.');
 
