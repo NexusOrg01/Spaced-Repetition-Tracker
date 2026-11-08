@@ -1,4 +1,4 @@
-name: Android multi-store build
+name: F-Droid Android build
 
 on:
   push:
@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   android-build:
-    name: Build F-Droid and Google Play variants
+    name: Build F-Droid debug and unsigned release APKs
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -79,7 +79,7 @@ jobs:
       - name: Verify Android asset isolation and native feature wiring
         run: npm run test:android
 
-      - name: Build debug APKs and unsigned release bundles
+      - name: Build F-Droid debug and unsigned release APKs
         working-directory: android
         run: |
           mkdir -p build/reports/fdroid-dependencies
@@ -87,7 +87,7 @@ jobs:
           ./gradlew --no-daemon --stacktrace --dependency-verification strict :app:dependencies --configuration fdroidDebugRuntimeClasspath > build/reports/fdroid-dependencies/fdroid-debug-runtime.txt
           ./gradlew --no-daemon --stacktrace --dependency-verification strict :app:dependencies --configuration fdroidReleaseRuntimeClasspath > build/reports/fdroid-dependencies/fdroid-release-runtime.txt
           ! grep -Eiq 'com[.]google[.]android[.]gms|com[.]google[.]firebase|firebase-analytics|play-services' build/reports/fdroid-dependencies/fdroid-debug-runtime.txt build/reports/fdroid-dependencies/fdroid-release-runtime.txt
-          ./gradlew --no-daemon --stacktrace --dependency-verification strict assembleFdroidDebug assemblePlayDebug assembleFdroidRelease bundleFdroidRelease bundlePlayRelease
+          ./gradlew --no-daemon --stacktrace --dependency-verification strict assembleFdroidDebug assembleFdroidRelease
           git diff --exit-code -- gradle/verification-metadata.xml
 
       - name: Generate Gradle/Maven dependency licence inventory
@@ -102,10 +102,7 @@ jobs:
           retention-days: 14
           path: |
             android/app/build/outputs/apk/fdroid/debug/*.apk
-            android/app/build/outputs/apk/play/debug/*.apk
             android/app/build/outputs/apk/fdroid/release/*.apk
-            android/app/build/outputs/bundle/fdroidRelease/*.aab
-            android/app/build/outputs/bundle/playRelease/*.aab
             android/gradle/verification-metadata.xml
             android/build/reports/fdroid-dependencies/*.txt
             android/build/reports/third-party/*
