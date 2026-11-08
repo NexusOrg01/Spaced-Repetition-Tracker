@@ -621,7 +621,7 @@
       if(parent&&panel.parentElement===target)parent.insertBefore(panel,next&&next.parentElement===parent?next:null);
       analyticsReturnParent=null;analyticsReturnNext=null;hubTab='planner';
       console.error('Nexus Analytics failed to open',error);
-      notify('Analytics could not open. Please try again; reload the app if it continues.');
+      notify('Analytics could not open. Please try again. Reload the app if the problem continues.');
     }
   }
   function closeAnalyticsWindow(){
