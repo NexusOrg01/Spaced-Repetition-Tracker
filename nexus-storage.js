@@ -30,6 +30,9 @@
   let lastError = null;
   let mirrorError = null;
   let revision = 0;
+  // The account owner exposed to the app must represent a completed IndexedDB commit,
+  // not an optimistic value staged in the compatibility cache.
+  let committedOwnerId = null;
   let writeSequence = 0;
   let serial = Promise.resolve();
   let bootPromise = null;
@@ -582,6 +585,9 @@
       const nextRevision = await persistBatch(batch);
       revision = nextRevision;
       for (const item of batch) {
+        if (item.key === OWNER_KEY) committedOwnerId = item.value;
+      }
+      for (const item of batch) {
         if (pending.get(item.key) === item) pending.delete(item.key);
       }
       mirrorBatch(batch);
@@ -625,19 +631,56 @@
     if (normalized.some(entry => !isManagedKey(entry.key))) {
       throw new Error('This atomic operation included a key outside Nexus durable storage.');
     }
+    const isWorkspaceHandoff =
+      normalized.some(entry => entry.key === OWNER_KEY) &&
+      normalized.some(entry => entry.key === TRACKER_KEY) &&
+      normalized.some(entry => entry.key === FEATURE_KEY);
+    const previous = isWorkspaceHandoff ? normalized.map(entry => ({
+      key: entry.key,
+      cacheHad: cache.has(entry.key),
+      cacheValue: cache.get(entry.key),
+      known: knownKeys.has(entry.key),
+      pendingHad: pending.has(entry.key),
+      pendingValue: pending.get(entry.key)
+    })) : null;
+    const staged = [];
     for (const entry of normalized) {
       if (entry.value === null) cache.delete(entry.key);
       else cache.set(entry.key, entry.value);
       knownKeys.add(entry.key);
-      pending.set(entry.key, { ...entry, sequence: ++writeSequence });
+      const item = { ...entry, sequence: ++writeSequence };
+      staged.push(item);
+      pending.set(entry.key, item);
     }
-    return enqueuePersist();
+    const task = enqueuePersist();
+    if (!isWorkspaceHandoff) return task;
+
+    // If an account-handoff transaction fails, do not leave its optimistic owner
+    // marker or target workspace visible in memory. Keep any earlier pending values
+    // intact so a later ordinary save can still retry them safely.
+    return task.catch(error => {
+      for (let i = 0; i < staged.length; i++) {
+        const entry = normalized[i];
+        if (pending.get(entry.key) !== staged[i]) continue;
+        const before = previous[i];
+        if (before.pendingHad) pending.set(entry.key, before.pendingValue);
+        else pending.delete(entry.key);
+        if (before.cacheHad) cache.set(entry.key, before.cacheValue);
+        else cache.delete(entry.key);
+        if (before.known) knownKeys.add(entry.key);
+        else knownKeys.delete(entry.key);
+      }
+      throw error;
+    });
   }
 
   function makeFacade() {
     const storage = {
       getItem(key) {
         const name = String(key);
+        // Workspace isolation reads this marker synchronously. Do not expose a staged
+        // account switch until IndexedDB has committed the matching workspace batch.
+        if (enabled && name === OWNER_KEY) return committedOwnerId;
         if (enabled && isManagedKey(name)) {
           if (cache.has(name)) return cache.get(name);
           if (knownKeys.has(name)) return null;
@@ -729,6 +772,7 @@
         knownKeys.add(row.key);
         if (row.deleted !== true && typeof row.value === 'string') cache.set(row.key, row.value);
       }
+      committedOwnerId = cache.has(OWNER_KEY) ? cache.get(OWNER_KEY) : null;
       revision = snapshot.revision;
       enabled = true;
       await seedWorkspaceProjection(snapshot.rows, snapshot.revision);
