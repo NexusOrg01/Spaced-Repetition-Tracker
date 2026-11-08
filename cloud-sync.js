@@ -377,16 +377,32 @@ async function recoverCachedWorkspaceForOfflineAccount(userId){
  if(!userId||!session||!session.user||session.user.id!==userId)return null;
  try{await assertActiveUser(userId);}catch(_){return null;}
  const currentOwner=localStorage.getItem(OWNER_KEY)||'';
- if(currentOwner===userId)return 'active';
  const queue=window.NexusOfflineSyncQueue;
- let payload=null,source='';
+ if(currentOwner===userId){
+  // The ordinary initialization path reads the outbox before this recovery hook.
+  // When an older compact queue exceeds its decoder limit, rebuild it only from
+  // this already-active account's current local snapshot; never substitute another user.
+  try{if(queue&&typeof queue.getPending==='function')queue.getPending(localStorage,userId);}
+  catch(error){
+   if(!error||error.code!=='NEXUS_OFFLINE_QUEUE_TOO_LARGE')throw error;
+   rebuildOversizedOfflineQueue(queue,userId,snapshot(),
+    queue&&typeof queue.getStamp==='function'?queue.getStamp(localStorage,userId):lastRemoteStamp,
+    'active-account-initialization');
+   syncDiag('offline-account-queue-rebuilt',snapshot(),{source:'active-local-workspace'});
+  }
+  return 'active';
+ }
+ let payload=null,source='',oversizedQueueDetected=false;
  // An account-bound queued snapshot is newer than the last confirmed base.
  try{
   const pending=queue&&queue.getPending(localStorage,userId);
   if(pending&&pending.ownerUserId===userId&&pending.payload&&pending.payload.state&&pending.payload.featureState){
    payload={state:pending.payload.state,featureState:pending.payload.featureState};source='pending';
   }
- }catch(error){syncDiag('offline-account-pending-unavailable',null,{errorMessage:String(error&&error.message||'unknown').slice(0,100)});}
+ }catch(error){
+  oversizedQueueDetected=!!(error&&error.code==='NEXUS_OFFLINE_QUEUE_TOO_LARGE');
+  syncDiag('offline-account-pending-unavailable',null,{errorCode:String(error&&error.code||'unknown'),errorMessage:String(error&&error.message||'unknown').slice(0,100)});
+ }
  // The durable projection is keyed by account and cannot be used for another user.
  if(!payload){
   try{
@@ -411,7 +427,12 @@ async function recoverCachedWorkspaceForOfflineAccount(userId){
  const normalizedState=normalizeState(payload.state);
  const normalizedFeatures=window.NexusNormalizeFeatureState(payload.featureState);
  await applyWorkspaceSnapshot(normalizedState,normalizedFeatures,userId);
- syncDiag('offline-account-workspace-restored',{state:normalizedState,featureState:normalizedFeatures},{source});
+ if(oversizedQueueDetected){
+  rebuildOversizedOfflineQueue(queue,userId,snapshot(),
+   queue&&typeof queue.getStamp==='function'?queue.getStamp(localStorage,userId):null,
+   'restored-account-workspace');
+ }
+ syncDiag('offline-account-workspace-restored',{state:normalizedState,featureState:normalizedFeatures},{source,queueRebuilt:oversizedQueueDetected});
  return source||'indexeddb';
 }
 async function initializeSession(s){syncDiag('initialize-start',snapshot(),{hasSession:!!(s&&s.user),ownerPresent:!!localStorage.getItem(OWNER_KEY)});const requestedSession=s||null,requestedUserId=requestedSession&&requestedSession.user?requestedSession.user.id:null;if(initializing){if(requestedUserId!==initializingUserId){queuedSession=requestedSession;hasQueuedSession=true;}return;}initializing=true;initializingUserId=requestedUserId;try{const newSession=requestedSession,newUserId=requestedUserId;session=newSession;ready=false;lastRemoteStamp=null;clearTimeout(timer);setControls();if(!session){status(client?'Not signed in · offline ready':'Offline ready');say('You can continue studying offline. Your local data remains on this device when you sign out.');return;}status('Loading account…');await assertActiveUser(newUserId);let owner=localStorage.getItem(OWNER_KEY)||'',localPayload=snapshot();const remote=await fetchRemote(newUserId);syncDiag('initialize-after-cloud-read',remote&&remote.payload,{remoteHasPayload:!!(remote&&remote.payload)});await assertActiveUser(newUserId);
