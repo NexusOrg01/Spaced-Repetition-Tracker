@@ -512,7 +512,14 @@ async function upload(){
    const {data:authData,error:authError}=await client.auth.getUser();
   if(authError)throw new Error('Supabase could not verify the active login before cloud write: '+authError.message);
   if(!authData.user||authData.user.id!==uploadUserId||!session||session.user.id!==uploadUserId)throw new Error('The active Google/account session changed or could not be verified. Cloud write paused to protect the other account. Sign in again and retry.');
-  let pending=queue?queue.getPending(localStorage,uploadUserId):null;
+  let pending=null;
+  if(queue){
+   try{pending=queue.getPending(localStorage,uploadUserId);}
+   catch(error){
+    if(error&&error.code!=='NEXUS_OFFLINE_QUEUE_TOO_LARGE')throw error;
+    pending=rebuildOversizedOfflineQueue(queue,uploadUserId,snapshot(),lastRemoteStamp,'upload-start');
+   }
+  }
   const priorStamp=lastRemoteStamp;attemptedPriorStamp=priorStamp;
   // Rebuild catalogue-owned rows before any cloud write. Commit the repaired workspace and
   // matching outbox snapshot together so an old queued snapshot cannot remove local pack rows.
@@ -541,7 +548,7 @@ async function upload(){
    if(actualStamp!==(pending.baseServerVersion||null)){const conflict=new Error('The cloud revision changed since this offline snapshot was queued.');conflict.code='NEXUS_CLOUD_CONFLICT';throw conflict;}
    const stamp=nextCloudStamp(pending.baseServerVersion);
    await assertUploadOwner();
-   await window.NexusBackupRestoreUtils.writeCloudSnapshot(client,uploadUserId,payload,pending.baseServerVersion,stamp);
+   await writeRemoteSnapshot(uploadUserId,payload,pending.baseServerVersion,stamp);
    const verify=await fetchRemote(uploadUserId);
    await assertUploadOwner();
    syncDiag('upload-verification-readback',verify&&verify.payload,{readbackHasPayload:!!(verify&&verify.payload),matchesAttempted:!!(verify&&verify.payload&&stableJson(verify.payload)===stableJson(payload))});if(!verify||!verify.payload||stableJson(verify.payload)!==stableJson(payload)){const conflict=new Error('The remote cloud snapshot changed during write verification.');conflict.code='NEXUS_CLOUD_CONFLICT';throw conflict;}
@@ -551,7 +558,7 @@ async function upload(){
    const laterPending=queue.getPending(localStorage,uploadUserId);if(laterPending&&laterPending.operationId!==pending.operationId&&(laterPending.baseServerVersion||null)===(pending.baseServerVersion||null))queue.rebase(localStorage,uploadUserId,snapshot(),lastRemoteStamp,'local-change-during-upload');
   }else{
    const stamp=nextCloudStamp(priorStamp);
-   await window.NexusBackupRestoreUtils.writeCloudSnapshot(client,uploadUserId,payload,priorStamp,stamp);
+   await writeRemoteSnapshot(uploadUserId,payload,priorStamp,stamp);
    const verify=await fetchRemote(uploadUserId);
    await assertUploadOwner();
    if(!verify||!verify.payload||stableJson(verify.payload)!==stableJson(payload)){const conflict=new Error('The remote cloud snapshot changed during write verification.');conflict.code='NEXUS_CLOUD_CONFLICT';throw conflict;}
@@ -602,7 +609,46 @@ async function upload(){
  return uploaded;
 }
 let localQueueHealthy=true,localMutationRevision=0;
-function recordWorkspaceSave(payload,reason){if(deletingAccount)return;localMutationRevision++;if(!payload||!payload.state)return;const ownerId=session&&session.user?session.user.id:null;if(!ownerId||!ready||localStorage.getItem(OWNER_KEY)!==ownerId)return;const queue=window.NexusOfflineSyncQueue;if(!queue||!window.NexusStorageKey||!window.NexusFeatureStorageKey){localQueueHealthy=false;status('Sync queue unavailable');say('Your changes are saved on this device, but the cloud queue is unavailable. Local data is preserved. Do not clear browser data.');syncDiag('local-save-queue-error',payload,{reason:reason||'local-save',errorMessage:'Safe offline queue unavailable'});return;}try{const pending=queue.getPending(localStorage,ownerId);const nextPayload={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:clone(payload.state),featureState:clone(payload.featureState||{})};queue.commitWorkspace(localStorage,[{key:window.NexusStorageKey,value:JSON.stringify(nextPayload.state)},{key:window.NexusFeatureStorageKey,value:JSON.stringify(nextPayload.featureState)}],nextPayload,{baseServerVersion:pending?pending.baseServerVersion:(lastRemoteStamp||null)});localQueueHealthy=true;syncDiag('local-save-queued',nextPayload,{reason:reason||'local-save',hadPending:!!pending});}catch(e){localQueueHealthy=false;status('Sync queue error');say('Your changes are saved on this device, but the cloud queue could not be updated safely. Sync is paused to prevent an older snapshot overwriting your work. Save again after checking browser storage.');syncDiag('local-save-queue-error',payload,{reason:reason||'local-save',errorMessage:String(e&&e.message||'unknown').slice(0,120)});console.error('Nexus could not queue the latest local workspace safely',e);}}
+function recordWorkspaceSave(payload,reason){
+ if(deletingAccount)return;
+ localMutationRevision++;
+ if(!payload||!payload.state)return;
+ const ownerId=session&&session.user?session.user.id:null;
+ if(!ownerId||!ready||localStorage.getItem(OWNER_KEY)!==ownerId)return;
+ const queue=window.NexusOfflineSyncQueue;
+ if(!queue||!window.NexusStorageKey||!window.NexusFeatureStorageKey){
+  localQueueHealthy=false;status('Sync queue unavailable');
+  say('Your changes are saved on this device, but the cloud queue is unavailable. Local data is preserved. Do not clear browser data.');
+  syncDiag('local-save-queue-error',payload,{reason:reason||'local-save',errorMessage:'Safe offline queue unavailable'});
+  return;
+ }
+ const nextPayload={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:clone(payload.state),featureState:clone(payload.featureState||{})};
+ const trackerJson=JSON.stringify(nextPayload.state),featureJson=JSON.stringify(nextPayload.featureState);
+ try{
+  let pending=null;
+  try{pending=queue.getPending(localStorage,ownerId);}
+  catch(error){
+   if(error&&error.code!=='NEXUS_OFFLINE_QUEUE_TOO_LARGE')throw error;
+   pending=rebuildOversizedOfflineQueue(queue,ownerId,nextPayload,lastRemoteStamp,'local-save');
+   localQueueHealthy=true;
+   syncDiag('local-save-queued',nextPayload,{reason:reason||'local-save',hadPending:false,payloadCharacters:trackerJson.length+featureJson.length,queueRebuilt:true});
+   schedule();
+   return;
+  }
+  queue.commitWorkspace(localStorage,[
+   {key:window.NexusStorageKey,value:trackerJson},
+   {key:window.NexusFeatureStorageKey,value:featureJson}
+  ],nextPayload,{baseServerVersion:pending?pending.baseServerVersion:(lastRemoteStamp||null)});
+  localQueueHealthy=true;
+  syncDiag('local-save-queued',nextPayload,{reason:reason||'local-save',hadPending:!!pending,payloadCharacters:trackerJson.length+featureJson.length});
+ }catch(e){
+  localQueueHealthy=false;
+  status('Sync queue error');
+  say('Your changes are saved on this device, but the cloud queue could not be updated safely. Sync is paused to prevent an older snapshot overwriting your work. Export a JSON backup before clearing storage, then retry after checking available device storage.');
+  syncDiag('local-save-queue-error',payload,{reason:reason||'local-save',errorCode:String(e&&e.code||'unknown'),errorMessage:String(e&&e.message||'unknown').slice(0,120)});
+  console.error('Nexus could not queue the latest local workspace safely',e);
+ }
+}
 function schedule(){if(deletingAccount||!localQueueHealthy||!client||!session||!ready||(typeof navigator!=='undefined'&&!navigator.onLine))return;clearTimeout(timer);timer=setTimeout(()=>{if(syncing){pendingSync=true;return;}upload();},650);}
 function createSafeAuthStorage(storage){
   // A literal "undefined" or other invalid value in Supabase's persisted
