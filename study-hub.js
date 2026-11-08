@@ -420,7 +420,7 @@
   function getPdfExportDatasets(selection,scope){
     const inRange=date=>safeDate(date)&&date>=selection.from&&date<=selection.to,sort=(a,b)=>String(b.date||b.reviewedAt||'').localeCompare(String(a.date||a.reviewedAt||''));
     return {
-      reviews:selection.records.slice().sort((a,b)=>String(b.reviewedAt||'').localeCompare(String(a.reviewedAt||''))),
+      reviews:selection.records.filter(x=>pdfRecordMatchesScope(x,scope)).slice().sort((a,b)=>String(b.reviewedAt||'').localeCompare(String(a.reviewedAt||''))),
       sessions:fsState.studyLogs.filter(x=>inRange(x.date)&&pdfRecordMatchesScope(x,scope)).slice().sort(sort),
       papers:fsState.papers.filter(x=>inRange(x.date)&&pdfRecordMatchesScope(x,scope)).slice().sort(sort),
       journal:fsState.journal.filter(x=>inRange(x.date)&&pdfRecordMatchesScope(x,scope)).slice().sort(sort)
@@ -445,7 +445,7 @@
       datasets=dialog._pdfDatasetCache.datasets;groupCount=dialog._pdfDatasetCache.groupCount;
     }else{
       datasets=getPdfExportDatasets(options.selection,options.scope);
-      groupCount=getRatingAnalyticsGroups(options.selection.records,fsState.analyticsRatingGrouping||'topic').length;
+      groupCount=getRatingAnalyticsGroups(datasets.reviews,fsState.analyticsRatingGrouping||'topic').length;
       if(dialog)dialog._pdfDatasetCache={key:cacheKey,datasets,groupCount};
     }
     const selected={
@@ -552,10 +552,11 @@
     setPdfExportProgress('Preparing report data…',reportWindow,dialog);
     try{
     const logoUrl=new URL('icon-192.png',window.location.href).href;
-    const selection=options.selection||getRatingAnalyticsSelection();
+    const initialSelection=options.selection||getRatingAnalyticsSelection();
     const graphs=options.graphs||Object.fromEntries(PDF_EXPORT_GRAPH_OPTIONS.map(([key])=>[key,true]));
     const tables=options.tables||{reviews:{include:true,limit:'100'},sessions:{include:true,limit:'100'},papers:{include:true,limit:'100'},journal:{include:true,limit:'50'}};
     const scope=options.scope||{streamIds:(state.streams||[]).map(item=>String(item.id)),subjectIds:(state.subjects||[]).map(item=>String(item.id)),all:true};
+    const selection={...initialSelection,records:(initialSelection.records||[]).filter(record=>pdfRecordMatchesScope(record,scope))};
     const preflight=estimatePdfExport({selection,graphs,tables,scope});
     if(preflight.blocked)throw new Error('This report now exceeds the safe PDF export limit for this device. Reduce the selected table limits or narrow the timeframe. Complete raw data remains available through JSON / CSV backup exports.');
     const datasets=preflight.datasets,records=datasets.reviews;
