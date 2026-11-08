@@ -633,6 +633,15 @@
       seen.add(entry.key);
       return { key: entry.key, value: entry.value };
     });
+    const ownerEntry = normalized.find(entry => entry.key === OWNER_KEY);
+    const currentOwner = enabled
+      ? committedOwnerId
+      : (nativeStorage && nativeStorage.getItem(OWNER_KEY)) || null;
+    if (ownerEntry && ownerEntry.value !== null && ownerEntry.value !== currentOwner &&
+        (!normalized.some(entry => entry.key === TRACKER_KEY) ||
+         !normalized.some(entry => entry.key === FEATURE_KEY))) {
+      throw new Error('Changing the active account requires the tracker and Study Hub workspaces in the same atomic transaction.');
+    }
     if (!enabled) {
       const managedCount = normalized.filter(entry => isManagedKey(entry.key)).length;
       if (managedCount && managedCount !== normalized.length) throw new Error('This atomic operation mixed Nexus data with browser/auth storage; no values were written.');
@@ -640,12 +649,6 @@
     }
     if (normalized.some(entry => !isManagedKey(entry.key))) {
       throw new Error('This atomic operation included a key outside Nexus durable storage.');
-    }
-    const ownerEntry = normalized.find(entry => entry.key === OWNER_KEY);
-    if (ownerEntry && ownerEntry.value !== null && ownerEntry.value !== committedOwnerId &&
-        (!normalized.some(entry => entry.key === TRACKER_KEY) ||
-         !normalized.some(entry => entry.key === FEATURE_KEY))) {
-      throw new Error('Changing the active account requires the tracker and Study Hub workspaces in the same atomic transaction.');
     }
     const isOwnerMutation = normalized.some(entry => entry.key === OWNER_KEY);
     const previous = isOwnerMutation ? normalized.map(entry => ({
