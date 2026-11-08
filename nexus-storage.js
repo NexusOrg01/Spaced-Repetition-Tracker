@@ -113,6 +113,13 @@
 
   function fallbackAtomicWrite(entries) {
     if (!nativeStorage) throw new Error('Browser storage is unavailable.');
+    const ownerEntry = entries.find(entry => entry && entry.key === OWNER_KEY);
+    const currentOwner = nativeStorage.getItem(OWNER_KEY) || null;
+    if (ownerEntry && ownerEntry.value !== null && ownerEntry.value !== currentOwner &&
+        (!entries.some(entry => entry.key === TRACKER_KEY) ||
+         !entries.some(entry => entry.key === FEATURE_KEY))) {
+      throw new Error('Changing the active account requires the tracker and Study Hub workspaces in the same atomic transaction.');
+    }
     if (!entries.every(entry => isManagedKey(entry.key))) return nativeAtomicWrite(entries);
     const previousJournal = nativeStorage.getItem(FALLBACK_JOURNAL_KEY);
     const journal = readFallbackJournal();
