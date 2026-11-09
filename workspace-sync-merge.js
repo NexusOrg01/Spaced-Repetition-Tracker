@@ -177,27 +177,38 @@
   }
   const MERGE_YIELD_BATCH=400;
   function yieldToBrowser(){return new Promise(resolve=>setTimeout(resolve,0));}
+  async function indexRowsAsync(index,value,side){
+    const source=rows(value);
+    for(let i=0;i<source.length;i++){
+      const row=source[i];
+      if(!isObject(row))throw new Error('Cannot safely merge a malformed workspace record. Repair the record before syncing.');
+      if(row.id===undefined||row.id===null||String(row.id)==='')throw new Error('Cannot safely merge a record without a stable ID. Repair the record before syncing.');
+      const id=String(row.id);
+      let entry=index.get(id);
+      if(!entry){
+        entry={base:ABSENT,local:ABSENT,remote:ABSENT};
+        index.set(id,entry);
+      }else if(entry[side]!==ABSENT){
+        throw new Error('Cannot safely merge records with duplicate stable record ID "'+id+'". Fix the duplicate IDs before syncing.');
+      }
+      entry[side]=row;
+      if((i+1)%MERGE_YIELD_BATCH===0)await yieldToBrowser();
+    }
+  }
   async function mergeRecordsAsync(baseRows,localRows,remoteRows,path,conflicts){
-    const b=rowMap(baseRows),l=rowMap(localRows),r=rowMap(remoteRows),out=[];
+    // Keep one index of record references rather than three full Maps. On a large
+    // workspace this cuts index overhead, and each index pass yields so Android WebView
+    // can paint and process input while the snapshot is being reconciled.
+    const index=new Map(),out=[];
+    await indexRowsAsync(index,baseRows,'base');
+    await indexRowsAsync(index,localRows,'local');
+    await indexRowsAsync(index,remoteRows,'remote');
     let processed=0;
-    const append=(id,bv,lv,rv)=>{
-      const value=mergeRecordValue(bv,lv,rv,path,id,conflicts);
+    for(const [id,entry] of index){
+      const value=mergeRecordValue(entry.base,entry.local,entry.remote,path,id,conflicts);
       if(value!==ABSENT)out.push(value);
       processed++;
-    };
-    for(const [id,bv] of b){
-      append(id,bv,l.has(id)?l.get(id):ABSENT,r.has(id)?r.get(id):ABSENT);
-      if(processed&&processed%MERGE_YIELD_BATCH===0)await yieldToBrowser();
-    }
-    for(const [id,lv] of l){
-      if(b.has(id))continue;
-      append(id,ABSENT,lv,r.has(id)?r.get(id):ABSENT);
-      if(processed&&processed%MERGE_YIELD_BATCH===0)await yieldToBrowser();
-    }
-    for(const [id,rv] of r){
-      if(b.has(id)||l.has(id))continue;
-      append(id,ABSENT,ABSENT,rv);
-      if(processed&&processed%MERGE_YIELD_BATCH===0)await yieldToBrowser();
+      if(processed%MERGE_YIELD_BATCH===0)await yieldToBrowser();
     }
     return out;
   }
