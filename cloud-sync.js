@@ -119,9 +119,11 @@ function assertStableRecordIds(payload){
 function normalizeWorkspacePayload(payload){
  if(!payload||!payload.state||!Array.isArray(payload.state.streams))throw new Error('A valid workspace snapshot is required for automatic reconciliation.');
  assertStableRecordIds(payload);
- const normalized=normalizeState(payload.state);
- const safeState=window.NexusRepairCurriculumState?window.NexusRepairCurriculumState(normalized):normalized;
- return {...payload,state:safeState,featureState:window.NexusNormalizeFeatureState(Object.prototype.hasOwnProperty.call(payload,'featureState')?payload.featureState:undefined)};
+ // These snapshots were already normalized when they entered local/cloud storage.
+ // Keep their arrays and records by reference during the three-way comparison; normalise
+ // the merged result once afterward instead of cloning all three workspaces up front.
+ const features=payload.featureState&&typeof payload.featureState==='object'&&!Array.isArray(payload.featureState)?payload.featureState:{};
+ return {...payload,state:payload.state,featureState:features};
 }
 function nextCloudStamp(previous){
  const policy=window.NexusCloudSyncRecovery;
@@ -271,13 +273,13 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
 }
 async function applyRemote(payload,ownerId,serverVersion){
   if(!payload||!payload.state||!Array.isArray(payload.state.streams))throw new Error('Cloud backup format is invalid.');
-  const normalizedState=normalizeState(payload.state);
-  const nextState=window.NexusRepairCurriculumState?window.NexusRepairCurriculumState(normalizedState):normalizedState;
-  const hasFeatures=Object.prototype.hasOwnProperty.call(payload,'featureState');
-  const nextFeatures=window.NexusNormalizeFeatureState(hasFeatures?payload.featureState:undefined);
   ready=false;
-  await applyWorkspaceSnapshot(nextState,nextFeatures,ownerId);
-  if(ownerId&&window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberBase(localStorage,ownerId,{state:nextState,featureState:nextFeatures},serverVersion||null);
+  // applyWorkspaceSnapshot performs the one required normalize/repair pass itself.
+  await applyWorkspaceSnapshot(payload.state,payload.featureState,ownerId);
+  if(ownerId&&window.NexusOfflineSyncQueue){
+   const appliedFeatures=window.NexusGetFeatureState?window.NexusGetFeatureState():{};
+   window.NexusOfflineSyncQueue.rememberBase(localStorage,ownerId,{state,featureState:appliedFeatures},serverVersion||null);
+  }
   await flushDurableLocalWrites();
   ready=true;
 }
@@ -642,9 +644,9 @@ async function upload(){
   // Rebuild catalogue-owned rows before any cloud write. Commit the repaired workspace and
   // matching outbox snapshot together so an old queued snapshot cannot remove local pack rows.
   if(window.NexusRepairCurriculumState&&window.NexusStorageKey&&queue){
-   const beforeRepair=JSON.stringify(state);
+   const beforeRepairState=state;
    state=window.NexusRepairCurriculumState(state);
-   if(JSON.stringify(state)!==beforeRepair){
+   if(!(await sameWorkspace({state:beforeRepairState,featureState:{}},{state,featureState:{}}))){
     const repairPayload={state:clone(state),featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}};
     queue.commitWorkspace(localStorage,[{key:window.NexusStorageKey,value:JSON.stringify(state)}],repairPayload,{baseServerVersion:pending?pending.baseServerVersion:(priorStamp||null),returnOperationPayload:false});
     pending=queue.getPending(localStorage,uploadUserId);
