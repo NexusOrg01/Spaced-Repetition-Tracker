@@ -56,7 +56,9 @@
   function nearestFutureExam(){return state.exams.filter(e=>safeDate(e.date)&&e.date>=today()).sort((a,b)=>a.date.localeCompare(b.date))[0]||null;}
   function updateKpis(){
     let activeCount=0,due=0,weak=0,mastered=0;
+    let topicOrder=0;
     for(const topic of state.topics){
+      const order=topicOrder++;
       if(topic.archived)continue;activeCount++;
       const st=status(topic),meta=featureMeta(topic);
       if(st==='overdue'||st==='due')due++;
@@ -157,7 +159,7 @@
     const subjectStats=new Map(state.subjects.map(sub=>[String(sub.id),{
       sub,total:0,reviewed:0,mastered:0,weak:0,averageSum:0,target:fNum(fsState.syllabusTargets[sub.id])||0
     }]));
-    const compareDetailed=(a,b)=>a.meta.score-b.meta.score||b.priority-a.priority;
+    const compareDetailed=(a,b)=>a.meta.score-b.meta.score||b.priority-a.priority||a.order-b.order;
     const detailedCollector=window.NexusCreateTopKCollector(40,compareDetailed);
     // Aggregate each topic once. The previous subject-by-subject filtering was
     // O(subjects × topics), followed by a full sort merely to display 40 rows.
@@ -170,7 +172,7 @@
       if(topic.reviewCount>0){row.reviewed++;row.averageSum+=meta.avg;}
       if(topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&topicStatus!=='overdue')row.mastered++;
       if(meta.weak)row.weak++;
-      detailedCollector.add({topic,meta,priority:topicPriority(topic,meta)});
+      detailedCollector.add({topic,meta,priority:topicPriority(topic,meta),order});
     }
     const rows=Array.from(subjectStats.values()).map(row=>{
       const coverage=row.target>0?Math.min(100,Math.round(row.total/row.target*100)):row.total?Math.round(row.reviewed/row.total*100):0;
