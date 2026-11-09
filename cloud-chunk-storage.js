@@ -29,22 +29,50 @@ function utf8ByteLength(value){
  }
  return bytes;
 }
-function splitUtf8(value){
- const chunks=[];
- let current='',currentBytes=0;
- for(const character of value){
-  const code=character.codePointAt(0);
-  const bytes=code<=0x7f?1:code<=0x7ff?2:code<=0xffff?3:4;
-  if(current&&currentBytes+bytes>CHUNK_BYTES){
-   chunks.push(current);
-   current='';
-   currentBytes=0;
+function splitUtf8Ranges(value){
+ const ranges=[];
+ let start=0,bytes=0;
+ for(let offset=0;offset<value.length;){
+  const code=value.codePointAt(offset),length=code>0xffff?2:1;
+  const size=code<=0x7f?1:code<=0x7ff?2:code<=0xffff?3:4;
+  if(bytes&&bytes+size>CHUNK_BYTES){
+   ranges.push({start,end:offset,bytes});
+   start=offset;bytes=0;
   }
-  current+=character;
-  currentBytes+=bytes;
+  bytes+=size;
+  offset+=length;
  }
- if(current||!chunks.length)chunks.push(current);
- return chunks;
+ if(offset>start||!ranges.length)ranges.push({start,end:offset,bytes});
+ return ranges;
+}
+function splitUtf8(value){
+ return splitUtf8Ranges(value).map(range=>value.slice(range.start,range.end));
+}
+function yieldToBrowser(){
+ return new Promise(resolve=>{
+  if(root&&typeof root.setTimeout==='function')root.setTimeout(resolve,0);
+  else setTimeout(resolve,0);
+ });
+}
+async function splitUtf8RangesAsync(value){
+ const ranges=[];
+ let start=0,bytes=0,lastYield=0;
+ for(let offset=0;offset<value.length;){
+  const code=value.codePointAt(offset),length=code>0xffff?2:1;
+  const size=code<=0x7f?1:code<=0x7ff?2:code<=0xffff?3:4;
+  if(bytes&&bytes+size>CHUNK_BYTES){
+   ranges.push({start,end:offset,bytes});
+   start=offset;bytes=0;
+  }
+  bytes+=size;
+  offset+=length;
+  if(offset-lastYield>=1024*1024){
+   await yieldToBrowser();
+   lastYield=offset;
+  }
+ }
+ if(offset>start||!ranges.length)ranges.push({start,end:offset,bytes});
+ return ranges;
 }
 function secureRevisionId(){
  const cryptoApi=root&&root.crypto;
@@ -83,30 +111,34 @@ function assertManifest(manifest){
 async function readSnapshot(client,userId,manifest){
  if(!client||typeof userId!=='string'||!userId)throw fail('A verified account is required to read cloud workspace chunks.');
  assertManifest(manifest);
- const rows=[];
+ // Keep only one database page in memory. Retaining every row and then joining
+ // all chunk_data doubled the large snapshot's string footprint on low-memory devices.
+ let serialized='',totalBytes=0,expectedIndex=0;
  for(let offset=0;offset<manifest.chunkCount;offset+=READ_BATCH_SIZE){
+  const pageCount=Math.min(READ_BATCH_SIZE,manifest.chunkCount-offset);
   const result=await client.from(TABLE)
    .select('chunk_index,chunk_count,chunk_bytes,chunk_data')
    .eq('user_id',userId)
    .eq('revision_id',manifest.revisionId)
    .order('chunk_index',{ascending:true})
-   .range(offset,Math.min(manifest.chunkCount-1,offset+READ_BATCH_SIZE-1));
+   .range(offset,offset+pageCount-1);
   if(result&&result.error)throw result.error;
-  if(!result||!Array.isArray(result.data)||result.data.length!==Math.min(READ_BATCH_SIZE,manifest.chunkCount-offset)){
+  if(!result||!Array.isArray(result.data)||result.data.length!==pageCount){
    throw fail('The published cloud workspace is incomplete. This device’s local workspace and pending changes have been preserved.');
   }
-  rows.push(...result.data);
- }
- let serialized='';
- for(let index=0;index<rows.length;index++){
-  const row=rows[index];
-  if(!row||row.chunk_index!==index||row.chunk_count!==manifest.chunkCount||
-    typeof row.chunk_data!=='string'||row.chunk_bytes!==utf8ByteLength(row.chunk_data)){
-   throw fail('A cloud workspace chunk failed its structural integrity check. Local data remains preserved.');
+  for(const row of result.data){
+   if(!row||row.chunk_index!==expectedIndex||row.chunk_count!==manifest.chunkCount||
+     typeof row.chunk_data!=='string'){
+    throw fail('A cloud workspace chunk failed its structural integrity check. Local data remains preserved.');
+   }
+   const actualBytes=utf8ByteLength(row.chunk_data);
+   if(row.chunk_bytes!==actualBytes)throw fail('A cloud workspace chunk failed its byte-length integrity check. Local data remains preserved.');
+   totalBytes+=actualBytes;
+   serialized+=row.chunk_data;
+   expectedIndex++;
   }
-  serialized+=row.chunk_data;
  }
- if(utf8ByteLength(serialized)!==manifest.totalBytes)throw fail('The cloud workspace size does not match its published manifest. Local data remains preserved.');
+ if(expectedIndex!==manifest.chunkCount||totalBytes!==manifest.totalBytes)throw fail('The cloud workspace size does not match its published manifest. Local data remains preserved.');
  const digest=await sha256(serialized);
  if(digest!==manifest.sha256)throw fail('The cloud workspace failed SHA-256 verification. Local data remains preserved.');
  let payload;
@@ -116,6 +148,31 @@ async function readSnapshot(client,userId,manifest){
   throw fail('The reconstructed cloud workspace has an unsupported format. Local data remains preserved.');
  }
  return payload;
+}
+async function verifySnapshotChunks(client,userId,manifest,serialized,ranges){
+ let expectedIndex=0;
+ for(let offset=0;offset<manifest.chunkCount;offset+=READ_BATCH_SIZE){
+  const pageCount=Math.min(READ_BATCH_SIZE,manifest.chunkCount-offset);
+  const result=await client.from(TABLE)
+   .select('chunk_index,chunk_count,chunk_bytes,chunk_data')
+   .eq('user_id',userId)
+   .eq('revision_id',manifest.revisionId)
+   .order('chunk_index',{ascending:true})
+   .range(offset,offset+pageCount-1);
+  if(result&&result.error)throw result.error;
+  if(!result||!Array.isArray(result.data)||result.data.length!==pageCount){
+   throw fail('Cloud chunk upload could not be read back completely. The previous published snapshot is unchanged and the pending local snapshot is preserved.');
+  }
+  for(const row of result.data){
+   const range=ranges[expectedIndex];
+   if(!row||!range||row.chunk_index!==expectedIndex||row.chunk_count!==manifest.chunkCount||
+     row.chunk_bytes!==range.bytes||row.chunk_data!==serialized.slice(range.start,range.end)){
+    throw fail('Cloud chunk upload failed exact read-back verification. The previous published snapshot is unchanged and the pending local snapshot is preserved.');
+   }
+   expectedIndex++;
+  }
+ }
+ if(expectedIndex!==manifest.chunkCount)throw fail('Cloud chunk upload could not be fully verified. The previous published snapshot is unchanged and the pending local snapshot is preserved.');
 }
 async function cleanupOldChunks(client,userId,activeRevisionId){
  const cutoff=new Date(Date.now()-CLEANUP_AGE_MS).toISOString();
@@ -139,25 +196,28 @@ async function writeSnapshot(client,userId,payload,expectedStamp,stamp,backupUti
  const serialized=typeof serializedOverride==='string'?serializedOverride:JSON.stringify(payload);
  if(typeof serialized!=='string'||!serialized)throw fail('The workspace could not be serialized for cloud sync.');
  const totalBytes=utf8ByteLength(serialized);
- const chunks=splitUtf8(serialized);
- if(chunks.length>MAX_CHUNKS)throw fail('This workspace exceeds the safe chunk-count limit. Its local backup and pending sync snapshot remain preserved.');
+ const ranges=await splitUtf8RangesAsync(serialized);
+ if(ranges.length>MAX_CHUNKS)throw fail('This workspace exceeds the safe chunk-count limit. Its local backup and pending sync snapshot remain preserved.');
  const revisionId=secureRevisionId();
  const manifest={
   [MARKER_KEY]:FORMAT,
   version:1,
   revisionId,
-  chunkCount:chunks.length,
+  chunkCount:ranges.length,
   totalBytes,
   sha256:await sha256(serialized)
  };
- for(let offset=0;offset<chunks.length;offset+=INSERT_BATCH_SIZE){
-  const batch=chunks.slice(offset,offset+INSERT_BATCH_SIZE).map((chunk,index)=>({
+ // Slice only the current small upload batch. The old implementation materialised
+ // every chunk up front and then reconstructed/parses the full workspace again for
+ // read-back verification, creating several simultaneous copies of a large snapshot.
+ for(let offset=0;offset<ranges.length;offset+=INSERT_BATCH_SIZE){
+  const batch=ranges.slice(offset,offset+INSERT_BATCH_SIZE).map((range,index)=>({
    user_id:userId,
    revision_id:revisionId,
    chunk_index:offset+index,
-   chunk_count:chunks.length,
-   chunk_bytes:utf8ByteLength(chunk),
-   chunk_data:chunk
+   chunk_count:ranges.length,
+   chunk_bytes:range.bytes,
+   chunk_data:serialized.slice(range.start,range.end)
   }));
   const inserted=await client.from(TABLE).insert(batch).select('chunk_index');
   if(inserted&&inserted.error)throw inserted.error;
@@ -165,11 +225,10 @@ async function writeSnapshot(client,userId,payload,expectedStamp,stamp,backupUti
    throw fail('Cloud chunk upload could not be confirmed. The previous published snapshot is unchanged and the pending local snapshot is preserved.');
   }
  }
- // Verify every immutable chunk before moving the active cloud revision pointer.
- await readSnapshot(client,userId,manifest);
+ // Verify database contents against the source string page by page. Do not rebuild
+ // and JSON.parse another copy of the entire payload just to verify an upload.
+ await verifySnapshotChunks(client,userId,manifest,serialized,ranges);
  await backupUtils.writeCloudSnapshot(client,userId,manifest,expectedStamp,stamp);
- // Read back the small publication row. The chunk contents were already fully
- // read back and hashed; the manifest update is the atomic publication step.
  const published=await client.from('nexus_user_data').select('payload,updated_at').eq('user_id',userId).maybeSingle();
  if(published&&published.error)throw published.error;
  if(!published||!published.data||!sameManifest(published.data.payload,manifest)){
@@ -183,6 +242,6 @@ async function writeSnapshot(client,userId,payload,expectedStamp,stamp,backupUti
 
 return {
  TABLE,FORMAT,CHUNK_BYTES,INSERT_BATCH_SIZE,READ_BATCH_SIZE,CHUNK_THRESHOLD_BYTES,
- isManifest,sameManifest,utf8ByteLength,splitUtf8,readSnapshot,writeSnapshot,cleanupOldChunks
+ isManifest,sameManifest,utf8ByteLength,splitUtf8,splitUtf8Ranges,readSnapshot,writeSnapshot,cleanupOldChunks
 };
 });
