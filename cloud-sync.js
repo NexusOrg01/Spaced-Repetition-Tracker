@@ -14,7 +14,11 @@ function syncDiagSummary(payload){
  const features=payload&&payload.featureState&&typeof payload.featureState==='object'?payload.featureState:{};
  const counts={streamCount:Array.isArray(s.streams)?s.streams.length:0,subjectCount:Array.isArray(s.subjects)?s.subjects.length:0,topicCount:Array.isArray(s.topics)?s.topics.length:0,reviewHistoryCount:Array.isArray(s.history)?s.history.length:0,examCount:Array.isArray(s.exams)?s.exams.length:0,journalCount:Array.isArray(features.journal)?features.journal.length:0,paperCount:Array.isArray(features.papers)?features.papers.length:0,goalCount:Array.isArray(features.goals)?features.goals.length:0,studyLogCount:Array.isArray(features.studyLogs)?features.studyLogs.length:0};
  counts.totalRecordCount=Object.values(counts).reduce((total,count)=>total+count,0);
- return {hasPackInstallIntent:packInstalled.length>0,packInstallMarkerCount:packInstalled.length,packDeletionMarkerCount:packDeleted.length,...counts,hasSettings:!!s.settings};
+ // Record only aggregate size metrics. Never persist the serialized snapshot or study content.
+ const serialized=payload?JSON.stringify(payload):'';
+ let utf8Bytes=serialized.length;
+ try{utf8Bytes=typeof TextEncoder==='function'?new TextEncoder().encode(serialized).length:new Blob([serialized]).size;}catch(_){}
+ return {hasPackInstallIntent:packInstalled.length>0,packInstallMarkerCount:packInstalled.length,packDeletionMarkerCount:packDeleted.length,...counts,hasSettings:!!s.settings,serializedPayloadCharacters:serialized.length,serializedPayloadUtf8Bytes:utf8Bytes};
 }
 function syncDiag(stage,payload,extra){
  if(!SYNC_DIAG_ENABLED)return;
@@ -23,7 +27,7 @@ function syncDiag(stage,payload,extra){
 function downloadSyncDiagnostics(){
  if(!SYNC_DIAG_ENABLED)return;
  let events=[];try{events=JSON.parse(localStorage.getItem(SYNC_DIAG_KEY)||'[]');}catch(_){}
- const report={app:'Nexus sync diagnostic',schema:1,generatedAt:new Date().toISOString(),note:'Contains stage names, aggregate workspace record counts, serialized-character estimates, timings and safe error codes/messages. No account identifiers, credentials, topic names or study content.',events};
+ const report={app:'Nexus sync diagnostic',schema:2,generatedAt:new Date().toISOString(),note:'Contains stage names, aggregate workspace record counts, serialized-character and UTF-8 byte estimates, timings and safe error codes/messages. No account identifiers, credentials, topic names or study content.',events};
  const blob=new Blob([JSON.stringify(report,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');
  link.href=url;link.download='nexus-sync-diagnostics.json';document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
 }
