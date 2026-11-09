@@ -103,6 +103,14 @@ const makePayload=(label,repeat=6000)=>({
  featureState:{version:1,journal:[],papers:[],goals:[],studyLogs:[],settings:{},label}
 });
 
+const unicodeBoundary='a'.repeat(chunks.CHUNK_BYTES-1)+'😀'+'b'.repeat(12);
+for(const source of ['', 'plain ASCII', 'සිංහල தமிழ் 😀', unicodeBoundary]){
+  const parts=chunks.splitUtf8(source);
+  assert.equal(parts.join(''),source,'UTF-8 splitting must reconstruct the original text exactly');
+  assert.ok(parts.every(part=>chunks.utf8ByteLength(part)<=chunks.CHUNK_BYTES),'every UTF-8 chunk must remain within the configured byte limit');
+}
+assert.ok(chunks.splitUtf8(unicodeBoundary).length>1,'a four-byte code point crossing a chunk boundary must begin intact in the next chunk');
+
 const cloud=new MemoryCloud();
 const firstPayload=makePayload('large-A',72000);
 const first=await chunks.writeSnapshot(cloud,OWNER_A,firstPayload,null,'2026-11-09T05:00:00.000Z',backup);
