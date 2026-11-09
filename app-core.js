@@ -63,11 +63,51 @@
     'Economics':'ආර්ථික විද්‍යාව','ECON':'ආර්ථික විද්‍යාව'
   };
   const RATING_LABELS = {1:'Again',2:'Hard',3:'Good',4:'Very good',5:'Easy'};
-  let state, undoState=null, undoTimer=null, toastTimer=null, editTopicId=null, reviewTopicId=null, selectedReviewRating=null, editStreamId=null, editSubjectId=null, editExamId=null, installPrompt=window.NexusInstallPrompt||null, topicVisibleLimit=100, historyVisibleLimit=100, historyInsightsDirty=true, historySortedCache=null, historySortedCacheSource=null, historySortedCacheLength=-1, historySortedCacheFirst=null, historyMetricsCache=null;
+  let state, undoState=null, undoTimer=null, toastTimer=null, editTopicId=null, reviewTopicId=null, selectedReviewRating=null, editStreamId=null, editSubjectId=null, editExamId=null, installPrompt=window.NexusInstallPrompt||null, topicVisibleLimit=100, historyVisibleLimit=100, historyInsightsDirty=true, historyMetricsCache=null;
   const $ = id => document.getElementById(id);
   const clone = obj => JSON.parse(JSON.stringify(obj));
   const makeId = prefix => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  function createTopKCollector(limit,compare){
+    const capacity=Math.max(0,Math.floor(Number(limit)||0)),heap=[];
+    let count=0;
+    function siftDown(index){
+      while(true){
+        const left=index*2+1,right=left+1;
+        let worst=index;
+        if(left<heap.length&&compare(heap[left],heap[worst])>0)worst=left;
+        if(right<heap.length&&compare(heap[right],heap[worst])>0)worst=right;
+        if(worst===index)return;
+        [heap[index],heap[worst]]=[heap[worst],heap[index]];
+        index=worst;
+      }
+    }
+    function siftUp(index){
+      while(index>0){
+        const parent=(index-1)>>1;
+        if(compare(heap[parent],heap[index])>=0)return;
+        [heap[index],heap[parent]]=[heap[parent],heap[index]];
+        index=parent;
+      }
+    }
+    return {
+      add(item){
+        if(item===null||item===undefined)return;
+        count++;
+        if(!capacity)return;
+        if(heap.length<capacity){heap.push(item);siftUp(heap.length-1);}
+        else if(compare(item,heap[0])<0){heap[0]=item;siftDown(0);}
+      },
+      finish(){heap.sort(compare);return {items:heap,count};}
+    };
+  }
+  function selectTopK(items,limit,compare,project=value=>value){
+    const collector=createTopKCollector(limit,compare);
+    for(const source of items)collector.add(project(source));
+    return collector.finish();
+  }
+  window.NexusCreateTopKCollector=createTopKCollector;
+  window.NexusSelectTopK=selectTopK;
   function today(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
   function validDate(s){if(!/^\d{4}-\d{2}-\d{2}$/.test(String(s||'')))return false;const [y,m,d]=s.split('-').map(Number);const x=new Date(y,m-1,d);return x.getFullYear()===y&&x.getMonth()===m-1&&x.getDate()===d;}
   function plusDays(date,days){if(!validDate(date))return '';const d=new Date(date+'T12:00:00');d.setDate(d.getDate()+Number(days));return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
@@ -412,43 +452,62 @@
     return false;
   }
   function renderTopics(){
-    // Keep the DOM bounded on low-memory phones. A large cloud workspace can contain
-    // tens of thousands of topics; rendering every card at once can exhaust WebView memory.
+    // Keep both intermediate memory and the DOM bounded. The tracker can contain
+    // tens of thousands of topics; retain only the current page while scanning it.
     renderStructureList();
     const q=$('topicSearch').value.trim().toLocaleLowerCase(),streamId=$('topicStreamFilter').value,subjectId=$('topicSubjectFilter').value,stat=$('topicStatusFilter').value,sort=$('topicSort').value;
-    const allActive=activeTopics();
-    let items=allActive.filter(t=>{const sub=subjectFor(t),st=streamFor(sub),stt=status(t);return (!q||[t.name,t.notes,sub?.name,st?.name].some(x=>String(x||'').toLocaleLowerCase().includes(q)))&&(streamId==='ALL'||st?.id===streamId)&&(subjectId==='ALL'||t.subjectId===subjectId)&&(stat==='ALL'||(stat==='due-now'?['overdue','due'].includes(stt):stt===stat));});
-    items.sort((a,b)=>{if(sort==='name')return naturalCompare(a.name,b.name);if(sort==='stream'){const aa=subjectDisplay(a),bb=subjectDisplay(b);return naturalCompare(aa.stream,bb.stream)||naturalCompare(aa.subject,bb.subject)||naturalCompare(a.name,b.name);}if(sort==='least')return a.reviewCount-b.reviewCount||naturalCompare(a.name,b.name);return dueRank(status(a))-dueRank(status(b))||(a.dueDate||'9999').localeCompare(b.dueDate||'9999')||naturalCompare(a.name,b.name);});
-    const visible=items.slice(0,topicVisibleLimit),remaining=items.length-visible.length;
-    $('topicCountLabel').textContent=`Showing ${visible.length} of ${items.length} matching topics (${allActive.length} active)`;
-    const cards=visible.map(t=>{const d=subjectDisplay(t),s=status(t);return `<article class="topic-card"><div class="topic-card-top"><div style="min-width:0"><div class="topic-name">${esc(t.name)}</div><div class="topic-sub">${esc(d.stream)} · ${esc(d.subject)}</div></div><span class="pill ${s}">${statusText(s)}</span></div>${t.notes?`<div class="topic-note">${esc(t.notes)}</div>`:''}<div class="topic-details"><span>Last: ${fmtDate(t.lastReviewed)}</span><span>Next: ${fmtDate(t.dueDate)}</span><span>Interval: ${t.intervalDays||'—'}d</span><span>Reviews: ${t.reviewCount}</span></div><div class="topic-actions"><button class="btn btn-sm btn-primary" data-action="review" data-id="${esc(t.id)}">Review</button><button class="btn btn-sm" data-action="edit-topic" data-id="${esc(t.id)}">Edit</button><span class="spacer"></span><button class="btn btn-sm btn-danger" data-action="delete-topic" data-id="${esc(t.id)}">Delete</button></div></article>`;}).join('');
-    const more=remaining? `<div style="grid-column:1/-1;display:flex;justify-content:center;padding:12px"><button type="button" class="btn btn-sm" data-action="show-more-topics">Show 100 more topics (${remaining} remaining)</button></div>`:'';
+    const subjectById=new Map(state.subjects.map(subject=>[String(subject.id),subject]));
+    const streamById=new Map(state.streams.map(stream=>[String(stream.id),stream]));
+    const compare=(a,b)=>{
+      if(sort==='name')return naturalCompare(a.topic.name,b.topic.name)||a.order-b.order;
+      if(sort==='stream')return naturalCompare(a.stream,b.stream)||naturalCompare(a.subject,b.subject)||naturalCompare(a.topic.name,b.topic.name)||a.order-b.order;
+      if(sort==='least')return a.topic.reviewCount-b.topic.reviewCount||naturalCompare(a.topic.name,b.topic.name)||a.order-b.order;
+      return dueRank(a.status)-dueRank(b.status)||(a.topic.dueDate||'9999').localeCompare(b.topic.dueDate||'9999')||naturalCompare(a.topic.name,b.topic.name)||a.order-b.order;
+    };
+    let activeCount=0,topicOrder=0;
+    const selection=selectTopK(state.topics,topicVisibleLimit,compare,topic=>{
+      const order=topicOrder++;
+      if(topic.archived)return null;
+      activeCount++;
+      const subject=subjectById.get(String(topic.subjectId)),stream=subject?streamById.get(String(subject.streamId)):null;
+      const topicStatus=status(topic);
+      if(q&&![topic.name,topic.notes,subject?.name,stream?.name].some(value=>String(value||'').toLocaleLowerCase().includes(q)))return null;
+      if(streamId!=='ALL'&&stream?.id!==streamId)return null;
+      if(subjectId!=='ALL'&&topic.subjectId!==subjectId)return null;
+      if(stat!=='ALL'&&(stat==='due-now'?!['overdue','due'].includes(topicStatus):topicStatus!==stat))return null;
+      return {topic,status:topicStatus,subject:subject?.name||'Unknown subject',stream:stream?.name||'Unknown stream',order};
+    });
+    const visible=selection.items,remaining=selection.count-visible.length;
+    $('topicCountLabel').textContent=`Showing ${visible.length} of ${selection.count} matching topics (${activeCount} active)`;
+    const cards=visible.map(({topic:t,status:s,subject,stream})=>`<article class="topic-card"><div class="topic-card-top"><div style="min-width:0"><div class="topic-name">${esc(t.name)}</div><div class="topic-sub">${esc(stream)} · ${esc(subject)}</div></div><span class="pill ${s}">${statusText(s)}</span></div>${t.notes?`<div class="topic-note">${esc(t.notes)}</div>`:''}<div class="topic-details"><span>Last: ${fmtDate(t.lastReviewed)}</span><span>Next: ${fmtDate(t.dueDate)}</span><span>Interval: ${t.intervalDays||'—'}d</span><span>Reviews: ${t.reviewCount}</span></div><div class="topic-actions"><button class="btn btn-sm btn-primary" data-action="review" data-id="${esc(t.id)}">Review</button><button class="btn btn-sm" data-action="edit-topic" data-id="${esc(t.id)}">Edit</button><span class="spacer"></span><button class="btn btn-sm btn-danger" data-action="delete-topic" data-id="${esc(t.id)}">Delete</button></div></article>`).join('');
+    const more=remaining?`<div style="grid-column:1/-1;display:flex;justify-content:center;padding:12px"><button type="button" class="btn btn-sm" data-action="show-more-topics">Show 100 more topics (${remaining} remaining)</button></div>`:'';
     $('topicGrid').innerHTML=cards||`<div class="panel" style="grid-column:1/-1"><div class="empty"><strong>No matching topics</strong>Change the filters or add a topic.</div></div>`;
     if(more)$('topicGrid').insertAdjacentHTML('beforeend',more);
   }
   function compareHistoryRows(a,b){return b.reviewedAt.localeCompare(a.reviewedAt)||String(b.id).localeCompare(String(a.id));}
-  function getSortedHistory(){
-    const entries=state.history;
-    if(historySortedCache&&historySortedCacheSource===entries){
-      if(historySortedCacheLength===entries.length)return historySortedCache;
-      if(entries.length===historySortedCacheLength+1&&entries[1]===historySortedCacheFirst&&entries[0]){
-        const record=entries[0];let low=0,high=historySortedCache.length;
-        while(low<high){const middle=(low+high)>>1;if(compareHistoryRows(record,historySortedCache[middle])<0)high=middle;else low=middle+1;}
-        historySortedCache.splice(low,0,record);historySortedCacheLength=entries.length;historySortedCacheFirst=record;return historySortedCache;
-      }
-    }
-    historySortedCache=entries.slice().sort(compareHistoryRows);historySortedCacheSource=entries;historySortedCacheLength=entries.length;historySortedCacheFirst=entries[0];
-    return historySortedCache;
-  }  function renderHistory(){const q=$('historySearch').value.trim().toLocaleLowerCase(),streamId=$('historyStreamFilter').value,subjectId=$('historySubjectFilter').value;const subjectById=new Map(state.subjects.map(x=>[x.id,x])),subjectByName=new Map(state.subjects.map(x=>[x.name,x])),streamById=new Map(state.streams.map(x=>[x.id,x])),streamByName=new Map(state.streams.map(x=>[x.name,x]));const orderedHistory=getSortedHistory();const filtered=orderedHistory.filter(h=>{const subject=subjectById.get(h.subjectId)||subjectByName.get(h.subjectName),stream=streamById.get(h.streamId)||streamByName.get(h.streamName)||streamById.get(subject?.streamId);return(!q||[h.topicName,h.subjectName,h.streamName,h.note].some(x=>String(x||'').toLocaleLowerCase().includes(q)))&&(streamId==='ALL'||stream?.id===streamId)&&(subjectId==='ALL'||subject?.id===subjectId);});
-    const visible=filtered.slice(0,historyVisibleLimit);
+  function renderHistory(){
+    const q=$('historySearch').value.trim().toLocaleLowerCase(),streamId=$('historyStreamFilter').value,subjectId=$('historySubjectFilter').value;
+    const subjectById=new Map(state.subjects.map(x=>[String(x.id),x])),subjectByName=new Map(state.subjects.map(x=>[String(x.name),x]));
+    const streamById=new Map(state.streams.map(x=>[String(x.id),x])),streamByName=new Map(state.streams.map(x=>[String(x.name),x]));
+    const compare=(a,b)=>compareHistoryRows(a.record,b.record)||a.order-b.order;
+    let historyOrder=0;
+    const selection=selectTopK(state.history,historyVisibleLimit,compare,h=>{
+      const order=historyOrder++;
+      const subject=subjectById.get(String(h.subjectId||''))||subjectByName.get(String(h.subjectName||''));
+      const stream=streamById.get(String(h.streamId||''))||streamByName.get(String(h.streamName||''))||streamById.get(String(subject?.streamId||''));
+      const matches=(!q||[h.topicName,h.subjectName,h.streamName,h.note].some(x=>String(x||'').toLocaleLowerCase().includes(q)))&&
+        (streamId==='ALL'||stream?.id===streamId)&&(subjectId==='ALL'||subject?.id===subjectId);
+      return matches?{record:h,order}:null;
+    });
+    const visible=selection.items.map(item=>item.record);
     $('historyList').innerHTML=visible.length?visible.map(h=>`<article class="history-entry"><div><h3>${esc(h.topicName)}</h3><p>${esc(h.streamName)} · ${esc(h.subjectName)} · ${fmtDate(h.reviewedAt)}</p><p>Next: ${fmtDate(h.dueDate)} · ${h.intervalDays} day interval</p>${h.note?`<div class="history-note">${esc(h.note)}</div>`:''}<div class="history-actions"><button class="btn btn-sm btn-danger" data-action="delete-history" data-id="${esc(h.id)}">Delete entry</button></div></div><div class="history-score">${h.rating}/5<br><span class="muted small">${esc(RATING_LABELS[h.rating])}</span></div></article>`).join(''):`<div class="panel"><div class="empty"><strong>No review records found</strong>Completed reviews will appear here.</div></div>`;
-    $('historyCountLabel').textContent=`Showing ${visible.length} of ${filtered.length} matching records (${state.history.length} total). Deleting an entry also removes that review from Analytics and future exports; topic schedules remain unchanged.`;
-    $('historyPagination').hidden=visible.length>=filtered.length;
+    $('historyCountLabel').textContent=`Showing ${visible.length} of ${selection.count} matching records (${state.history.length} total). Deleting an entry also removes that review from Analytics and future exports; topic schedules remain unchanged.`;
+    $('historyPagination').hidden=visible.length>=selection.count;
     if(historyInsightsDirty){renderHistoryInsights();historyInsightsDirty=false;}
   }
   function renderStructureList(){
-    const topicCounts=new Map(),subjectsByStream=new Map(),active=activeTopics();
-    for(const topic of active)topicCounts.set(topic.subjectId,(topicCounts.get(topic.subjectId)||0)+1);
+    const topicCounts=new Map(),subjectsByStream=new Map();
+    for(const topic of state.topics)if(!topic.archived)topicCounts.set(topic.subjectId,(topicCounts.get(topic.subjectId)||0)+1);
     for(const subject of state.subjects){
       if(!subjectsByStream.has(subject.streamId))subjectsByStream.set(subject.streamId,[]);
       subjectsByStream.get(subject.streamId).push(subject);
@@ -601,7 +660,7 @@
   // Delegate review actions once so dynamically rendered due and upcoming queues work consistently.
   document.addEventListener('click',e=>{const b=e.target.closest('button[data-action="review"]');if(!b)return;openReview(b.dataset.id);});
   $('topicGrid').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='edit-topic')openTopic(id);if(action==='delete-topic')deleteTopic(id);if(action==='show-more-topics'){topicVisibleLimit+=100;renderTopics();}});
-  $('historyList').addEventListener('click',e=>{const b=e.target.closest('button[data-action="delete-history"]');if(!b)return;const id=b.dataset.id;const entry=state.history.find(h=>h.id===id);if(!entry||!confirm('DANGER ZONE — Delete this review record?\n\nThis review will disappear from rating analytics and future history exports. The topic schedule will not change. Use Undo immediately or restore a backup if needed. Continue?'))return;startUndo('History entry deleted.');state.history=state.history.filter(h=>h.id!==id);historyInsightsDirty=true;historySortedCache=null;save();renderHistory();notify('History entry deleted.',true);});
+  $('historyList').addEventListener('click',e=>{const b=e.target.closest('button[data-action="delete-history"]');if(!b)return;const id=b.dataset.id;const entry=state.history.find(h=>h.id===id);if(!entry||!confirm('DANGER ZONE — Delete this review record?\n\nThis review will disappear from rating analytics and future history exports. The topic schedule will not change. Use Undo immediately or restore a backup if needed. Continue?'))return;startUndo('History entry deleted.');state.history=state.history.filter(h=>h.id!==id);historyInsightsDirty=true;save();renderHistory();notify('History entry deleted.',true);});
   $('structureList').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='edit-stream')openStream(id);if(action==='delete-stream')deleteStream(id);if(action==='add-subject-to-stream')openSubject(null,id);if(action==='edit-subject')openSubject(id);if(action==='delete-subject')deleteSubject(id);});
   $('examList').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;if(b.dataset.action==='edit-exam')openExam(b.dataset.id);if(b.dataset.action==='delete-exam')deleteExam(b.dataset.id);});
   let topicSearchTimer=0,historySearchTimer=0,exploreSearchTimer=0;
@@ -806,7 +865,7 @@
         if(!confirm(`DANGER ZONE — Delete this review record?\n\nTopic: "${h.topicName}"\nDate: ${h.reviewedAt}\nRating: ${h.rating}/5\n\nThis review will be removed from rating analytics and future history exports. The topic schedule will not change. Use Undo immediately or restore a backup if needed.`)) return;
         startUndo('History entry deleted');
         state.history = state.history.filter(x=>x.id!==id);
-        historyInsightsDirty=true;historySortedCache=null;
+        historyInsightsDirty=true;
         save(); renderHistory();
       }, true);
     }
