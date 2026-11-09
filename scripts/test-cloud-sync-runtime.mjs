@@ -20,6 +20,34 @@ const commercePack = commerceCatalogue.packs.find(pack => pack.id === 'sl-al-com
 const workspaceMerge = require('../workspace-sync-merge.js');
 const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
 
+const syncMarkerLimitMatch=source.match(/const MAX_SYNC_CURRICULUM_MARKERS=(\d+);/);
+const mergeStateStart=source.indexOf('function mergeState(local,remote){');
+const mergeStateEnd=source.indexOf('function hasLocalWork(',mergeStateStart);
+assert.ok(syncMarkerLimitMatch&&Number(syncMarkerLimitMatch[1])>=12032,
+  'cloud-side account merge must use a marker limit large enough for batch deletion');
+assert.ok(mergeStateStart>=0&&mergeStateEnd>mergeStateStart,'cloud-side guest/account merge helper must be available');
+const mergeStateSandbox={
+  clone:value=>JSON.parse(JSON.stringify(value)),
+  normalizeState:value=>({...value,settings:{...(value.settings||{})}}),
+  window:{NexusCurriculumIntegrity:{reconcileMergedIntents(){return {changed:false,conflicts:[]};}}}
+};
+vm.createContext(mergeStateSandbox);
+vm.runInContext(syncMarkerLimitMatch[0]+'\n'+source.slice(mergeStateStart,mergeStateEnd),mergeStateSandbox,{filename:'cloud-merge-state.js'});
+const largeInstallMarkers=Array.from({length:12032},(_,index)=>'installed:topic:synthetic-pack:synthetic-subject:'+JSON.stringify('Topic '+index));
+const largeDeleteMarkers=Array.from({length:12032},(_,index)=>'deleted:topic:synthetic-pack:synthetic-subject:'+JSON.stringify('Topic '+index));
+const mergedMarkerState=mergeStateSandbox.mergeState({
+  streams:[],subjects:[],topics:[],exams:[],history:[],
+  settings:{installedCurricula:largeInstallMarkers,curriculumTombstones:largeDeleteMarkers}
+},{
+  streams:[],subjects:[],topics:[],exams:[],history:[],
+  settings:{installedCurricula:[],curriculumTombstones:[]}
+});
+assert.equal(mergedMarkerState.settings.installedCurricula.length,12032,
+  'guest/account workspace merge must retain more than 5,000 granular install markers');
+assert.equal(mergedMarkerState.settings.curriculumTombstones.length,12032,
+  'guest/account workspace merge must retain all 12,032 deletion markers');
+
+
 const initializationStart=source.indexOf('async function initializeSession(s){');
 const initializationEnd=source.indexOf('async function sameWorkspace(',initializationStart);
 assert.ok(initializationStart>=0&&initializationEnd>initializationStart,'cloud initialization source must be inspectable');
