@@ -15,7 +15,34 @@
   let focusGoalCacheKey='',focusGoalLoggedMinutes=0;
   function saveFs(){focusGoalCacheKey='';try{if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[{key:FEATURE_KEY,value:JSON.stringify(fsState)}],{state,featureState:fsState},{returnOperationPayload:false});if(window.NexusCloudSync)window.NexusCloudSync.schedule();return true;}catch(e){console.error(e);try{notify('Study Hub data could not be saved. Export a backup now.');}catch(_){}return false;}}
   window.NexusFeatureStorageKey=FEATURE_KEY;window.NexusNormalizeFeatureState=value=>window.NexusBackupRestoreUtils.normalizeFeatureState(value,freshFeatureState());window.NexusMergeFeatureState=(current,imported,rawImported)=>window.NexusBackupRestoreUtils.mergeFeatureState(current,imported,freshFeatureState(),rawImported);window.NexusGetFeatureState=()=>clone(fsState);window.NexusSetFeatureState=(value,options={})=>{focusGoalCacheKey='';fsState=window.NexusNormalizeFeatureState(value);if(options.applyFsrs!==false&&window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(fsState.fsrsSettings,{syncFeature:false,persist:options.persist!==false});focusStart=fsState.focusStartedAt?new Date(fsState.focusStartedAt).getTime():null;focusPausedAt=fsState.focusPausedAt?new Date(fsState.focusPausedAt).getTime():null;focusTopicId=fsState.focusTopicId||'';focusSubjectId=fsState.focusSubjectId||'';if(focusTimer){clearInterval(focusTimer);focusTimer=null;}if(focusStart)focusTimer=setInterval(refreshLiveFocusUi,1000);if(options.persist!==false)saveFs();if(options.render!==false)renderHub();if(focusStart&&options.render!==false)refreshLiveFocusUi();return true;};
-  let cascadeUndoState=null;window.NexusCascadeDeleteSubject=(subjectId,topicIds)=>{cascadeUndoState=clone(fsState);fsState.journal=fsState.journal.filter(x=>x.subjectId!==subjectId&&!topicIds.includes(x.topicId));fsState.papers=fsState.papers.filter(x=>x.subjectId!==subjectId);delete fsState.syllabusTargets[subjectId];fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIds.includes(id));saveFs();renderHub();};window.NexusCascadeDeleteStream=(streamId,subjectIds,topicIds)=>{cascadeUndoState=clone(fsState);fsState.journal=fsState.journal.filter(x=>!subjectIds.includes(x.subjectId)&&!topicIds.includes(x.topicId));fsState.papers=fsState.papers.filter(x=>!subjectIds.includes(x.subjectId));subjectIds.forEach(id=>delete fsState.syllabusTargets[id]);fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIds.includes(id));saveFs();renderHub();};window.NexusUndoCascadeDelete=()=>{if(cascadeUndoState){fsState=clone(cascadeUndoState);cascadeUndoState=null;saveFs();renderHub();}};window.NexusClearCascadeUndo=()=>{cascadeUndoState=null;};window.NexusRenderHub=()=>renderHub();
+  let cascadeUndoState=null;
+  function captureCascadeUndo(){
+    // Cascade deletes replace these arrays and mutate only the target map. Keep the
+    // original arrays by reference; cloning all Study Hub logs is unnecessary.
+    return {journal:fsState.journal,papers:fsState.papers,syllabusTargets:{...(fsState.syllabusTargets||{})},selectedTopicIds:fsState.selectedTopicIds};
+  }
+  window.NexusCascadeDeleteSubject=(subjectId,topicIds)=>{
+    const topicIdSet=new Set(topicIds);cascadeUndoState=captureCascadeUndo();
+    fsState.journal=fsState.journal.filter(item=>item.subjectId!==subjectId&&!topicIdSet.has(item.topicId));
+    fsState.papers=fsState.papers.filter(item=>item.subjectId!==subjectId);
+    delete fsState.syllabusTargets[subjectId];
+    fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIdSet.has(id));
+    saveFs();renderHub();
+  };
+  window.NexusCascadeDeleteStream=(streamId,subjectIds,topicIds)=>{
+    const subjectIdSet=new Set(subjectIds),topicIdSet=new Set(topicIds);cascadeUndoState=captureCascadeUndo();
+    fsState.journal=fsState.journal.filter(item=>!subjectIdSet.has(item.subjectId)&&!topicIdSet.has(item.topicId));
+    fsState.papers=fsState.papers.filter(item=>!subjectIdSet.has(item.subjectId));
+    for(const id of subjectIds)delete fsState.syllabusTargets[id];
+    fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIdSet.has(id));
+    saveFs();renderHub();
+  };
+  window.NexusUndoCascadeDelete=()=>{
+    if(!cascadeUndoState)return;
+    Object.assign(fsState,cascadeUndoState);cascadeUndoState=null;saveFs();renderHub();
+  };
+  window.NexusClearCascadeUndo=()=>{cascadeUndoState=null;};
+  window.NexusRenderHub=()=>renderHub();
   let topicHistoryStatsCache={source:null,length:-1,byTopic:new Map()};
   function getTopicHistoryStats(){
     const history=state.history,cache=topicHistoryStatsCache;
