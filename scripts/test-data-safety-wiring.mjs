@@ -1,9 +1,34 @@
 import assert from 'node:assert/strict';
+import { resolvePreviewConfig } from './build.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+const syntheticAnonKey = 'header.eyJyb2xlIjoiYW5vbiJ9.synthetic-anon-signature-123456';
+const androidPreviewConfig = resolvePreviewConfig({
+  VERCEL_ENV: 'preview',
+  VERCEL_GIT_COMMIT_REF: 'android/capacitor-multistore-foundation',
+  NEXUS_SUPABASE_URL: 'https://xuwfzibxhxzxxupprxsq.supabase.co',
+  NEXUS_SUPABASE_ANON_KEY: syntheticAnonKey
+});
+assert.deepEqual(androidPreviewConfig, {
+  url: 'https://xuwfzibxhxzxxupprxsq.supabase.co',
+  key: syntheticAnonKey
+}, 'the Android PR preview must receive only the isolated staging Supabase configuration');
+assert.throws(() => resolvePreviewConfig({
+  VERCEL_ENV: 'preview',
+  VERCEL_GIT_COMMIT_REF: 'android/capacitor-multistore-foundation',
+  NEXUS_SUPABASE_URL: 'https://txugbdavblpettcnhcxl.supabase.co',
+  NEXUS_SUPABASE_ANON_KEY: syntheticAnonKey
+}), /separate HTTPS Supabase project/, 'the Android PR preview must reject the production Supabase host');
+assert.equal(resolvePreviewConfig({
+  VERCEL_ENV: 'preview',
+  VERCEL_GIT_COMMIT_REF: 'unlisted-preview-branch',
+  NEXUS_SUPABASE_URL: 'https://xuwfzibxhxzxxupprxsq.supabase.co',
+  NEXUS_SUPABASE_ANON_KEY: syntheticAnonKey
+}), null, 'unlisted preview branches must remain offline-safe');
 const index = readFileSync(resolve(root, 'index.html'), 'utf8');
 const appCore = readFileSync(resolve(root, 'app-core.js'), 'utf8');
 const studyHub = readFileSync(resolve(root, 'study-hub.js'), 'utf8');
