@@ -260,7 +260,7 @@
     if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
     // Bulk deletes replace top-level arrays and only mutate the small settings
     // tombstone object. Keep the original large topic/history arrays by reference.
-    undoState={kind:'state-reference',value:state,settings:clone(state.settings)};
+    undoState={kind:'state-reference',value:state,streams:state.streams,subjects:state.subjects,topics:state.topics,history:state.history,settings:clone(state.settings)};
     armUndo(text);
   }
   function startUndoReview(text,topic,reviewId){
@@ -280,7 +280,7 @@
       if(state.history.length===pending.historyLength+1&&state.history[0]?.id===pending.reviewId)state.history.shift();
       else state.history=state.history.filter(entry=>String(entry&&entry.id||'')!==String(pending.reviewId));
     }else if(pending.kind==='state-reference'){
-      state=pending.value;state.settings=pending.settings;
+      state=pending.value;state.streams=pending.streams;state.subjects=pending.subjects;state.topics=pending.topics;state.history=pending.history;state.settings=pending.settings;
     }else state=pending.value;
     if(window.NexusUndoCascadeDelete)window.NexusUndoCascadeDelete();
     save();renderAll();$('toast').classList.remove('show');
