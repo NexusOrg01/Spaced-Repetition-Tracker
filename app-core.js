@@ -155,6 +155,9 @@
     return fresh;
   }
   function sanitizeExam(ex){return {id:String(ex.id||makeId('exam')),name:String(ex.name||'Exam').slice(0,150),date:validDate(ex.date)?ex.date:'',type:String(ex.type||'Other').slice(0,60),notes:String(ex.notes||'').slice(0,500)};}
+  // Keep this aligned with curriculum-integrity.js: large batch deletions can
+  // legitimately require more than 5,000 durable installed/deleted intent markers.
+  const MAX_CURRICULUM_MARKERS=100000;
   function normalizeState(raw){
     if(!raw||typeof raw!=='object')throw new Error('Invalid backup format.');
     if(!Array.isArray(raw.streams)||!Array.isArray(raw.subjects)||!Array.isArray(raw.topics))return migrateOld(raw);
@@ -171,8 +174,8 @@
     const cleanHistory=Array.isArray(raw.history)?raw.history.slice(0,200000).map((h,i)=>{const rating=Number(h.rating??h.score);const reviewed=validDate(h.reviewedAt||h.reviewedDate)?(h.reviewedAt||h.reviewedDate):today();return {id:String(h.id||`history-${i}-${Date.now()}`),topicId:String(h.topicId||''),streamId:String(h.streamId||''),subjectId:String(h.subjectId||''),streamName:String(h.streamName||''),subjectName:String(h.subjectName||h.subject||'Unknown subject').slice(0,100),topicName:String(h.topicName||h.topic||'Untitled topic').slice(0,240),reviewedAt:reviewed,rating:rating>=1&&rating<=5?rating:3,intervalDays:Math.min(120,Math.max(1,Number(h.intervalDays)||1)),dueDate:validDate(h.dueDate||h.nextDate)?(h.dueDate||h.nextDate):'',note:String(h.note||'').slice(0,1000)};}):[];
     const exams=Array.isArray(raw.exams)?raw.exams.filter(e=>e&&e.name).map(sanitizeExam):[];
     const theme=['system','light','dark'].includes(raw.settings?.theme)?raw.settings.theme:'system';
-    const installedCurricula=Array.isArray(raw.settings?.installedCurricula)?Array.from(new Set(raw.settings.installedCurricula.filter(x=>typeof x==='string'&&x.length>0))).slice(-5000):[];
-    const curriculumTombstones=Array.isArray(raw.settings?.curriculumTombstones)?Array.from(new Set(raw.settings.curriculumTombstones.filter(x=>typeof x==='string'&&x.length>0))).slice(-5000):[];
+    const installedCurricula=Array.isArray(raw.settings?.installedCurricula)?Array.from(new Set(raw.settings.installedCurricula.filter(x=>typeof x==='string'&&x.length>0))).slice(-MAX_CURRICULUM_MARKERS):[];
+    const curriculumTombstones=Array.isArray(raw.settings?.curriculumTombstones)?Array.from(new Set(raw.settings.curriculumTombstones.filter(x=>typeof x==='string'&&x.length>0))).slice(-MAX_CURRICULUM_MARKERS):[];
     return {schema:3,streams,subjects,topics,history:cleanHistory,exams,settings:{theme,intervalCap:Math.min(120,Math.max(1,Number(raw.settings?.intervalCap)||120)),installedCurricula,curriculumTombstones}};
   }
   // Curriculum rows are owned by explicit install intent, not by whether a topic has
