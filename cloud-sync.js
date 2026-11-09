@@ -122,7 +122,7 @@ async function fetchRemote(userId,knownWrite){
   const chunks=window.NexusCloudChunkStorage;
   if(!chunks||!chunks.isManifest(remote.payload))throw new Error('The cloud workspace uses an unsupported chunked format. Local data and pending changes remain preserved.');
   lastRemoteStorageMode='chunked';
-  if(knownWrite&&knownWrite.verifiedChunks&&knownWrite.chunkManifest&&chunks.sameManifest(remote.payload,knownWrite.chunkManifest)){
+  if(knownWrite&&knownWrite.verifiedChunks&&knownWrite.manifest&&chunks.sameManifest(remote.payload,knownWrite.manifest)){
    // The upload helper already read back and SHA-256-verified every immutable chunk
    // before publishing this manifest. Confirming the active manifest here completes
    // the post-publication read-back without downloading the same large payload twice.
