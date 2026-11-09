@@ -10,7 +10,7 @@ const MARKER_KEY='__nexusStorage';
 const FORMAT='chunked-v1';
 const CHUNK_BYTES=256*1024;
 const INSERT_BATCH_SIZE=4;
-const MAX_CHUNKS=4096;
+const MAX_CHUNKS=900;
 const CLEANUP_AGE_MS=7*24*60*60*1000;
 const CLEANUP_BATCH_SIZE=200;
 const CHUNK_THRESHOLD_BYTES=1024*1024;
@@ -126,13 +126,13 @@ async function cleanupOldChunks(client,userId,activeRevisionId){
  if(removed&&removed.error)throw removed.error;
  return ids.length;
 }
-async function writeSnapshot(client,userId,payload,expectedStamp,stamp,backupUtils){
+async function writeSnapshot(client,userId,payload,expectedStamp,stamp,backupUtils,serializedOverride){
  if(!client||typeof userId!=='string'||!userId||!payload||!payload.state||
    !Array.isArray(payload.state.streams)||!payload.featureState||typeof payload.featureState!=='object'){
   throw fail('A complete workspace and verified account are required for chunked cloud sync.');
  }
  if(!backupUtils||typeof backupUtils.writeCloudSnapshot!=='function')throw fail('The safe conditional cloud-write helper is unavailable.');
- const serialized=JSON.stringify(payload);
+ const serialized=typeof serializedOverride==='string'?serializedOverride:JSON.stringify(payload);
  if(typeof serialized!=='string'||!serialized)throw fail('The workspace could not be serialized for cloud sync.');
  const totalBytes=utf8ByteLength(serialized);
  const chunks=splitUtf8(serialized);
