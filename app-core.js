@@ -251,11 +251,6 @@
     clearTimeout(undoTimer);notify(text,true);
     undoTimer=setTimeout(()=>{undoState=null;$('undoBtn').style.display='none';},6500);
   }
-  function startUndo(text){
-    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
-    undoState={kind:'snapshot',value:clone(state)};
-    armUndo(text);
-  }
   function startUndoBulkDelete(text){
     if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
     // Bulk deletes replace top-level arrays and only mutate the small settings
