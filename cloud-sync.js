@@ -14,11 +14,9 @@ function syncDiagSummary(payload){
  const features=payload&&payload.featureState&&typeof payload.featureState==='object'?payload.featureState:{};
  const counts={streamCount:Array.isArray(s.streams)?s.streams.length:0,subjectCount:Array.isArray(s.subjects)?s.subjects.length:0,topicCount:Array.isArray(s.topics)?s.topics.length:0,reviewHistoryCount:Array.isArray(s.history)?s.history.length:0,examCount:Array.isArray(s.exams)?s.exams.length:0,journalCount:Array.isArray(features.journal)?features.journal.length:0,paperCount:Array.isArray(features.papers)?features.papers.length:0,goalCount:Array.isArray(features.goals)?features.goals.length:0,studyLogCount:Array.isArray(features.studyLogs)?features.studyLogs.length:0};
  counts.totalRecordCount=Object.values(counts).reduce((total,count)=>total+count,0);
- // Record only aggregate size metrics. Never persist the serialized snapshot or study content.
- const serialized=payload?JSON.stringify(payload):'';
- let utf8Bytes=serialized.length;
- try{utf8Bytes=typeof TextEncoder==='function'?new TextEncoder().encode(serialized).length:new Blob([serialized]).size;}catch(_){}
- return {hasPackInstallIntent:packInstalled.length>0,packInstallMarkerCount:packInstalled.length,packDeletionMarkerCount:packDeleted.length,...counts,hasSettings:!!s.settings,serializedPayloadCharacters:serialized.length,serializedPayloadUtf8Bytes:utf8Bytes};
+ // Diagnostics deliberately avoid serializing the workspace: a large snapshot must
+ // not allocate another full-size string merely to describe a sync failure.
+ return {hasPackInstallIntent:packInstalled.length>0,packInstallMarkerCount:packInstalled.length,packDeletionMarkerCount:packDeleted.length,...counts,hasSettings:!!s.settings};
 }
 function syncDiag(stage,payload,extra){
  if(!SYNC_DIAG_ENABLED)return;
@@ -27,16 +25,37 @@ function syncDiag(stage,payload,extra){
 function downloadSyncDiagnostics(){
  if(!SYNC_DIAG_ENABLED)return;
  let events=[];try{events=JSON.parse(localStorage.getItem(SYNC_DIAG_KEY)||'[]');}catch(_){}
- const report={app:'Nexus sync diagnostic',schema:2,generatedAt:new Date().toISOString(),note:'Contains stage names, aggregate workspace record counts, serialized-character and UTF-8 byte estimates, timings and safe error codes/messages. No account identifiers, credentials, topic names or study content.',events};
+ const report={app:'Nexus sync diagnostic',schema:3,generatedAt:new Date().toISOString(),note:'Contains stage names, aggregate workspace record counts, timings and safe error codes/messages. It does not contain account identifiers, credentials, topic names or study content.',events};
  const blob=new Blob([JSON.stringify(report,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');
  link.href=url;link.download='nexus-sync-diagnostics.json';document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
 }
 function installSyncDiagnosticsButton(){
- if(!SYNC_DIAG_ENABLED||el('nexusSyncDiagnosticsDownload'))return;
  const help=el('cloudHelpText'),anchor=help&&help.parentNode?help:null;
- const button=document.createElement('button');button.id='nexusSyncDiagnosticsDownload';button.type='button';button.className='btn btn-sm';button.textContent='Download sync diagnostics (safe summary)';button.addEventListener('click',downloadSyncDiagnostics);
- if(anchor){button.style.marginTop='8px';anchor.insertAdjacentElement('afterend',button);}else if(document.body){button.style.position='fixed';button.style.zIndex='99999';button.style.right='12px';button.style.bottom='12px';button.style.maxWidth='calc(100vw - 24px)';button.style.boxShadow='0 2px 12px rgba(0,0,0,.25)';document.body.appendChild(button);}else return;
- syncDiag('diagnostics-enabled');
+ const place=button=>{
+  if(anchor){button.style.marginTop='8px';button.style.marginRight='8px';anchor.insertAdjacentElement('afterend',button);}
+  else if(document.body){button.style.position='fixed';button.style.zIndex='99999';button.style.right='12px';button.style.bottom='12px';button.style.maxWidth='calc(100vw - 24px)';button.style.boxShadow='0 2px 12px rgba(0,0,0,.25)';document.body.appendChild(button);}
+ };
+ let toggle=el('nexusSyncDiagnosticsToggle');
+ if(!toggle){
+  toggle=document.createElement('button');toggle.id='nexusSyncDiagnosticsToggle';toggle.type='button';toggle.className='btn btn-sm';
+  toggle.addEventListener('click',()=>{
+   try{
+    if(SYNC_DIAG_ENABLED){localStorage.removeItem('nexus.syncdiag.enabled');sessionStorage.removeItem('nexus.syncdiag.enabled');}
+    else{localStorage.setItem('nexus.syncdiag.enabled','1');sessionStorage.setItem('nexus.syncdiag.enabled','1');}
+    location.reload();
+   }catch(error){console.warn('Nexus sync diagnostics could not be toggled.',error);}
+  });
+  place(toggle);
+ }
+ toggle.textContent=SYNC_DIAG_ENABLED?'Disable sync diagnostics':'Enable sync diagnostics';
+ toggle.title=SYNC_DIAG_ENABLED?'Stop recording additional sync diagnostics. Download the report before disabling.':'Enable safe local sync diagnostics and reload Nexus before reproducing the sync problem.';
+ let download=el('nexusSyncDiagnosticsDownload');
+ if(SYNC_DIAG_ENABLED){
+  if(!download){
+   download=document.createElement('button');download.id='nexusSyncDiagnosticsDownload';download.type='button';download.className='btn btn-sm';download.textContent='Download sync diagnostics (safe summary)';download.addEventListener('click',downloadSyncDiagnostics);place(download);
+   syncDiag('diagnostics-enabled');
+  }
+ }else if(download)download.remove();
 }
 
 function isUnsafeCloudOrigin(){const host=location.hostname.toLowerCase(),url=String(config().url||'').trim();let cloudHost='';try{cloudHost=new URL(url).hostname.toLowerCase();}catch(_){}return cloudHost===new URL(LIVE_SUPABASE_URL).hostname&&host!=='spaced-repetition-tracker-delta.vercel.app'&&host!=='kkmalithmalshan2000-png.github.io';}
@@ -311,9 +330,16 @@ async function reconcileConcurrentSnapshot(userId,initialRemote){
   status('Reconciling cloud changes…');
   const mergeStartedAt=Date.now();
   const usedCooperativeMerge=typeof merger.mergeAsync==='function';
-  const result=usedCooperativeMerge
-   ?await merger.mergeAsync(normalizedBase,normalizedLocal,normalizedRemote)
-   :merger.merge(normalizedBase,normalizedLocal,normalizedRemote);
+  syncDiag('workspace-merge-start',null,{cooperative:usedCooperativeMerge,baseTopicCount:normalizedBase&&normalizedBase.state&&normalizedBase.state.topics?.length||0,localTopicCount:normalizedLocal.state.topics?.length||0,remoteTopicCount:normalizedRemote.state.topics?.length||0});
+  let result;
+  try{
+   result=usedCooperativeMerge
+    ?await merger.mergeAsync(normalizedBase,normalizedLocal,normalizedRemote)
+    :merger.merge(normalizedBase,normalizedLocal,normalizedRemote);
+  }catch(error){
+   syncDiag('workspace-merge-error',null,{durationMs:Date.now()-mergeStartedAt,errorCode:String(error&&error.code||'unknown'),errorMessage:String(error&&error.message||'unknown').slice(0,120)});
+   throw error;
+  }
   // Cooperative merging yields to the UI. Revalidate both account and outbox version
   // before committing, because the user may have made another local edit while it ran.
   await assertActiveUser(userId);
@@ -324,20 +350,41 @@ async function reconcileConcurrentSnapshot(userId,initialRemote){
    continue;
   }
   syncDiag('workspace-merge-complete',null,{durationMs:Date.now()-mergeStartedAt,cooperative:usedCooperativeMerge,conflictCount:result.conflicts.length});
-  const nextState=normalizeState(result.payload.state);
-  const nextFeatures=window.NexusNormalizeFeatureState(result.payload.featureState||{});
+  const normalizeStartedAt=Date.now();
+  syncDiag('workspace-merge-normalize-start',null,{topicCount:result.payload.state.topics?.length||0});
+  let nextState,nextFeatures;
+  try{
+   nextState=normalizeState(result.payload.state);
+   nextFeatures=window.NexusNormalizeFeatureState(result.payload.featureState||{});
+  }catch(error){
+   syncDiag('workspace-merge-normalize-error',null,{durationMs:Date.now()-normalizeStartedAt,errorCode:String(error&&error.code||'unknown'),errorMessage:String(error&&error.message||'unknown').slice(0,120)});
+   throw error;
+  }
+  syncDiag('workspace-merge-normalize-complete',null,{durationMs:Date.now()-normalizeStartedAt,topicCount:nextState.topics?.length||0});
   if(!window.NexusBackupRestoreUtils||!window.NexusStorageKey||!window.NexusFeatureStorageKey||!window.NexusSetFeatureState)throw new Error('Atomic workspace reconciliation is unavailable; local changes were preserved.');
-  const mergedSnapshot={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:clone(nextState),featureState:clone(nextFeatures)};
-  const rebased=queue.rebaseWithBase(localStorage,userId,mergedSnapshot,remoteStamp,'automatic-three-way-merge',
-   {state:normalizedRemote.state,featureState:normalizedRemote.featureState},
-   {workspaceEntries:[
-     {key:window.NexusStorageKey,value:JSON.stringify(nextState)},
-     {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)},
-     {key:OWNER_KEY,value:String(userId)}
-    ],
-    conflicts:result.conflicts,
-    conflictMetadata:{baseServerVersion:pending.baseServerVersion,remoteServerVersion:remoteStamp}
-   });
+  // nextState and nextFeatures are newly normalized objects and are not mutated before
+  // rebaseWithBase serializes them. Avoid a second full clone of a very large workspace.
+  const mergedSnapshot={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:nextState,featureState:nextFeatures};
+  const commitStartedAt=Date.now();
+  syncDiag('workspace-merge-commit-start',null,{topicCount:nextState.topics?.length||0,conflictCount:result.conflicts.length});
+  let rebased;
+  try{
+   rebased=queue.rebaseWithBase(localStorage,userId,mergedSnapshot,remoteStamp,'automatic-three-way-merge',
+    {state:normalizedRemote.state,featureState:normalizedRemote.featureState},
+    {workspaceEntries:[
+      {key:window.NexusStorageKey,value:JSON.stringify(nextState)},
+      {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)},
+      {key:OWNER_KEY,value:String(userId)}
+     ],
+     conflicts:result.conflicts,
+     conflictMetadata:{baseServerVersion:pending.baseServerVersion,remoteServerVersion:remoteStamp}
+    });
+  }catch(error){
+   syncDiag('workspace-merge-commit-error',null,{durationMs:Date.now()-commitStartedAt,errorCode:String(error&&error.code||'unknown'),errorMessage:String(error&&error.message||'unknown').slice(0,120)});
+   throw error;
+  }
+  syncDiag('workspace-merge-commit-complete',null,{durationMs:Date.now()-commitStartedAt});
+
   // Storage, outbox, new base, and losing conflict alternatives now commit together.
   // Do not switch the in-memory workspace until the durable transaction succeeds.
   state=nextState;
