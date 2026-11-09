@@ -208,7 +208,9 @@
   let storageSaveRevision=0;
   function save(){
     try{
-      state=repairCurriculumState(state);
+      // Curriculum repair runs at hydration, import/restore, cloud-merge, and catalogue
+      // boundaries. Repeating a full catalogue scan on every ordinary review/save would
+      // make a large workspace pay for repair work even when no catalogue state changed.
       const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():(()=>{
         try{const x=JSON.parse(localStorage.getItem('recall.study.features.v1')||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{}}catch(_){return {}}
       })();
@@ -428,9 +430,9 @@
       esc,makeId,today,save,renderAll,notify,
       getIntegrity:()=>window.NexusCurriculumIntegrity,
       onCatalogLoaded:()=>{
-        const before=JSON.stringify(state);
-        state=repairCurriculumState(state);
-        if(JSON.stringify(state)!==before)save();
+        const result=repairCurriculumStateResult(state);
+        state=result.state;
+        if(result.changed)save();
         renderAll();
       },
       onCatalogError:error=>console.warn('Nexus curriculum catalogue could not be refreshed; using the built-in Commerce fallback.',error)
