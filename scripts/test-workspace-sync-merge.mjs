@@ -166,6 +166,11 @@ const snap=(state,featureState={})=>({app:'Nexus',schema:4,exportedAt:'2026-10-2
  assert.equal(conflict.remote.streak,1);
 }
 {
+ const duplicateRemote=snap({topics:[{id:'duplicate-async',name:'First',subjectId:'sub'},{id:'duplicate-async',name:'Second',subjectId:'sub'}]});
+ await assert.rejects(()=>merge.mergeAsync(snap({topics:[]}),snap({topics:[]}),duplicateRemote),/duplicate stable record ID/,
+  'the cooperative index builder must reject duplicate IDs instead of overwriting a remote row');
+}
+{
  const totalTopics=77144,deletedTopics=12032,notes='x'.repeat(280);
  const baseRows=Array.from({length:totalTopics},(_,i)=>({
   id:'large-topic-'+i,name:'Large workspace topic '+i,
