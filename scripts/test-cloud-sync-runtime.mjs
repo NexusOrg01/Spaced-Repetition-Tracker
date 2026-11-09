@@ -212,7 +212,7 @@ window.supabase = { createClient() { return client; } };
 context = {
   window, document, navigator: { get onLine() { return networkAvailable; } },
   location: { hostname: 'preview.example', origin: 'https://preview.example', pathname: '/' },
-  localStorage: storage, URL, console, Promise, Date, Map, Array, Object, JSON, String, Math, Number, Error,
+  localStorage: storage, URL, URLSearchParams, console, Promise, Date, Map, Array, Object, JSON, String, Math, Number, Error,
   setTimeout, clearTimeout, setInterval, clearInterval,
   state: localState,
   clone: v => JSON.parse(JSON.stringify(v)),
