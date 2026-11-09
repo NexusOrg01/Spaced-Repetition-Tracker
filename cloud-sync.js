@@ -272,7 +272,7 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
   if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(nextFeatures.fsrsSettings,{syncFeature:false,persist:false});
   window.NexusSetFeatureState(nextFeatures,{persist:false,render:false,applyFsrs:false});
   renderAll();
-  const activeView=document.querySelector('.view.active');if(activeView&&activeView.id==='view-studyhub'&&window.NexusRenderHub)window.NexusRenderHub();
+  const activeView=typeof document!=='undefined'&&typeof document.querySelector==='function'?document.querySelector('.view.active'):null;if(activeView&&activeView.id==='view-studyhub'&&window.NexusRenderHub)window.NexusRenderHub();
   return true;
 }
 async function applyRemote(payload,ownerId,serverVersion){
@@ -396,7 +396,7 @@ async function reconcileConcurrentSnapshot(userId,initialRemote){
   state=nextState;
   window.NexusSetFeatureState(nextFeatures,{persist:false,render:false});
   renderAll();
-  const activeView=document.querySelector('.view.active');if(activeView&&activeView.id==='view-studyhub'&&window.NexusRenderHub)window.NexusRenderHub();
+  const activeView=typeof document!=='undefined'&&typeof document.querySelector==='function'?document.querySelector('.view.active'):null;if(activeView&&activeView.id==='view-studyhub'&&window.NexusRenderHub)window.NexusRenderHub();
   if(rebased.archivedConflicts){totalConflicts+=rebased.archivedConflicts;updateConflictRecoveryButton();}
   lastRemoteStamp=remoteStamp;ready=true;
   const uploaded=await upload();
