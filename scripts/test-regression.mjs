@@ -137,7 +137,7 @@ assert.ok(appCore.includes('topicIdSet.has(h.topicId)') && appCore.includes('sub
   'subject and stream deletion must use constant-time Set membership when removing large topic and history groups');
 assert.ok(appCore.includes('function startUndoReview(text,topic,reviewId)') &&
   appCore.includes("startUndoReview('Review recorded.',t,reviewEntry.id)") &&
-  appCore.includes("undoState={kind:'state-reference',value:state,settings:clone(state.settings)}"),
+  appCore.includes("undoState={kind:'state-reference',value:state,streams:state.streams,subjects:state.subjects,topics:state.topics,history:state.history,settings:clone(state.settings)}") && appCore.includes('state.topics=pending.topics;state.history=pending.history;'),
   'single-review and bulk-delete Undo must not deep-clone the full workspace');
 assert.ok(studyHub.includes('function captureCascadeUndo()') && !studyHub.includes('cascadeUndoState=clone(fsState)') &&
   studyHub.includes('Object.assign(fsState,cascadeUndoState)'),
