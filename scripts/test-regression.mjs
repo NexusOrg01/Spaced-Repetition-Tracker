@@ -357,12 +357,13 @@ for(const [kind,expectedId] of [
 
 
 assert.ok(appCore.includes('topicVisibleLimit=100') &&
-  appCore.includes('items.slice(0,topicVisibleLimit)') &&
+  appCore.includes('selectTopK(state.topics,topicVisibleLimit') &&
   appCore.includes('data-action="show-more-topics"') &&
-  appCore.includes("topicVisibleLimit+=100"),
-  'the Topics view must paginate large workspaces instead of creating a DOM card for every topic');
-assert.ok(appCore.includes('const topicCounts=new Map(),subjectsByStream=new Map(),active=activeTopics()') &&
-  appCore.includes('progressBySubject=new Map()'),
-  'topic counts in the Library and Overview must use one-pass aggregation rather than rescanning every topic for each subject');
+  appCore.includes('topicVisibleLimit+=100'),
+  'the Topics view must retain only a bounded top-ranked page instead of creating a DOM card for every topic');
+assert.ok(appCore.includes('const topicCounts=new Map(),subjectsByStream=new Map();') &&
+  appCore.includes('for(const topic of state.topics)if(!topic.archived)topicCounts.set(topic.subjectId') &&
+  appCore.includes('for(const subject of state.subjects){'),
+  'topic counts in the Library must use one pass over the source topic array instead of copying all active topics');
 
 console.log('FSRS and core feature regression tests passed.');
