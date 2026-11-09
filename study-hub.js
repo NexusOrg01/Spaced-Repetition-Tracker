@@ -871,30 +871,35 @@
     const studyLogs=Array.isArray(selection?.pdfDatasets?.sessions)?selection.pdfDatasets.sessions:(Array.isArray(fsState&&fsState.studyLogs)?fsState.studyLogs:[]);
     const subjects=Array.isArray(state&&state.subjects)?state.subjects:[];
     const subjectNameById=new Map(subjects.map(subject=>[String(subject.id),String(subject.name||'Unnamed subject')]));
-    const reviews=history.map(record=>({record,date:activityDate(record&&record.reviewedAt)}))
-      .filter(item=>item.record&&item.date&&item.date>=from&&item.date<=to&&(!pdfScope||pdfRecordMatchesScope(item.record,pdfScope)));
-    const sessions=studyLogs.map(record=>({record,date:activityDate(record&&record.date),minutes:studyLogMinutes(record)}))
-      .filter(item=>item.record&&item.date&&item.date>=from&&item.date<=to&&(!pdfScope||pdfRecordMatchesScope(item.record,pdfScope)));
     const reviewsByDate=new Map(),minutesByDate=new Map(),reviewsBySubject=new Map(),minutesBySubject=new Map();
     const activeDates=new Set();
     const subjectLabel=record=>{
       const id=String(record&&record.subjectId||'');
       return subjectNameById.get(id)||String(record&&record.subjectName||'Unassigned subject');
     };
-    reviews.forEach(item=>{
-      reviewsByDate.set(item.date,(reviewsByDate.get(item.date)||0)+1);
-      const name=subjectLabel(item.record);
+    let reviewCount=0,positiveSessionCount=0,totalMinutes=0;
+    // Stream through source records once. Building filtered wrapper arrays here used
+    // several additional full-size allocations for a 77k-record workspace.
+    for(const record of history){
+      const date=activityDate(record&&record.reviewedAt);
+      if(!record||!date||date<from||date>to||(pdfScope&&!pdfRecordMatchesScope(record,pdfScope)))continue;
+      reviewCount++;
+      reviewsByDate.set(date,(reviewsByDate.get(date)||0)+1);
+      const name=subjectLabel(record);
       reviewsBySubject.set(name,(reviewsBySubject.get(name)||0)+1);
-      activeDates.add(item.date);
-    });
-    let totalMinutes=0;
-    sessions.forEach(item=>{
-      minutesByDate.set(item.date,(minutesByDate.get(item.date)||0)+item.minutes);
-      const name=subjectLabel(item.record);
-      minutesBySubject.set(name,(minutesBySubject.get(name)||0)+item.minutes);
-      totalMinutes+=item.minutes;
-      if(item.minutes>0)activeDates.add(item.date);
-    });
+      activeDates.add(date);
+    }
+    for(const record of studyLogs){
+      const date=activityDate(record&&record.date);
+      if(!record||!date||date<from||date>to||(pdfScope&&!pdfRecordMatchesScope(record,pdfScope)))continue;
+      const minutes=studyLogMinutes(record);
+      if(minutes>0)positiveSessionCount++;
+      minutesByDate.set(date,(minutesByDate.get(date)||0)+minutes);
+      const name=subjectLabel(record);
+      minutesBySubject.set(name,(minutesBySubject.get(name)||0)+minutes);
+      totalMinutes+=minutes;
+      if(minutes>0)activeDates.add(date);
+    }
 
     const span=activityDayDiff(from,to)+1,longRange=span>35;
     const buildActivitySeries=(start,end,values)=>{
@@ -956,10 +961,10 @@
     const reviewSeries=buildActivitySeries(from,to,reviewsByDate),studySeries=buildActivitySeries(from,to,minutesByDate);
     const reviewTitle=longRange?'Total review count':'Daily review count',studyTitle=longRange?'Total study time':'Daily study time';
     const rangeDescription=longRange?'Aggregated totals across the selected timeframe.':'Daily totals across the selected timeframe.';
-    const reviewGraph=renderActivityChart(reviewSeries,reviewTitle,'Reviews','#8978f8','nexusActivityReviewsGradient',reviews.length>0);
-    const studyGraph=renderActivityChart(studySeries,studyTitle,'Minutes','#32bfc0','nexusActivityStudyGradient',sessions.some(item=>item.minutes>0));
-    const sessionCount=sessions.filter(item=>item.minutes>0).length;
-    const kpis='<div class="hub-kpis"><div class="hub-kpi"><strong>'+reviews.length+'</strong><span>Reviews in range</span></div><div class="hub-kpi"><strong>'+formatStudyDuration(totalMinutes*60)+'</strong><span>Logged study time</span></div><div class="hub-kpi"><strong>'+sessionCount+'</strong><span>Study sessions logged</span></div><div class="hub-kpi"><strong>'+activeDates.size+'</strong><span>Days with activity</span></div></div>';
+    const reviewGraph=renderActivityChart(reviewSeries,reviewTitle,'Reviews','#8978f8','nexusActivityReviewsGradient',reviewCount>0);
+    const studyGraph=renderActivityChart(studySeries,studyTitle,'Minutes','#32bfc0','nexusActivityStudyGradient',positiveSessionCount>0);
+    const sessionCount=positiveSessionCount;
+    const kpis='<div class="hub-kpis"><div class="hub-kpi"><strong>'+reviewCount+'</strong><span>Reviews in range</span></div><div class="hub-kpi"><strong>'+formatStudyDuration(totalMinutes*60)+'</strong><span>Logged study time</span></div><div class="hub-kpi"><strong>'+sessionCount+'</strong><span>Study sessions logged</span></div><div class="hub-kpi"><strong>'+activeDates.size+'</strong><span>Days with activity</span></div></div>';
     const charts='<div class="hub-grid analytics-chart-grid">'+
       hubCard(reviewTitle,rangeDescription,reviewGraph,true)+
       hubCard(studyTitle,rangeDescription+' Only completed focus sessions with saved minutes contribute to the graph.',studyGraph,true)+
@@ -1074,7 +1079,24 @@
   }
   function openDangerZone(){if(document.body.classList.contains('danger-mode'))return;renderHistory();$('dangerZoneStandalone').hidden=false;document.body.classList.add('danger-mode');window.scrollTo({top:0,behavior:'auto'});}
   function closeDangerZone(){document.body.classList.remove('danger-mode');$('dangerZoneStandalone').hidden=true;window.scrollTo({top:0,behavior:'auto'});}
-  function globalSearchMarkup(q){const query=String(q||'').trim().toLocaleLowerCase();if(!query)return '<div class="hub-empty">Type a topic, note, subject, paper, or mistake to search across the tracker.</div>';const ts=state.topics.filter(t=>{const sub=subjectFor(t),st=streamFor(sub);return [t.name,t.notes,sub?.name,st?.name].some(v=>String(v||'').toLocaleLowerCase().includes(query));}).slice(0,80);const js=fsState.journal.filter(j=>[j.category,j.issue,j.fix,state.subjects.find(s=>s.id===j.subjectId)?.name].some(v=>String(v||'').toLocaleLowerCase().includes(query))).slice(0,25);const ps=fsState.papers.filter(p=>[p.name,p.weakAreas,p.notes,state.subjects.find(s=>s.id===p.subjectId)?.name].some(v=>String(v||'').toLocaleLowerCase().includes(query))).slice(0,25);const topicResult=ts.map(t=>`<div class="hub-row"><label class="hub-switch"><input type="checkbox" data-hub-action="select-topic" data-id="${localEsc(t.id)}" ${fsState.selectedTopicIds.includes(t.id)?'checked':''}><span class="hub-row-main"><span class="hub-row-title">${localEsc(t.name)}</span><span class="hub-row-meta">${localEsc(subjectFor(t)?.name||'')} · ${localEsc(statusText(status(t)))}${t.archived?' · Archived':''}</span></span></label><div class="hub-row-actions"><button class="btn btn-sm" data-hub-action="edit-topic" data-id="${localEsc(t.id)}">Edit</button></div></div>`).join('');const journalResult=js.map(j=>`<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(j.category)} · ${localEsc(j.issue.slice(0,180))}</div><div class="hub-row-meta">Journal · ${localEsc(fmtDate(j.date))}</div></div></div>`).join('');const paperResult=ps.map(p=>`<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(p.name)}</div><div class="hub-row-meta">Practice · ${localEsc(fmtDate(p.date))}</div></div></div>`).join('');return `<div class="hub-list">${topicResult||''}${journalResult}${paperResult}</div>${ts.length+js.length+ps.length===0?'<div class="hub-empty">No matching topics, journal entries, or papers.</div>':''}<div class="hub-muted" style="margin-top:8px">${ts.length} topic(s), ${js.length} journal item(s), ${ps.length} paper(s) matched. Topic checkboxes select items for bulk actions below.</div>`;}
+  function globalSearchMarkup(q){
+    const query=String(q||'').trim().toLocaleLowerCase();
+    if(!query)return '<div class="hub-empty">Type a topic, note, subject, paper, or mistake to search across the tracker.</div>';
+    const ts=[];let topicMatchCount=0;
+    const subjectById=new Map(state.subjects.map(subject=>[String(subject.id),subject]));
+    for(const topic of state.topics){
+      const subject=subjectById.get(String(topic.subjectId)),stream=subject?streamFor(subject):null;
+      if(![topic.name,topic.notes,subject?.name,stream?.name].some(value=>String(value||'').toLocaleLowerCase().includes(query)))continue;
+      topicMatchCount++;
+      if(ts.length<80)ts.push(topic);
+    }
+    const js=fsState.journal.filter(j=>[j.category,j.issue,j.fix,state.subjects.find(s=>s.id===j.subjectId)?.name].some(v=>String(v||'').toLocaleLowerCase().includes(query))).slice(0,25);
+    const ps=fsState.papers.filter(p=>[p.name,p.weakAreas,p.notes,state.subjects.find(s=>s.id===p.subjectId)?.name].some(v=>String(v||'').toLocaleLowerCase().includes(query))).slice(0,25);
+    const topicResult=ts.map(t=>`<div class="hub-row"><label class="hub-switch"><input type="checkbox" data-hub-action="select-topic" data-id="${localEsc(t.id)}" ${fsState.selectedTopicIds.includes(t.id)?'checked':''}><span class="hub-row-main"><span class="hub-row-title">${localEsc(t.name)}</span><span class="hub-row-meta">${localEsc(subjectFor(t)?.name||'')} · ${localEsc(statusText(status(t)))}${t.archived?' · Archived':''}</span></span></label><div class="hub-row-actions"><button class="btn btn-sm" data-hub-action="edit-topic" data-id="${localEsc(t.id)}">Edit</button></div></div>`).join('');
+    const journalResult=js.map(j=>`<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(j.category)} · ${localEsc(j.issue.slice(0,180))}</div><div class="hub-row-meta">Journal · ${localEsc(fmtDate(j.date))}</div></div></div>`).join('');
+    const paperResult=ps.map(p=>`<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(p.name)}</div><div class="hub-row-meta">Practice · ${localEsc(fmtDate(p.date))}</div></div></div>`).join('');
+    return `<div class="hub-list">${topicResult||''}${journalResult}${paperResult}</div>${topicMatchCount+js.length+ps.length===0?'<div class="hub-empty">No matching topics, journal entries, or papers.</div>':''}<div class="hub-muted" style="margin-top:8px">${topicMatchCount} topic(s), ${js.length} journal item(s), ${ps.length} paper(s) matched. Only the first 80 matching topics are shown; refine the search for a shorter result set. Topic checkboxes select items for bulk actions below.</div>`;
+  }
   function renderTools(){const reminderSupported='Notification'in window;const selected=fsState.selectedTopicIds.filter(id=>state.topics.some(t=>t.id===id)).length;const age=fsState.lastBackupAt?dayDiff(fsState.lastBackupAt,today()):null;const searchCard=`<div class="hub-field"><label for="hubGlobalSearch">Search every subject, topic, journal and paper</label><input class="hub-input" id="hubGlobalSearch" type="search" placeholder="Try a lesson name, formula, or error…"></div><div id="hubSearchResults" style="margin-top:10px"></div><div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${selected} topic(s) selected</div><div class="hub-row-meta">Bulk actions update selected topic schedules or archive state. They do not create fake review history.</div></div></div><div class="hub-actions"><button class="btn btn-sm" data-hub-action="bulk-due-today">Set selected due today</button><div class="hub-field" style="min-width:150px"><label for="hubBulkDueDate">Custom due date</label><input class="hub-input" type="date" id="hubBulkDueDate" min="${today()}"></div><button class="btn btn-sm" data-hub-action="bulk-due-custom">Apply custom date</button><button class="btn btn-sm" data-hub-action="bulk-archive">Archive selected</button><button class="btn btn-sm" data-hub-action="bulk-unarchive">Unarchive selected</button><button class="btn btn-sm" data-hub-action="bulk-export">Export selected CSV</button><button class="btn btn-sm btn-danger" data-hub-action="bulk-delete">Delete selected</button><button class="btn btn-sm btn-danger" data-hub-action="bulk-clear">Clear selection</button></div>`;
     const settings=`<div class="hub-form"><div class="hub-field"><label for="hubBacklogDays">Backlog recovery window (days)</label><input type="number" id="hubBacklogDays" min="1" max="60" value="${localEsc(fsState.settings.backlogDays||7)}"></div><div class="hub-field"><label for="hubReminderTime">Daily reminder time</label><input type="time" id="hubReminderTime" value="${localEsc(fsState.settings.reminderTime||'08:00')}"></div></div><label class="hub-switch" style="margin-top:10px"><input type="checkbox" id="hubRemindersEnabled" ${fsState.settings.reminders?'checked':''}><span>Enable due-study reminder while Nexus is open</span></label><div class="hub-actions"><button class="btn btn-sm btn-primary" data-hub-action="save-tool-settings">Save reminder settings</button><button class="btn btn-sm" data-hub-action="request-notifications">Enable browser notifications</button><button class="btn btn-sm" data-hub-action="check-reminder">Check reminder now</button></div><div class="hub-note">Browser notifications can be checked while the app is running and permission is granted. A fully closed browser cannot reliably send scheduled reminders without push infrastructure and a server.</div>`;
     const data=`<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">Backup status</div><div class="hub-row-meta">${fsState.lastBackupAt?`Last recorded backup: ${localEsc(fmtDate(fsState.lastBackupAt))} (${age} day(s) ago)`:'No backup recorded yet.'}</div></div><span class="hub-badge ${age===null||age>7?'warn':'good'}">${age===null?'Needed':age>7?'Due':'Recent'}</span></div><div class="hub-actions"><button class="btn btn-sm btn-primary" data-hub-action="full-backup"><svg class="nexus-action-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11m-4-4 4 4 4-4"/><path d="M5 16v4h14v-4"/></svg> Download full backup</button><button class="btn btn-sm" data-hub-action="full-restore"><svg class="nexus-action-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H10l2 2h5.5A2.5 2.5 0 0 1 20 9.5v8a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5z"/><path d="M12 16v-6m-2.5 2.5L12 10l2.5 2.5"/></svg> Restore / merge backup</button><button class="btn btn-sm" data-hub-action="export-papers">Export papers CSV</button><button class="btn btn-sm" data-hub-action="export-journal">Export journal CSV</button><button class="btn btn-sm" data-hub-action="export-study">Export focus log CSV</button><button class="btn btn-sm" data-hub-action="csv-template">Download topic CSV template</button><button class="btn btn-sm" data-hub-action="csv-import">Import topics CSV</button><input id="hubImportFile" type="file" accept=".json,.csv,application/json,text/csv" hidden></div><div class="hub-note">Study data is stored locally by default. Use Cloud sync in Setup & data to connect a private Supabase account, or continue using manual JSON export/import. Keep copies in a separate location.</div>`;
