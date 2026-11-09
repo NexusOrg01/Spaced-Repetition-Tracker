@@ -288,7 +288,7 @@ const runtimeAssets = [...runtimeBody.matchAll(/'([^']+)'/g)].map(match => match
 assert.ok(runtimeAssets.indexOf('curriculum-integrity.js') < runtimeAssets.indexOf('explore-curriculum.js') &&
   runtimeAssets.indexOf('explore-curriculum.js') < runtimeAssets.indexOf('app-core.js'),
   'curriculum integrity and Explore lifecycle modules must load before app initialization, after storage bootstrap');
-assert.ok(cloudSync.includes('window.NexusRepairCurriculumState?window.NexusRepairCurriculumState(normalized):normalized'),
+assert.ok(cloudSync.includes('window.NexusRepairNormalizedCurriculumState?window.NexusRepairNormalizedCurriculumState(normalized):normalized'),
   'remote snapshots must be repaired before reconciliation');
 assert.ok(cloudSync.includes('Rebuild catalogue-owned rows before any cloud write'),
   'the upload path must repair and atomically requeue the current workspace before writing');
@@ -306,7 +306,10 @@ const startupRepairSource = appCore.slice(appCore.indexOf('function persistLoade
 assert.ok(startupRepairSource.includes('function persistLoadedRepair(data)'), 'startup repair persistence must be explicit and auditable');
 assert.ok(startupRepairSource.includes('queue.commitWorkspace(localStorage,[{key:STORAGE_KEY,value:JSON.stringify(data)}],{state:data,featureState},{returnOperationPayload:false})'),
   'a repaired startup workspace must be committed atomically with the matching offline outbox payload');
-assert.ok(startupRepairSource.includes('if(JSON.stringify(repaired)!==JSON.stringify(normalized))'),
-  'startup must persist only when curriculum repair changes the normalized workspace');
+assert.ok(startupRepairSource.includes('const result=repairCurriculumStateResult(normalized)') && startupRepairSource.includes('if(result.changed)'),
+  'startup must use the repair result instead of serializing the entire workspace to detect changes');
+assert.ok(appCore.includes('window.NexusRepairNormalizedCurriculumState=repairCurriculumState') &&
+  appCore.includes('window.NexusRepairNormalizedCurriculumStateWithResult=repairCurriculumStateResult'),
+  'sync code must be able to repair an already-normalized state without normalizing every record again');
 
 console.log('Curriculum integrity regression tests passed.');
