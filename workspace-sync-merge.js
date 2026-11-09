@@ -180,15 +180,25 @@
   async function mergeRecordsAsync(baseRows,localRows,remoteRows,path,conflicts){
     const b=rowMap(baseRows),l=rowMap(localRows),r=rowMap(remoteRows),out=[];
     let processed=0;
-    const append=async(id,bv,lv,rv)=>{
+    const append=(id,bv,lv,rv)=>{
       const value=mergeRecordValue(bv,lv,rv,path,id,conflicts);
       if(value!==ABSENT)out.push(value);
       processed++;
-      if(processed%MERGE_YIELD_BATCH===0)await yieldToBrowser();
     };
-    for(const [id,bv] of b)await append(id,bv,l.has(id)?l.get(id):ABSENT,r.has(id)?r.get(id):ABSENT);
-    for(const [id,lv] of l){if(b.has(id))continue;await append(id,ABSENT,lv,r.has(id)?r.get(id):ABSENT);}
-    for(const [id,rv] of r){if(b.has(id)||l.has(id))continue;await append(id,ABSENT,ABSENT,rv);}
+    for(const [id,bv] of b){
+      append(id,bv,l.has(id)?l.get(id):ABSENT,r.has(id)?r.get(id):ABSENT);
+      if(processed&&processed%MERGE_YIELD_BATCH===0)await yieldToBrowser();
+    }
+    for(const [id,lv] of l){
+      if(b.has(id))continue;
+      append(id,ABSENT,lv,r.has(id)?r.get(id):ABSENT);
+      if(processed&&processed%MERGE_YIELD_BATCH===0)await yieldToBrowser();
+    }
+    for(const [id,rv] of r){
+      if(b.has(id)||l.has(id))continue;
+      append(id,ABSENT,ABSENT,rv);
+      if(processed&&processed%MERGE_YIELD_BATCH===0)await yieldToBrowser();
+    }
     return out;
   }
   function mergeSet(baseValues,localValues,remoteValues){
