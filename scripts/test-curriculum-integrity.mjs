@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
@@ -25,6 +26,20 @@ assert.ok(pack.subjects.every(subject => String(subject.legacyIdPrefix).startsWi
 const today = () => '2026-10-22';
 const makeId = prefix => prefix + '-test-' + Math.random().toString(36).slice(2, 7);
 const copy = value => JSON.parse(JSON.stringify(value));
+
+const normalizeStart=appCore.indexOf('function normalizeState(raw){');
+const normalizeEnd=appCore.indexOf('// Curriculum rows are owned by explicit install intent',normalizeStart);
+assert.ok(normalizeStart>=0&&normalizeEnd>normalizeStart,'the real app-core workspace normalizer must be available');
+const normalizerContext={
+  migrateOld(){throw new Error('The normalizer test must use the current workspace schema.');},
+  normalizeTopic(topic,fallbackSubjectId){return {...topic,subjectId:String(topic.subjectId||fallbackSubjectId)};},
+  sanitizeExam(exam){return {...exam};},
+  validDate(){return false;},
+  today(){return '2026-11-09';}
+};
+vm.createContext(normalizerContext);
+vm.runInContext(appCore.slice(normalizeStart,normalizeEnd),normalizerContext,{filename:'app-core-normalize-state.js'});
+
 const emptyState = () => ({
   schema: 3, streams: [], subjects: [], topics: [], exams: [], history: [],
   settings: { theme: 'dark', intervalCap: 120, installedCurricula: [], curriculumTombstones: [] }
@@ -347,6 +362,23 @@ assert.ok(appCore.includes('window.NexusRepairNormalizedCurriculumState=repairCu
   assert.equal(markedCount,count,'batch deletion must write a tombstone for every selected catalogue topic');
   assert.equal(bulkDeleteState.settings.curriculumTombstones.length,count,
     'large deletion intent must not be truncated to the former 5,000-marker cap');
+  // Exercise the exact normalizer used for downloaded schema-4 cloud snapshots.
+  // A 12,032-row deletion must survive this boundary before curriculum repair runs.
+  const normalizedAfterDelete=normalizerContext.normalizeState(bulkDeleteState);
+  assert.equal(normalizedAfterDelete.settings.curriculumTombstones.length,count,
+    'workspace normalization must retain all 12,032 deletion markers instead of truncating them to 5,000');
+  const normalizedRepair=integrity.repair(normalizedAfterDelete,[largePack],{today,makeId});
+  assert.equal(normalizedRepair.changed,false,
+    'normalization followed by repair must not resurrect topics hidden by a large deletion batch');
+  assert.equal(normalizedAfterDelete.topics.length,manualCount,
+    'all 12,032 deleted catalogue topics must remain absent after normalization and repair');
+  const manyInstallMarkers=names.map(name=>integrity.keys.topic(largePack.id,definition.id,name));
+  const normalizedInstallIntents=normalizerContext.normalizeState({
+    ...emptyState(),settings:{theme:'dark',intervalCap:120,installedCurricula:manyInstallMarkers,curriculumTombstones:[]}
+  });
+  assert.equal(normalizedInstallIntents.settings.installedCurricula.length,count,
+    'workspace normalization must retain more than 5,000 granular installed-topic markers too');
+
   const deletedIds=new Set(catalogTopics.map(topic=>topic.id));
   bulkDeleteState.topics=bulkDeleteState.topics.filter(topic=>!deletedIds.has(topic.id));
   bulkDeleteState.history=bulkDeleteState.history.filter(entry=>!deletedIds.has(entry.topicId));
