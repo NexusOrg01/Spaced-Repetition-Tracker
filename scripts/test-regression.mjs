@@ -135,6 +135,13 @@ assert.ok(!appCore.slice(appCore.indexOf('  function save(){'),appCore.indexOf('
   'curriculum repair must run at data lifecycle boundaries rather than on every routine review save');
 assert.ok(appCore.includes('topicIdSet.has(h.topicId)') && appCore.includes('subjectIdSet.has(h.subjectId)'),
   'subject and stream deletion must use constant-time Set membership when removing large topic and history groups');
+assert.ok(appCore.includes('function startUndoReview(text,topic,reviewId)') &&
+  appCore.includes("startUndoReview('Review recorded.',t,reviewEntry.id)") &&
+  appCore.includes("undoState={kind:'state-reference',value:state,settings:clone(state.settings)}"),
+  'single-review and bulk-delete Undo must not deep-clone the full workspace');
+assert.ok(studyHub.includes('function captureCascadeUndo()') && !studyHub.includes('cascadeUndoState=clone(fsState)') &&
+  studyHub.includes('Object.assign(fsState,cascadeUndoState)'),
+  'Study Hub cascade undo must retain only changed arrays and the small syllabus-target map');
 assert.ok(studyHub.includes('const visibleDates=new Set(dates.map') && studyHub.includes('selectedTopics.length<calendarTopicLimit') &&
   !studyHub.includes('activeTopics().filter(t=>t.dueDate===iso'),
   'the review calendar must index its 42-day window in one topic pass and bound selected-day DOM rows');
