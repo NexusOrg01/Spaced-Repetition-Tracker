@@ -1402,8 +1402,14 @@ for (const scenario of [
   assert.equal(getElement('cloudStatus').textContent,'Synced',
     'Device 2 must report Synced only after its large deletion reconciliation completes');
   const verifiedBase=queue.getBase(storage,accountA.id);
+  const syncDebug={status:getElement('cloudStatus').textContent,owner:storage.getItem(OWNER),
+    localTopics:downloaded.topics.length,globalTopics:context.state.topics.length,
+    remoteTopics:rows.get(accountA.id)?.payload?.state?.topics?.length||0,
+    pendingTopics:queue.getPending(storage,accountA.id)?.payload?.state?.topics?.length||0,
+    baseTopics:verifiedBase?.state?.topics?.length||0,
+    message:getElement('cloudHelpText').textContent};
   assert.equal(verifiedBase.state.topics.length,retainedCount,
-    'the next sync baseline must advance to the verified post-deletion snapshot');
+    'the next sync baseline must advance to the verified post-deletion snapshot: '+JSON.stringify(syncDebug));
 }
  
 console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, target-account pending-snapshot isolation, and 77,144-record second-device deletion reconciliation.');
