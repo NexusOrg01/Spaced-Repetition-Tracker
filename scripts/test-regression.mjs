@@ -139,6 +139,23 @@ assert.ok(appCore.includes('function startUndoReview(text,topic,reviewId)') &&
   appCore.includes("startUndoReview('Review recorded.',t,reviewEntry.id)") &&
   appCore.includes("undoState={kind:'state-reference',value:state,streams:state.streams,subjects:state.subjects,topics:state.topics,history:state.history,settings:clone(state.settings)}") && appCore.includes('state.topics=pending.topics;state.history=pending.history;'),
   'single-review and bulk-delete Undo must not deep-clone the full workspace');
+assert.ok(appCore.includes('function startUndoTopicEdit(text,topic)') && appCore.includes('function startUndoTopicAdd(text,topicId)') &&
+  appCore.includes('function startUndoHistoryChange(text)') && appCore.includes('function startUndoWorkspaceReplace(text)') &&
+  appCore.includes("startUndoBulkDelete('Topic deleted.')") &&
+  appCore.includes("startUndoTopicEdit('Topic updated.',topic)") &&
+  appCore.includes("startUndoTopicAdd('Topic added.',newTopic.id)") &&
+  appCore.includes("startUndoHistoryChange('History entry deleted.')") &&
+  appCore.includes("startUndoHistoryChange('History cleared.')") &&
+  appCore.includes("startUndoWorkspaceReplace('Backup imported.')") &&
+  appCore.includes("startUndoWorkspaceReplace('Tracker reset.')"),
+  'topic edits/additions/deletions, history clearing/deletion, imports and resets must use lightweight undo records or old-state references');
+assert.ok(appCore.includes('window.deleteTopic = id => deleteTopic(id)') &&
+  appCore.includes('window.deleteSubject = id => deleteSubject(id)') &&
+  appCore.includes('window.deleteStream = id => deleteStream(id)') &&
+  appCore.includes("startUndoHistoryChange('All history cleared.')") &&
+  appCore.includes("startUndoWorkspaceReplace('All data reset.')") &&
+  !appCore.includes('This will also remove its history.'),
+  'legacy/global controls must route through the current handlers instead of bypassing topic-history retention and lightweight undo');
 assert.ok(studyHub.includes('function captureCascadeUndo()') && !studyHub.includes('cascadeUndoState=clone(fsState)') &&
   studyHub.includes('Object.assign(fsState,cascadeUndoState)'),
   'Study Hub cascade undo must retain only changed arrays and the small syllabus-target map');
