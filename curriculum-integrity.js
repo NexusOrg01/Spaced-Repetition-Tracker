@@ -126,8 +126,9 @@
         normalizeName(item.name)===normalizeName(pack.streamName)).map(item=>String(item.id)));
     const subjectIds=new Set(),topicIds=new Set(),deletedTopicNames=[];
     const definitionById=new Map(definitions.map(definition=>[String(definition.id),definition]));
-    const prefixes=definitions.flatMap(definition=>[canonicalPrefix(definition)+'-',legacyPrefix(definition)+'-']);
     const deletedPackScope=deleted.has(deletedPack(id));
+    const prefixes=definitions.filter(definition=>deletedPackScope||deleted.has(deletedSubject(id,definition.id)))
+      .flatMap(definition=>[canonicalPrefix(definition)+'-',legacyPrefix(definition)+'-']);
     for(const subject of rows(state.subjects)){
       const subjectNameMatches=definitions.some(definition=>normalizeName(subject.name)===normalizeName(definition.name));
       if((deletedPackScope&&((definitions.some(definition=>definition.workspaceId&&String(definition.workspaceId)===String(subject.id)))||
@@ -219,13 +220,14 @@
       }).filter(entry=>entry.full||entry.topics.length);
       if(!selected.length)continue;
       const stream=existingStream||ensureStream(state,pack,opts.makeId);
-      if(!existingStream)restoredStreams++;
+      if(!existingStream){restoredStreams++;changed=true;}
       for(const entry of selected){
         const definition=entry.definition;
         if(marker.deleted.has(deletedSubject(id,definition.id)))continue;
         const oldSubjectLength=state.subjects.length;
         const subject=ensureSubject(state,pack,definition,stream,opts.makeId);
         if(state.subjects.length>oldSubjectLength){restoredSubjects++;changed=true;}
+        else if(String(subject.streamId)!==String(stream.id)){changed=true;}
         for(const name of entry.topics){
           if(marker.deleted.has(deletedTopic(id,definition.id,name)))continue;
           const existing=topicByCatalogIdentity(state,definition,name,subject);
