@@ -330,4 +330,14 @@ for(const [kind,expectedId] of [
     'PDF '+kind+' must include only the selected subject within the selected stream');
 }
 
+
+assert.ok(appCore.includes('topicVisibleLimit=100') &&
+  appCore.includes('items.slice(0,topicVisibleLimit)') &&
+  appCore.includes('data-action="show-more-topics"') &&
+  appCore.includes("topicVisibleLimit+=100"),
+  'the Topics view must paginate large workspaces instead of creating a DOM card for every topic');
+assert.ok(appCore.includes('const topicCounts=new Map(),subjectsByStream=new Map(),active=activeTopics()') &&
+  appCore.includes('progressBySubject=new Map()'),
+  'topic counts in the Library and Overview must use one-pass aggregation rather than rescanning every topic for each subject');
+
 console.log('FSRS and core feature regression tests passed.');
