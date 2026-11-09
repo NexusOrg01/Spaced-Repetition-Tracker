@@ -25,7 +25,7 @@ const initializationEnd=source.indexOf('async function sameWorkspace(',initializ
 assert.ok(initializationStart>=0&&initializationEnd>initializationStart,'cloud initialization source must be inspectable');
 const initializationSource=source.slice(initializationStart,initializationEnd);
 const initializationRemoteRead=initializationSource.indexOf('const remote=await fetchRemote(newUserId);');
-const initializationLocalSnapshot=initializationSource.indexOf('const localPayload=snapshot();');
+const initializationLocalSnapshot=initializationSource.indexOf('let localPayload=snapshot();');
 assert.ok(initializationRemoteRead>=0&&initializationLocalSnapshot>initializationRemoteRead,
   'large local state must be snapshotted after the asynchronous cloud read so an offline edit during the request is included');
 assert.ok(!initializationSource.includes("localPayload=snapshot();const remote=await fetchRemote(newUserId);")&&
