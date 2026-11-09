@@ -1453,10 +1453,61 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
   };
 
   // Gentle reminder check and 60-second scheduled-time check while open.
-  const dueCountAtOpen=activeTopics().filter(t=>['overdue','due'].includes(status(t))).length;
+  let dueCountAtOpen=0;for(const topic of state.topics)if(!topic.archived&&['overdue','due'].includes(status(topic)))dueCountAtOpen++;
   if(dueCountAtOpen&&fsState.lastReminderAt!==today())setTimeout(()=>{if(fsState.settings.reminders)notify(`You have ${dueCountAtOpen} topic(s) due or overdue. Open Study Hub → Daily planner.`);},1200);
   setInterval(maybeNotify,60000);
-  document.addEventListener('click',e=>{const b=e.target.closest('[data-focus-action]');if(b){const a=b.dataset.focusAction;if(a==='pause')toggleFocusPause();else if(a==='reset'){if(confirm('Reset this focus session? The elapsed time will not be logged.')){focusStart=Date.now();focusPausedAt=null;fsState.focusStartedAt=new Date(focusStart).toISOString();fsState.focusActualStartedAt=new Date(focusStart).toISOString();fsState.focusPausedAt=null;saveFs();refreshLiveFocusUi();}}else if(a==='stop')logFocusStop();else if(a==='discard')discardFocusSession();return;}const c=e.target.closest('[data-calendar-action]');if(c){const a=c.dataset.calendarAction;if(a==='close')document.getElementById('reviewCalendarDialog')?.close();else if(a==='prev'||a==='next'){calendarMonth.setMonth(calendarMonth.getMonth()+(a==='prev'?-1:1));renderReviewCalendar();}return;}const day=e.target.closest('[data-calendar-day]');if(day){calendarSelected=day.dataset.calendarDay;renderReviewCalendar();}});document.getElementById('reviewCalendarWindow')?.addEventListener('change',e=>{calendarMonths=Number(e.target.value)||1;calendarMonth.setMonth(calendarMonth.getMonth()+calendarMonths);calendarMonth.setDate(1);renderReviewCalendar();});document.getElementById('homeOpenCalendarSecondary')?.addEventListener('click',openReviewCalendar);function openReviewCalendar(){const d=document.getElementById('reviewCalendarDialog');if(!d)return;calendarMonth=new Date();calendarMonth.setDate(1);calendarSelected=today();renderReviewCalendar();d.showModal();}let calendarMonth=new Date(new Date().getFullYear(),new Date().getMonth(),1),calendarSelected=today(),calendarMonths=1;function renderReviewCalendar(){const grid=document.getElementById('reviewCalendarGrid'),monthLabel=document.getElementById('reviewCalendarMonth'),details=document.getElementById('reviewCalendarDetails');if(!grid||!monthLabel||!details)return;const year=calendarMonth.getFullYear(),month=calendarMonth.getMonth();monthLabel.textContent=calendarMonth.toLocaleDateString(undefined,{month:'long',year:'numeric'});const range=document.getElementById('reviewCalendarWindow');if(range)range.value=String(calendarMonths);const first=new Date(year,month,1),startOffset=(first.getDay()+6)%7,days=new Date(year,month+1,0).getDate(),prevDays=new Date(year,month,0).getDate();let html=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(x=>'<div class="calendar-weekday">'+x+'</div>').join('');for(let i=0;i<42;i++){let dayNum=i-startOffset+1,dt,outs=false;if(dayNum<1){dt=new Date(year,month-1,prevDays+dayNum);outs=true;}else if(dayNum>days){dt=new Date(year,month+1,dayNum-days);outs=true;}else dt=new Date(year,month,dayNum);const iso=dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');const count=activeTopics().filter(t=>t.dueDate===iso||(!t.dueDate&&t.createdAt===iso)).length,exams=state.exams.filter(x=>x.date===iso);html+='<button type="button" class="calendar-day '+(outs?'outside ':'')+(iso===today()?'today ':'')+(iso===calendarSelected?'selected':'')+'" data-calendar-day="'+iso+'"><span class="calendar-day-number">'+dt.getDate()+'</span><span class="calendar-dots">'+(count?'<i title="'+count+' reviews"></i>':'')+(exams.length?'<i class="exam" title="Exam"></i>':'')+'</span><span class="calendar-day-count">'+(count?count+' due':'')+(exams.length?' · '+exams.length+' exam':'')+'</span></button>';}grid.innerHTML=html;const selectedDate=new Date(calendarSelected+'T12:00:00').toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric',year:'numeric'});const topics=activeTopics().filter(t=>t.dueDate===calendarSelected||(!t.dueDate&&t.createdAt===calendarSelected));const exams=state.exams.filter(x=>x.date===calendarSelected);details.innerHTML='<h3>'+selectedDate+'</h3>'+(topics.map(t=>'<div class="calendar-event"><i class="legend-review"></i><div><strong>'+localEsc(t.name)+'</strong><span>'+localEsc(subjectFor(t)?.name||'Topic review')+'</span></div></div>').join(''))+(exams.map(x=>'<div class="calendar-event"><i class="legend-exam"></i><div><strong>'+localEsc(x.name)+'</strong><span>Exam · '+localEsc(x.type||'')+'</span></div></div>').join(''))+(!topics.length&&!exams.length?'<div class="muted small">Nothing scheduled for this day.</div>':'');} if(focusStart){focusTimer=setInterval(refreshLiveFocusUi,1000);}
+  document.addEventListener('click',e=>{const b=e.target.closest('[data-focus-action]');if(b){const a=b.dataset.focusAction;if(a==='pause')toggleFocusPause();else if(a==='reset'){if(confirm('Reset this focus session? The elapsed time will not be logged.')){focusStart=Date.now();focusPausedAt=null;fsState.focusStartedAt=new Date(focusStart).toISOString();fsState.focusActualStartedAt=new Date(focusStart).toISOString();fsState.focusPausedAt=null;saveFs();refreshLiveFocusUi();}}else if(a==='stop')logFocusStop();else if(a==='discard')discardFocusSession();return;}const c=e.target.closest('[data-calendar-action]');if(c){const a=c.dataset.calendarAction;if(a==='close')document.getElementById('reviewCalendarDialog')?.close();else if(a==='more-topics'){calendarTopicLimit+=100;renderReviewCalendar();}else if(a==='prev'||a==='next'){calendarTopicLimit=100;calendarMonth.setMonth(calendarMonth.getMonth()+(a==='prev'?-1:1));renderReviewCalendar();}return;}const day=e.target.closest('[data-calendar-day]');if(day){calendarSelected=day.dataset.calendarDay;calendarTopicLimit=100;renderReviewCalendar();}});document.getElementById('reviewCalendarWindow')?.addEventListener('change',e=>{calendarMonths=Number(e.target.value)||1;calendarMonth.setMonth(calendarMonth.getMonth()+calendarMonths);calendarMonth.setDate(1);renderReviewCalendar();});document.getElementById('homeOpenCalendarSecondary')?.addEventListener('click',openReviewCalendar);function openReviewCalendar(){const d=document.getElementById('reviewCalendarDialog');if(!d)return;calendarMonth=new Date();calendarMonth.setDate(1);calendarSelected=today();calendarTopicLimit=100;renderReviewCalendar();d.showModal();}let calendarMonth=new Date(new Date().getFullYear(),new Date().getMonth(),1),calendarSelected=today(),calendarMonths=1,calendarTopicLimit=100;function renderReviewCalendar(){
+    const grid=document.getElementById('reviewCalendarGrid'),monthLabel=document.getElementById('reviewCalendarMonth'),details=document.getElementById('reviewCalendarDetails');
+    if(!grid||!monthLabel||!details)return;
+    const year=calendarMonth.getFullYear(),month=calendarMonth.getMonth();
+    monthLabel.textContent=calendarMonth.toLocaleDateString(undefined,{month:'long',year:'numeric'});
+    const range=document.getElementById('reviewCalendarWindow');if(range)range.value=String(calendarMonths);
+    const first=new Date(year,month,1),startOffset=(first.getDay()+6)%7,days=new Date(year,month+1,0).getDate(),prevDays=new Date(year,month,0).getDate();
+    const dates=[];
+    for(let i=0;i<42;i++){
+      const dayNum=i-startOffset+1;
+      let dt,outs=false;
+      if(dayNum<1){dt=new Date(year,month-1,prevDays+dayNum);outs=true;}
+      else if(dayNum>days){dt=new Date(year,month+1,dayNum-days);outs=true;}
+      else dt=new Date(year,month,dayNum);
+      const iso=dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
+      dates.push({dt,iso,outs});
+    }
+    const visibleDates=new Set(dates.map(item=>item.iso)),dueCounts=new Map(),examsByDate=new Map();
+    const selectedTopics=[],subjectById=new Map(state.subjects.map(subject=>[String(subject.id),subject]));
+    let selectedTopicCount=0;
+    // Build the 42-day calendar index in one topic pass. Previously each cell
+    // filtered the complete active-topic array, multiplying work by 42.
+    for(const topic of state.topics){
+      if(topic.archived)continue;
+      const date=topic.dueDate||topic.createdAt||'';
+      if(!visibleDates.has(date))continue;
+      dueCounts.set(date,(dueCounts.get(date)||0)+1);
+      if(date===calendarSelected){
+        selectedTopicCount++;
+        if(selectedTopics.length<calendarTopicLimit)selectedTopics.push(topic);
+      }
+    }
+    for(const exam of state.exams){
+      if(!exam||!exam.date||!visibleDates.has(exam.date))continue;
+      const entries=examsByDate.get(exam.date)||[];
+      entries.push(exam);examsByDate.set(exam.date,entries);
+    }
+    const html=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(label=>'<div class="calendar-weekday">'+label+'</div>').join('')+dates.map(({dt,iso,outs})=>{
+      const count=dueCounts.get(iso)||0,exams=examsByDate.get(iso)||[];
+      return '<button type="button" class="calendar-day '+(outs?'outside ':'')+(iso===today()?'today ':'')+(iso===calendarSelected?'selected':'')+'" data-calendar-day="'+iso+'"><span class="calendar-day-number">'+dt.getDate()+'</span><span class="calendar-dots">'+(count?'<i title="'+count+' reviews"></i>':'')+(exams.length?'<i class="exam" title="Exam"></i>':'')+'</span><span class="calendar-day-count">'+(count?count+' due':'')+(exams.length?' · '+exams.length+' exam':'')+'</span></button>';
+    }).join('');
+    grid.innerHTML=html;
+    const selectedDate=new Date(calendarSelected+'T12:00:00').toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+    const exams=examsByDate.get(calendarSelected)||[];
+    const topicRows=selectedTopics.map(topic=>{
+      const subject=subjectById.get(String(topic.subjectId));
+      return '<div class="calendar-event"><i class="legend-review"></i><div><strong>'+localEsc(topic.name)+'</strong><span>'+localEsc(subject?.name||'Topic review')+'</span></div></div>';
+    }).join('');
+    const more=selectedTopicCount>selectedTopics.length?'<button type="button" class="btn btn-sm" data-calendar-action="more-topics">Show 100 more ('+(selectedTopicCount-selectedTopics.length)+' remaining)</button>':'';
+    const examRows=exams.map(exam=>'<div class="calendar-event"><i class="legend-exam"></i><div><strong>'+localEsc(exam.name)+'</strong><span>Exam · '+localEsc(exam.type||'')+'</span></div></div>').join('');
+    details.innerHTML='<h3>'+selectedDate+'</h3>'+(selectedTopicCount?'<p class="muted small">Showing '+selectedTopics.length+' of '+selectedTopicCount+' scheduled topic(s).</p>':'')+topicRows+more+examRows+(!selectedTopicCount&&!exams.length?'<div class="muted small">Nothing scheduled for this day.</div>':'');
+  } if(focusStart){focusTimer=setInterval(refreshLiveFocusUi,1000);}
   // Home is the normal startup view: avoid building the hidden Study Hub planner.
   // Preserve correct startup rendering if another flow has already activated Study Hub.
   const studyHubView=hubEl('view-studyhub');
