@@ -36,11 +36,10 @@ assert.ok(runtimeStart >= 0 && runtimeEnd > runtimeStart, 'the bootstrap must de
 const runtimeBody = runtimeStart >= 0 && runtimeEnd > runtimeStart ? bootstrap.slice(runtimeStart, runtimeEnd) : '';
 const runtimeAssets = [...runtimeBody.matchAll(/'([^']+)'/g)].map(match => match[1]);
 assert.deepEqual(runtimeAssets, [
-  'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
+  'workspace-isolation-guard.js', 'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
   'explore-curriculum.js', 'app-core.js', 'fsrs-bundle.js', 'study-hub.js', 'nexus-build-config.js',
-  'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-sync.js',
-  'nexus-app-inline.js', 'workspace-isolation-guard.js'
-], 'all app modules must load in their existing dependency order after storage bootstrap');
+  'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-sync.js', 'nexus-app-inline.js'
+], 'the isolation guard must install before any application module can hydrate local workspace data');
 for (const asset of ['backup-restore-utils.js','offline-sync-queue.js','curriculum-integrity.js','explore-curriculum.js','app-core.js','study-hub.js','nexus-build-config.js','cloud-sync-recovery.js','workspace-sync-merge.js','cloud-sync.js','workspace-isolation-guard.js','fsrs-bundle.js']) {
   assert.ok(!index.includes('<script src="./' + asset + '"></script>'), asset + ' must not load before the asynchronous storage bootstrap.');
 }
@@ -184,9 +183,12 @@ assert.ok(workflow.includes('node scripts/test-offline-sync-queue.mjs') && workf
 
 
 const isolationOverlayAt = index.indexOf('id="workspaceIsolationLock"');
-assert.ok(isolationOverlayAt >= 0 && runtimeAssets.indexOf('workspace-isolation-guard.js') > runtimeAssets.indexOf('cloud-sync.js'), 'install the workspace isolation guard after the app UI and cloud sync modules exist');
-assert.ok(appSource.includes('aria-modal="true"') && appSource.includes('workspaceIsolationSignOut') && appSource.includes('workspaceIsolationRetry'), 'the account-mismatch lock must be modal and provide retry/sign-out recovery');
-assert.ok(guard.includes('retry.hidden=false;') && guard.includes('signOut.hidden=false;'), 'retry and sign-out must remain available even if account loading stalls');
+assert.ok(isolationOverlayAt >= 0 && runtimeAssets[0] === 'workspace-isolation-guard.js', 'install the workspace isolation guard before any app module can hydrate local data');
+assert.ok(index.includes('data-workspace-auth="pending"') && index.includes('html[data-workspace-auth="pending"] .app { visibility: hidden !important; }'), 'hide the app from the first paint until account ownership is resolved');
+assert.ok(index.includes('<div id="workspaceIsolationLock" aria-hidden="false" role="dialog"'), 'the isolation overlay must be visible in the initial HTML, before JavaScript loads');
+assert.ok(appSource.includes('aria-modal="true"') && appSource.includes('workspaceIsolationSignOut') && appSource.includes('workspaceIsolationSignInGoogle') && appSource.includes('workspaceIsolationSignInEmail'), 'the isolation overlay must provide safe account recovery actions');
+assert.ok(!appSource.includes('workspaceIsolationRetry') && !guard.includes('location.reload'), 'account recovery must not restart the vulnerable page-load sequence');
+assert.ok(guard.includes('LAST_AUTH_KEY') && guard.includes('offline-mismatch') && guard.includes('offline-unassigned'), 'confirmed sign-out must not reveal a workspace owned by a different or unassigned account');
 
 assert.ok(cloudSync.includes("if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',startCloudSyncUi,{once:true});else startCloudSyncUi();"), 'cloud sync must initialize controls whether its deferred module loads before or after DOMContentLoaded');
 console.log('Data-safety integration wiring checks passed.');

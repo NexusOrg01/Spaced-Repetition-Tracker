@@ -3,6 +3,7 @@
   'use strict';
 
   const RUNTIME_ASSETS = [
+    'workspace-isolation-guard.js',
     'backup-restore-utils.js',
     'offline-sync-queue.js',
     'curriculum-integrity.js',
@@ -14,8 +15,7 @@
     'cloud-sync-recovery.js',
     'workspace-sync-merge.js',
     'cloud-sync.js',
-    'nexus-app-inline.js',
-    'workspace-isolation-guard.js'
+    'nexus-app-inline.js'
   ];
 
   // Capture Chromium's installability event before asynchronous storage setup and
