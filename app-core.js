@@ -224,21 +224,38 @@
     window.scrollTo({top:0,behavior:'smooth'});
   }
   function statCard(label,value,foot){return `<div class="stat"><div class="stat-label">${esc(label)}</div><div class="stat-value">${esc(value)}</div><div class="stat-foot">${esc(foot)}</div></div>`;}
+  function insertSortedLimit(items,item,limit,compare){
+    let low=0,high=items.length;
+    while(low<high){const middle=(low+high)>>1;if(compare(items[middle],item)<=0)low=middle+1;else high=middle;}
+    if(low>=limit)return;
+    items.splice(low,0,item);
+    if(items.length>limit)items.pop();
+  }
   function renderOverview(){
-    const topics=activeTopics(), due=topics.filter(t=>['overdue','due'].includes(status(t))), newTopics=topics.filter(t=>status(t)==='new');
-    const reviewedToday=getHistoryMetrics().byDate.get(today())||0;
-    $('statsGrid').innerHTML=statCard('Due now',due.length,`${due.filter(t=>status(t)==='overdue').length} overdue`)+statCard('Not reviewed',newTopics.length,'Active topics with no review')+statCard('Reviewed topics',topics.filter(t=>t.reviewCount>0).length,`of ${topics.length} active topics`)+statCard('Reviews today',reviewedToday,'Review records dated today');
-    const ex=nearestExam();if(ex){const remaining=dayDiff(today(),ex.date);$('examBanner').innerHTML=`<div><h3>${esc(ex.name)}</h3><p>${esc(ex.type)} · ${fmtDate(ex.date)}${ex.notes?` · ${esc(ex.notes)}`:''}</p></div><div class="countdown"><strong>${remaining>=0?remaining:Math.abs(remaining)}</strong><span>${remaining>0?'days remaining':remaining===0?'today':'days since'}</span></div>`;}else{$('examBanner').innerHTML=`<div><h3>No exam dates added</h3><p>Add an exam or deadline to display a countdown here.</p></div><button class="btn btn-sm" id="bannerAddExam">＋ Add exam</button>`;$('bannerAddExam').addEventListener('click',()=>openExam());}
-    const queue=topics.slice().sort((a,b)=>dueRank(status(a))-dueRank(status(b))||((a.dueDate||'9999').localeCompare(b.dueDate||'9999'))).filter(t=>['overdue','due','new'].includes(status(t))).slice(0,7);
-    $('dueQueue').innerHTML=queue.length?queue.map(t=>{const d=subjectDisplay(t),st=status(t);return `<div class="due-item"><div style="min-width:0"><div class="due-title">${esc(t.name)}</div><div class="due-meta"><span>${esc(d.subject)}</span><span>·</span><span>${esc(d.stream)}</span><span class="pill ${st}">${statusText(st)}</span></div></div><button type="button" class="btn btn-sm btn-primary" data-action="review" data-id="${esc(t.id)}">Review</button></div>`;}).join(''):`<div class="empty"><strong>You're all caught up</strong>No overdue or due topics at the moment. New topics are available under Topics.</div>`;
-    const progressBySubject=new Map();
+    const topics=activeTopics(),todayKey=today(),progressBySubject=new Map(),queue=[];
+    let dueCount=0,overdueCount=0,newCount=0,reviewedCount=0;
+    const queueCompare=(a,b)=>dueRank(a.status)-dueRank(b.status)||
+      (a.topic.dueDate||'9999').localeCompare(b.topic.dueDate||'9999')||
+      naturalCompare(a.topic.name,b.topic.name);
+    // Compute all topic totals in one pass. Only the seven visible queue
+    // entries are retained and sorted; the full collection is never sorted
+    // merely to render a seven-row summary.
     for(const topic of topics){
+      const topicStatus=status(topic);
+      if(topicStatus==='overdue'||topicStatus==='due'){dueCount++;if(topicStatus==='overdue')overdueCount++;}
+      if(topicStatus==='new')newCount++;
+      if(topic.reviewCount>0)reviewedCount++;
       let entry=progressBySubject.get(topic.subjectId);
       if(!entry){entry={total:0,done:0};progressBySubject.set(topic.subjectId,entry);}
       entry.total++;if(topic.reviewCount>0)entry.done++;
+      if(topicStatus==='overdue'||topicStatus==='due'||topicStatus==='new')insertSortedLimit(queue,{topic,status:topicStatus},7,queueCompare);
     }
+    const reviewedToday=getHistoryMetrics().byDate.get(todayKey)||0;
+    $('statsGrid').innerHTML=statCard('Due now',dueCount,overdueCount+' overdue')+statCard('Not reviewed',newCount,'Active topics with no review')+statCard('Reviewed topics',reviewedCount,'of '+topics.length+' active topics')+statCard('Reviews today',reviewedToday,'Review records dated today');
+    const ex=nearestExam();if(ex){const remaining=dayDiff(todayKey,ex.date);$('examBanner').innerHTML='<div><h3>'+esc(ex.name)+'</h3><p>'+esc(ex.type)+' · '+fmtDate(ex.date)+(ex.notes?' · '+esc(ex.notes):'')+'</p></div><div class="countdown"><strong>'+(remaining>=0?remaining:Math.abs(remaining))+'</strong><span>'+(remaining>0?'days remaining':remaining===0?'today':'days since')+'</span></div>';}else{$('examBanner').innerHTML='<div><h3>No exam dates added</h3><p>Add an exam or deadline to display a countdown here.</p></div><button class="btn btn-sm" id="bannerAddExam">＋ Add exam</button>';$('bannerAddExam').addEventListener('click',()=>openExam());}
+    $('dueQueue').innerHTML=queue.length?queue.map(({topic,status:st})=>{const d=subjectDisplay(topic);return '<div class="due-item"><div style="min-width:0"><div class="due-title">'+esc(topic.name)+'</div><div class="due-meta"><span>'+esc(d.subject)+'</span><span>·</span><span>'+esc(d.stream)+'</span><span class="pill '+st+'">'+statusText(st)+'</span></div></div><button type="button" class="btn btn-sm btn-primary" data-action="review" data-id="'+esc(topic.id)+'">Review</button></div>';}).join(''):'<div class="empty"><strong>You\'re all caught up</strong>No overdue or due topics at the moment. New topics are available under Topics.</div>';
     const subjectGroups=state.subjects.map(sub=>{const stats=progressBySubject.get(sub.id)||{total:0,done:0};return {s:sub,total:stats.total,done:stats.done,stream:streamFor(sub)?.name||''};}).filter(x=>x.total||state.subjects.length<8);
-    $('progressList').innerHTML=subjectGroups.length?subjectGroups.map(g=>{const p=g.total?Math.round(g.done/g.total*100):0;return `<div class="progress-row"><div class="progress-label"><strong>${esc(g.s.name)}</strong><span>${g.done}/${g.total} · ${p}%</span></div><div class="progress-track"><div class="progress-fill" style="width:${p}%"></div></div><div class="muted small" style="margin-top:4px">${esc(g.stream)}</div></div>`;}).join(''):`<div class="empty">Add a subject to see progress.</div>`;
+    $('progressList').innerHTML=subjectGroups.length?subjectGroups.map(g=>{const p=g.total?Math.round(g.done/g.total*100):0;return '<div class="progress-row"><div class="progress-label"><strong>'+esc(g.s.name)+'</strong><span>'+g.done+'/'+g.total+' · '+p+'%</span></div><div class="progress-track"><div class="progress-fill" style="width:'+p+'%"></div></div><div class="muted small" style="margin-top:4px">'+esc(g.stream)+'</div></div>';}).join(''):'<div class="empty">Add a subject to see progress.</div>';
     renderUpcomingQueue();renderOverviewAnalytics();
   }
   function addHistoryMetricRecord(metrics,record){
@@ -328,10 +345,14 @@
     $('overviewAnalytics').innerHTML=`<div class="insight-metrics">${metricMarkup(recent.length,'Reviews this week')}${metricMarkup(average?average.toFixed(1)+'/5':'—','Average recall rating')}${metricMarkup(currentStudyStreak()+'d','Current study streak')}</div><div class="chart-heading"><span>Daily reviews</span><small>7-day activity</small></div>${state.history.length?overviewLineChartMarkup(series):'<div class="chart-empty">Your chart will fill in after your first review.</div>'}`;
   }
   function renderUpcomingQueue(){
-    const limit=plusDays(today(),7);
-    const items=activeTopics().filter(t=>validDate(t.dueDate)&&t.dueDate>today()&&t.dueDate<=limit).sort((a,b)=>a.dueDate.localeCompare(b.dueDate)||naturalCompare(a.name,b.name)).slice(0,7);
-    $('upcomingCount').textContent=`${items.length} scheduled`;
-    $('upcomingQueue').innerHTML=items.length?items.map(t=>{const d=subjectDisplay(t),days=dayDiff(today(),t.dueDate);return `<div class="due-item upcoming-row"><div style="min-width:0"><div class="due-title">${esc(t.name)}</div><div class="due-meta"><span>${esc(d.subject)}</span><span class="pill upcoming">In ${days} day${days===1?'':'s'}</span></div></div><div class="upcoming-date"><strong>${esc(fmtDate(t.dueDate))}</strong><button type="button" class="btn btn-sm" data-action="review" data-id="${esc(t.id)}">Review</button></div></div>`;}).join(''):`<div class="empty"><strong>No reviews scheduled this week</strong>Upcoming topics will appear here when their next review date falls within seven days.</div>`;
+    const todayKey=today(),limit=plusDays(todayKey,7),items=[];
+    const compare=(a,b)=>a.dueDate.localeCompare(b.dueDate)||naturalCompare(a.name,b.name);
+    for(const topic of activeTopics()){
+      if(!validDate(topic.dueDate)||topic.dueDate<=todayKey||topic.dueDate>limit)continue;
+      insertSortedLimit(items,topic,7,compare);
+    }
+    $('upcomingCount').textContent=items.length+' scheduled';
+    $('upcomingQueue').innerHTML=items.length?items.map(t=>{const d=subjectDisplay(t),days=dayDiff(todayKey,t.dueDate);return '<div class="due-item upcoming-row"><div style="min-width:0"><div class="due-title">'+esc(t.name)+'</div><div class="due-meta"><span>'+esc(d.subject)+'</span><span class="pill upcoming">In '+days+' day'+(days===1?'':'s')+'</span></div></div><div class="upcoming-date"><strong>'+esc(fmtDate(t.dueDate))+'</strong><button type="button" class="btn btn-sm" data-action="review" data-id="'+esc(t.id)+'">Review</button></div></div>';}).join(''):'<div class="empty"><strong>No reviews scheduled this week</strong>Upcoming topics will appear here when their next review date falls within seven days.</div>';
   }
   function renderHistoryInsights(){
     const series=dailyReviewSeries(14),recent=recentHistoryCount(7),average=averageRating();
