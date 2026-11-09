@@ -126,7 +126,7 @@ function normalizeWorkspacePayload(payload,repairCurriculum=false){
  const features=window.NexusNormalizeFeatureState(Object.prototype.hasOwnProperty.call(payload,'featureState')?payload.featureState:undefined);
  if(!repairCurriculum&&Number(payload.schema)>=4)return {...payload,state:payload.state,featureState:features};
  const normalized=normalizeState(payload.state);
- const safeState=repairCurriculum&&window.NexusRepairCurriculumState?window.NexusRepairCurriculumState(normalized):normalized;
+ const safeState=repairCurriculum&&window.NexusRepairNormalizedCurriculumState?window.NexusRepairNormalizedCurriculumState(normalized):normalized;
  return {...payload,state:safeState,featureState:features};
 }
 function nextCloudStamp(previous){
@@ -649,7 +649,7 @@ async function upload(){
   // matching outbox snapshot together so an old queued snapshot cannot remove local pack rows.
   if(window.NexusRepairCurriculumState&&window.NexusStorageKey&&queue){
    const beforeRepairState=state;
-   state=window.NexusRepairCurriculumState(state);
+   state=window.NexusRepairNormalizedCurriculumState?window.NexusRepairNormalizedCurriculumState(state):window.NexusRepairCurriculumState(state);
    if(!(await sameWorkspace({state:beforeRepairState,featureState:{}},{state,featureState:{}}))){
     const repairPayload={state:clone(state),featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}};
     queue.commitWorkspace(localStorage,[{key:window.NexusStorageKey,value:JSON.stringify(state)}],repairPayload,{baseServerVersion:pending?pending.baseServerVersion:(priorStamp||null),returnOperationPayload:false});
