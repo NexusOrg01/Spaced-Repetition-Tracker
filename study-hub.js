@@ -63,7 +63,11 @@
     const todayDone=loggedMinutesToday()+liveFocusMinutesToday();
     hubEl('hubKpis').innerHTML='<div class="hub-kpi"><strong>'+due+'</strong><span>Due or overdue</span></div><div class="hub-kpi"><strong>'+weak+'</strong><span>Topics needing attention</span></div><div class="hub-kpi"><strong>'+mastered+'/'+ts.length+'</strong><span>Mastered topics</span></div><div class="hub-kpi"><strong>'+formatStudyDuration(todayDone*60)+'</strong><span>Study time today</span></div>';
   }
-  function topicPriority(t){const m=featureMeta(t),st=status(t);const revisionBoost=fsState.settings.finalRevision&&!isMastered(t)?45:0;return revisionBoost+(st==='overdue'?100+Math.min(30,Math.max(0,dayDiff(t.dueDate,today()))):st==='due'?80:st==='new'?60:st==='upcoming'?10:0)+(m.weak?30:0)+(m.avg&&m.avg<2.5?20:0)+(t.lapses||0)*3-(m.score/20);}
+  function topicPriority(t){
+    const meta=featureMeta(t),st=status(t),mastered=t.reviewCount>=2&&meta.avg>=3.5&&t.intervalDays>=4&&st!=='overdue';
+    const revisionBoost=fsState.settings.finalRevision&&!mastered?45:0;
+    return revisionBoost+(st==='overdue'?100+Math.min(30,Math.max(0,dayDiff(t.dueDate,today()))):st==='due'?80:st==='new'?60:st==='upcoming'?10:0)+(meta.weak?30:0)+(meta.avg&&meta.avg<2.5?20:0)+(t.lapses||0)*3-(meta.score/20);
+  }
   function buildPlan(limitBudget=true){const ts=activeTopics().filter(t=>!t.archived).slice().sort((a,b)=>topicPriority(b)-topicPriority(a));const daily=Math.max(10,Math.min(720,fNum(fsState.settings.dailyMinutes)||90));const backlog=fsState.settings.backlogDays||7;const cap=limitBudget?daily:Math.max(720,ts.length*30);const selected=[];let sum=0;const done=new Set(fsState.taskChecks[today()]||[]);
     for(const t of ts){const st=status(t);if(!['overdue','due','new'].includes(st))continue;let mins=estimateMinutes(t);if(st==='overdue'&&backlog===0)continue;if(sum+mins>cap&&selected.length>0)continue;if(sum+mins>cap&&selected.length===0&&limitBudget)continue;selected.push({topic:t,minutes:mins,priority:topicPriority(t),status:st});sum+=mins;if(sum>=cap)break;}
     return selected;}
