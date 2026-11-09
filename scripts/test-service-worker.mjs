@@ -7,7 +7,7 @@ import vm from 'node:vm';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const source = readFileSync(resolve(root, 'sw.js'), 'utf8');
 const ORIGIN = 'https://nexus.test/';
-const CACHE_NAME = 'nexus-rating-analytics-v31';
+const CACHE_NAME = 'nexus-rating-analytics-v32';
 const CACHE_PREFIX = 'nexus-rating-analytics-';
 
 function response(status = 200, type = 'basic', label = '') {
@@ -199,6 +199,6 @@ async function settle(event) {
 
 assert.ok(source.includes('keys.filter(k=>k.startsWith(CACHE_PREFIX)&&k!==CACHE_NAME)'),
   'the activation handler must scope cache cleanup to Nexus-owned cache names');
-assert.ok(source.includes('const CACHE_NAME=CACHE_PREFIX+\'v31\';'),
+assert.ok(source.includes('const CACHE_NAME=CACHE_PREFIX+\'v32\';'),
   'the app-shell cache version must advance after service-worker behavior changes');
 console.log('Service-worker reliability tests passed.');
