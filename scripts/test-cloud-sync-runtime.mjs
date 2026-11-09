@@ -59,6 +59,8 @@ assert.ok(initializationRemoteRead>=0&&initializationLocalSnapshot>initializatio
 assert.ok(!initializationSource.includes("localPayload=snapshot();const remote=await fetchRemote(newUserId);")&&
   !initializationSource.includes('sameWorkspace(localPayload,latestLocalPayload)'),
   'account initialization must not deep-clone and compare the entire local workspace twice before any account decision');
+assert.ok(source.includes("const normalizedBase=savedBase?normalizeWorkspacePayload({...savedBase,schema:4}):null;"),
+  'a last-verified workspace base is already normalized and must not receive a second legacy normalization pass that creates false concurrent-edit conflicts');
 
 const OWNER = queue.OWNER;
 const STATE_KEY = 'recall.study.tracker.v1';
