@@ -76,7 +76,7 @@ assert.ok(cloud.includes('sameWorkspace(remote.payload,pending.payload)') &&
   'pending reconciliation must ignore export metadata and compare the actual workspace contents');
 assert.ok(cloud.includes('nextCloudStamp(pending.baseServerVersion)') && cloud.includes('nextCloudStamp(priorStamp)'),
   'every cloud revision write must advance strictly beyond the compared revision, including same-millisecond writes');
-assert.ok(cloud.includes('const normalizedBase=savedBase?normalizeWorkspacePayload(savedBase):null') &&
+assert.ok(cloud.includes('const normalizedBase=savedBase?normalizeWorkspacePayload({...savedBase,schema:4}):null') &&
   cloud.includes('const normalizedLocal=normalizeWorkspacePayload(pending.payload)') &&
   cloud.includes('const normalizedRemote=normalizeWorkspacePayload(remote.payload,true)') &&
   cloud.includes('Number(payload.schema)>=4') &&
