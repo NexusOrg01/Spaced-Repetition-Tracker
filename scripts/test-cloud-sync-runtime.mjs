@@ -1366,7 +1366,7 @@ for (const scenario of [
   const basePayload={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:baseStamp,state:baseState,featureState:featuresFor(null)};
   const remotePayload={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:remoteStamp,state:remoteState,featureState:featuresFor(null)};
 
-  queue.forgetAccount(storage,accountA.id,[{key:STATE_KEY,value:null},{key:FEATURE_KEY,value:null}]);
+  if(queue.hasPending(storage,accountA.id))queue.archive(storage,accountA.id,'large-second-device-sync-test-reset');
   storage.setItem(OWNER,accountA.id);
   storage.setItem(STATE_KEY,JSON.stringify(baseState));
   storage.setItem(FEATURE_KEY,JSON.stringify(basePayload.featureState));
