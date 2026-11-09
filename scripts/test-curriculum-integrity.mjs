@@ -235,7 +235,11 @@ const deletedTopicState = copy(fresh);
 const topicToDelete = deletedTopicState.topics.find(topic => topic.id === 'curr-bs-02');
 integrity.markDeletedTopic(deletedTopicState, catalogue.packs, topicToDelete);
 deletedTopicState.topics = deletedTopicState.topics.filter(topic => topic.id !== topicToDelete.id);
-integrity.repair(deletedTopicState, catalogue.packs, { today, makeId });
+deletedTopicState.history.push({id:'deleted-topic-review',topicId:topicToDelete.id,subjectId:topicToDelete.subjectId,topicName:topicToDelete.name});
+const deletedTopicRepair=integrity.repair(deletedTopicState, catalogue.packs, { today, makeId });
+assert.equal(deletedTopicRepair.changed,true,'removing only stale review history for a deleted topic must be reported as a workspace change');
+assert.equal(deletedTopicState.history.length,0,'a deleted topic must not leave review history behind');
+assert.equal(integrity.repair(deletedTopicState,catalogue.packs,{today,makeId}).changed,false,'a second repair after the deletion must be idempotent');
 assert.equal(deletedTopicState.topics.length, 45);
 assert.equal(deletedTopicState.topics.some(topic => topic.id === topicToDelete.id), false);
 
