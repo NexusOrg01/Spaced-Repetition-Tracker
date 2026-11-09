@@ -101,7 +101,24 @@ assert.ok(cloudSync.includes("queue.rebaseWithBase(localStorage,userId,mergedSna
 assert.ok(cloudSync.includes('workspaceEntries:[') && cloudSync.includes('{key:OWNER_KEY,value:String(userId)}'), 'the automatic merge transaction atomically writes tracker state, Study Hub state, and the account owner');
 assert.ok(cloudSync.includes('const normalizedBase=savedBase?normalizeWorkspacePayload(savedBase):null') && cloudSync.includes('const normalizedLocal=normalizeWorkspacePayload(pending.payload)') && cloudSync.includes('const normalizedRemote=normalizeWorkspacePayload(remote.payload)'), 'base, local, and cloud snapshots must be normalized before three-way comparison');
 assert.ok(cloudSync.includes('function assertStableRecordIds(payload)'), 'malformed or ID-less records must fail closed before normalization can create new identities');
-assert.ok(cloudChunkStorage.includes('async function writeSnapshot(') && cloudChunkStorage.includes('await readSnapshot(client,userId,manifest)') && cloudChunkStorage.includes('sha256'), 'large cloud snapshots must be chunked, read back, and SHA-256 verified before publication');
+
+assert.ok(cloudChunkStorage.includes('async function splitUtf8RangesAsync(') &&
+  cloudChunkStorage.includes('await yieldToBrowser()') &&
+  cloudChunkStorage.includes('async function verifySnapshotChunks(') &&
+  !cloudChunkStorage.includes('await readSnapshot(client,userId,manifest)'),
+  'chunk splitting must yield and upload verification must not reconstruct a second full parsed workspace');
+const mergeInputs=section(cloudSync,'function normalizeWorkspacePayload(payload){','function nextCloudStamp(previous)','large merge input preparation');
+assert.ok(mergeInputs.includes('state:payload.state') && !mergeInputs.includes('normalizeState(') &&
+  !mergeInputs.includes('NexusRepairCurriculumState'),
+  'three-way reconciliation must retain verified source snapshots by reference and normalise the merged result only once');
+assert.ok(cloudSync.includes('async function sameWorkspace(a,b)') && cloudSync.includes('merger.sameAsync(') &&
+  !cloudSync.includes('stableJson('),
+  'workspace equality checks must use cooperative structural comparison instead of allocating giant JSON strings');
+assert.ok(cloudSync.includes("syncDiag('upload-start',diagnosticWorkspace()") &&
+  !cloudSync.includes("syncDiag('upload-start',snapshot()"),
+  'diagnostic-only upload events must not deep-clone the entire workspace when diagnostics are disabled');
+
+assert.ok(cloudChunkStorage.includes('async function writeSnapshot(') && cloudChunkStorage.includes('await verifySnapshotChunks(client,userId,manifest,serialized,ranges)') && cloudChunkStorage.includes('sha256'), 'large cloud snapshots must be chunked, read back against the source string, and SHA-256 verified before publication');
 assert.ok(cloudChunkStorage.includes('const READ_BATCH_SIZE=16') && cloudChunkStorage.includes('offset+=READ_BATCH_SIZE'), 'large chunked snapshots must be read back in bounded pages rather than one oversized API response');
 assert.ok(chunkMigration.includes('chunk_count <= 900') && chunkLimitMigration.includes('chunk_count <= 900'), 'the database and client must enforce the same bounded chunk-count limit');
 assert.ok(cloudSync.includes('knownWrite.manifest') && cloudSync.includes('chunks.sameManifest(remote.payload,knownWrite.manifest)'), 'post-publication verification must reuse the already verified chunk manifest and avoid a second full workspace download');
@@ -205,7 +222,7 @@ assert.ok(cloudSync.includes("status('Cloud conflict')") && cloudSync.includes("
 assert.ok(cloudSync.includes("conflict.code='NEXUS_CLOUD_CONFLICT'"), 'verification mismatches must be treated as cloud conflicts');
 assert.ok(cloudSync.includes("else{ready=false;status('Sync error')"), 'transient cloud failures must expose an error state while automatic retry preserves pending data');
 
-const accountChoice = section(cloudSync, 'async function initializeSession(s){', 'function stableJson(v)', 'account-choice cancellation safeguards');
+const accountChoice = section(cloudSync, 'async function initializeSession(s){', 'async function sameWorkspace(a,b)', 'account-choice cancellation safeguards');
 const destructiveChoiceGuard = accountChoice.indexOf("while(choice==='replace-cloud'||choice==='replace'){");
 const choiceExecution = accountChoice.indexOf("if(choice==='merge'){");
 assert.ok(destructiveChoiceGuard >= 0 && choiceExecution > destructiveChoiceGuard, 'confirm destructive account choices before applying or uploading workspace data');
