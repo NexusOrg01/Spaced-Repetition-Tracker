@@ -5,7 +5,7 @@
   const hubEl=id=>document.getElementById(id);
   const freshFeatureState=()=>({version:1,fsrsSettings:window.NexusFSRS&&typeof window.NexusFSRS.settings==='function'?window.NexusFSRS.settings():{request_retention:0.9,maximum_interval:120,enable_fuzz:false,w:null},settings:{dailyMinutes:90,sessionMinutes:25,scheduler:'classic',weeklyReviewGoal:100,backlogDays:7,reminders:false,reminderTime:'08:00',maxInterval:120,finalRevision:false,workloadDays:7},syllabusTargets:{},taskChecks:{},journal:[],papers:[],goals:[],studyLogs:[],selectedTopicIds:[],lastBackupAt:'',lastReminderAt:'',focusStartedAt:null,focusActualStartedAt:null,focusPausedAt:null,focusTopicId:'',focusSubjectId:''});
   function loadFeatureState(){try{const x=JSON.parse(localStorage.getItem(FEATURE_KEY)||'null');if(!x||typeof x!=='object'||Array.isArray(x))return freshFeatureState();const d=freshFeatureState(),focus=window.NexusBackupRestoreUtils.sanitizeFocusState(x);return {...d,...x,settings:{...d.settings,...(x.settings&&typeof x.settings==='object'&&!Array.isArray(x.settings)?x.settings:{})},syllabusTargets:x.syllabusTargets&&typeof x.syllabusTargets==='object'&&!Array.isArray(x.syllabusTargets)?x.syllabusTargets:{},taskChecks:x.taskChecks&&typeof x.taskChecks==='object'&&!Array.isArray(x.taskChecks)?x.taskChecks:{},journal:Array.isArray(x.journal)?x.journal:[],papers:Array.isArray(x.papers)?x.papers:[],goals:Array.isArray(x.goals)?x.goals:[],studyLogs:Array.isArray(x.studyLogs)?x.studyLogs:[],selectedTopicIds:Array.isArray(x.selectedTopicIds)?x.selectedTopicIds:[],...focus};}catch(e){console.warn('Study Hub data could not be read',e);return freshFeatureState();}}
-  let fsState=loadFeatureState();if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function'&&fsState.fsrsSettings)window.NexusFSRS.setSettings(fsState.fsrsSettings,{syncFeature:false,persist:true});let hubTab='planner';let focusTimer=null;let focusStart=fsState.focusStartedAt?new Date(fsState.focusStartedAt).getTime():null;let focusPausedAt=fsState.focusPausedAt?new Date(fsState.focusPausedAt).getTime():null;let focusTopicId=fsState.focusTopicId||'';let focusSubjectId=fsState.focusSubjectId||'';
+  let fsState=loadFeatureState();if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function'&&fsState.fsrsSettings)window.NexusFSRS.setSettings(fsState.fsrsSettings,{syncFeature:false,persist:true});let hubTab='planner';let focusTimer=null,studyLogHistoryLimit=100;let focusStart=fsState.focusStartedAt?new Date(fsState.focusStartedAt).getTime():null;let focusPausedAt=fsState.focusPausedAt?new Date(fsState.focusPausedAt).getTime():null;let focusTopicId=fsState.focusTopicId||'';let focusSubjectId=fsState.focusSubjectId||'';
   const fid=()=>`hub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,9)}`;
   const dateShift=(d,n)=>{const x=new Date((d||today())+'T12:00:00');x.setDate(x.getDate()+n);return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`;};
   const safeDate=d=>{if(!/^\d{4}-\d{2}-\d{2}$/.test(String(d||'')))return false;const [y,m,day]=String(d).split('-').map(Number);const x=new Date(y,m-1,day);return x.getFullYear()===y&&x.getMonth()===m-1&&x.getDate()===day;};
@@ -113,7 +113,36 @@
   function loggedMinutesToday(){return fsState.studyLogs.filter(x=>x.date===today()).reduce((n,x)=>n+studyLogMinutes(x),0);}
   function ensureStudyLogIds(){const ids=new Set();let changed=false;for(const entry of fsState.studyLogs){if(!entry||typeof entry!=='object')continue;let id=String(entry.id||'');if(!id||ids.has(id)){do{entry.id=fid();id=String(entry.id);}while(ids.has(id));changed=true;}ids.add(id);}if(changed)saveFs();}
   function studyLogTimeInfo(entry){const match=String(entry&&entry.note||'').match(/Started (.*?) · ended (.*?) · Duration:/);const parse=value=>{const ms=Date.parse(value||'');return Number.isFinite(ms)?new Date(ms):null;};const start=parse(entry&&entry.startedAt)||parse(match&&match[1]),end=parse(entry&&entry.endedAt)||parse(match&&match[2]),fallback=parse((entry&&entry.date||'')+'T12:00:00');const time=date=>date.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}),full=date=>date.toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});const label=start&&end?(start.toDateString()===end.toDateString()?time(start)+'–'+time(end):full(start)+' – '+full(end)):start?'Started '+full(start):'';return {start,end,label,sortStamp:(end||start||fallback||new Date(0)).getTime()};}
-  function renderStudyLogHistory(){ensureStudyLogIds();const entries=fsState.studyLogs.map((entry,index)=>({entry,index,timing:studyLogTimeInfo(entry)})).filter(item=>item.entry&&typeof item.entry==='object').sort((a,b)=>b.timing.sortStamp-a.timing.sortStamp||a.index-b.index);const totalSeconds=entries.reduce((sum,item)=>sum+Math.max(0,Math.round(studyLogMinutes(item.entry)*60)),0);const rows=entries.map(({entry,timing})=>{const subject=state.subjects.find(s=>s.id===entry.subjectId)?.name||entry.subjectName||'Unassigned subject',topic=getTopic(entry.topicId)?.name||entry.topicName||'',title=topic?subject+' · '+topic:subject,type=String(entry.type||'Study session'),date=safeDate(entry.date)?fmtDate(entry.date):String(entry.date||'Date unavailable'),note=entry.note&&type.toLowerCase()!=='focus session'?String(entry.note).slice(0,240):'';return `<article class="nexus-study-log-row"><div class="nexus-study-log-main"><div class="nexus-study-log-title">${localEsc(title)}</div><div class="nexus-study-log-meta">${localEsc(date)}${timing.label?' · '+localEsc(timing.label):''} · ${localEsc(type)}</div>${note?`<div class="nexus-study-log-note">${localEsc(note)}</div>`:''}</div><div class="nexus-study-log-actions"><strong class="nexus-study-log-duration">${formatStudyDuration(studyLogMinutes(entry)*60)}</strong><button type="button" class="btn btn-sm btn-danger" data-hub-action="delete-study-log" data-id="${localEsc(entry.id)}" aria-label="Delete this study-time entry">Delete</button></div></article>`;}).join('');return `<div class="nexus-study-log-history-toolbar"><div><strong>${entries.length} entr${entries.length===1?'y':'ies'}</strong><span class="nexus-study-log-total">${formatStudyDuration(totalSeconds)} total recorded</span></div><button type="button" class="btn btn-sm btn-soft" data-hub-action="study-history-toggle" data-target="hubStudyLogHistory" aria-controls="hubStudyLogHistory" aria-expanded="true">Collapse</button></div><div id="hubStudyLogHistory" role="region" aria-label="Study-time history" tabindex="0">${rows||'<div class="nexus-study-log-empty">No study-time entries yet. Completed focus sessions will appear here.</div>'}</div>`;}
+  function renderStudyLogHistory(){
+    ensureStudyLogIds();
+    const subjectById=new Map(state.subjects.map(subject=>[String(subject.id),subject]));
+    const topicById=new Map(state.topics.map(topic=>[String(topic.id),topic]));
+    const compare=(a,b)=>b.timing.sortStamp-a.timing.sortStamp||a.index-b.index;
+    const collector=window.NexusCreateTopKCollector(studyLogHistoryLimit,compare);
+    let count=0,totalSeconds=0,index=0;
+    // Retain and render only the newest page. Older log rows remain in storage and
+    // totals, but are not copied into a giant intermediate array or DOM fragment.
+    for(const entry of fsState.studyLogs){
+      if(entry&&typeof entry==='object'){
+        const timing=studyLogTimeInfo(entry);
+        count++;
+        totalSeconds+=Math.max(0,Math.round(studyLogMinutes(entry)*60));
+        collector.add({entry,index,timing});
+      }
+      index++;
+    }
+    const visible=collector.finish().items;
+    const rows=visible.map(({entry,timing})=>{
+      const subject=subjectById.get(String(entry.subjectId||''))?.name||entry.subjectName||'Unassigned subject';
+      const topic=topicById.get(String(entry.topicId||''))?.name||entry.topicName||'';
+      const title=topic?subject+' · '+topic:subject,type=String(entry.type||'Study session');
+      const date=safeDate(entry.date)?fmtDate(entry.date):String(entry.date||'Date unavailable');
+      const note=entry.note&&type.toLowerCase()!=='focus session'?String(entry.note).slice(0,240):'';
+      return `<article class="nexus-study-log-row"><div class="nexus-study-log-main"><div class="nexus-study-log-title">${localEsc(title)}</div><div class="nexus-study-log-meta">${localEsc(date)}${timing.label?' · '+localEsc(timing.label):''} · ${localEsc(type)}</div>${note?`<div class="nexus-study-log-note">${localEsc(note)}</div>`:''}</div><div class="nexus-study-log-actions"><strong class="nexus-study-log-duration">${formatStudyDuration(studyLogMinutes(entry)*60)}</strong><button type="button" class="btn btn-sm btn-danger" data-hub-action="delete-study-log" data-id="${localEsc(entry.id)}" aria-label="Delete this study-time entry">Delete</button></div></article>`;
+    }).join('');
+    const more=count>visible.length?`<div class="hub-actions"><button type="button" class="btn btn-sm btn-soft" data-hub-action="study-history-more">Show 100 older entries (${count-visible.length} remaining)</button></div>`:'';
+    return `<div class="nexus-study-log-history-toolbar"><div><strong>${count} entr${count===1?'y':'ies'}</strong><span class="nexus-study-log-total">${formatStudyDuration(totalSeconds)} total recorded</span></div><button type="button" class="btn btn-sm btn-soft" data-hub-action="study-history-toggle" data-target="hubStudyLogHistory" aria-controls="hubStudyLogHistory" aria-expanded="true">Collapse</button></div><div id="hubStudyLogHistory" role="region" aria-label="Study-time history" tabindex="0">${rows||'<div class="nexus-study-log-empty">No study-time entries yet. Completed focus sessions will appear here.</div>'}</div>${more}`;
+  }
   function deleteStudyLog(id){const entry=fsState.studyLogs.find(item=>item&&String(item.id)===String(id));if(!entry){notify('That study-time entry could not be found. Refresh the history and try again.');return;}const subject=state.subjects.find(s=>s.id===entry.subjectId)?.name||entry.subjectName||'Unassigned subject',topic=getTopic(entry.topicId)?.name||entry.topicName||'',time=studyLogTimeInfo(entry).label,duration=formatStudyDuration(studyLogMinutes(entry)*60),description=(topic?subject+' · '+topic:subject)+'\n'+(safeDate(entry.date)?fmtDate(entry.date):String(entry.date||'Date unavailable'))+(time?' · '+time:'')+'\n'+String(entry.type||'Study session')+' · '+duration;if(!confirm(`Delete this study-time entry?\n\n${description}\n\nIt will be removed from study-time history, totals, charts, and future exports. Related review, journal, and paper records will be kept. This cannot be undone.`))return;fsState.studyLogs=fsState.studyLogs.filter(item=>!item||String(item.id)!==String(id));saveFs();renderHub();notify('Study-time entry deleted. Study-time totals and exports updated.');}
   function renderPlanner(){const plan=buildPlan(true),done=new Set(fsState.taskChecks[today()]||[]),allPlan=plan.length?plan.reduce((n,x)=>n+x.minutes,0):0,doneMins=loggedMinutesToday()+liveFocusMinutesToday();const daily=fNum(fsState.settings.dailyMinutes)||90,session=fNum(fsState.settings.sessionMinutes)||25,week=weeklyReviewCount(),goal=fNum(fsState.settings.weeklyReviewGoal)||100;const nearest=nearestFutureExam();const left=nearest?Math.max(0,dayDiff(today(),nearest.date)):null;let remainingMins=0;for(const topic of state.topics){if(topic.archived)continue;const st=status(topic),meta=featureMeta(topic),mastered=topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&st!=='overdue';if(!mastered)remainingMins+=Math.max(6,Math.min(30,Math.round(10+(meta.weak?7:0)+(meta.avg&&meta.avg<3?5:0)+(st==='overdue'?Math.min(5,Math.ceil(Math.max(0,dayDiff(topic.dueDate,today()))/5)):0))));}const perDay=left!==null&&left>0?Math.ceil(remainingMins/left):remainingMins;
     const tasks=plan.length?plan.map(x=>`<div class="hub-task"><div><div class="hub-task-name">${localEsc(x.topic.name)}</div><div class="hub-task-meta">${localEsc(subjectFor(x.topic)?.name||'')} · estimated ${x.minutes} min · ${localEsc(statusText(x.status))}</div></div><button class="btn btn-sm btn-primary" data-hub-action="review-topic" data-id="${localEsc(x.topic.id)}">Review</button></div>`).join(''):`<div class="hub-empty">No due or new topics fit the current budget. You can still choose any topic for a longer focus session.</div>`;
@@ -818,30 +847,33 @@
     const studyLogs=Array.isArray(selection?.pdfDatasets?.sessions)?selection.pdfDatasets.sessions:(Array.isArray(fsState&&fsState.studyLogs)?fsState.studyLogs:[]);
     const subjects=Array.isArray(state&&state.subjects)?state.subjects:[];
     const subjectNameById=new Map(subjects.map(subject=>[String(subject.id),String(subject.name||'Unnamed subject')]));
-    const reviews=history.map(record=>({record,date:activityDate(record&&record.reviewedAt)}))
-      .filter(item=>item.record&&item.date&&item.date>=from&&item.date<=to&&(!pdfScope||pdfRecordMatchesScope(item.record,pdfScope)));
-    const sessions=studyLogs.map(record=>({record,date:activityDate(record&&record.date),minutes:studyLogMinutes(record)}))
-      .filter(item=>item.record&&item.date&&item.date>=from&&item.date<=to&&(!pdfScope||pdfRecordMatchesScope(item.record,pdfScope)));
     const reviewsByDate=new Map(),minutesByDate=new Map(),reviewsBySubject=new Map(),minutesBySubject=new Map();
     const activeDates=new Set();
     const subjectLabel=record=>{
       const id=String(record&&record.subjectId||'');
       return subjectNameById.get(id)||String(record&&record.subjectName||'Unassigned subject');
     };
-    reviews.forEach(item=>{
-      reviewsByDate.set(item.date,(reviewsByDate.get(item.date)||0)+1);
-      const name=subjectLabel(item.record);
+    let reviewCount=0,positiveSessionCount=0,totalMinutes=0;
+    for(const record of history){
+      const date=activityDate(record&&record.reviewedAt);
+      if(!record||!date||date<from||date>to||(pdfScope&&!pdfRecordMatchesScope(record,pdfScope)))continue;
+      reviewCount++;
+      reviewsByDate.set(date,(reviewsByDate.get(date)||0)+1);
+      const name=subjectLabel(record);
       reviewsBySubject.set(name,(reviewsBySubject.get(name)||0)+1);
-      activeDates.add(item.date);
-    });
-    let totalMinutes=0;
-    sessions.forEach(item=>{
-      minutesByDate.set(item.date,(minutesByDate.get(item.date)||0)+item.minutes);
-      const name=subjectLabel(item.record);
-      minutesBySubject.set(name,(minutesBySubject.get(name)||0)+item.minutes);
-      totalMinutes+=item.minutes;
-      if(item.minutes>0)activeDates.add(item.date);
-    });
+      activeDates.add(date);
+    }
+    for(const record of studyLogs){
+      const date=activityDate(record&&record.date);
+      if(!record||!date||date<from||date>to||(pdfScope&&!pdfRecordMatchesScope(record,pdfScope)))continue;
+      const minutes=studyLogMinutes(record);
+      if(minutes>0)positiveSessionCount++;
+      minutesByDate.set(date,(minutesByDate.get(date)||0)+minutes);
+      const name=subjectLabel(record);
+      minutesBySubject.set(name,(minutesBySubject.get(name)||0)+minutes);
+      totalMinutes+=minutes;
+      if(minutes>0)activeDates.add(date);
+    }
 
     const span=activityDayDiff(from,to)+1,longRange=span>35;
     const buildActivitySeries=(start,end,values)=>{
@@ -903,10 +935,10 @@
     const reviewSeries=buildActivitySeries(from,to,reviewsByDate),studySeries=buildActivitySeries(from,to,minutesByDate);
     const reviewTitle=longRange?'Total review count':'Daily review count',studyTitle=longRange?'Total study time':'Daily study time';
     const rangeDescription=longRange?'Aggregated totals across the selected timeframe.':'Daily totals across the selected timeframe.';
-    const reviewGraph=renderActivityChart(reviewSeries,reviewTitle,'Reviews','#8978f8','nexusActivityReviewsGradient',reviews.length>0);
-    const studyGraph=renderActivityChart(studySeries,studyTitle,'Minutes','#32bfc0','nexusActivityStudyGradient',sessions.some(item=>item.minutes>0));
-    const sessionCount=sessions.filter(item=>item.minutes>0).length;
-    const kpis='<div class="hub-kpis"><div class="hub-kpi"><strong>'+reviews.length+'</strong><span>Reviews in range</span></div><div class="hub-kpi"><strong>'+formatStudyDuration(totalMinutes*60)+'</strong><span>Logged study time</span></div><div class="hub-kpi"><strong>'+sessionCount+'</strong><span>Study sessions logged</span></div><div class="hub-kpi"><strong>'+activeDates.size+'</strong><span>Days with activity</span></div></div>';
+    const reviewGraph=renderActivityChart(reviewSeries,reviewTitle,'Reviews','#8978f8','nexusActivityReviewsGradient',reviewCount>0);
+    const studyGraph=renderActivityChart(studySeries,studyTitle,'Minutes','#32bfc0','nexusActivityStudyGradient',positiveSessionCount>0);
+    const sessionCount=positiveSessionCount;
+    const kpis='<div class="hub-kpis"><div class="hub-kpi"><strong>'+reviewCount+'</strong><span>Reviews in range</span></div><div class="hub-kpi"><strong>'+formatStudyDuration(totalMinutes*60)+'</strong><span>Logged study time</span></div><div class="hub-kpi"><strong>'+sessionCount+'</strong><span>Study sessions logged</span></div><div class="hub-kpi"><strong>'+activeDates.size+'</strong><span>Days with activity</span></div></div>';
     const charts='<div class="hub-grid analytics-chart-grid">'+
       hubCard(reviewTitle,rangeDescription,reviewGraph,true)+
       hubCard(studyTitle,rangeDescription+' Only completed focus sessions with saved minutes contribute to the graph.',studyGraph,true)+
@@ -1266,7 +1298,7 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
     }
     if(a==='review-topic'){openReview(id);return;}if(a==='open-calendar'){openReviewCalendar();return;}if(a==='edit-topic'){switchView('topics');openTopic(id);return;}
     if(a==='analytics-custom-apply'){const from=hubEl('hubRatingCustomStart')?.value||'',to=hubEl('hubRatingCustomEnd')?.value||'';if(!safeDate(from)||!safeDate(to)||from>to){notify('Choose valid dates. The From date must be on or before the To date.');return;}fsState.analyticsCustomStart=from;fsState.analyticsCustomEnd=to;fsState.analyticsPeriod='custom';saveFs();renderHub();return;}if(a==='analytics-export-pdf'){exportAnalyticsPdf();return;}if(a==='analytics-export'){const selection=getRatingAnalyticsSelection(),from=selection.from,to=selection.to,rows=[['Metric','Value'],['From',from],['To',to],['Reviews',state.history.filter(h=>h.reviewedAt>=from&&h.reviewedAt<=to).length],['Mean recall rating',(()=>{const r=state.history.filter(h=>h.reviewedAt>=from&&h.reviewedAt<=to);return r.length?(r.reduce((n,h)=>n+fNum(h.rating),0)/r.length).toFixed(2):'N/A';})()],['Active topics',activeTopics().length],['Mastered topics',activeTopics().filter(isMastered).length],['Overdue topics',activeTopics().filter(t=>status(t)==='overdue').length],['Study minutes in range',fsState.studyLogs.filter(l=>l.date>=from&&l.date<=to).reduce((n,l)=>n+studyLogMinutes(l),0)],['Generated at',new Date().toISOString()]],csv=rows.map(row=>row.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\\r\\n');downloadBlob('nexus-analytics-'+from+'-to-'+to+'.csv',csv,'text/csv;charset=utf-8');notify('Analytics CSV exported.');return;}if(a==='refresh-plan'){renderHub();return;}if(a==='toggle-final-revision'){fsState.settings.finalRevision=!fsState.settings.finalRevision;saveFs();renderHub();notify(fsState.settings.finalRevision?'Final-revision mode enabled. Non-mastered topics get higher priority.':'Final-revision mode disabled.');return;}if(a==='balance-workload'){balanceWorkload();return;}if(a==='backlog-plan'){spreadBacklog();return;}
-    if(a==='save-planner-settings'){savePlannerSettings();return;}if(a==='focus-start'){startFocus();return;}if(a==='focus-stop'){logFocusStop();return;}if(a==='focus-discard'){discardFocusSession();return;}if(a==='study-history-toggle'){const target=hubEl(b.dataset.target);if(!target)return;target.hidden=!target.hidden;b.setAttribute('aria-expanded',String(!target.hidden));b.textContent=target.hidden?'Expand':'Collapse';return;}if(a==='delete-study-log'){deleteStudyLog(id);return;}if(a==='save-targets'){saveTargets();return;}
+    if(a==='save-planner-settings'){savePlannerSettings();return;}if(a==='focus-start'){startFocus();return;}if(a==='focus-stop'){logFocusStop();return;}if(a==='focus-discard'){discardFocusSession();return;}if(a==='study-history-toggle'){const target=hubEl(b.dataset.target);if(!target)return;target.hidden=!target.hidden;b.setAttribute('aria-expanded',String(!target.hidden));b.textContent=target.hidden?'Expand':'Collapse';return;}if(a==='study-history-more'){studyLogHistoryLimit+=100;renderHub();return;}if(a==='delete-study-log'){deleteStudyLog(id);return;}if(a==='save-targets'){saveTargets();return;}
     if(a==='delete-paper'){if(confirm('Delete this paper/practice record?')){fsState.papers=fsState.papers.filter(p=>p.id!==id);saveFs();renderHub();}return;}if(a==='export-papers'){exportHubCsv('papers');return;}
     if(a==='toggle-journal'){const j=fsState.journal.find(x=>x.id===id);if(j){j.solved=!j.solved;saveFs();renderHub();}return;}if(a==='delete-journal'){if(confirm('Delete this journal entry?')){fsState.journal=fsState.journal.filter(j=>j.id!==id);saveFs();renderHub();}return;}
     if(a==='save-tool-settings'){saveToolSettings();return;}if(a==='request-notifications'){requestNotify();return;}if(a==='check-reminder'){const c=activeTopics().filter(t=>['overdue','due'].includes(status(t))).length;notify(c?`${c} topic(s) due or overdue. Open Daily planner to prioritise them.`:'No topics due or overdue right now.');return;}
