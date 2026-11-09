@@ -268,10 +268,10 @@ assert.ok(studyHub.includes('getPdfExportDatasets(selection,scope)') &&
 assert.ok(studyHub.includes('renderActivityAnalytics({...selection,pdfScope:scope,pdfDatasets:datasets})') &&
   studyHub.includes('function renderActivityAnalytics(selection)') &&
   studyHub.includes('const pdfScope=selection?.pdfScope||null;') &&
-  studyHub.includes('selection?.pdfDatasets?.reviews') &&
-  studyHub.includes('selection?.pdfDatasets?.sessions') &&
-  studyHub.includes('(!pdfScope||pdfRecordMatchesScope(item.record,pdfScope))'),
-  'review activity and study-time graphs must consume the exact scoped PDF datasets');
+  studyHub.includes('const history=Array.isArray(selection?.pdfDatasets?.reviews)?selection.pdfDatasets.reviews:') &&
+  studyHub.includes('const studyLogs=Array.isArray(selection?.pdfDatasets?.sessions)?selection.pdfDatasets.sessions:') &&
+  studyHub.includes('if(!record||!date||date<from||date>to||(pdfScope&&!pdfRecordMatchesScope(record,pdfScope)))continue;'),
+  'activity graphs must consume the exact scoped PDF datasets and stream them without wrapper-array allocations');
 assert.ok(studyHub.includes('const entityOptions=getRatingAnalyticsEntityOptions(level),entityId=\'ALL\';') &&
   studyHub.includes('Streams: \'+(options.scope?.all?\'All\''),
   'the PDF rating graph and report header must describe the full selected scope rather than an unrelated Analytics entity filter');
