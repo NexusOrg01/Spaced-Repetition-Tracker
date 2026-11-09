@@ -200,4 +200,23 @@ const snap=(state,featureState={})=>({app:'Nexus',schema:4,exportedAt:'2026-10-2
  console.log('Large-workspace merge regression passed: '+totalTopics+' topics, '+deletedTopics+' deletions, subject cascade and independent edits ('+durationMs+' ms).');
 }
 
+
+{
+ const total=77144;
+ const left=Array.from({length:total},(_,index)=>({id:'equal-'+index,meta:{rank:index,flags:[true,false,index%3]}}));
+ const right=left.map(row=>({id:row.id,meta:{rank:row.meta.rank,flags:[...row.meta.flags]}}));
+ let yielded=0;
+ const originalSetTimeout=globalThis.setTimeout;
+ globalThis.setTimeout=(callback,...args)=>{yielded++;return originalSetTimeout(callback,0,...args);};
+ try{
+  assert.equal(await merge.sameAsync({state:{topics:left},featureState:{}},{state:{topics:right},featureState:{}}),true,
+   'large structurally equal snapshots must compare without serializing them');
+  assert.ok(yielded>0,'large structural comparisons must yield to the browser periodically');
+  right[total-1].meta.rank=-1;
+  assert.equal(await merge.sameAsync({state:{topics:left},featureState:{}},{state:{topics:right},featureState:{}}),false,
+   'a difference at the end of a large workspace must not be missed');
+ }finally{globalThis.setTimeout=originalSetTimeout;}
+ console.log('Large structural equality regression passed: '+total+' records, cooperative yields='+yielded+'.');
+}
+
 console.log('Automatic three-way workspace merge tests passed.');
