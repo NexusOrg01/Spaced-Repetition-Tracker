@@ -11,6 +11,7 @@ const appSource = index + '\n' + appCore + '\n' + studyHub;
 const cloudSync = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
 const cloudChunkStorage = readFileSync(resolve(root, 'cloud-chunk-storage.js'), 'utf8');
 const chunkMigration = readFileSync(resolve(root, 'supabase/migrations/20261109052019_chunked_nexus_workspace_snapshots.sql'), 'utf8');
+const chunkLimitMigration = readFileSync(resolve(root, 'supabase/migrations/20261109053246_tighten_nexus_workspace_chunk_limit.sql'), 'utf8');
 const fsrsBundle = readFileSync(resolve(root, 'fsrs-bundle.js'), 'utf8');
 const serviceWorker = readFileSync(resolve(root, 'sw.js'), 'utf8');
 const workflow = readFileSync(resolve(root, '.github/workflows/validate-curricula.yml'), 'utf8');
@@ -76,6 +77,8 @@ assert.ok(cloudSync.includes('workspaceEntries:[') && cloudSync.includes('{key:O
 assert.ok(cloudSync.includes('const normalizedBase=savedBase?normalizeWorkspacePayload(savedBase):null') && cloudSync.includes('const normalizedLocal=normalizeWorkspacePayload(pending.payload)') && cloudSync.includes('const normalizedRemote=normalizeWorkspacePayload(remote.payload)'), 'base, local, and cloud snapshots must be normalized before three-way comparison');
 assert.ok(cloudSync.includes('function assertStableRecordIds(payload)'), 'malformed or ID-less records must fail closed before normalization can create new identities');
 assert.ok(cloudChunkStorage.includes('async function writeSnapshot(') && cloudChunkStorage.includes('await readSnapshot(client,userId,manifest)') && cloudChunkStorage.includes('sha256'), 'large cloud snapshots must be chunked, read back, and SHA-256 verified before publication');
+assert.ok(cloudChunkStorage.includes('const READ_BATCH_SIZE=16') && cloudChunkStorage.includes('offset+=READ_BATCH_SIZE'), 'large chunked snapshots must be read back in bounded pages rather than one oversized API response');
+assert.ok(chunkMigration.includes('chunk_count <= 900') && chunkLimitMigration.includes('chunk_count <= 900'), 'the database and client must enforce the same bounded chunk-count limit');
 assert.ok(cloudSync.includes("lastRemoteStorageMode==='chunked'") && cloudSync.includes('chunks.readSnapshot(client,uid,remote.payload)'), 'once an account publishes chunked storage, subsequent clients must continue reading and writing that format');
 assert.ok(chunkMigration.includes('ENABLE ROW LEVEL SECURITY') && chunkMigration.includes('GRANT SELECT, INSERT, DELETE') && chunkMigration.includes('(SELECT auth.uid()) = user_id'), 'chunk storage must grant only required operations and restrict all access to the authenticated owner');
 assert.ok(chunkMigration.includes('nexus_guard_chunked_snapshot_update') && chunkMigration.includes("ERRCODE = '55000'"), 'legacy clients must be prevented from overwriting a published chunk manifest');
