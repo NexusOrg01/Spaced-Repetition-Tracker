@@ -102,7 +102,7 @@ assert.ok(appSource.includes("const restoreFocusUi=()=>{if(focusStart)openFocusM
 assert.ok(appSource.includes('focusStart=Date.now();focusPausedAt=null;fsState.focusStartedAt=new Date(focusStart).toISOString();fsState.focusActualStartedAt=new Date(focusStart).toISOString();fsState.focusPausedAt=null;saveFs();'), 'starting a new focus session must clear stale pause state and initialize the original wall-clock start before persisting');
 assert.ok(serviceWorker.includes("'./nexus-storage.js'") && serviceWorker.includes("'./nexus-app-bootstrap.js'") && serviceWorker.includes("'./nexus-app-inline.js'") && serviceWorker.includes("'./fsrs-bundle.js'") && serviceWorker.includes("'./explore-curriculum.js'") && serviceWorker.includes("'./backup-restore-utils.js'") && serviceWorker.includes("'./offline-sync-queue.js'") && serviceWorker.includes("'./workspace-isolation-guard.js'") && serviceWorker.includes("'./nexus-build-config.js'") && serviceWorker.includes("'./cloud-sync-recovery.js'") && serviceWorker.includes("'./workspace-sync-merge.js'") && serviceWorker.includes("'./cloud-sync.js'"),
   'offline app shell must cache the storage bootstrap, scheduler, and backup safety helpers');
-assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v31';"), 'the service-worker cache must be versioned and scoped to Nexus-owned caches');
+assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v32';"), 'the service-worker cache must be versioned and scoped to Nexus-owned caches');
 const networkFirstSources = serviceWorker.split('const networkFirst=')[1]?.split(';')[0] || '';
 assert.ok(networkFirstSources.includes("url.pathname.endsWith('/nexus-storage.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-app-bootstrap.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-app-inline.js')") && networkFirstSources.includes("url.pathname.endsWith('/explore-curriculum.js')") && networkFirstSources.includes("url.pathname.endsWith('/backup-restore-utils.js')") && networkFirstSources.includes("url.pathname.endsWith('/offline-sync-queue.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-isolation-guard.js')") && networkFirstSources.includes("url.pathname.endsWith('/fsrs-bundle.js')") && networkFirstSources.includes("url.pathname.endsWith('/nexus-build-config.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync-recovery.js')") && networkFirstSources.includes("url.pathname.endsWith('/workspace-sync-merge.js')") && networkFirstSources.includes("url.pathname.endsWith('/cloud-sync.js')"), 'online loads must refresh the durable storage/bootstrap and coupled FSRS/sync helpers while preserving offline cache fallback');
 assert.equal(manifest.theme_color, manifest.background_color, 'installed app chrome should blend with the PWA launch surface');
@@ -118,8 +118,21 @@ assert.ok(offlineQueueSource.includes('wordCode*256+next') && offlineQueueSource
   'large snapshot compression must avoid per-byte phrase strings and callers must be able to skip unused full-payload clones');
 assert.ok(appCore.includes('function getHistoryMetrics()') && appCore.includes('const reviewedToday=getHistoryMetrics().byDate.get(todayKey)||0;'),
   'overview history totals must reuse indexed history metrics instead of rescanning the entire history per render');
-assert.ok(appCore.includes('const orderedHistory=getSortedHistory();') && appCore.includes("const activeView=document.querySelector('.view.active')?.id||'view-overview';"),
-  'tracker rendering must reuse the sorted history cache and refresh only the visible view');
+assert.ok(appCore.includes('selectTopK(state.topics,topicVisibleLimit') && appCore.includes('selectTopK(state.history,historyVisibleLimit') &&
+  appCore.includes("const activeView=document.querySelector('.view.active')?.id||'view-overview';'),
+  'topic and history screens must retain only the visible top-ranked page while refreshing only the active view');
+assert.ok(appCore.includes('window.NexusCreateTopKCollector=createTopKCollector;') &&
+  studyHub.includes('NexusCreateTopKCollector(studyLogHistoryLimit') && studyHub.includes('NexusCreateTopKCollector(40'),
+  'Study Hub mastery and study-log history must use the same bounded top-K collector');
+assert.ok(studyHub.includes('studyTopicOptionsMarkup(fsState.studyTopicQuery,focusTopicId,150)') &&
+  studyHub.includes('if(ts.length<80)ts.push(topic)'),
+  'Study Hub topic selectors and global search must cap generated options and rows');
+assert.ok(studyHub.includes('for(const record of history){') && studyHub.includes('for(const record of studyLogs){') &&
+  !studyHub.includes('const reviews=history.map(') && !studyHub.includes('const sessions=studyLogs.map('),
+  'activity analytics must aggregate source records directly instead of allocating full-size wrapper arrays');
+assert.ok(!appCore.slice(appCore.indexOf('  function save(){'),appCore.indexOf('  function save(){')+450).includes('repairCurriculumState(') &&
+  appCore.includes('const result=repairCurriculumStateResult(state);') && appCore.includes('if(result.changed)save();'),
+  'curriculum repair must run at data lifecycle boundaries rather than on every routine review save');
 assert.ok(studyHub.includes('function getTopicHistoryStats()') && studyHub.includes('const stats=getTopicHistoryStats().get(String(t.id))'),
   'Study Hub mastery and planning must reuse a per-topic history index instead of filtering all history for each topic');
 assert.ok(studyHub.includes('for(const record of state.history){const date=record&&record.reviewedAt;') && !studyHub.includes('state.history.filter(h=>h.reviewedAt===d)'),
