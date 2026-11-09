@@ -108,7 +108,15 @@ assert.ok(cloudSync.includes('knownWrite.manifest') && cloudSync.includes('chunk
 assert.ok(cloudSync.includes("lastRemoteStorageMode==='chunked'") && cloudSync.includes('chunks.readSnapshot(client,uid,remote.payload)'), 'once an account publishes chunked storage, subsequent clients must continue reading and writing that format');
 assert.ok(chunkMigration.includes('ENABLE ROW LEVEL SECURITY') && chunkMigration.includes('GRANT SELECT, INSERT, DELETE') && chunkMigration.includes('(SELECT auth.uid()) = user_id'), 'chunk storage must grant only required operations and restrict all access to the authenticated owner');
 assert.ok(chunkMigration.includes('nexus_guard_chunked_snapshot_update') && chunkMigration.includes("ERRCODE = '55000'"), 'legacy clients must be prevented from overwriting a published chunk manifest');
-assert.ok(cloudSync.includes('serializedPayloadCharacters') && cloudSync.includes('serializedPayloadUtf8Bytes') && cloudSync.includes('new TextEncoder()'), 'sync diagnostics must measure serialized snapshot size in characters and UTF-8 bytes without storing snapshot contents');
+const syncDiagnosticSummary=section(cloudSync,'function syncDiagSummary(payload){','function syncDiag(stage,payload,extra){','sync diagnostic summary');
+assert.ok(syncDiagnosticSummary.includes('totalRecordCount') && syncDiagnosticSummary.includes('topicCount') &&
+  !syncDiagnosticSummary.includes('JSON.stringify(payload)') &&
+  !syncDiagnosticSummary.includes('serializedPayloadCharacters') &&
+  !syncDiagnosticSummary.includes('serializedPayloadUtf8Bytes'),
+  'sync diagnostics must use aggregate record counts and avoid a second full-workspace serialization allocation');
+assert.ok(cloudSync.includes('Enable sync diagnostics') && cloudSync.includes('Download sync diagnostics (safe summary)') &&
+  cloudSync.includes('workspace-merge-normalize-error') && cloudSync.includes('workspace-merge-commit-error'),
+  'users must be able to enable/download safe diagnostics and the reconciliation failure stages must be captured');
 assert.ok(cloudSync.includes('scheduleRetry();localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;return;'), 'transient merge-verification races must use bounded automatic retry');
 assert.ok(cloudSync.includes('sameWorkspace(remoteData,pendingForUser.payload)'), 'routine conflict detection must compare workspace contents, not exported-at metadata');
 assert.ok(cloudSync.includes('function nextCloudStamp(previous)') && cloudSync.includes('policy.nextRevisionStamp(previous)'), 'revision creation must prevent same-millisecond writes from reusing a compare-and-swap version');
