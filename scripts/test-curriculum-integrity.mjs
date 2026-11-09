@@ -334,7 +334,7 @@ assert.ok(appCore.includes('window.NexusRepairNormalizedCurriculumState=repairCu
   const bulkDeleteState={
     schema:3,
     streams:[{id:largePack.streamId,name:largePack.streamName},{id:'manual-stream',name:'Manual stream'}],
-    subjects:[{id:definition.workspaceId,name:definition.name,streamId:largePack.streamId},
+    subjects:[{id:definition.workspaceId,name:definition.name,streamId:largePack.streamId,order:0},
       {id:'manual-subject',name:'Manual subject',streamId:'manual-stream'}],
     topics:catalogTopics.concat(manualTopics),
     history:names.map((name,index)=>({id:'bulk-catalog-history-'+index,topicId:catalogTopics[index].id,
