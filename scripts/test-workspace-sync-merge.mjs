@@ -155,6 +155,17 @@ const snap=(state,featureState={})=>({app:'Nexus',schema:4,exportedAt:'2026-10-2
  assert.ok(result.conflicts.some(item=>item.path==='featureState.settings.dailyMinutes'));
 }
 {
+ const base=snap({topics:[{id:'async-schedule',name:'Topic',subjectId:'sub',notes:'base',dueDate:'2026-11-01',lastRating:3,intervalDays:5,reviewCount:2,streak:2,fsrs:{stability:4,difficulty:5,reps:2}}]});
+ const local=snap({topics:[{id:'async-schedule',name:'Topic',subjectId:'sub',notes:'base',dueDate:'2026-11-08',lastRating:4,intervalDays:7,reviewCount:3,streak:3,fsrs:{stability:6,difficulty:5,reps:3}}]});
+ const remote=snap({topics:[{id:'async-schedule',name:'Topic',subjectId:'sub',notes:'cloud notes',dueDate:'2026-11-12',lastRating:2,intervalDays:11,reviewCount:3,streak:1,fsrs:{stability:9,difficulty:6,reps:3}}]});
+ const result=await merge.mergeAsync(base,local,remote);
+ const conflict=result.conflicts.find(item=>item.path==='state.topics[async-schedule].__reviewSchedule');
+ assert.ok(conflict,'the cooperative merge path must keep schedule conflict recovery behavior');
+ assert.equal(conflict.remote.fsrs.stability,9);
+ assert.equal(conflict.remote.lastRating,2);
+ assert.equal(conflict.remote.streak,1);
+}
+{
  const totalTopics=77144,deletedTopics=12032,notes='x'.repeat(280);
  const baseRows=Array.from({length:totalTopics},(_,i)=>({
   id:'large-topic-'+i,name:'Large workspace topic '+i,
