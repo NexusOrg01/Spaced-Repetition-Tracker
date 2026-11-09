@@ -170,6 +170,17 @@ assert.ok(appCore.includes('window.deleteTopic = id => deleteTopic(id)') &&
 assert.ok(studyHub.includes('function captureCascadeUndo()') && !studyHub.includes('cascadeUndoState=clone(fsState)') &&
   studyHub.includes('Object.assign(fsState,cascadeUndoState)'),
   'Study Hub cascade undo must retain only changed arrays and the small syllabus-target map');
+assert.ok(appCore.includes('window.NexusStartUndoBulkDelete=startUndoBulkDelete;') &&
+  appCore.includes('window.NexusStartUndoTopicBatch=startUndoTopicBatch;') &&
+  studyHub.includes("window.NexusStartUndoTopicBatch('Overdue backlog rescheduled',over,['dueDate'])") &&
+  studyHub.includes("window.NexusStartUndoTopicBatch('Study workload balanced',candidates,['dueDate'])") &&
+  studyHub.includes("window.NexusStartUndoTopicBatch('Bulk topic update',chosen"),
+  'Study Hub bulk scheduling and metadata updates must retain only the topic fields they mutate');
+assert.ok(studyHub.includes("window.NexusStartUndoBulkDelete('Bulk topic deletion')") &&
+  studyHub.includes("markDeletedTopics(state,window.NexusCurriculumPacks||[],chosen)") &&
+  studyHub.includes('const selectedIds=new Set(fsState.selectedTopicIds)') &&
+  !studyHub.includes('startUndo('),
+  'Study Hub bulk deletion must use Set-based selection, batched curriculum tombstones and reference-based Undo');
 assert.ok(studyHub.includes('const visibleDates=new Set(dates.map') && studyHub.includes('selectedTopics.length<calendarTopicLimit') &&
   !studyHub.includes('activeTopics().filter(t=>t.dueDate===iso'),
   'the review calendar must index its 42-day window in one topic pass and bound selected-day DOM rows');
