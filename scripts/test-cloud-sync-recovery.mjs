@@ -78,8 +78,10 @@ assert.ok(cloud.includes('nextCloudStamp(pending.baseServerVersion)') && cloud.i
   'every cloud revision write must advance strictly beyond the compared revision, including same-millisecond writes');
 assert.ok(cloud.includes('const normalizedBase=savedBase?normalizeWorkspacePayload(savedBase):null') &&
   cloud.includes('const normalizedLocal=normalizeWorkspacePayload(pending.payload)') &&
-  cloud.includes('const normalizedRemote=normalizeWorkspacePayload(remote.payload)'),
-  'three-way comparisons must use the same normalized schema on both sides and the saved base');
+  cloud.includes('const normalizedRemote=normalizeWorkspacePayload(remote.payload,true)') &&
+  cloud.includes('Number(payload.schema)>=4') &&
+  cloud.includes('NexusNormalizeFeatureState(Object.prototype.hasOwnProperty.call(payload'),
+  'current-schema local/base state must stay reference-backed, while legacy/remote states and all feature sections use the canonical merge schema');
 assert.ok(cloud.includes('function assertStableRecordIds(payload)') && cloud.includes('assertStableRecordIds(payload);'),
   'records must be checked for stable IDs before normalization can generate replacements and accidentally duplicate them');
 assert.ok(cloud.includes('if(localStorage.getItem(OWNER_KEY)===uploadUserId&&session&&session.user.id===uploadUserId)retryReconcileAfterConflict=true;'),
