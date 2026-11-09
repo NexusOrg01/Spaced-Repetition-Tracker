@@ -178,10 +178,11 @@
   // Curriculum rows are owned by explicit install intent, not by whether a topic has
   // review progress. The previous cleanup inferred ownership from seed IDs and deleted
   // untouched Commerce-pack rows on every reload.
-  function repairCurriculumState(data){
+  function repairCurriculumState(data,withStatus=false){
     const api=window.NexusCurriculumIntegrity;
-    if(!api||typeof api.repair!=='function')return data;
-    return api.repair(data,CURRICULUM_PACKS,{today,makeId}).state;
+    if(!api||typeof api.repair!=='function')return withStatus?{state:data,changed:false}:data;
+    const result=api.repair(data,CURRICULUM_PACKS,{today,makeId});
+    return withStatus?result:result.state;
   }
   window.NexusRepairCurriculumState=function(data){return repairCurriculumState(normalizeState(data));};
   function persistLoadedRepair(data){
@@ -194,17 +195,19 @@
   }
   function loadAndRepair(data){
     const normalized=normalizeState(data);
-    const repaired=repairCurriculumState(normalized);
-    if(JSON.stringify(repaired)!==JSON.stringify(normalized)){
-      try{persistLoadedRepair(repaired);}catch(e){console.warn('Curriculum repair is available in memory but could not be persisted safely; original saved data was left intact.',e);}
+    const result=repairCurriculumState(normalized,true);
+    if(result.changed){
+      try{persistLoadedRepair(result.state);}catch(e){console.warn('Curriculum repair is available in memory but could not be persisted safely; original saved data was left intact.',e);}
     }
-    return repaired;
+    return result.state;
   }
   function loadState(){const current=safeRead(STORAGE_KEY);if(current){try{return loadAndRepair(current);}catch(e){console.warn('Saved data was invalid; existing saved bytes were not overwritten.',e);}}const old=safeRead('alSrsTrackerV2');if(old){try{return loadAndRepair(migrateOld(old.state||old));}catch(e){console.warn(e);}}const legacyT=safeRead('alTrackerData'),legacyH=safeRead('alHistoryLog');if(Array.isArray(legacyT)||Array.isArray(legacyH))return loadAndRepair(migrateOld({topics:legacyT||[],history:legacyH||[]}));return baseState();}
   let storageSaveRevision=0;
   function save(){
     try{
-      state=repairCurriculumState(state);
+      // State is normalized at hydration/import/merge boundaries. Re-running a full
+      // catalogue repair on every ordinary review/save is unnecessary for an unchanged
+      // install intent and makes large workspaces slower as their topic count grows.
       const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():(()=>{
         try{const x=JSON.parse(localStorage.getItem('recall.study.features.v1')||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{}}catch(_){return {}}
       })();
@@ -424,9 +427,9 @@
       esc,makeId,today,save,renderAll,notify,
       getIntegrity:()=>window.NexusCurriculumIntegrity,
       onCatalogLoaded:()=>{
-        const before=JSON.stringify(state);
-        state=repairCurriculumState(state);
-        if(JSON.stringify(state)!==before)save();
+        const result=repairCurriculumState(state,true);
+        state=result.state;
+        if(result.changed)save();
         renderAll();
       },
       onCatalogError:error=>console.warn('Nexus curriculum catalogue could not be refreshed; using the built-in Commerce fallback.',error)
