@@ -331,6 +331,33 @@ assert.ok(appCore.includes('window.NexusRepairNormalizedCurriculumState=repairCu
     id:'manual-'+index,subjectId:'manual-subject',name:'Manual topic '+index,
     reviewCount:0,intervalDays:0,archived:false
   }));
+  const bulkDeleteState={
+    schema:3,
+    streams:[{id:largePack.streamId,name:largePack.streamName},{id:'manual-stream',name:'Manual stream'}],
+    subjects:[{id:definition.workspaceId,name:definition.name,streamId:largePack.streamId},
+      {id:'manual-subject',name:'Manual subject',streamId:'manual-stream'}],
+    topics:catalogTopics.concat(manualTopics),
+    history:names.map((name,index)=>({id:'bulk-catalog-history-'+index,topicId:catalogTopics[index].id,
+      subjectId:definition.workspaceId,topicName:name,reviewedAt:'2026-10-01'}))
+      .concat([{id:'bulk-manual-history',topicId:'manual-0',subjectId:'manual-subject',topicName:'Manual topic 0'}]),
+    exams:[],
+    settings:{theme:'dark',installedCurricula:[integrity.keys.pack(largePack.id)],curriculumTombstones:[]}
+  };
+  const markedCount=integrity.markDeletedTopics(bulkDeleteState,[largePack],catalogTopics);
+  assert.equal(markedCount,count,'batch deletion must write a tombstone for every selected catalogue topic');
+  assert.equal(bulkDeleteState.settings.curriculumTombstones.length,count,
+    'large deletion intent must not be truncated to the former 5,000-marker cap');
+  const deletedIds=new Set(catalogTopics.map(topic=>topic.id));
+  bulkDeleteState.topics=bulkDeleteState.topics.filter(topic=>!deletedIds.has(topic.id));
+  bulkDeleteState.history=bulkDeleteState.history.filter(entry=>!deletedIds.has(entry.topicId));
+  const bulkRepair=integrity.repair(bulkDeleteState,[largePack],{today,makeId});
+  assert.equal(bulkRepair.changed,false,'repair must preserve the explicitly deleted topics without rebuilding them');
+  assert.equal(bulkDeleteState.topics.length,manualCount,
+    'a 12,032-topic batch deletion must not resurrect catalogue records from installed-pack intent');
+  assert.equal(bulkDeleteState.history.length,1,'unrelated manual history must survive batched topic deletion');
+  assert.ok(bulkDeleteState.topics.every(topic=>topic.id.startsWith('manual-')),
+    'only unrelated manual topics should remain after the batch delete');
+  console.log('Large topic deletion tombstones passed: '+markedCount+' catalogue records preserved as deleted intent.');
   const largeState={
     schema:3,
     streams:[{id:largePack.streamId,name:largePack.streamName},{id:'manual-stream',name:'Manual stream'}],
