@@ -312,4 +312,55 @@ assert.ok(appCore.includes('window.NexusRepairNormalizedCurriculumState=repairCu
   appCore.includes('window.NexusRepairNormalizedCurriculumStateWithResult=repairCurriculumStateResult'),
   'sync code must be able to repair an already-normalized state without normalizing every record again');
 
+
+{
+  const count=12032,manualCount=65112;
+  const names=Array.from({length:count},(_,index)=>'Synthetic topic '+index);
+  const definition={id:'synthetic-subject',workspaceId:'synthetic-subject',name:'Synthetic Subject',
+    legacyIdPrefix:'seed-synthetic',topics:names};
+  const largePack={id:'synthetic-large-pack',streamId:'stream-synthetic',streamName:'Synthetic Stream',subjects:[definition]};
+  const catalogTopics=names.map((name,index)=>({
+    id:'curr-synthetic-'+String(index+1).padStart(2,'0'),subjectId:definition.workspaceId,name,
+    reviewCount:0,intervalDays:0,archived:false
+  }));
+  const manualTopics=Array.from({length:manualCount},(_,index)=>({
+    id:'manual-'+index,subjectId:'manual-subject',name:'Manual topic '+index,
+    reviewCount:0,intervalDays:0,archived:false
+  }));
+  const largeState={
+    schema:3,
+    streams:[{id:largePack.streamId,name:largePack.streamName},{id:'manual-stream',name:'Manual stream'}],
+    subjects:[{id:definition.workspaceId,name:definition.name,streamId:largePack.streamId},
+      {id:'manual-subject',name:'Manual subject',streamId:'manual-stream'}],
+    topics:catalogTopics.concat(manualTopics),
+    history:names.map((name,index)=>({id:'catalog-history-'+index,topicId:catalogTopics[index].id,
+      subjectId:definition.workspaceId,topicName:name,reviewedAt:'2026-10-01'}))
+      .concat([{id:'manual-history',topicId:'manual-0',subjectId:'manual-subject',topicName:'Manual topic 0',reviewedAt:'2026-10-02'}]),
+    exams:[],
+    settings:{
+      theme:'dark',
+      installedCurricula:[integrity.keys.pack(largePack.id)],
+      curriculumTombstones:[integrity.keys.deletedSubject(largePack.id,definition.id)]
+    }
+  };
+  const started=Date.now();
+  const outcome=integrity.repair(largeState,[largePack],{today,makeId});
+  const duration=Date.now()-started;
+  assert.equal(outcome.changed,true,'a mass subject deletion must report a workspace change');
+  assert.equal(largeState.topics.length,manualCount,
+    'a 12,032-topic subject deletion must remove only its own topics from a 77,144-topic workspace');
+  assert.equal(largeState.topics[0].id,'manual-0','unrelated manual topics must remain in their original order');
+  assert.equal(largeState.subjects.some(subject=>subject.id===definition.workspaceId),false,
+    'the deleted subject must not be restored by curriculum repair');
+  assert.equal(largeState.history.length,1,'only history associated with the deleted subject must be removed');
+  assert.equal(largeState.history[0].id,'manual-history','unrelated manual history must remain intact');
+  assert.ok(largeState.streams.some(stream=>stream.id==='manual-stream'),'unrelated streams must remain intact');
+  console.log('Large curriculum tombstone regression passed: '+count+' deleted topics from '+(count+manualCount)+' topics in '+duration+'ms.');
+}
+const curriculumSource=readFileSync(new URL('../curriculum-integrity.js',import.meta.url),'utf8');
+const repairSource=curriculumSource.slice(curriculumSource.indexOf('function repair(state, packs, options)'),
+  curriculumSource.indexOf('function markInstalled(state, pack, scope, subjectId, topicName)'));
+assert.ok(!repairSource.includes('JSON.stringify('),
+  'curriculum repair must not serialize the full workspace to detect whether records changed');
+
 console.log('Curriculum integrity regression tests passed.');
