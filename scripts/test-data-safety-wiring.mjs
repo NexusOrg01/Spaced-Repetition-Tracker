@@ -108,7 +108,7 @@ assert.ok(cloudChunkStorage.includes('async function splitUtf8RangesAsync(') &&
   !cloudChunkStorage.includes('await readSnapshot(client,userId,manifest)'),
   'chunk splitting must yield and upload verification must not reconstruct a second full parsed workspace');
 const mergeInputs=section(cloudSync,'function normalizeWorkspacePayload(payload,repairCurriculum=false){','function nextCloudStamp(previous)','large merge input preparation');
-assert.ok(mergeInputs.includes('state:payload.state') && mergeInputs.includes('if(!repairCurriculum)') &&
+assert.ok(mergeInputs.includes('state:payload.state') && mergeInputs.includes('if(!repairCurriculum&&Number(payload.schema)>=4)') &&
   mergeInputs.includes('repairCurriculum&&window.NexusRepairCurriculumState?window.NexusRepairCurriculumState(normalized):normalized') &&
   cloudSync.includes('normalizeWorkspacePayload(remote.payload,true)'),
   'three-way reconciliation must retain trusted local/base snapshots by reference while repairing legacy remote curriculum state before merge');
