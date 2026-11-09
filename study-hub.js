@@ -69,12 +69,13 @@
     return revisionBoost+(st==='overdue'?100+Math.min(30,Math.max(0,dayDiff(t.dueDate,today()))):st==='due'?80:st==='new'?60:st==='upcoming'?10:0)+(meta.weak?30:0)+(meta.avg&&meta.avg<2.5?20:0)+(t.lapses||0)*3-(meta.score/20);
   }
   function buildPlan(limitBudget=true){
-    const ts=activeTopics(),daily=Math.max(10,Math.min(720,fNum(fsState.settings.dailyMinutes)||90));
-    const backlog=fsState.settings.backlogDays||7,cap=limitBudget?daily:Math.max(720,ts.length*30);
+    const ts=state.topics,daily=Math.max(10,Math.min(720,fNum(fsState.settings.dailyMinutes)||90));
+    const backlog=fsState.settings.backlogDays||7;let activeCount=0;const cap=limitBudget?daily:Math.max(720,ts.length*30);
     const buckets=new Map(),selected=[];let sum=0;
     // Priority values are exact multiples of 0.05. Grouping preserves original
     // order within equal-priority buckets and avoids sorting the full catalogue.
     for(const topic of ts){
+      if(topic.archived)continue;activeCount++;
       const st=status(topic);
       if(!['overdue','due','new'].includes(st)||(st==='overdue'&&backlog===0))continue;
       const priority=topicPriority(topic),key=Math.round(priority*20);
