@@ -254,49 +254,148 @@
     const valid=safeDate(from)&&safeDate(to)&&from<=to,records=valid?state.history.filter(h=>safeDate(h.reviewedAt)&&h.reviewedAt>=from&&h.reviewedAt<=to):[];
     return {range:period,from,to,records,label:({week:'This week',month:'This month',year:'This year',custom:'Custom date range'})[period],valid};
   }
-  function getRatingAnalyticsEntityOptions(level){
-    const map=new Map();
+  const RATING_ANALYTICS_ENTITY_OPTION_LIMIT=150;
+  function getRatingAnalyticsEntityOptions(level,search='',limit=RATING_ANALYTICS_ENTITY_OPTION_LIMIT,currentValue=String(fsState.analyticsRatingEntity||'ALL')){
+    const query=String(search||'').trim().toLocaleLowerCase();
+    const max=Math.max(1,Math.min(RATING_ANALYTICS_ENTITY_OPTION_LIMIT,Math.floor(Number(limit)||RATING_ANALYTICS_ENTITY_OPTION_LIMIT)));
+    const compare=(a,b)=>a.label.localeCompare(b.label)||a.subtitle.localeCompare(b.subtitle)||a.value.localeCompare(b.value);
+    const collector=window.NexusCreateTopKCollector(max,compare),seen=new Set();
+    const subjectById=new Map(state.subjects.map(subject=>[String(subject.id),subject]));
+    const streamById=new Map(state.streams.map(stream=>[String(stream.id),stream]));
+    const topicById=level==='topic'?new Map(state.topics.map(topic=>[String(topic.id),topic])):null;
+    const selected=String(currentValue||'');
+    let currentOption=null,matchCount=0;
+    const add=(value,label,subtitle)=>{
+      value=String(value);
+      const option={value,label:String(label||'Untitled'),subtitle:String(subtitle||'')};
+      if(value===selected&&!currentOption)currentOption=option;
+      const matches=!query||(option.label+' '+option.subtitle).toLocaleLowerCase().includes(query);
+      if(!matches||seen.has(value))return;
+      seen.add(value);matchCount++;collector.add(option);
+    };
     if(level==='topic'){
-      state.topics.forEach(t=>{const sub=subjectFor(t);map.set(String(t.id),{value:String(t.id),label:String(t.name||'Untitled topic'),subtitle:String(sub?.name||'Unassigned subject')});});
-      state.history.forEach(h=>{const name=String(h.topicName||getTopic(h.topicId)?.name||'Untitled topic'),sub=String(h.subjectName||'Unassigned subject'),value=h.topicId?String(h.topicId):'legacy-topic:'+sub+'::'+name;if(!map.has(value))map.set(value,{value,label:name,subtitle:sub});});
+      state.topics.forEach(topic=>{
+        const subject=subjectById.get(String(topic.subjectId));
+        add(topic.id,topic.name||'Untitled topic',subject?.name||'Unassigned subject');
+      });
+      state.history.forEach(record=>{
+        const topic=topicById.get(String(record.topicId));
+        const name=String(record.topicName||topic?.name||'Untitled topic');
+        const subject=String(record.subjectName||'Unassigned subject');
+        const value=record.topicId?String(record.topicId):'legacy-topic:'+subject+'::'+name;
+        add(value,name,subject);
+      });
     }else if(level==='subject'){
-      state.subjects.forEach(sub=>{const st=streamFor(sub);map.set(String(sub.id),{value:String(sub.id),label:String(sub.name||'Untitled subject'),subtitle:String(st?.name||'Unassigned syllabus')});});
-      state.history.forEach(h=>{const name=String(h.subjectName||'Unassigned subject'),subtitle=String(h.streamName||'Unassigned syllabus'),value=h.subjectId?String(h.subjectId):'legacy-subject:'+name;if(!map.has(value))map.set(value,{value,label:name,subtitle});});
+      state.subjects.forEach(subject=>{
+        const stream=streamById.get(String(subject.streamId));
+        add(subject.id,subject.name||'Untitled subject',stream?.name||'Unassigned syllabus');
+      });
+      state.history.forEach(record=>{
+        const name=String(record.subjectName||'Unassigned subject');
+        const subtitle=String(record.streamName||'Unassigned syllabus');
+        const value=record.subjectId?String(record.subjectId):'legacy-subject:'+name;
+        add(value,name,subtitle);
+      });
     }else{
-      state.streams.forEach(st=>map.set(String(st.id),{value:String(st.id),label:String(st.name||'Untitled syllabus'),subtitle:'Syllabus / stream'}));
-      state.history.forEach(h=>{const name=String(h.streamName||'Unassigned syllabus'),value=h.streamId?String(h.streamId):'legacy-syllabus:'+name;if(!map.has(value))map.set(value,{value,label:name,subtitle:'Syllabus / stream'});});
+      state.streams.forEach(stream=>add(stream.id,stream.name||'Untitled syllabus','Syllabus / stream'));
+      state.history.forEach(record=>{
+        const name=String(record.streamName||'Unassigned syllabus');
+        const value=record.streamId?String(record.streamId):'legacy-syllabus:'+name;
+        add(value,name,'Syllabus / stream');
+      });
     }
+    const result=collector.finish().items;
+    if(currentOption&&!result.some(option=>option.value===currentOption.value))result.push(currentOption);
     const allLabel=level==='topic'?'All topics':level==='subject'?'All subjects':'All syllabuses';
-    map.set('ALL',{value:'ALL',label:allLabel,subtitle:'Combined rating history for this timeframe'});
-    return Array.from(map.values()).sort((a,b)=>a.label.localeCompare(b.label)||a.subtitle.localeCompare(b.subtitle));
+    if(!result.some(option=>option.value==='ALL'))result.push({value:'ALL',label:allLabel,subtitle:'Combined rating history for this timeframe'});
+    result.sort(compare);
+    result.matchCount=matchCount;result.limit=max;
+    return result;
   }
-  function getRatingAnalyticsEntityId(level,options){const choices=Array.isArray(options)?options:getRatingAnalyticsEntityOptions(level),prior=String(fsState.analyticsRatingEntity||'');return choices.some(x=>x.value===prior)?prior:(choices[0]?.value||'');}
-  function getRatingAnalyticsEntityLabel(level,entityId,options){const choices=Array.isArray(options)?options:getRatingAnalyticsEntityOptions(level),o=choices.find(x=>x.value===String(entityId));return o?.label||'No '+(level==='topic'?'topic':level==='subject'?'subject':'syllabus')+' selected';}
+  function getRatingAnalyticsEntityId(level,options){
+    const choices=Array.isArray(options)?options:getRatingAnalyticsEntityOptions(level);
+    const prior=String(fsState.analyticsRatingEntity||'');
+    if(choices.some(option=>option.value===prior))return prior;
+    return choices.some(option=>option.value==='ALL')?'ALL':choices[0]?.value||'';
+  }
+  function getRatingAnalyticsEntityLabel(level,entityId,options){
+    const choices=Array.isArray(options)?options:getRatingAnalyticsEntityOptions(level),option=choices.find(item=>item.value===String(entityId));
+    return option?.label||'No '+(level==='topic'?'topic':level==='subject'?'subject':'syllabus')+' selected';
+  }
+  function createRatingAnalyticsRecordMatcher(level,entityId){
+    const id=String(entityId||'');
+    if(level==='topic'){
+      if(id.startsWith('legacy-topic:'))return record=>!record?.topicId&&id==='legacy-topic:'+String(record?.subjectName||'Unassigned subject')+'::'+String(record?.topicName||'Untitled topic');
+      const topic=getTopic(id),topicName=String(topic?.name||'Untitled topic'),topicSubjectName=topic?(subjectFor(topic)?.name||'Unassigned subject'):'';
+      return record=>{
+        if(String(record?.topicId||'')===id)return true;
+        if(record?.topicId||!topic)return false;
+        return String(record?.topicName||'Untitled topic')===topicName&&String(record?.subjectName||'Unassigned subject')===topicSubjectName;
+      };
+    }
+    if(level==='subject'){
+      if(id.startsWith('legacy-subject:'))return record=>!record?.subjectId&&id==='legacy-subject:'+String(record?.subjectName||'Unassigned subject');
+      const subject=state.subjects.find(item=>String(item.id)===id),subjectName=String(subject?.name||'');
+      return record=>{
+        if(String(record?.subjectId||'')===id)return true;
+        if(record?.subjectId||!subject)return false;
+        return String(record?.subjectName||'Unassigned subject')===subjectName;
+      };
+    }
+    if(id.startsWith('legacy-syllabus:'))return record=>!record?.streamId&&id==='legacy-syllabus:'+String(record?.streamName||'Unassigned syllabus');
+    const stream=state.streams.find(item=>String(item.id)===id),streamName=String(stream?.name||'');
+    return record=>{
+      if(String(record?.streamId||'')===id)return true;
+      if(record?.streamId||!stream)return false;
+      return String(record?.streamName||'Unassigned syllabus')===streamName;
+    };
+  }
   function getRatingAnalyticsScopedRecords(records,level,entityId){
-    if(!entityId)return [];if(String(entityId)==='ALL')return records||[];
-    return records.filter(h=>{
-      const name=String(h.topicName||getTopic(h.topicId)?.name||'Untitled topic'),subject=String(h.subjectName||'Unassigned subject'),stream=String(h.streamName||'Unassigned syllabus');
-      if(level==='topic'){if(String(entityId).startsWith('legacy-topic:'))return !h.topicId&&String(entityId)==='legacy-topic:'+subject+'::'+name;const t=getTopic(entityId);return String(h.topicId||'')===String(entityId)||(!h.topicId&&t&&name===t.name&&subject===(subjectFor(t)?.name||'Unassigned subject'));}
-      if(level==='subject'){if(String(entityId).startsWith('legacy-subject:'))return !h.subjectId&&String(entityId)==='legacy-subject:'+subject;const sub=state.subjects.find(x=>String(x.id)===String(entityId));return String(h.subjectId||'')===String(entityId)||(!h.subjectId&&sub&&subject===sub.name);}
-      if(String(entityId).startsWith('legacy-syllabus:'))return !h.streamId&&String(entityId)==='legacy-syllabus:'+stream;
-      const st=state.streams.find(x=>String(x.id)===String(entityId));return String(h.streamId||'')===String(entityId)||(!h.streamId&&st&&stream===st.name);
-    });
+    if(!entityId)return [];
+    if(String(entityId)==='ALL')return records||[];
+    const matches=createRatingAnalyticsRecordMatcher(level,entityId);
+    return (records||[]).filter(matches);
+  }
+  function hasRatingAnalyticsScopedRecord(records,level,entityId){
+    if(!entityId)return false;
+    if(String(entityId)==='ALL')return Boolean(records&&records.length);
+    const matches=createRatingAnalyticsRecordMatcher(level,entityId);
+    for(const record of records||[])if(matches(record))return true;
+    return false;
   }
   function getRatingAnalyticsGroups(records,level){
-    const map=new Map();
-    records.forEach(h=>{
-      const topicName=String(h.topicName||getTopic(h.topicId)?.name||'Untitled topic');
-      const subjectName=String(h.subjectName||state.subjects.find(s=>s.id===h.subjectId)?.name||'Unassigned subject');
-      const streamName=String(h.streamName||state.streams.find(s=>s.id===h.streamId)?.name||'Unassigned syllabus');
+    const map=new Map(),topicById=new Map(state.topics.map(topic=>[String(topic.id),topic]));
+    const subjectById=new Map(state.subjects.map(subject=>[String(subject.id),subject]));
+    const streamById=new Map(state.streams.map(stream=>[String(stream.id),stream]));
+    for(const record of records||[]){
+      const topicName=String(record.topicName||topicById.get(String(record.topicId))?.name||'Untitled topic');
+      const subjectName=String(record.subjectName||subjectById.get(String(record.subjectId))?.name||'Unassigned subject');
+      const streamName=String(record.streamName||streamById.get(String(record.streamId))?.name||'Unassigned syllabus');
       let key,label,subtitle;
-      if(level==='subject'){key=String(h.subjectId||('subject:'+subjectName));label=subjectName;subtitle=streamName;}
-      else if(level==='syllabus'){key=String(h.streamId||('syllabus:'+streamName));label=streamName;subtitle='Syllabus / stream';}
-      else{key=String(h.topicId||('topic:'+subjectName+'::'+topicName));label=topicName;subtitle=subjectName+' · '+streamName;}
+      if(level==='subject'){key=String(record.subjectId||('subject:'+subjectName));label=subjectName;subtitle=streamName;}
+      else if(level==='syllabus'){key=String(record.streamId||('syllabus:'+streamName));label=streamName;subtitle='Syllabus / stream';}
+      else{key=String(record.topicId||('topic:'+subjectName+'::'+topicName));label=topicName;subtitle=subjectName+' · '+streamName;}
       if(!map.has(key))map.set(key,{key,label,subtitle,counts:[0,0,0,0,0],total:0});
-      const item=map.get(key),rating=Number(h.rating);
+      const item=map.get(key),rating=Number(record.rating);
       if(rating>=1&&rating<=5&&Number.isInteger(rating)){item.counts[rating-1]++;item.total++;}
-    });
-    return Array.from(map.values()).filter(x=>x.total>0).sort((a,b)=>b.total-a.total||a.label.localeCompare(b.label));
+    }
+    return Array.from(map.values()).filter(item=>item.total>0).sort((a,b)=>b.total-a.total||a.label.localeCompare(b.label));
+  }
+  function countRatingAnalyticsGroups(records,level){
+    const keys=new Set(),topicById=new Map(state.topics.map(topic=>[String(topic.id),topic]));
+    const subjectById=new Map(state.subjects.map(subject=>[String(subject.id),subject]));
+    const streamById=new Map(state.streams.map(stream=>[String(stream.id),stream]));
+    for(const record of records||[]){
+      const rating=Number(record.rating);
+      if(!Number.isInteger(rating)||rating<1||rating>5)continue;
+      const topicName=String(record.topicName||topicById.get(String(record.topicId))?.name||'Untitled topic');
+      const subjectName=String(record.subjectName||subjectById.get(String(record.subjectId))?.name||'Unassigned subject');
+      const streamName=String(record.streamName||streamById.get(String(record.streamId))?.name||'Unassigned syllabus');
+      if(level==='subject')keys.add(String(record.subjectId||('subject:'+subjectName)));
+      else if(level==='syllabus')keys.add(String(record.streamId||('syllabus:'+streamName)));
+      else keys.add(String(record.topicId||('topic:'+subjectName+'::'+topicName)));
+    }
+    return keys.size;
   }
 
   function getRatingAnalyticsTimeline(selection,level,entityId){
@@ -590,7 +689,7 @@
       datasets=dialog._pdfDatasetCache.datasets;groupCount=dialog._pdfDatasetCache.groupCount;
     }else{
       datasets=getPdfExportDatasets(options.selection,options.scope);
-      groupCount=getRatingAnalyticsGroups(datasets.reviews,fsState.analyticsRatingGrouping||'topic').length;
+      groupCount=countRatingAnalyticsGroups(datasets.reviews,fsState.analyticsRatingGrouping||'topic');
       if(dialog)dialog._pdfDatasetCache={key:cacheKey,datasets,groupCount};
     }
     const selected={
@@ -1008,7 +1107,7 @@
       '</div>';
   }
 
-  let analyticsSection='presses';
+  let analyticsSection='presses',analyticsEntityQuery='';
   function renderAnalytics(){
     const selection=getRatingAnalyticsSelection(),from=selection.from,to=selection.to,valid=selection.valid!==false,recent=selection.records||[],rangeDays=valid?Math.max(1,dayDiff(from,to)+1):30;
     const keys=['presses','papers','activity'];if(!keys.includes(analyticsSection))analyticsSection='presses';
@@ -1028,8 +1127,13 @@
       const activityHero='<div class="analytics-hero"><div><span class="analytics-eyebrow">LEARNING INTELLIGENCE</span><h3>Your progress, decoded.</h3><p>Review history and saved study sessions for the selected timeframe.</p></div><div class="hub-actions"><button class="btn btn-primary" data-hub-action="analytics-export-pdf"><svg class="nexus-action-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 15h8M8 18h5"/></svg> Export detailed PDF</button><button class="btn btn-soft" data-hub-action="analytics-export">Export CSV</button></div></div>';
       return activityHero+nav+activityFilter+'<div class="analytics-section-content" data-analytics-section="activity">'+renderActivityAnalytics(selection)+'</div>';
     }
-    const ratingLevel=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic',ratingOptions=analyticsSection==='presses'?getRatingAnalyticsEntityOptions(ratingLevel):[],ratingEntityId=analyticsSection==='presses'?getRatingAnalyticsEntityId(ratingLevel,ratingOptions):'',ratingEntityChoices=ratingOptions.length?selectOptions(ratingOptions.map(x=>[x.value,x.label+' — '+x.subtitle]),ratingEntityId):'<option value="">No '+esc(ratingLevel)+' records available</option>',groupingLabel=ratingLevel==='syllabus'?'syllabus / stream':ratingLevel;
-    const reviewScopeFields=analyticsSection==='presses'?'<div class="ra-field"><label for="hubRatingGrouping">Analyse by</label><select class="hub-input" id="hubRatingGrouping">'+selectOptions([['topic','Individual topic'],['subject','Subject'],['syllabus','Syllabus / stream']],ratingLevel)+'</select></div><div class="ra-field"><label for="hubRatingEntity">Choose '+esc(groupingLabel)+'</label><select class="hub-input" id="hubRatingEntity">'+ratingEntityChoices+'</select></div>':'';
+    const ratingLevel=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic';
+    const ratingOptions=analyticsSection==='presses'?getRatingAnalyticsEntityOptions(ratingLevel,analyticsEntityQuery,150,String(fsState.analyticsRatingEntity||'ALL')):[];
+    const ratingEntityId=analyticsSection==='presses'?getRatingAnalyticsEntityId(ratingLevel,ratingOptions):'';
+    const ratingEntityChoices=ratingOptions.length?selectOptions(ratingOptions.map(option=>[option.value,option.label+' — '+option.subtitle]),ratingEntityId):'<option value="">No '+esc(ratingLevel)+' records available</option>';
+    const groupingLabel=ratingLevel==='syllabus'?'syllabus / stream':ratingLevel;
+    const entityHint=analyticsSection==='presses'?(ratingOptions.matchCount>ratingOptions.limit?'Showing the first '+ratingOptions.limit+' of '+ratingOptions.matchCount+' matches. Search to narrow the list.':ratingOptions.matchCount+' matching entries.'):'';
+    const reviewScopeFields=analyticsSection==='presses'?'<div class="ra-field"><label for="hubRatingGrouping">Analyse by</label><select class="hub-input" id="hubRatingGrouping">'+selectOptions([['topic','Individual topic'],['subject','Subject'],['syllabus','Syllabus / stream']],ratingLevel)+'</select></div><div class="ra-field"><label for="hubRatingEntitySearch">Find '+esc(groupingLabel)+'</label><input class="hub-input" id="hubRatingEntitySearch" type="search" maxlength="120" placeholder="Search '+esc(groupingLabel)+'…" value="'+localEsc(analyticsEntityQuery)+'"><label for="hubRatingEntity">Choose '+esc(groupingLabel)+'</label><select class="hub-input" id="hubRatingEntity">'+ratingEntityChoices+'</select><small class="hub-muted" id="hubRatingEntityHint">'+entityHint+'</small></div>':'';
     const customRange=selection.range==='custom',customDates='<div class="ra-custom-dates" id="hubRatingCustomDates" '+(customRange?'':'hidden')+'><div class="ra-field"><label for="hubRatingCustomStart">From date</label><input class="hub-input" type="date" id="hubRatingCustomStart" value="'+localEsc(selection.from)+'"></div><div class="ra-field"><label for="hubRatingCustomEnd">To date</label><input class="hub-input" type="date" id="hubRatingCustomEnd" value="'+localEsc(selection.to)+'"></div><button class="btn btn-primary" type="button" data-hub-action="analytics-custom-apply">Apply custom range</button></div>';
     const sharedTimeframeFilter='<div class="analytics-global-filter ra-controls '+(analyticsSection==='presses'?'':'single-filter')+'">'+reviewScopeFields+'<div class="ra-field"><label for="hubRatingPeriod">Timeframe</label><select class="hub-input" id="hubRatingPeriod">'+selectOptions([['week','This week'],['month','This month'],['year','This year'],['custom','Choose date range']],selection.range)+'</select></div></div>'+customDates;
     const hero='<div class="analytics-hero"><div><span class="analytics-eyebrow">LEARNING INTELLIGENCE</span><h3>Your progress, decoded.</h3><p>Choose a section to explore review difficulty ratings, paper scores, and study activity for your selected timeframe.</p></div><div class="hub-actions"><button class="btn btn-primary" data-hub-action="analytics-export-pdf"><svg class="nexus-action-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 15h8M8 18h5"/></svg> Export detailed PDF</button><button class="btn btn-soft" data-hub-action="analytics-export">Export CSV</button></div></div>';
@@ -1058,15 +1162,9 @@
   let analyticsReturnParent=null,analyticsReturnNext=null;
   const analyticsDefaultParent=hubEl('hubContent')?.parentElement||null,analyticsDefaultNext=hubEl('hubContent')?.nextSibling||null;
   function ensureAnalyticsEntityForRange(level){
-    const options=getRatingAnalyticsEntityOptions(level),prior=String(fsState.analyticsRatingEntity||''),selected=options.find(option=>option.value===prior);
+    const prior=String(fsState.analyticsRatingEntity||'');
     const range=getRatingAnalyticsSelection();
-    if(selected&&getRatingAnalyticsScopedRecords(range.records,level,selected.value).length)return selected.value;
-    // A previously selected topic may be inactive during this month while other topics
-    // still have ratings. Use the aggregate view rather than leaving Analytics blank.
-    const all=options.find(option=>option.value==='ALL');
-    const best=options.map(option=>({option,count:getRatingAnalyticsScopedRecords(range.records,level,option.value).length}))
-      .filter(item=>item.count>0).sort((a,b)=>b.count-a.count||a.option.label.localeCompare(b.option.label))[0]?.option;
-    const next=all?.value||best?.value||options[0]?.value||'';
+    const next=prior==='ALL'||(prior&&hasRatingAnalyticsScopedRecord(range.records,level,prior))?prior:'ALL';
     if(next!==prior){fsState.analyticsRatingEntity=next;saveFs();}
     return next;
   }
@@ -1347,7 +1445,7 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
   document.querySelectorAll('[data-hub-tab]').forEach(b=>b.addEventListener('click',()=>hubSwitch(b.dataset.hubTab)));
   hubEl('hubQuickBackup').addEventListener('click',fullBackup);
   hubEl('hubContent').addEventListener('input',e=>{if(e.target.id==='hubGlobalSearch'){e.target.dataset.q=e.target.value;const out=hubEl('hubSearchResults');if(out)out.innerHTML=globalSearchMarkup(e.target.value);}});
-  hubEl('hubContent').addEventListener('change',e=>{const el=e.target;if(['hubRatingGrouping','hubRatingEntity','hubRatingPeriod','hubStudyTimeGrouping'].includes(el.id))return;if(el.id==='hubRatingGrouping'||el.id==='hubRatingEntity'||el.id==='hubRatingPeriod'){if(el.id==='hubRatingGrouping'){fsState.analyticsRatingGrouping=el.value;fsState.analyticsRatingEntity='';}else if(el.id==='hubRatingEntity')fsState.analyticsRatingEntity=el.value;else fsState.analyticsPeriod=el.value;
+  hubEl('hubContent').addEventListener('change',e=>{const el=e.target;if(['hubRatingGrouping','hubRatingEntity','hubRatingPeriod','hubStudyTimeGrouping'].includes(el.id))return;if(el.id==='hubRatingGrouping'||el.id==='hubRatingEntity'||el.id==='hubRatingPeriod'){if(el.id==='hubRatingGrouping'){fsState.analyticsRatingGrouping=el.value;fsState.analyticsRatingEntity='';analyticsEntityQuery='';}else if(el.id==='hubRatingEntity')fsState.analyticsRatingEntity=el.value;else fsState.analyticsPeriod=el.value;
       if(el.id==='hubRatingPeriod'||el.id==='hubRatingGrouping'){
         const level=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic';
         ensureAnalyticsEntityForRange(level);
@@ -1435,7 +1533,26 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
     if(el.id==='hubStudyTimeGrouping'){fsState.studyTimeGrouping=el.value==='topic'?'topic':'subject';saveFs();try{renderHub();}catch(error){console.error('Study time grouping failed',error);notify('Could not update study-time grouping.');}return;}
     if(el.id==='homeHeatmapPeriod'){fsState.heatmapPeriod=el.value;saveFs();try{renderHomeConsistencySummary();}catch(error){console.error('Home heatmap update failed',error);notify('Could not update the Overview heatmap.');}}
   });
-  hubEl('hubContent').addEventListener('input',e=>{if(e.target.id==='hubStudySearch'){fsState.studyTopicQuery=e.target.value;const sel=hubEl('hubStudyTopic');if(sel)sel.innerHTML=studyTopicOptionsMarkup(fsState.studyTopicQuery,focusTopicId,150);}});
+  hubEl('hubContent').addEventListener('input',e=>{
+    if(e.target.id==='hubStudySearch'){
+      fsState.studyTopicQuery=e.target.value;
+      const sel=hubEl('hubStudyTopic');
+      if(sel)sel.innerHTML=studyTopicOptionsMarkup(fsState.studyTopicQuery,focusTopicId,150);
+      return;
+    }
+    if(e.target.id==='hubRatingEntitySearch'){
+      analyticsEntityQuery=e.target.value;
+      const level=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic';
+      const select=hubEl('hubRatingEntity'),current=String(select?.value||fsState.analyticsRatingEntity||'ALL');
+      const options=getRatingAnalyticsEntityOptions(level,analyticsEntityQuery,150,current);
+      if(select){
+        select.innerHTML=selectOptions(options.map(option=>[option.value,option.label+' — '+option.subtitle]),current);
+        select.value=current;
+      }
+      const hint=hubEl('hubRatingEntityHint');
+      if(hint)hint.textContent=options.matchCount>options.limit?'Showing the first '+options.limit+' of '+options.matchCount+' matches. Search to narrow the list.':options.matchCount+' matching entries.';
+    }
+  });
   hubEl('hubContent').addEventListener('change',async e=>{if(e.target.id==='hubStudyTimeGrouping')return;if(e.target.id==='hubStudyTimeGrouping'){fsState.studyTimeGrouping=e.target.value==='topic'?'topic':'subject';saveFs();renderHub();return;}if(e.target.id==='hubStudyTopic'){focusTopicId=e.target.value;const t=getTopic(focusTopicId);focusSubjectId=t?(subjectFor(t)?.id||''):focusSubjectId;fsState.focusTopicId=focusTopicId;fsState.focusSubjectId=focusSubjectId;saveFs();return;}if(e.target.id==='hubTimerMinutes'){fsState.settings.sessionMinutes=Math.max(5,Math.min(240,Number(e.target.value)||25));saveFs();return;}if(e.target.id==='hubCalendarWindow'){fsState.calendarWindow=e.target.value;saveFs();renderHub();return;}if(e.target.id==='hubImportFile'){const f=e.target.files?.[0];e.target.value='';if(f)await restoreOrMerge(f);}});
 
   // Override reset to clear all extension data only after the user's existing reset flow confirms.
