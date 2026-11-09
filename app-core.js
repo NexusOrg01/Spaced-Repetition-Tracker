@@ -68,7 +68,7 @@
   const clone = obj => JSON.parse(JSON.stringify(obj));
   const makeId = prefix => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  function selectTopK(items,limit,compare,project=value=>value){
+  function createTopKCollector(limit,compare){
     const capacity=Math.max(0,Math.floor(Number(limit)||0)),heap=[];
     let count=0;
     function siftDown(index){
@@ -90,17 +90,24 @@
         index=parent;
       }
     }
-    for(const source of items){
-      const item=project(source);
-      if(item===null||item===undefined)continue;
-      count++;
-      if(!capacity)continue;
-      if(heap.length<capacity){heap.push(item);siftUp(heap.length-1);}
-      else if(compare(item,heap[0])<0){heap[0]=item;siftDown(0);}
-    }
-    heap.sort(compare);
-    return {items:heap,count};
+    return {
+      add(item){
+        if(item===null||item===undefined)return;
+        count++;
+        if(!capacity)return;
+        if(heap.length<capacity){heap.push(item);siftUp(heap.length-1);}
+        else if(compare(item,heap[0])<0){heap[0]=item;siftDown(0);}
+      },
+      finish(){heap.sort(compare);return {items:heap,count};}
+    };
   }
+  function selectTopK(items,limit,compare,project=value=>value){
+    const collector=createTopKCollector(limit,compare);
+    for(const source of items)collector.add(project(source));
+    return collector.finish();
+  }
+  window.NexusCreateTopKCollector=createTopKCollector;
+  window.NexusSelectTopK=selectTopK;
   function today(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
   function validDate(s){if(!/^\d{4}-\d{2}-\d{2}$/.test(String(s||'')))return false;const [y,m,d]=s.split('-').map(Number);const x=new Date(y,m-1,d);return x.getFullYear()===y&&x.getMonth()===m-1&&x.getDate()===d;}
   function plusDays(date,days){if(!validDate(date))return '';const d=new Date(date+'T12:00:00');d.setDate(d.getDate()+Number(days));return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
@@ -491,8 +498,8 @@
     if(historyInsightsDirty){renderHistoryInsights();historyInsightsDirty=false;}
   }
   function renderStructureList(){
-    const topicCounts=new Map(),subjectsByStream=new Map(),active=activeTopics();
-    for(const topic of active)topicCounts.set(topic.subjectId,(topicCounts.get(topic.subjectId)||0)+1);
+    const topicCounts=new Map(),subjectsByStream=new Map();
+    for(const topic of state.topics)if(!topic.archived)topicCounts.set(topic.subjectId,(topicCounts.get(topic.subjectId)||0)+1);
     for(const subject of state.subjects){
       if(!subjectsByStream.has(subject.streamId))subjectsByStream.set(subject.streamId,[]);
       subjectsByStream.get(subject.streamId).push(subject);
