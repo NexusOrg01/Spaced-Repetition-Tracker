@@ -138,11 +138,14 @@
   // Curriculum rows are owned by explicit install intent, not by whether a topic has
   // review progress. The previous cleanup inferred ownership from seed IDs and deleted
   // untouched Commerce-pack rows on every reload.
-  function repairCurriculumState(data){
+  function repairCurriculumStateResult(data){
     const api=window.NexusCurriculumIntegrity;
-    if(!api||typeof api.repair!=='function')return data;
-    return api.repair(data,CURRICULUM_PACKS,{today,makeId}).state;
+    if(!api||typeof api.repair!=='function')return {state:data,changed:false,restoredStreams:0,restoredSubjects:0,restoredTopics:0};
+    return api.repair(data,CURRICULUM_PACKS,{today,makeId});
   }
+  function repairCurriculumState(data){return repairCurriculumStateResult(data).state;}
+  window.NexusRepairNormalizedCurriculumState=repairCurriculumState;
+  window.NexusRepairNormalizedCurriculumStateWithResult=repairCurriculumStateResult;
   window.NexusRepairCurriculumState=function(data){return repairCurriculumState(normalizeState(data));};
   function persistLoadedRepair(data){
     const queue=window.NexusOfflineSyncQueue;
@@ -154,8 +157,9 @@
   }
   function loadAndRepair(data){
     const normalized=normalizeState(data);
-    const repaired=repairCurriculumState(normalized);
-    if(JSON.stringify(repaired)!==JSON.stringify(normalized)){
+    const result=repairCurriculumStateResult(normalized);
+    const repaired=result.state;
+    if(result.changed){
       try{persistLoadedRepair(repaired);}catch(e){console.warn('Curriculum repair is available in memory but could not be persisted safely; original saved data was left intact.',e);}
     }
     return repaired;
