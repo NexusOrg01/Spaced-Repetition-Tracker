@@ -263,6 +263,26 @@
     undoState={kind:'state-reference',value:state,streams:state.streams,subjects:state.subjects,topics:state.topics,history:state.history,settings:clone(state.settings)};
     armUndo(text);
   }
+  function startUndoTopicEdit(text,topic){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    undoState={kind:'topic-edit',value:state,topic,before:{name:topic.name,subjectId:topic.subjectId,notes:topic.notes,dueDate:topic.dueDate}};
+    armUndo(text);
+  }
+  function startUndoTopicAdd(text,topicId){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    undoState={kind:'topic-add',value:state,topicId};
+    armUndo(text);
+  }
+  function startUndoHistoryChange(text){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    undoState={kind:'history-reference',value:state,history:state.history};
+    armUndo(text);
+  }
+  function startUndoWorkspaceReplace(text){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    undoState={kind:'workspace-reference',value:state};
+    armUndo(text);
+  }
   function startUndoReview(text,topic,reviewId){
     if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
     // A review mutates one topic and prepends one history row. Capture only the
@@ -281,6 +301,12 @@
       else state.history=state.history.filter(entry=>String(entry&&entry.id||'')!==String(pending.reviewId));
     }else if(pending.kind==='state-reference'){
       state=pending.value;state.streams=pending.streams;state.subjects=pending.subjects;state.topics=pending.topics;state.history=pending.history;state.settings=pending.settings;
+    }else if(pending.kind==='topic-edit'){
+      state=pending.value;Object.assign(pending.topic,pending.before);
+    }else if(pending.kind==='topic-add'){
+      state=pending.value;state.topics=state.topics.filter(topic=>String(topic.id)!==String(pending.topicId));
+    }else if(pending.kind==='history-reference'){
+      state=pending.value;state.history=pending.history;
     }else state=pending.value;
     if(window.NexusUndoCascadeDelete)window.NexusUndoCascadeDelete();
     save();renderAll();$('toast').classList.remove('show');
@@ -635,8 +661,25 @@
     renderReviewPreview();
   }
   function openTopic(id=null){editTopicId=id;const t=id?getTopic(id):null;$('topicDialogTitle').textContent=t?'Edit topic':'Add topic';$('topicNameInput').value=t?.name||'';$('topicNotesInput').value=t?.notes||'';if($('topicDueInput'))$('topicDueInput').value=t?.dueDate||'';refreshFilterOptions();const sub=subjectFor(t||{});$('topicStreamInput').value=sub?.streamId||state.streams[0]?.id||'';refreshTopicSubjectInput();$('topicSubjectInput').value=t?.subjectId||state.subjects.find(s=>s.streamId===$('topicStreamInput').value)?.id||'';$('topicDialog').showModal();}
-  function saveTopic(e){e.preventDefault();const name=$('topicNameInput').value.trim(),subjectId=$('topicSubjectInput').value,notes=$('topicNotesInput').value.trim(),customDue=$('topicDueInput')?.value||'';if(!name||!state.subjects.some(s=>s.id===subjectId)){notify('Choose a valid subject.');return;}const dup=activeTopics().find(t=>t.id!==editTopicId&&t.subjectId===subjectId&&t.name.toLocaleLowerCase()===name.toLocaleLowerCase());if(dup&&!confirm('A topic with that name already exists in this subject. Save a duplicate anyway?'))return;startUndo(editTopicId?'Topic updated.':'Topic added.');if(editTopicId){const t=getTopic(editTopicId);if(t){t.name=name;t.subjectId=subjectId;t.notes=notes;if(customDue&&validDate(customDue)){t.dueDate=customDue;}}}else {const newTopic={id:makeId('topic'),subjectId,name,notes,custom:true,createdAt:today(),lastReviewed:'',lastRating:null,dueDate:customDue&&validDate(customDue)?customDue:'',intervalDays:0,reviewCount:0,streak:0,lapses:0,archived:false};state.topics.push(newTopic);}save();$('topicDialog').close();renderAll();switchView('topics');notify('Topic saved.'+(customDue?' Custom review date set.':''),true);}
-  function deleteTopic(id){const t=getTopic(id);if(!t)return;if(!confirm(`Delete “${t.name}” from the topic tracker? Existing history entries will be retained.`))return;startUndo('Topic deleted.');if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedTopic(state,CURRICULUM_PACKS,t);state.topics=state.topics.filter(x=>x.id!==id);save();renderAll();notify('Topic deleted. Review history is retained.',true);}
+  function saveTopic(e){
+    e.preventDefault();
+    const name=$('topicNameInput').value.trim(),subjectId=$('topicSubjectInput').value,notes=$('topicNotesInput').value.trim(),customDue=$('topicDueInput')?.value||'';
+    if(!name||!state.subjects.some(subject=>subject.id===subjectId)){notify('Choose a valid subject.');return;}
+    const duplicate=activeTopics().find(topic=>topic.id!==editTopicId&&topic.subjectId===subjectId&&topic.name.toLocaleLowerCase()===name.toLocaleLowerCase());
+    if(duplicate&&!confirm('A topic with that name already exists in this subject. Save a duplicate anyway?'))return;
+    if(editTopicId){
+      const topic=getTopic(editTopicId);if(!topic)return;
+      startUndoTopicEdit('Topic updated.',topic);
+      topic.name=name;topic.subjectId=subjectId;topic.notes=notes;
+      if(customDue&&validDate(customDue))topic.dueDate=customDue;
+    }else{
+      const newTopic={id:makeId('topic'),subjectId,name,notes,custom:true,createdAt:today(),lastReviewed:'',lastRating:null,dueDate:customDue&&validDate(customDue)?customDue:'',intervalDays:0,reviewCount:0,streak:0,lapses:0,archived:false};
+      startUndoTopicAdd('Topic added.',newTopic.id);
+      state.topics.push(newTopic);
+    }
+    save();$('topicDialog').close();renderAll();switchView('topics');notify('Topic saved.'+(customDue?' Custom date set.':''),true);
+  }
+  function deleteTopic(id){const t=getTopic(id);if(!t)return;if(!confirm(`Delete “${t.name}” from the topic tracker? Existing history entries will be retained.`))return;startUndoBulkDelete('Topic deleted.');if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedTopic(state,CURRICULUM_PACKS,t);state.topics=state.topics.filter(x=>x.id!==id);save();renderAll();notify('Topic deleted. Review history is retained.',true);}
   function openStream(id=null){editStreamId=id;const st=id?state.streams.find(s=>s.id===id):null;$('streamDialogTitle').textContent=st?'Edit stream / course':'Add stream / course';$('streamNameInput').value=st?.name||'';$('streamDialog').showModal();}
   function saveStream(e){e.preventDefault();const name=$('streamNameInput').value.trim();if(!name)return;const duplicate=state.streams.find(s=>s.id!==editStreamId&&s.name.toLocaleLowerCase()===name.toLocaleLowerCase());if(duplicate){notify('A stream with that name already exists.');return;}startUndo('Stream saved.');if(editStreamId){const st=state.streams.find(s=>s.id===editStreamId);if(st)st.name=name;}else state.streams.push({id:makeId('stream'),name});save();$('streamDialog').close();renderAll();notify('Stream saved.',true);}
   function openSubject(id=null,preselectedStream=null){editSubjectId=id;const sub=id?state.subjects.find(s=>s.id===id):null;$('subjectDialogTitle').textContent=sub?'Edit subject':'Add subject';refreshFilterOptions();$('subjectStreamInput').value=sub?.streamId||preselectedStream||state.streams[0]?.id||'';$('subjectNameInput').value=sub?.name||'';$('subjectDialog').showModal();}
@@ -651,9 +694,9 @@
   const csvCell=v=>window.NexusBackupRestoreUtils.csvCell(v);
   function exportHistory(){const rows=[['Review date','Stream','Subject','Topic','Rating','Rating meaning','Interval days','Next due','Note'],...state.history.map(h=>[h.reviewedAt,h.streamName,h.subjectName,h.topicName,h.rating,RATING_LABELS[h.rating],h.intervalDays,h.dueDate,h.note])];downloadFile(`nexus-history-${today()}.csv`,'\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('History CSV exported.');}
   function exportTopics(){const rows=[['Stream','Subject','Topic','Notes','Last reviewed','Last rating','Next due','Interval days','Review count','Streak','Lapses','Status'],...state.topics.map(t=>{const d=subjectDisplay(t);return[d.stream,d.subject,t.name,t.notes,t.lastReviewed,t.lastRating,t.dueDate,t.intervalDays,t.reviewCount,t.streak,t.lapses,status(t)];})];downloadFile(`nexus-topics-${today()}.csv`,'\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('Topics CSV exported.');}
-  async function importBackup(file){if(!file)return;try{const parsed=JSON.parse(await file.text()),raw=parsed?.state||parsed;const restored=normalizeState(raw);if(!restored.topics||!restored.history||!restored.subjects)throw new Error('Required backup sections are missing.');if(!confirm(`Import ${restored.topics.length} topics, ${restored.history.length} history records, and ${restored.exams.length} exams? This replaces current local data.`))return;startUndo('Backup imported.');state=restored;save();renderAll();switchView('overview');notify('Backup restored.',true);}catch(err){alert(`Could not import this backup. ${err.message||'Check the file format.'}`);}finally{$('importFile').value='';}}
-  function clearHistory(){if(!state.history.length){notify('History is already empty.');return;}if(!confirm('DANGER ZONE — Clear every saved review-history entry?\n\nAll rating analytics, review-history exports and historical counts based on these records will be lost. Topic schedules may remain unchanged. Use Undo immediately or restore a backup if this was accidental. Continue?'))return;startUndo('History cleared.');state.history=[];save();renderAll();notify('History cleared; schedules remain unchanged.',true);}
-  function resetAll(){if(!confirm('Reset all local data, including topics, custom streams, subjects, exams, settings and history? Download a backup first if you may need it.'))return;startUndo('Tracker reset.');state=baseState();save();renderAll();switchView('overview');notify('Tracker reset.',true);}
+  async function importBackup(file){if(!file)return;try{const parsed=JSON.parse(await file.text()),raw=parsed?.state||parsed;const restored=normalizeState(raw);if(!restored.topics||!restored.history||!restored.subjects)throw new Error('Required backup sections are missing.');if(!confirm(`Import ${restored.topics.length} topics, ${restored.history.length} history records, and ${restored.exams.length} exams? This replaces current local data.`))return;startUndoWorkspaceReplace('Backup imported.');state=restored;save();renderAll();switchView('overview');notify('Backup restored.',true);}catch(err){alert(`Could not import this backup. ${err.message||'Check the file format.'}`);}finally{$('importFile').value='';}}
+  function clearHistory(){if(!state.history.length){notify('History is already empty.');return;}if(!confirm('DANGER ZONE — Clear every saved review-history entry?\n\nAll rating analytics, review-history exports and historical counts based on these records will be lost. Topic schedules may remain unchanged. Use Undo immediately or restore a backup if this was accidental. Continue?'))return;startUndoHistoryChange('History cleared.');state.history=[];save();renderAll();notify('History cleared; schedules remain unchanged.',true);}
+  function resetAll(){if(!confirm('Reset all local data, including topics, custom streams, subjects, exams, settings and history? Download a backup first if you may need it.'))return;startUndoWorkspaceReplace('Tracker reset.');state=baseState();save();renderAll();switchView('overview');notify('Tracker reset.',true);}
   function applyTheme(){document.documentElement.dataset.theme=state.settings.theme;const themeColor=document.querySelector('meta[name="theme-color"]');if(themeColor){const appBackground=getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();if(appBackground)themeColor.setAttribute('content',appBackground);}$('themeSelect').value=state.settings.theme;$('themeBtn').textContent=state.settings.theme==='light'?'☀':state.settings.theme==='dark'?'☾':'◐';$('themeBtn').title=`Theme: ${state.settings.theme}. Click to cycle.`;}
   function cycleTheme(){const seq=['system','light','dark'];state.settings.theme=seq[(seq.indexOf(state.settings.theme)+1)%seq.length];save();applyTheme();notify(`Theme: ${state.settings.theme}.`);}
   function openHelp(){$('helpDialog').showModal();}
@@ -699,7 +742,7 @@
   // Delegate review actions once so dynamically rendered due and upcoming queues work consistently.
   document.addEventListener('click',e=>{const b=e.target.closest('button[data-action="review"]');if(!b)return;openReview(b.dataset.id);});
   $('topicGrid').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='edit-topic')openTopic(id);if(action==='delete-topic')deleteTopic(id);if(action==='show-more-topics'){topicVisibleLimit+=100;renderTopics();}});
-  $('historyList').addEventListener('click',e=>{const b=e.target.closest('button[data-action="delete-history"]');if(!b)return;const id=b.dataset.id;const entry=state.history.find(h=>h.id===id);if(!entry||!confirm('DANGER ZONE — Delete this review record?\n\nThis review will disappear from rating analytics and future history exports. The topic schedule will not change. Use Undo immediately or restore a backup if needed. Continue?'))return;startUndo('History entry deleted.');state.history=state.history.filter(h=>h.id!==id);historyInsightsDirty=true;save();renderHistory();notify('History entry deleted.',true);});
+  $('historyList').addEventListener('click',e=>{const b=e.target.closest('button[data-action="delete-history"]');if(!b)return;const id=b.dataset.id;const entry=state.history.find(h=>h.id===id);if(!entry||!confirm('DANGER ZONE — Delete this review record?\n\nThis review will disappear from rating analytics and future history exports. The topic schedule will not change. Use Undo immediately or restore a backup if needed. Continue?'))return;startUndoHistoryChange('History entry deleted.');state.history=state.history.filter(h=>h.id!==id);historyInsightsDirty=true;save();renderHistory();notify('History entry deleted.',true);});
   $('structureList').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='edit-stream')openStream(id);if(action==='delete-stream')deleteStream(id);if(action==='add-subject-to-stream')openSubject(null,id);if(action==='edit-subject')openSubject(id);if(action==='delete-subject')deleteSubject(id);});
   $('examList').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;if(b.dataset.action==='edit-exam')openExam(b.dataset.id);if(b.dataset.action==='delete-exam')deleteExam(b.dataset.id);});
   let topicSearchTimer=0,historySearchTimer=0,exploreSearchTimer=0;
