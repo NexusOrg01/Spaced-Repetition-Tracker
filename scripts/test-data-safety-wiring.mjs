@@ -191,7 +191,12 @@ assert.ok(repairImportedState >= 0 && serializeImportedState > repairImportedSta
 assert.ok(restore.includes('window.NexusCloudSync.schedule()'), 'schedule cloud sync only after a successful restore commit');
 const backupPayloadSource = section(studyHub, 'function backupPayload(){', 'function fullBackup()', 'schema 4 full backup export');
 assert.ok(backupPayloadSource.includes("schema:4,exportedAt:new Date().toISOString(),state:backupState,featureState:fsState,syncMetadata:syncStatus"), 'full backups must include schema 4, Study Hub state, and account-bound queue metadata without importing the queue itself');
-assert.ok(backupPayloadSource.includes('window.NexusRepairCurriculumState(JSON.parse(JSON.stringify(state)))'), 'full backups must export inferred curriculum install intent without mutating the live workspace');
+assert.ok(backupPayloadSource.includes('window.NexusRepairCurriculumState(state)') &&
+  appCore.includes('const streams=raw.streams.filter(s=>s&&s.id&&s.name).map(s=>') &&
+  appCore.includes('const subjects=raw.subjects.filter(s=>s&&s.id&&s.name).map((s,i)=>') &&
+  appCore.includes('const topics=raw.topics.filter(t=>t&&t.name).map(t=>normalizeTopic') &&
+  appCore.includes('const cleanHistory=Array.isArray(raw.history)?raw.history.slice(0,200000).map('),
+  'full backups must infer curriculum intent on freshly normalized workspace records without mutating the live workspace or adding a redundant full JSON clone');
 assert.ok(appCore.includes("if(typeof window.NexusExportFullBackup==='function'){window.NexusExportFullBackup();return;}"), 'the main Backup button and menu must delegate to the same schema-4 full backup exporter');
 assert.ok(studyHub.includes('window.NexusCreateBackupPayload=backupPayload;') && studyHub.includes('window.NexusExportFullBackup=fullBackup;'), 'Study Hub must expose the canonical complete backup payload and export action');
 assert.ok(!appCore.includes("schema:3,exportedAt:new Date().toISOString(),state}"), 'the main backup path must not emit the obsolete schema-3 tracker-only packet');
