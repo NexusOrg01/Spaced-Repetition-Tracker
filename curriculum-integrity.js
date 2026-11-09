@@ -129,14 +129,15 @@
     const prefixes=definitions.filter(definition=>deletedPackScope||deleted.has(deletedSubject(id,definition.id)))
       .flatMap(definition=>[canonicalPrefix(definition)+'-',legacyPrefix(definition)+'-']);
     for(const subject of rows(state.subjects)){
-      const subjectNameMatches=definitions.some(definition=>normalizeName(subject.name)===normalizeName(definition.name));
-      if((deletedPackScope&&((definitions.some(definition=>definition.workspaceId&&String(definition.workspaceId)===String(subject.id)))||
-          (streamIds.has(String(subject.streamId))&&subjectNameMatches)))||
-        (!deletedPackScope&&definitions.some(definition=>deleted.has(deletedSubject(id,definition.id))&&
-          ((definition.workspaceId&&String(definition.workspaceId)===String(subject.id))||
-           (streamIds.has(String(subject.streamId))&&normalizeName(subject.name)===normalizeName(definition.name))))){
-        subjectIds.add(String(subject.id));
+      let matchesDeletedSubject=false;
+      for(const definition of definitions){
+        const sameWorkspace=!!definition.workspaceId&&String(definition.workspaceId)===String(subject.id);
+        const sameStreamAndName=streamIds.has(String(subject.streamId))&&
+          normalizeName(subject.name)===normalizeName(definition.name);
+        const markedDeleted=deletedPackScope||deleted.has(deletedSubject(id,definition.id));
+        if(markedDeleted&&(sameWorkspace||sameStreamAndName)){matchesDeletedSubject=true;break;}
       }
+      if(matchesDeletedSubject)subjectIds.add(String(subject.id));
     }
     if(deletedPackScope){
       for(const topic of rows(state.topics)){
