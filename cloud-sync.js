@@ -120,14 +120,14 @@ function assertStableRecordIds(payload){
 function normalizeWorkspacePayload(payload,repairCurriculum=false){
  if(!payload||!payload.state||!Array.isArray(payload.state.streams))throw new Error('A valid workspace snapshot is required for automatic reconciliation.');
  assertStableRecordIds(payload);
- // The local outbox and last verified base already come from this app's normalized
- // state. Retain those arrays by reference. Repair the remote workspace because
- // older cloud snapshots may lack catalogue-owned rows required by install intent.
- const features=payload.featureState&&typeof payload.featureState==='object'&&!Array.isArray(payload.featureState)?payload.featureState:{};
- if(!repairCurriculum)return {...payload,state:payload.state,featureState:features};
+ // Current-schema local and base snapshots are already normalized. Keep their large
+ // state arrays by reference, but normalize the comparatively small Study Hub payload.
+ // Legacy states and remote snapshots still receive the full state normalization pass.
+ const features=window.NexusNormalizeFeatureState(Object.prototype.hasOwnProperty.call(payload,'featureState')?payload.featureState:undefined);
+ if(!repairCurriculum&&Number(payload.schema)>=4)return {...payload,state:payload.state,featureState:features};
  const normalized=normalizeState(payload.state);
- const safeState=window.NexusRepairCurriculumState?window.NexusRepairCurriculumState(normalized):normalized;
- return {...payload,state:safeState,featureState:window.NexusNormalizeFeatureState(Object.prototype.hasOwnProperty.call(payload,'featureState')?payload.featureState:undefined)};
+ const safeState=repairCurriculum&&window.NexusRepairCurriculumState?window.NexusRepairCurriculumState(normalized):normalized;
+ return {...payload,state:safeState,featureState:features};
 }
 function nextCloudStamp(previous){
  const policy=window.NexusCloudSyncRecovery;
