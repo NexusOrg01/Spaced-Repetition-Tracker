@@ -49,13 +49,13 @@ function installSyncDiagnosticsButton(){
  }
  toggle.textContent=SYNC_DIAG_ENABLED?'Disable sync diagnostics':'Enable sync diagnostics';
  toggle.title=SYNC_DIAG_ENABLED?'Stop recording additional sync diagnostics. Download the report before disabling.':'Enable safe local sync diagnostics and reload Nexus before reproducing the sync problem.';
- let download=el('nexusSyncDiagnosticsDownload');
  if(SYNC_DIAG_ENABLED){
+  let download=el('nexusSyncDiagnosticsDownload');
   if(!download){
    download=document.createElement('button');download.id='nexusSyncDiagnosticsDownload';download.type='button';download.className='btn btn-sm';download.textContent='Download sync diagnostics (safe summary)';download.addEventListener('click',downloadSyncDiagnostics);place(download);
    syncDiag('diagnostics-enabled');
   }
- }else if(download)download.remove();
+ }
 }
 
 function isUnsafeCloudOrigin(){const host=location.hostname.toLowerCase(),url=String(config().url||'').trim();let cloudHost='';try{cloudHost=new URL(url).hostname.toLowerCase();}catch(_){}return cloudHost===new URL(LIVE_SUPABASE_URL).hostname&&host!=='spaced-repetition-tracker-delta.vercel.app'&&host!=='kkmalithmalshan2000-png.github.io';}
