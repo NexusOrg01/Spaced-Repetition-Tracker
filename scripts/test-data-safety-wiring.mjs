@@ -107,10 +107,11 @@ assert.ok(cloudChunkStorage.includes('async function splitUtf8RangesAsync(') &&
   cloudChunkStorage.includes('async function verifySnapshotChunks(') &&
   !cloudChunkStorage.includes('await readSnapshot(client,userId,manifest)'),
   'chunk splitting must yield and upload verification must not reconstruct a second full parsed workspace');
-const mergeInputs=section(cloudSync,'function normalizeWorkspacePayload(payload){','function nextCloudStamp(previous)','large merge input preparation');
-assert.ok(mergeInputs.includes('state:payload.state') && !mergeInputs.includes('normalizeState(') &&
-  !mergeInputs.includes('NexusRepairCurriculumState'),
-  'three-way reconciliation must retain verified source snapshots by reference and normalise the merged result only once');
+const mergeInputs=section(cloudSync,'function normalizeWorkspacePayload(payload,repairCurriculum=false){','function nextCloudStamp(previous)','large merge input preparation');
+assert.ok(mergeInputs.includes('state:payload.state') && mergeInputs.includes('if(!repairCurriculum)') &&
+  mergeInputs.includes('window.NexusRepairCurriculumState?window.NexusRepairCurriculumState(normalized):normalized') &&
+  cloudSync.includes('normalizeWorkspacePayload(remote.payload,true)'),
+  'three-way reconciliation must retain trusted local/base snapshots by reference while repairing legacy remote curriculum state before merge');
 assert.ok(cloudSync.includes('async function sameWorkspace(a,b)') && cloudSync.includes('merger.sameAsync(') &&
   !cloudSync.includes('stableJson('),
   'workspace equality checks must use cooperative structural comparison instead of allocating giant JSON strings');
