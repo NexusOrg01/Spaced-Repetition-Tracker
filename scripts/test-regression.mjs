@@ -225,7 +225,7 @@ assert.ok(studyHub.includes('function ratingAnalyticsSvgMarkup(selection,level,e
   'the analytics chart, SVG and count table must reuse one computed timeline rather than filtering a large review history repeatedly');
 assert.ok(studyHub.includes('function getRatingAnalyticsEntityId(level,options)'),
   'analytics entity selection must reuse its already-built entity options');
-assert.ok(studyHub.includes("ratingOptions=analyticsSection==='presses'?getRatingAnalyticsEntityOptions(ratingLevel):[]"),
+assert.ok(studyHub.includes("ratingOptions=analyticsSection==='presses'?getRatingAnalyticsEntityOptions(ratingLevel,analyticsEntityQuery,150,String(fsState.analyticsRatingEntity||'ALL')):[]"),
   'paper and activity analytics must not build the full review-history entity selector unnecessarily');
 
 assert.ok(durableStorage.includes('const ownerEntry = normalized.find(entry => entry.key === OWNER_KEY);') &&
