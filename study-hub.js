@@ -75,13 +75,13 @@
     const ts=state.topics,daily=Math.max(10,Math.min(720,fNum(fsState.settings.dailyMinutes)||90));
     const backlog=fsState.settings.backlogDays||7,cap=limitBudget?daily:Math.max(720,ts.length*30);
     const buckets=new Map(),selected=[];let sum=0;
-    // Priority values are exact multiples of 0.05. Grouping preserves original
-    // order within equal-priority buckets and avoids sorting the full catalogue.
+    // Grouping by the exact priority preserves source order within equal-priority
+    // buckets and avoids sorting the full catalogue.
     for(const topic of ts){
       if(topic.archived)continue;
       const st=status(topic);
       if(!['overdue','due','new'].includes(st)||(st==='overdue'&&backlog===0))continue;
-      const priority=topicPriority(topic),key=Math.round(priority*20);
+      const key=topicPriority(topic);
       let bucket=buckets.get(key);if(!bucket){bucket=[];buckets.set(key,bucket);}
       bucket.push(topic);
     }
@@ -91,7 +91,7 @@
         const st=status(topic),minutes=estimateMinutes(topic);
         if(sum+minutes>cap&&selected.length>0)continue;
         if(sum+minutes>cap&&selected.length===0&&limitBudget)continue;
-        selected.push({topic,minutes,priority:key/20,status:st});sum+=minutes;
+        selected.push({topic,minutes,priority:key,status:st});sum+=minutes;
         if(sum>=cap)break;
       }
       if(sum>=cap)break;
