@@ -19,6 +19,19 @@ globalThis.NexusCurriculumPacks = commerceCatalogue.packs;
 const commercePack = commerceCatalogue.packs.find(pack => pack.id === 'sl-al-commerce-si');
 const workspaceMerge = require('../workspace-sync-merge.js');
 const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
+
+const initializationStart=source.indexOf('async function initializeSession(s){');
+const initializationEnd=source.indexOf('async function sameWorkspace(',initializationStart);
+assert.ok(initializationStart>=0&&initializationEnd>initializationStart,'cloud initialization source must be inspectable');
+const initializationSource=source.slice(initializationStart,initializationEnd);
+const initializationRemoteRead=initializationSource.indexOf('const remote=await fetchRemote(newUserId);');
+const initializationLocalSnapshot=initializationSource.indexOf('const localPayload=snapshot();');
+assert.ok(initializationRemoteRead>=0&&initializationLocalSnapshot>initializationRemoteRead,
+  'large local state must be snapshotted after the asynchronous cloud read so an offline edit during the request is included');
+assert.ok(!initializationSource.includes("localPayload=snapshot();const remote=await fetchRemote(newUserId);")&&
+  !initializationSource.includes('sameWorkspace(localPayload,latestLocalPayload)'),
+  'account initialization must not deep-clone and compare the entire local workspace twice before any account decision');
+
 const OWNER = queue.OWNER;
 const STATE_KEY = 'recall.study.tracker.v1';
 const FEATURE_KEY = 'recall.study.features.v1';
