@@ -68,9 +68,32 @@
     const revisionBoost=fsState.settings.finalRevision&&!mastered?45:0;
     return revisionBoost+(st==='overdue'?100+Math.min(30,Math.max(0,dayDiff(t.dueDate,today()))):st==='due'?80:st==='new'?60:st==='upcoming'?10:0)+(meta.weak?30:0)+(meta.avg&&meta.avg<2.5?20:0)+(t.lapses||0)*3-(meta.score/20);
   }
-  function buildPlan(limitBudget=true){const ts=activeTopics().filter(t=>!t.archived).slice().sort((a,b)=>topicPriority(b)-topicPriority(a));const daily=Math.max(10,Math.min(720,fNum(fsState.settings.dailyMinutes)||90));const backlog=fsState.settings.backlogDays||7;const cap=limitBudget?daily:Math.max(720,ts.length*30);const selected=[];let sum=0;const done=new Set(fsState.taskChecks[today()]||[]);
-    for(const t of ts){const st=status(t);if(!['overdue','due','new'].includes(st))continue;let mins=estimateMinutes(t);if(st==='overdue'&&backlog===0)continue;if(sum+mins>cap&&selected.length>0)continue;if(sum+mins>cap&&selected.length===0&&limitBudget)continue;selected.push({topic:t,minutes:mins,priority:topicPriority(t),status:st});sum+=mins;if(sum>=cap)break;}
-    return selected;}
+  function buildPlan(limitBudget=true){
+    const ts=activeTopics(),daily=Math.max(10,Math.min(720,fNum(fsState.settings.dailyMinutes)||90));
+    const backlog=fsState.settings.backlogDays||7,cap=limitBudget?daily:Math.max(720,ts.length*30);
+    const buckets=new Map(),selected=[];let sum=0;
+    // Priority values are exact multiples of 0.05. Grouping preserves original
+    // order within equal-priority buckets and avoids sorting the full catalogue.
+    for(const topic of ts){
+      const st=status(topic);
+      if(!['overdue','due','new'].includes(st)||(st==='overdue'&&backlog===0))continue;
+      const priority=topicPriority(topic),key=Math.round(priority*20);
+      let bucket=buckets.get(key);if(!bucket){bucket=[];buckets.set(key,bucket);}
+      bucket.push(topic);
+    }
+    const priorityKeys=Array.from(buckets.keys()).sort((a,b)=>b-a);
+    for(const key of priorityKeys){
+      for(const topic of buckets.get(key)){
+        const st=status(topic),minutes=estimateMinutes(topic);
+        if(sum+minutes>cap&&selected.length>0)continue;
+        if(sum+minutes>cap&&selected.length===0&&limitBudget)continue;
+        selected.push({topic,minutes,priority:key/20,status:st});sum+=minutes;
+        if(sum>=cap)break;
+      }
+      if(sum>=cap)break;
+    }
+    return selected;
+  }
   function hubCard(title,desc,body,wide=false){
     const inAnalytics=hubTab==='analytics',collapsible=inAnalytics&&!/(summary|trend|graph|chart|heatmap|consistency|daily review|daily study|review difficulty)/i.test(String(title||''));
     if(!inAnalytics)return `<section class="hub-card${wide?' wide':''}"><div class="hub-card-head"><div><h3>${title}</h3>${desc?`<p>${desc}</p>`:''}</div></div>${body}</section>`;
