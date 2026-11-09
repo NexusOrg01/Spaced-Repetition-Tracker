@@ -14,6 +14,7 @@
     'nexus-build-config.js',
     'cloud-sync-recovery.js',
     'workspace-sync-merge.js',
+    'cloud-chunk-storage.js',
     'cloud-sync.js',
     'nexus-app-inline.js'
   ];

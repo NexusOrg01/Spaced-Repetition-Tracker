@@ -41,7 +41,7 @@ function installSyncDiagnosticsButton(){
 
 function isUnsafeCloudOrigin(){const host=location.hostname.toLowerCase(),url=String(config().url||'').trim();let cloudHost='';try{cloudHost=new URL(url).hostname.toLowerCase();}catch(_){}return cloudHost===new URL(LIVE_SUPABASE_URL).hostname&&host!=='spaced-repetition-tracker-delta.vercel.app'&&host!=='kkmalithmalshan2000-png.github.io';}
 function previewCloudBlockedMessage(){status('Preview · cloud sync disabled');say('Cloud sync is disabled on this preview/local copy to protect real cloud data. Nexus still works offline. To test cloud sync, configure a separate Supabase test project on this device.');}
-let client=null,session=null,syncing=false,ready=false,deletingAccount=false,deletionServiceCheckedUser=null,deletionServiceAvailable=false,timer=null,retryTimer=null,retryAttempt=0,lastRemoteStamp=null,supabaseLoadPromise=null,pendingSync=false,lastUserId=null,initializing=false,initializingUserId=null,queuedSession=null,hasQueuedSession=false;
+let client=null,session=null,syncing=false,ready=false,deletingAccount=false,deletionServiceCheckedUser=null,deletionServiceAvailable=false,timer=null,retryTimer=null,retryAttempt=0,lastRemoteStamp=null,lastRemoteStorageMode='legacy',supabaseLoadPromise=null,pendingSync=false,lastUserId=null,initializing=false,initializingUserId=null,queuedSession=null,hasQueuedSession=false;
 const el=id=>document.getElementById(id),status=m=>{if(el('cloudStatus'))el('cloudStatus').textContent=m;if(m==='Synced')clearRetry();},say=m=>{if(el('cloudHelpText'))el('cloudHelpText').textContent=m;updateConflictRecoveryButton();},config=()=>{if(isPreviewDeploymentOrigin())return {...STAGING_CONFIG};try{return {...DEFAULT_CONFIG,...JSON.parse(localStorage.getItem(CFG_KEY)||'{}')}}catch(_){return {...DEFAULT_CONFIG}}};
 // The callback must return to the exact deployment that initiated sign-in. If Supabase rejects this origin, fix its redirect allow-list; do not pin a callback to an older preview.
 function authRedirectUrl(){const target=new URL(location.pathname,location.origin);target.search='';target.hash='';return target.href;}
@@ -111,23 +111,54 @@ function nextCloudStamp(previous){
  return new Date(Number.isFinite(prior)?Math.max(now,prior+1):now).toISOString();
 }
 async function assertActiveUser(userId){const {data,error}=await client.auth.getSession();if(error)throw error;const activeId=data&&data.session&&data.session.user?data.session.user.id:null;if(activeId!==userId||!session||session.user.id!==userId)throw new Error('The active account changed during sync. No cloud data was applied or written. Retry the account connection.');}
-async function fetchRemote(userId){
+async function fetchRemote(userId,knownWrite){
  const uid=userId||(session&&session.user&&session.user.id),startedAt=Date.now();
  if(!client||!uid)throw new Error('No active account is available for cloud sync.');
  const {data,error}=await client.from('nexus_user_data').select('payload,updated_at').eq('user_id',uid).maybeSingle();
  const durationMs=Date.now()-startedAt;
  if(error){syncDiag('cloud-read-error',null,{errorCode:String(error.code||'unknown'),durationMs});throw error;}
- syncDiag('cloud-read',data&&data.payload,{hasPayload:!!(data&&data.payload),hasUpdatedAt:!!(data&&data.updated_at),durationMs});
- return data;
+ let remote=data;
+ if(remote&&remote.payload&&remote.payload.__nexusStorage==='chunked-v1'){
+  const chunks=window.NexusCloudChunkStorage;
+  if(!chunks||!chunks.isManifest(remote.payload))throw new Error('The cloud workspace uses an unsupported chunked format. Local data and pending changes remain preserved.');
+  lastRemoteStorageMode='chunked';
+  if(knownWrite&&knownWrite.verifiedChunks&&knownWrite.chunkManifest&&chunks.sameManifest(remote.payload,knownWrite.chunkManifest)){
+   // The upload helper already read back and SHA-256-verified every immutable chunk
+   // before publishing this manifest. Confirming the active manifest here completes
+   // the post-publication read-back without downloading the same large payload twice.
+   remote={...remote,payload:knownWrite.payload,storageMode:'chunked',chunkManifest:remote.payload};
+  }else{
+   try{
+    const reconstructed=await chunks.readSnapshot(client,uid,remote.payload);
+    remote={...remote,payload:reconstructed,storageMode:'chunked',chunkManifest:remote.payload};
+   }catch(chunkError){
+    syncDiag('cloud-chunk-read-error',null,{errorCode:String(chunkError&&chunkError.code||'unknown'),errorMessage:String(chunkError&&chunkError.message||'unknown').slice(0,120)});
+    throw chunkError;
+   }
+  }
+ }else{
+  lastRemoteStorageMode='legacy';
+  if(remote)remote={...remote,storageMode:'legacy'};
+ }
+ syncDiag('cloud-read',remote&&remote.payload,{hasPayload:!!(remote&&remote.payload),hasUpdatedAt:!!(remote&&remote.updated_at),durationMs,storageMode:remote&&remote.storageMode||'empty'});
+ return remote;
 }
 async function writeRemoteSnapshot(userId,payload,expectedStamp,stamp){
  const startedAt=Date.now();
  try{
+  const chunks=window.NexusCloudChunkStorage;
+  const serialized=JSON.stringify(payload);
+  const serializedBytes=chunks?chunks.utf8ByteLength(serialized):(typeof TextEncoder==='function'?new TextEncoder().encode(serialized).length:serialized.length);
+  if(chunks&&(lastRemoteStorageMode==='chunked'||serializedBytes>=chunks.CHUNK_THRESHOLD_BYTES)){
+   const result=await chunks.writeSnapshot(client,userId,payload,expectedStamp,stamp,window.NexusBackupRestoreUtils);
+   syncDiag('cloud-write-complete',payload,{durationMs:Date.now()-startedAt,storageMode:'chunked',chunkCount:result.manifest.chunkCount,payloadUtf8Bytes:result.manifest.totalBytes});
+   return result;
+  }
   const result=await window.NexusBackupRestoreUtils.writeCloudSnapshot(client,userId,payload,expectedStamp,stamp);
-  syncDiag('cloud-write-complete',payload,{durationMs:Date.now()-startedAt});
+  syncDiag('cloud-write-complete',payload,{durationMs:Date.now()-startedAt,storageMode:'legacy',payloadUtf8Bytes:serializedBytes});
   return result;
  }catch(error){
-  syncDiag('cloud-write-error',payload,{durationMs:Date.now()-startedAt,errorCode:String(error&&error.code||'unknown'),errorMessage:String(error&&error.message||'unknown').slice(0,120)});
+  syncDiag('cloud-write-error',payload,{durationMs:Date.now()-startedAt,errorCode:String(error&&error.code||'unknown'),errorMessage:String(error&&error.message||'unknown').slice(0,120),storageMode:lastRemoteStorageMode});
   throw error;
  }
 }
@@ -573,8 +604,8 @@ async function upload(){
    if(actualStamp!==(pending.baseServerVersion||null)){const conflict=new Error('The cloud revision changed since this offline snapshot was queued.');conflict.code='NEXUS_CLOUD_CONFLICT';throw conflict;}
    const stamp=nextCloudStamp(pending.baseServerVersion);
    await assertUploadOwner();
-   await writeRemoteSnapshot(uploadUserId,payload,pending.baseServerVersion,stamp);
-   const verify=await fetchRemote(uploadUserId);
+   const writeResult=await writeRemoteSnapshot(uploadUserId,payload,pending.baseServerVersion,stamp);
+   const verify=await fetchRemote(uploadUserId,writeResult);
    await assertUploadOwner();
    syncDiag('upload-verification-readback',verify&&verify.payload,{readbackHasPayload:!!(verify&&verify.payload),matchesAttempted:!!(verify&&verify.payload&&stableJson(verify.payload)===stableJson(payload))});if(!verify||!verify.payload||stableJson(verify.payload)!==stableJson(payload)){const conflict=new Error('The remote cloud snapshot changed during write verification.');conflict.code='NEXUS_CLOUD_CONFLICT';throw conflict;}
    lastRemoteStamp=verify.updated_at||stamp;
@@ -583,8 +614,8 @@ async function upload(){
    const laterPending=queue.getPending(localStorage,uploadUserId);if(laterPending&&laterPending.operationId!==pending.operationId&&(laterPending.baseServerVersion||null)===(pending.baseServerVersion||null))queue.rebase(localStorage,uploadUserId,snapshot(),lastRemoteStamp,'local-change-during-upload');
   }else{
    const stamp=nextCloudStamp(priorStamp);
-   await writeRemoteSnapshot(uploadUserId,payload,priorStamp,stamp);
-   const verify=await fetchRemote(uploadUserId);
+   const writeResult=await writeRemoteSnapshot(uploadUserId,payload,priorStamp,stamp);
+   const verify=await fetchRemote(uploadUserId,writeResult);
    await assertUploadOwner();
    if(!verify||!verify.payload||stableJson(verify.payload)!==stableJson(payload)){const conflict=new Error('The remote cloud snapshot changed during write verification.');conflict.code='NEXUS_CLOUD_CONFLICT';throw conflict;}
    lastRemoteStamp=verify.updated_at||stamp;

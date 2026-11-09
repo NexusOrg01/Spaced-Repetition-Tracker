@@ -9,6 +9,8 @@ const appCore = readFileSync(resolve(root, 'app-core.js'), 'utf8');
 const studyHub = readFileSync(resolve(root, 'study-hub.js'), 'utf8');
 const appSource = index + '\n' + appCore + '\n' + studyHub;
 const cloudSync = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
+const cloudChunkStorage = readFileSync(resolve(root, 'cloud-chunk-storage.js'), 'utf8');
+const chunkMigration = readFileSync(resolve(root, 'supabase/migrations/20261109053000_chunked_nexus_workspace_snapshots.sql'), 'utf8');
 const fsrsBundle = readFileSync(resolve(root, 'fsrs-bundle.js'), 'utf8');
 const serviceWorker = readFileSync(resolve(root, 'sw.js'), 'utf8');
 const workflow = readFileSync(resolve(root, '.github/workflows/validate-curricula.yml'), 'utf8');
@@ -38,9 +40,9 @@ const runtimeAssets = [...runtimeBody.matchAll(/'([^']+)'/g)].map(match => match
 assert.deepEqual(runtimeAssets, [
   'workspace-isolation-guard.js', 'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
   'explore-curriculum.js', 'app-core.js', 'fsrs-bundle.js', 'study-hub.js', 'nexus-build-config.js',
-  'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-sync.js', 'nexus-app-inline.js'
+  'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-chunk-storage.js', 'cloud-sync.js', 'nexus-app-inline.js'
 ], 'the isolation guard must install before any application module can hydrate local workspace data');
-for (const asset of ['backup-restore-utils.js','offline-sync-queue.js','curriculum-integrity.js','explore-curriculum.js','app-core.js','study-hub.js','nexus-build-config.js','cloud-sync-recovery.js','workspace-sync-merge.js','cloud-sync.js','workspace-isolation-guard.js','fsrs-bundle.js']) {
+for (const asset of ['backup-restore-utils.js','offline-sync-queue.js','curriculum-integrity.js','explore-curriculum.js','app-core.js','study-hub.js','nexus-build-config.js','cloud-sync-recovery.js','workspace-sync-merge.js','cloud-chunk-storage.js','cloud-sync.js','workspace-isolation-guard.js','fsrs-bundle.js']) {
   assert.ok(!index.includes('<script src="./' + asset + '"></script>'), asset + ' must not load before the asynchronous storage bootstrap.');
 }
 assert.ok(storageSource.includes("const DB_NAME = 'nexus-workspace-v1'") && storageSource.includes('function commitLocalStorageEntries(entries)') && storageSource.includes('async function persistPending()'), 'the IndexedDB layer must expose the compatibility write path and durable flush logic');
@@ -73,6 +75,10 @@ assert.ok(cloudSync.includes("queue.rebaseWithBase(localStorage,userId,mergedSna
 assert.ok(cloudSync.includes('workspaceEntries:[') && cloudSync.includes('{key:OWNER_KEY,value:String(userId)}'), 'the automatic merge transaction atomically writes tracker state, Study Hub state, and the account owner');
 assert.ok(cloudSync.includes('const normalizedBase=savedBase?normalizeWorkspacePayload(savedBase):null') && cloudSync.includes('const normalizedLocal=normalizeWorkspacePayload(pending.payload)') && cloudSync.includes('const normalizedRemote=normalizeWorkspacePayload(remote.payload)'), 'base, local, and cloud snapshots must be normalized before three-way comparison');
 assert.ok(cloudSync.includes('function assertStableRecordIds(payload)'), 'malformed or ID-less records must fail closed before normalization can create new identities');
+assert.ok(cloudChunkStorage.includes('async function writeSnapshot(') && cloudChunkStorage.includes('await readSnapshot(client,userId,manifest)') && cloudChunkStorage.includes('sha256'), 'large cloud snapshots must be chunked, read back, and SHA-256 verified before publication');
+assert.ok(cloudSync.includes("lastRemoteStorageMode==='chunked'") && cloudSync.includes('chunks.readSnapshot(client,uid,remote.payload)'), 'once an account publishes chunked storage, subsequent clients must continue reading and writing that format');
+assert.ok(chunkMigration.includes('ENABLE ROW LEVEL SECURITY') && chunkMigration.includes('GRANT SELECT, INSERT, DELETE') && chunkMigration.includes('(SELECT auth.uid()) = user_id'), 'chunk storage must grant only required operations and restrict all access to the authenticated owner');
+assert.ok(chunkMigration.includes('nexus_guard_chunked_snapshot_update') && chunkMigration.includes("ERRCODE = '55000'"), 'legacy clients must be prevented from overwriting a published chunk manifest');
 assert.ok(cloudSync.includes('serializedPayloadCharacters') && cloudSync.includes('serializedPayloadUtf8Bytes') && cloudSync.includes('new TextEncoder()'), 'sync diagnostics must measure serialized snapshot size in characters and UTF-8 bytes without storing snapshot contents');
 assert.ok(cloudSync.includes('scheduleRetry();localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;return;'), 'transient merge-verification races must use bounded automatic retry');
 assert.ok(cloudSync.includes('sameWorkspace(remoteData,pendingForUser.payload)'), 'routine conflict detection must compare workspace contents, not exported-at metadata');
