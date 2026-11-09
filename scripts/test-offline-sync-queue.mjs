@@ -37,6 +37,9 @@ function withFacadeAtomic(storage,callback){
  const s=new MemoryStorage({[queue.OWNER]:'account-A'});queue.rememberStamp(s,'account-A','rev-1');
  const first=queue.commitWorkspace(s,[{key:stateKey,value:JSON.stringify(payload('first').state)}],payload('first'));
  assert.equal(first.queued,true);assert.equal(first.operation.ownerUserId,'account-A');assert.equal(first.operation.entityType,'workspace');assert.equal(first.operation.operationType,'snapshot');assert.equal(first.operation.schemaVersion,1);assert.equal(first.operation.baseServerVersion,'rev-1');assert.match(first.operation.operationId,/^nexus-op-[0-9a-f-]{36}$/,'operation IDs must be generated from cryptographically secure UUIDs');assert.equal(queue.getPending(s,'account-A').operationId,first.operation.operationId);assert.equal(queue.getPending(s,'account-B'),null);
+ const pendingRead=queue.getPending(s,'account-A');
+ pendingRead.payload.state.topics[0].id='mutated-read-result';
+ assert.equal(queue.getPending(s,'account-A').payload.state.topics[0].id,'first','a returned pending snapshot must be detached from persisted queue bytes even without a second deep clone');
 }
 {
  const s=new MemoryStorage({[queue.OWNER]:'account-A'});queue.rememberStamp(s,'account-A','rev-1');
@@ -86,6 +89,9 @@ function withFacadeAtomic(storage,callback){
  queue.rememberBase(s,'account-A',payload('baseline'),'revision-base-1');
  assert.equal(queue.getBase(s,'account-A').state.topics[0].id,'baseline','each account needs its last confirmed workspace base');
  assert.equal(queue.getBase(s,'account-A').serverVersion,'revision-base-1','a base must retain the cloud revision it represents');
+ const baseRead=queue.getBase(s,'account-A');
+ baseRead.state.topics[0].id='mutated-base-read';
+ assert.equal(queue.getBase(s,'account-A').state.topics[0].id,'baseline','a returned merge base must be detached from persisted bytes even without a second deep clone');
  assert.equal(queue.getBase(s,'account-B'),null,'merge bases must never cross account boundaries');
  queue.rememberBase(s,'account-B',payload('other'));
  assert.equal(queue.getBase(s,'account-A').state.topics[0].id,'baseline');
@@ -116,6 +122,8 @@ function withFacadeAtomic(storage,callback){
  assert.equal(queue.getBase(s,'account-A').serverVersion,'rev-2');
  assert.equal(queue.getConflictHistory(s,'account-A')[0].conflicts[0].remote,'cloud','conflict alternatives must commit in the same transaction as the merge');
  assert.equal(result.archivedConflicts,1);
+ result.operation.payload.state.topics[0].id='mutated-returned-operation';
+ assert.equal(queue.getPending(s,'account-A').payload.state.topics[0].id,'merged','mutating the returned rebase operation must not alter committed storage bytes');
 }
 {
  const s=new MemoryStorage({[queue.OWNER]:'account-A',[stateKey]:'pre-merge-state',['recall.study.features.v1']:'pre-merge-features'});
