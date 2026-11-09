@@ -43,7 +43,7 @@
     return {hs,avg,allAvg,score,weak};
   }
   function estimateMinutes(t){const m=featureMeta(t);return Math.max(6,Math.min(30,Math.round(10+(m.weak?7:0)+(m.avg&&m.avg<3?5:0)+(status(t)==='overdue'?Math.min(5,Math.ceil(Math.max(0,dayDiff(t.dueDate,today()))/5)):0))));}
-  function weeklyReviewCount(){const start=dateShift(today(),-6);return state.history.filter(h=>h.reviewedAt>=start&&h.reviewedAt<=today()).length;}
+  function weeklyReviewCount(){const end=today(),start=dateShift(end,-6);let count=0;for(const entry of state.history)if(entry&&entry.reviewedAt>=start&&entry.reviewedAt<=end)count++;return count;}
   function isMastered(t){const m=featureMeta(t);return t.reviewCount>=2&&m.avg>=3.5&&t.intervalDays>=4&&status(t)!=='overdue';}
   function streakCount(){return currentStudyStreak();}
   function studyLogMinutes(entry){const seconds=entry&&entry.durationSeconds;if(seconds!==undefined&&seconds!==null&&Number.isFinite(Number(seconds)))return Math.max(0,Number(seconds))/60;return Math.max(0,fNum(entry&&entry.minutes));}function formatStudyDuration(seconds){const total=Math.max(0,Math.round(Number(seconds)||0)),minutes=Math.floor(total/60),remainder=total%60;return minutes?`${minutes} min${remainder?' '+remainder+' sec':''}`:`${remainder} sec`;}function totalStudyMinutes(){return fsState.studyLogs.reduce((n,x)=>n+studyLogMinutes(x),0);}
@@ -186,12 +186,13 @@
       const order=topicOrder++;
       if(topic.archived)continue;
       const row=subjectStats.get(String(topic.subjectId));
-      if(!row)continue;
       const meta=featureMeta(topic),topicStatus=status(topic);
-      row.total++;
-      if(topic.reviewCount>0){row.reviewed++;row.averageSum+=meta.avg;}
-      if(topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&topicStatus!=='overdue')row.mastered++;
-      if(meta.weak)row.weak++;
+      if(row){
+        row.total++;
+        if(topic.reviewCount>0){row.reviewed++;row.averageSum+=meta.avg;}
+        if(topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&topicStatus!=='overdue')row.mastered++;
+        if(meta.weak)row.weak++;
+      }
       detailedCollector.add({topic,meta,priority:topicPriority(topic,meta),status:topicStatus,order});
     }
     const rows=Array.from(subjectStats.values()).map(row=>{
