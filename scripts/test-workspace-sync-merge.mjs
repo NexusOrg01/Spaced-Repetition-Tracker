@@ -133,4 +133,55 @@ const snap=(state,featureState={})=>({app:'Nexus',schema:4,exportedAt:'2026-10-2
  assert.ok(result.conflicts.some(c=>c.path.includes('curriculumIntent')&&c.resolution==='local'),
   'the opposing deletion/install intent must be reported as a locally resolved conflict');
 }
+
+{
+ const base=snap({settings:{}},{settings:{}});
+ const local=snap({settings:{theme:'system'}},{settings:{dailyMinutes:90,sessionMinutes:25,scheduler:'classic',weeklyReviewGoal:100,backlogDays:7,reminderTime:'08:00',finalRevision:false,workloadDays:7},lastBackupAt:''});
+ const remote=snap({settings:{theme:'dark'}},{settings:{dailyMinutes:240,sessionMinutes:50,scheduler:'adaptive',weeklyReviewGoal:180,backlogDays:14,reminderTime:'07:30',finalRevision:true,workloadDays:14},lastBackupAt:'2026-11-08'});
+ const result=merge.merge(base,local,remote);
+ assert.equal(result.conflicts.length,0,'client-initialized defaults must not conflict with customised settings when the saved baseline predates those fields');
+ assert.equal(result.payload.state.settings.theme,'dark','a cloud theme must survive an absent baseline when local only has the application default');
+ assert.deepEqual(result.payload.featureState.settings,remote.featureState.settings,'cloud custom preferences must survive local migration defaults');
+ assert.equal(result.payload.featureState.lastBackupAt,'2026-11-08','the remote backup timestamp must not be overwritten by an empty client default');
+}
+{
+ const base=snap({settings:{}},{settings:{}});
+ const local=snap({settings:{theme:'light'}},{settings:{dailyMinutes:120}});
+ const remote=snap({settings:{theme:'dark'}},{settings:{dailyMinutes:240}});
+ const result=merge.merge(base,local,remote);
+ assert.equal(result.payload.state.settings.theme,'light','two non-default edits with no baseline must retain documented local precedence');
+ assert.ok(result.conflicts.some(item=>item.path==='state.settings.theme'),'genuine non-default setting collisions remain recoverable');
+ assert.equal(result.payload.featureState.settings.dailyMinutes,120);
+ assert.ok(result.conflicts.some(item=>item.path==='featureState.settings.dailyMinutes'));
+}
+{
+ const totalTopics=77144,deletedTopics=12032,notes='x'.repeat(280);
+ const baseRows=Array.from({length:totalTopics},(_,i)=>({
+  id:'large-topic-'+i,name:'Large workspace topic '+i,
+  subjectId:i<deletedTopics?'subject-to-delete':'subject-to-keep',
+  notes,reviewCount:0,intervalDays:0,dueDate:''
+ }));
+ const localRows=baseRows.map(row=>({...row}));
+ const remoteRows=baseRows.slice(deletedTopics).map(row=>({...row}));
+ localRows[deletedTopics+100].notes='Local offline edit survives';
+ remoteRows[101].notes='Remote device edit survives';
+ const base={state:{schema:3,streams:[{id:'stream-general',name:'General'}],
+  subjects:[{id:'subject-to-delete',name:'Deleted subject',streamId:'stream-general'},{id:'subject-to-keep',name:'Kept subject',streamId:'stream-general'}],
+  topics:baseRows,history:[],exams:[],settings:{}},featureState:{}};
+ const local={...base,state:{...base.state,topics:localRows}};
+ const remote={...base,state:{...base.state,
+  subjects:[{id:'subject-to-keep',name:'Kept subject',streamId:'stream-general'}],
+  topics:remoteRows}};
+ const startedAt=Date.now();
+ const result=await merge.mergeAsync(base,local,remote);
+ const durationMs=Date.now()-startedAt;
+ assert.equal(result.payload.state.topics.length,totalTopics-deletedTopics,'the large merge must retain the exact post-deletion topic count');
+ assert.ok(!result.payload.state.topics.some(topic=>topic.subjectId==='subject-to-delete'),'deleting a complete subject must not resurrect its topics');
+ assert.ok(!result.payload.state.subjects.some(subject=>subject.id==='subject-to-delete'),'the deleted subject must remain deleted');
+ assert.equal(result.payload.state.topics.find(topic=>topic.id==='large-topic-'+(deletedTopics+100)).notes,'Local offline edit survives','independent local edits must survive remote deletion reconciliation');
+ assert.equal(result.payload.state.topics.find(topic=>topic.id==='large-topic-'+(deletedTopics+101)).notes,'Remote device edit survives','independent remote edits must survive local baseline reconciliation');
+ assert.equal(result.conflicts.length,0,'one-sided deletions and independent field edits must not create false conflicts');
+ console.log('Large-workspace merge regression passed: '+totalTopics+' topics, '+deletedTopics+' deletions, subject cascade and independent edits ('+durationMs+' ms).');
+}
+
 console.log('Automatic three-way workspace merge tests passed.');
