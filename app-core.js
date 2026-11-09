@@ -458,13 +458,14 @@
     const subjectById=new Map(state.subjects.map(subject=>[String(subject.id),subject]));
     const streamById=new Map(state.streams.map(stream=>[String(stream.id),stream]));
     const compare=(a,b)=>{
-      if(sort==='name')return naturalCompare(a.topic.name,b.topic.name);
-      if(sort==='stream')return naturalCompare(a.stream,b.stream)||naturalCompare(a.subject,b.subject)||naturalCompare(a.topic.name,b.topic.name);
-      if(sort==='least')return a.topic.reviewCount-b.topic.reviewCount||naturalCompare(a.topic.name,b.topic.name);
-      return dueRank(a.status)-dueRank(b.status)||(a.topic.dueDate||'9999').localeCompare(b.topic.dueDate||'9999')||naturalCompare(a.topic.name,b.topic.name);
+      if(sort==='name')return naturalCompare(a.topic.name,b.topic.name)||a.order-b.order;
+      if(sort==='stream')return naturalCompare(a.stream,b.stream)||naturalCompare(a.subject,b.subject)||naturalCompare(a.topic.name,b.topic.name)||a.order-b.order;
+      if(sort==='least')return a.topic.reviewCount-b.topic.reviewCount||naturalCompare(a.topic.name,b.topic.name)||a.order-b.order;
+      return dueRank(a.status)-dueRank(b.status)||(a.topic.dueDate||'9999').localeCompare(b.topic.dueDate||'9999')||naturalCompare(a.topic.name,b.topic.name)||a.order-b.order;
     };
-    let activeCount=0;
+    let activeCount=0,topicOrder=0;
     const selection=selectTopK(state.topics,topicVisibleLimit,compare,topic=>{
+      const order=topicOrder++;
       if(topic.archived)return null;
       activeCount++;
       const subject=subjectById.get(String(topic.subjectId)),stream=subject?streamById.get(String(subject.streamId)):null;
@@ -473,7 +474,7 @@
       if(streamId!=='ALL'&&stream?.id!==streamId)return null;
       if(subjectId!=='ALL'&&topic.subjectId!==subjectId)return null;
       if(stat!=='ALL'&&(stat==='due-now'?!['overdue','due'].includes(topicStatus):topicStatus!==stat))return null;
-      return {topic,status:topicStatus,subject:subject?.name||'Unknown subject',stream:stream?.name||'Unknown stream'};
+      return {topic,status:topicStatus,subject:subject?.name||'Unknown subject',stream:stream?.name||'Unknown stream',order};
     });
     const visible=selection.items,remaining=selection.count-visible.length;
     $('topicCountLabel').textContent=`Showing ${visible.length} of ${selection.count} matching topics (${activeCount} active)`;
