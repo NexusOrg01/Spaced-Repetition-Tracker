@@ -323,7 +323,7 @@ assert.ok(studyHub.includes('const initialSelection=options.selection||getRating
   studyHub.includes('estimatePdfExport({selection,graphs,tables,scope})'),
   'PDF generation must apply the selected stream/subject intersection before estimating or rendering any report content');
 assert.ok(studyHub.includes('reviews:selection.records.filter(x=>pdfRecordMatchesScope(x,scope))') &&
-  studyHub.includes('getRatingAnalyticsGroups(datasets.reviews,fsState.analyticsRatingGrouping||\'topic\')') &&
+  studyHub.includes('getRatingAnalyticsGroups(records,level)') &&
   studyHub.includes('const studyLogs=datasets.sessions;') &&
   studyHub.includes('const paperList=datasets.papers;') &&
   studyHub.includes('const journals=datasets.journal;'),
