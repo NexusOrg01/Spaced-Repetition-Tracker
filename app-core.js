@@ -63,7 +63,7 @@
     'Economics':'ආර්ථික විද්‍යාව','ECON':'ආර්ථික විද්‍යාව'
   };
   const RATING_LABELS = {1:'Again',2:'Hard',3:'Good',4:'Very good',5:'Easy'};
-  let state, undoState=null, undoTimer=null, toastTimer=null, editTopicId=null, reviewTopicId=null, selectedReviewRating=null, editStreamId=null, editSubjectId=null, editExamId=null, installPrompt=window.NexusInstallPrompt||null, historyVisibleLimit=100, historyInsightsDirty=true, historySortedCache=null, historySortedCacheSource=null, historySortedCacheLength=-1, historySortedCacheFirst=null, historyMetricsCache=null;
+  let state, undoState=null, undoTimer=null, toastTimer=null, editTopicId=null, reviewTopicId=null, selectedReviewRating=null, editStreamId=null, editSubjectId=null, editExamId=null, installPrompt=window.NexusInstallPrompt||null, topicVisibleLimit=100, historyVisibleLimit=100, historyInsightsDirty=true, historySortedCache=null, historySortedCacheSource=null, historySortedCacheLength=-1, historySortedCacheFirst=null, historyMetricsCache=null;
   const $ = id => document.getElementById(id);
   const clone = obj => JSON.parse(JSON.stringify(obj));
   const makeId = prefix => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
@@ -231,8 +231,14 @@
     const ex=nearestExam();if(ex){const remaining=dayDiff(today(),ex.date);$('examBanner').innerHTML=`<div><h3>${esc(ex.name)}</h3><p>${esc(ex.type)} · ${fmtDate(ex.date)}${ex.notes?` · ${esc(ex.notes)}`:''}</p></div><div class="countdown"><strong>${remaining>=0?remaining:Math.abs(remaining)}</strong><span>${remaining>0?'days remaining':remaining===0?'today':'days since'}</span></div>`;}else{$('examBanner').innerHTML=`<div><h3>No exam dates added</h3><p>Add an exam or deadline to display a countdown here.</p></div><button class="btn btn-sm" id="bannerAddExam">＋ Add exam</button>`;$('bannerAddExam').addEventListener('click',()=>openExam());}
     const queue=topics.slice().sort((a,b)=>dueRank(status(a))-dueRank(status(b))||((a.dueDate||'9999').localeCompare(b.dueDate||'9999'))).filter(t=>['overdue','due','new'].includes(status(t))).slice(0,7);
     $('dueQueue').innerHTML=queue.length?queue.map(t=>{const d=subjectDisplay(t),st=status(t);return `<div class="due-item"><div style="min-width:0"><div class="due-title">${esc(t.name)}</div><div class="due-meta"><span>${esc(d.subject)}</span><span>·</span><span>${esc(d.stream)}</span><span class="pill ${st}">${statusText(st)}</span></div></div><button type="button" class="btn btn-sm btn-primary" data-action="review" data-id="${esc(t.id)}">Review</button></div>`;}).join(''):`<div class="empty"><strong>You're all caught up</strong>No overdue or due topics at the moment. New topics are available under Topics.</div>`;
-    const subjectGroups=state.subjects.map(sub=>{const ts=topics.filter(t=>t.subjectId===sub.id);return {s:sub,ts,done:ts.filter(t=>t.reviewCount>0).length,stream:streamFor(sub)?.name||''};}).filter(x=>x.ts.length||state.subjects.length<8);
-    $('progressList').innerHTML=subjectGroups.length?subjectGroups.map(g=>{const p=g.ts.length?Math.round(g.done/g.ts.length*100):0;return `<div class="progress-row"><div class="progress-label"><strong>${esc(g.s.name)}</strong><span>${g.done}/${g.ts.length} · ${p}%</span></div><div class="progress-track"><div class="progress-fill" style="width:${p}%"></div></div><div class="muted small" style="margin-top:4px">${esc(g.stream)}</div></div>`;}).join(''):`<div class="empty">Add a subject to see progress.</div>`;
+    const progressBySubject=new Map();
+    for(const topic of topics){
+      let entry=progressBySubject.get(topic.subjectId);
+      if(!entry){entry={total:0,done:0};progressBySubject.set(topic.subjectId,entry);}
+      entry.total++;if(topic.reviewCount>0)entry.done++;
+    }
+    const subjectGroups=state.subjects.map(sub=>{const stats=progressBySubject.get(sub.id)||{total:0,done:0};return {s:sub,total:stats.total,done:stats.done,stream:streamFor(sub)?.name||''};}).filter(x=>x.total||state.subjects.length<8);
+    $('progressList').innerHTML=subjectGroups.length?subjectGroups.map(g=>{const p=g.total?Math.round(g.done/g.total*100):0;return `<div class="progress-row"><div class="progress-label"><strong>${esc(g.s.name)}</strong><span>${g.done}/${g.total} · ${p}%</span></div><div class="progress-track"><div class="progress-fill" style="width:${p}%"></div></div><div class="muted small" style="margin-top:4px">${esc(g.stream)}</div></div>`;}).join(''):`<div class="empty">Add a subject to see progress.</div>`;
     renderUpcomingQueue();renderOverviewAnalytics();
   }
   function addHistoryMetricRecord(metrics,record){
@@ -380,13 +386,19 @@
     return false;
   }
   function renderTopics(){
-    // Render the Library's stream/subject tree together with its topic cards.
+    // Keep the DOM bounded on low-memory phones. A large cloud workspace can contain
+    // tens of thousands of topics; rendering every card at once can exhaust WebView memory.
     renderStructureList();
     const q=$('topicSearch').value.trim().toLocaleLowerCase(),streamId=$('topicStreamFilter').value,subjectId=$('topicSubjectFilter').value,stat=$('topicStatusFilter').value,sort=$('topicSort').value;
-    let items=activeTopics().filter(t=>{const sub=subjectFor(t),st=streamFor(sub),stt=status(t);return (!q||[t.name,t.notes,sub?.name,st?.name].some(x=>String(x||'').toLocaleLowerCase().includes(q)))&&(streamId==='ALL'||st?.id===streamId)&&(subjectId==='ALL'||t.subjectId===subjectId)&&(stat==='ALL'||(stat==='due-now'?['overdue','due'].includes(stt):stt===stat));});
+    const allActive=activeTopics();
+    let items=allActive.filter(t=>{const sub=subjectFor(t),st=streamFor(sub),stt=status(t);return (!q||[t.name,t.notes,sub?.name,st?.name].some(x=>String(x||'').toLocaleLowerCase().includes(q)))&&(streamId==='ALL'||st?.id===streamId)&&(subjectId==='ALL'||t.subjectId===subjectId)&&(stat==='ALL'||(stat==='due-now'?['overdue','due'].includes(stt):stt===stat));});
     items.sort((a,b)=>{if(sort==='name')return naturalCompare(a.name,b.name);if(sort==='stream'){const aa=subjectDisplay(a),bb=subjectDisplay(b);return naturalCompare(aa.stream,bb.stream)||naturalCompare(aa.subject,bb.subject)||naturalCompare(a.name,b.name);}if(sort==='least')return a.reviewCount-b.reviewCount||naturalCompare(a.name,b.name);return dueRank(status(a))-dueRank(status(b))||(a.dueDate||'9999').localeCompare(b.dueDate||'9999')||naturalCompare(a.name,b.name);});
-    $('topicCountLabel').textContent=`Showing ${items.length} of ${activeTopics().length} active topics`;
-    $('topicGrid').innerHTML=items.length?items.map(t=>{const d=subjectDisplay(t),s=status(t);return `<article class="topic-card"><div class="topic-card-top"><div style="min-width:0"><div class="topic-name">${esc(t.name)}</div><div class="topic-sub">${esc(d.stream)} · ${esc(d.subject)}</div></div><span class="pill ${s}">${statusText(s)}</span></div>${t.notes?`<div class="topic-note">${esc(t.notes)}</div>`:''}<div class="topic-details"><span>Last: ${fmtDate(t.lastReviewed)}</span><span>Next: ${fmtDate(t.dueDate)}</span><span>Interval: ${t.intervalDays||'—'}d</span><span>Reviews: ${t.reviewCount}</span></div><div class="topic-actions"><button class="btn btn-sm btn-primary" data-action="review" data-id="${esc(t.id)}">Review</button><button class="btn btn-sm" data-action="edit-topic" data-id="${esc(t.id)}">Edit</button><span class="spacer"></span><button class="btn btn-sm btn-danger" data-action="delete-topic" data-id="${esc(t.id)}">Delete</button></div></article>`;}).join(''):`<div class="panel" style="grid-column:1/-1"><div class="empty"><strong>No matching topics</strong>Change the filters or add a topic.</div></div>`;
+    const visible=items.slice(0,topicVisibleLimit),remaining=items.length-visible.length;
+    $('topicCountLabel').textContent=`Showing ${visible.length} of ${items.length} matching topics (${allActive.length} active)`;
+    const cards=visible.map(t=>{const d=subjectDisplay(t),s=status(t);return `<article class="topic-card"><div class="topic-card-top"><div style="min-width:0"><div class="topic-name">${esc(t.name)}</div><div class="topic-sub">${esc(d.stream)} · ${esc(d.subject)}</div></div><span class="pill ${s}">${statusText(s)}</span></div>${t.notes?`<div class="topic-note">${esc(t.notes)}</div>`:''}<div class="topic-details"><span>Last: ${fmtDate(t.lastReviewed)}</span><span>Next: ${fmtDate(t.dueDate)}</span><span>Interval: ${t.intervalDays||'—'}d</span><span>Reviews: ${t.reviewCount}</span></div><div class="topic-actions"><button class="btn btn-sm btn-primary" data-action="review" data-id="${esc(t.id)}">Review</button><button class="btn btn-sm" data-action="edit-topic" data-id="${esc(t.id)}">Edit</button><span class="spacer"></span><button class="btn btn-sm btn-danger" data-action="delete-topic" data-id="${esc(t.id)}">Delete</button></div></article>`;}).join('');
+    const more=remaining? `<div style="grid-column:1/-1;display:flex;justify-content:center;padding:12px"><button type="button" class="btn btn-sm" data-action="show-more-topics">Show 100 more topics (${remaining} remaining)</button></div>`:'';
+    $('topicGrid').innerHTML=cards||`<div class="panel" style="grid-column:1/-1"><div class="empty"><strong>No matching topics</strong>Change the filters or add a topic.</div></div>`;
+    if(more)$('topicGrid').insertAdjacentHTML('beforeend',more);
   }
   function compareHistoryRows(a,b){return b.reviewedAt.localeCompare(a.reviewedAt)||String(b.id).localeCompare(String(a.id));}
   function getSortedHistory(){
@@ -408,7 +420,19 @@
     $('historyPagination').hidden=visible.length>=filtered.length;
     if(historyInsightsDirty){renderHistoryInsights();historyInsightsDirty=false;}
   }
-  function renderStructureList(){const streamsMarkup=state.streams.map(st=>{const subjects=state.subjects.filter(s=>s.streamId===st.id);return `<div class="entity"><div><strong>${esc(st.name)}</strong><small>${subjects.length} subject${subjects.length===1?'':'s'}</small>${subjects.map(s=>`<div class="entity" style="padding:8px 0 0 10px"><div><strong style="font-size:12px">${esc(s.name)}</strong><small>${activeTopics().filter(t=>t.subjectId===s.id).length} active topics</small></div><div class="inline-actions"><button class="btn btn-sm" data-action="edit-subject" data-id="${esc(s.id)}">Edit</button><button class="btn btn-sm btn-danger" data-action="delete-subject" data-id="${esc(s.id)}" ${state.topics.some(t=>t.subjectId===s.id)?'':''}>Delete</button></div></div>`).join('')}</div><div class="inline-actions"><button class="btn btn-sm" data-action="add-subject-to-stream" data-id="${esc(st.id)}">＋ Subject</button><button class="btn btn-sm" data-action="edit-stream" data-id="${esc(st.id)}">Edit</button><button class="btn btn-sm btn-danger" data-action="delete-stream" data-id="${esc(st.id)}" ${subjects.length?'':''}>Delete</button></div></div>`;}).join('');$('structureList').innerHTML=streamsMarkup||'<div class="empty">No streams created.</div>';}
+  function renderStructureList(){
+    const topicCounts=new Map(),subjectsByStream=new Map(),active=activeTopics();
+    for(const topic of active)topicCounts.set(topic.subjectId,(topicCounts.get(topic.subjectId)||0)+1);
+    for(const subject of state.subjects){
+      if(!subjectsByStream.has(subject.streamId))subjectsByStream.set(subject.streamId,[]);
+      subjectsByStream.get(subject.streamId).push(subject);
+    }
+    const streamsMarkup=state.streams.map(st=>{
+      const subjects=subjectsByStream.get(st.id)||[];
+      return `<div class="entity"><div><strong>${esc(st.name)}</strong><small>${subjects.length} subject${subjects.length===1?'':'s'}</small>${subjects.map(s=>`<div class="entity" style="padding:8px 0 0 10px"><div><strong style="font-size:12px">${esc(s.name)}</strong><small>${topicCounts.get(s.id)||0} active topics</small></div><div class="inline-actions"><button class="btn btn-sm" data-action="edit-subject" data-id="${esc(s.id)}">Edit</button><button class="btn btn-sm btn-danger" data-action="delete-subject" data-id="${esc(s.id)}">Delete</button></div></div>`).join('')}</div><div class="inline-actions"><button class="btn btn-sm" data-action="add-subject-to-stream" data-id="${esc(st.id)}">＋ Subject</button><button class="btn btn-sm" data-action="edit-stream" data-id="${esc(st.id)}">Edit</button><button class="btn btn-sm btn-danger" data-action="delete-stream" data-id="${esc(st.id)}">Delete</button></div></div>`;
+    }).join('');
+    $('structureList').innerHTML=streamsMarkup||'<div class="empty">No streams created.</div>';
+  }
   function renderSetup(){refreshFilterOptions();$('themeSelect').value=state.settings.theme;renderStructureList();
     const exams=state.exams.slice().sort((a,b)=>a.date.localeCompare(b.date));$('examList').innerHTML=exams.length?exams.map(ex=>`<div class="entity"><div><strong>${esc(ex.name)}</strong><small>${fmtDate(ex.date)} · ${esc(ex.type)}${validDate(ex.date)&&ex.date>=today()?` · ${dayDiff(today(),ex.date)} day(s) left`:''}</small>${ex.notes?`<small>${esc(ex.notes)}</small>`:''}</div><div class="inline-actions"><button class="btn btn-sm" data-action="edit-exam" data-id="${esc(ex.id)}">Edit</button><button class="btn btn-sm btn-danger" data-action="delete-exam" data-id="${esc(ex.id)}">Delete</button></div></div>`).join(''):'<div class="empty"><strong>No exams scheduled</strong>Add an exam or deadline.</div>';
   }
@@ -547,16 +571,16 @@
   // Events are attached once; dynamic content uses delegated handlers.
   document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>switchView(b.dataset.view)));
   
-  $('viewDueBtn').addEventListener('click',()=>{switchView('topics');$('topicStatusFilter').value='due-now';renderTopics();});
+  $('viewDueBtn').addEventListener('click',()=>{switchView('topics');topicVisibleLimit=100;$('topicStatusFilter').value='due-now';renderTopics();});
   // Delegate review actions once so dynamically rendered due and upcoming queues work consistently.
   document.addEventListener('click',e=>{const b=e.target.closest('button[data-action="review"]');if(!b)return;openReview(b.dataset.id);});
-  $('topicGrid').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='edit-topic')openTopic(id);if(action==='delete-topic')deleteTopic(id);});
+  $('topicGrid').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='edit-topic')openTopic(id);if(action==='delete-topic')deleteTopic(id);if(action==='show-more-topics'){topicVisibleLimit+=100;renderTopics();}});
   $('historyList').addEventListener('click',e=>{const b=e.target.closest('button[data-action="delete-history"]');if(!b)return;const id=b.dataset.id;const entry=state.history.find(h=>h.id===id);if(!entry||!confirm('DANGER ZONE — Delete this review record?\n\nThis review will disappear from rating analytics and future history exports. The topic schedule will not change. Use Undo immediately or restore a backup if needed. Continue?'))return;startUndo('History entry deleted.');state.history=state.history.filter(h=>h.id!==id);historyInsightsDirty=true;historySortedCache=null;save();renderHistory();notify('History entry deleted.',true);});
   $('structureList').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='edit-stream')openStream(id);if(action==='delete-stream')deleteStream(id);if(action==='add-subject-to-stream')openSubject(null,id);if(action==='edit-subject')openSubject(id);if(action==='delete-subject')deleteSubject(id);});
   $('examList').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;if(b.dataset.action==='edit-exam')openExam(b.dataset.id);if(b.dataset.action==='delete-exam')deleteExam(b.dataset.id);});
   let topicSearchTimer=0,historySearchTimer=0,exploreSearchTimer=0;
-  $('topicSearch').addEventListener('input',()=>{clearTimeout(topicSearchTimer);topicSearchTimer=setTimeout(renderTopics,110);});
-  ['topicStreamFilter','topicSubjectFilter','topicStatusFilter','topicSort'].forEach(id=>$(id).addEventListener('change',renderTopics));
+  $('topicSearch').addEventListener('input',()=>{topicVisibleLimit=100;clearTimeout(topicSearchTimer);topicSearchTimer=setTimeout(renderTopics,110);});
+  ['topicStreamFilter','topicSubjectFilter','topicStatusFilter','topicSort'].forEach(id=>$(id).addEventListener('change',()=>{topicVisibleLimit=100;renderTopics();}));
   $('historySearch').addEventListener('input',()=>{clearTimeout(historySearchTimer);historyVisibleLimit=100;historySearchTimer=setTimeout(renderHistory,110);});
   ['historyStreamFilter','historySubjectFilter'].forEach(id=>$(id).addEventListener('change',()=>{historyVisibleLimit=100;renderHistory();}));
   $('historyShowMoreBtn').addEventListener('click',()=>{historyVisibleLimit+=100;renderHistory();});
