@@ -118,8 +118,12 @@ assert.ok(offlineQueueSource.includes('wordCode*256+next') && offlineQueueSource
   'large snapshot compression must avoid per-byte phrase strings and callers must be able to skip unused full-payload clones');
 assert.ok(appCore.includes('function getHistoryMetrics()') && appCore.includes('const reviewedToday=getHistoryMetrics().byDate.get(today())||0;'),
   'overview history totals must reuse indexed history metrics instead of rescanning the entire history per render');
-assert.ok(appCore.includes('const orderedHistory=getSortedHistory();') && appCore.includes("const activeView=document.querySelector('.view.active')?.id||'view-overview';"),
-  'tracker rendering must reuse the sorted history cache and refresh only the visible view');
+assert.ok(appCore.includes('selectTopK(state.topics,topicVisibleLimit') && appCore.includes('selectTopK(state.history,historyVisibleLimit') && appCore.includes("const activeView=document.querySelector('.view.active')?.id||'view-overview';"),
+  'topic and history screens must retain only their visible top-ranked page while refreshing only the active view');
+assert.ok(appCore.includes('window.NexusCreateTopKCollector=createTopKCollector;') && studyHub.includes('NexusCreateTopKCollector(40'),
+  'shared bounded top-K collection must be available to Study Hub mastery and study-log rendering');
+assert.ok(studyHub.includes('data-hub-action="study-history-more"') && studyHub.includes('for(const record of history){') && studyHub.includes('for(const record of studyLogs){'),
+  'study logs must paginate rendered rows and activity analytics must aggregate full datasets without duplicate record arrays');
 assert.ok(studyHub.includes('function getTopicHistoryStats()') && studyHub.includes('const stats=getTopicHistoryStats().get(String(t.id))'),
   'Study Hub mastery and planning must reuse a per-topic history index instead of filtering all history for each topic');
 assert.ok(studyHub.includes('for(const record of state.history){const date=record&&record.reviewedAt;') && !studyHub.includes('state.history.filter(h=>h.reviewedAt===d)'),
