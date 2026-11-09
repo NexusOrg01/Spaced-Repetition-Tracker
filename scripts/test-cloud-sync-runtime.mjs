@@ -93,6 +93,7 @@ function makeElement() {
 }
 const storage = new MemoryStorage({
   [OWNER]: accountA.id,
+  'nexus.syncdiag.enabled': '1',
   [CONFIG_KEY]: JSON.stringify({ url: 'https://nexus-staging-test.supabase.co', key: 'sb_publishable_test_key_value_long_enough' }),
   [STATE_KEY]: JSON.stringify(stateFor('offline-A')),
   [FEATURE_KEY]: JSON.stringify(featuresFor('offline-A'))
@@ -1377,9 +1378,11 @@ for (const scenario of [
   window.NexusStorage=null;
   activeSession={user:accountA};
   networkAvailable=true;
+  const syncDiagnosticsBefore=JSON.parse(storage.getItem('nexus.syncdiag.session.v1')||'[]').length;
 
   await window.NexusCloudSync.reconnect();
 
+  const syncDiagnostics=JSON.parse(storage.getItem('nexus.syncdiag.session.v1')||'[]').slice(syncDiagnosticsBefore);
   const downloaded=JSON.parse(storage.getItem(STATE_KEY));
   const verifiedCloud=rows.get(accountA.id)?.payload?.state;
   const debugBase=queue.getBase(storage,accountA.id);
@@ -1388,7 +1391,8 @@ for (const scenario of [
     remoteTopics:verifiedCloud?.topics?.length||0,
     pendingTopics:queue.getPending(storage,accountA.id)?.payload?.state?.topics?.length||0,
     baseTopics:debugBase?.state?.topics?.length||0,
-    message:getElement('cloudHelpText').textContent};
+    message:getElement('cloudHelpText').textContent,
+    stages:syncDiagnostics.map(event=>({stage:event.stage,workspace:event.workspace,extra:event.errorCode||event.reason||event.durationMs||null}))};
   assert.equal(downloaded.topics.length,retainedCount,
     'Device 2 must apply the 12,032-topic deletion instead of retaining its stale 77,144-topic snapshot: '+JSON.stringify(syncDebug));
   assert.equal(downloaded.subjects.length,1,'the deleted subject must be absent on Device 2');
