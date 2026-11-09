@@ -63,7 +63,7 @@ const snap=(state,featureState={})=>({app:'Nexus',schema:4,exportedAt:'2026-10-2
  assert.equal(topic.intervalDays,7);
  assert.equal(topic.lastRating,4,'the local review rating must remain paired with the selected local schedule');
  assert.equal(topic.streak,3,'the local review streak must remain paired with the selected local schedule');
- assert.ok(result.conflicts.some(c=>c.path==='state.topics[t1].__reviewSchedule'&&c.remote.dueDate==='2026-11-12'&&c.remote.fsrs.stability===9&&c.remote.lastRating===2&&c.remote.streak===1),'the complete alternative schedule including rating and streak must be recoverable');
+ assert.ok(result.conflicts.some(c=>c.path==='state.topics[t1].__reviewSchedule'&&c.remote.dueDate==='2026-11-12'&&c.remote.fsrs.stability===9&&c.remote.lastRating===2&&c.remote.streak===1),'the complete alternative schedule including rating and streak must be recoverable: '+JSON.stringify(result.conflicts));
 }
 {
  const base=snap({}, {taskChecks:{'topic-a':['checked-1']}});
