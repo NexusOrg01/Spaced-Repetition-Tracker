@@ -23,19 +23,21 @@
     const byTopic=new Map();
     for(const record of history){
       const id=String(record&&record.topicId||'');if(!id)continue;
-      let item=byTopic.get(id);if(!item){item={hs:[],sum:0};byTopic.set(id,item);}
-      item.hs.push(record);item.sum+=fNum(record.rating);
+      let item=byTopic.get(id);if(!item){item={recent:[],count:0,sum:0};byTopic.set(id,item);}
+      item.count++;item.sum+=fNum(record.rating);
+      const date=record.reviewedAt||'',recent=item.recent;
+      let index=0;
+      while(index<recent.length&&(recent[index].reviewedAt||'')>=date)index++;
+      if(index<5){recent.splice(index,0,record);if(recent.length>5)recent.pop();}
     }
     for(const item of byTopic.values()){
-      item.hs.sort((a,b)=>(b.reviewedAt||'').localeCompare(a.reviewedAt||''));
-      const recent=item.hs.slice(0,5);
-      item.avg=recent.length?recent.reduce((sum,record)=>sum+fNum(record.rating),0)/recent.length:0;
-      item.allAvg=item.hs.length?item.sum/item.hs.length:0;
+      item.avg=item.recent.length?item.recent.reduce((sum,record)=>sum+fNum(record.rating),0)/item.recent.length:0;
+      item.allAvg=item.count?item.sum/item.count:0;
     }
     topicHistoryStatsCache={source:history,length:history.length,byTopic};return byTopic;
   }
   function featureMeta(t){
-    const stats=getTopicHistoryStats().get(String(t.id)),hs=stats?.hs||[],avg=hs.length?stats.avg:(t.lastRating||0),allAvg=hs.length?stats.allAvg:(t.lastRating||0);
+    const stats=getTopicHistoryStats().get(String(t.id)),hs=stats?.recent||[],avg=hs.length?stats.avg:(t.lastRating||0),allAvg=hs.length?stats.allAvg:(t.lastRating||0);
     const weak=Boolean(t.lapses||avg&&avg<3||status(t)==='overdue'&&dayDiff(t.dueDate,today())>5);let score=0;
     if(t.reviewCount>0){score=Math.round(Math.max(0,Math.min(100,(avg/5)*65+Math.min(t.reviewCount,6)/6*20+Math.min(t.intervalDays,30)/30*15)));if(t.lastRating===1)score=Math.max(5,score-15);}
     return {hs,avg,allAvg,score,weak};
