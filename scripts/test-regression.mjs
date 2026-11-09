@@ -119,7 +119,7 @@ assert.ok(offlineQueueSource.includes('wordCode*256+next') && offlineQueueSource
 assert.ok(appCore.includes('function getHistoryMetrics()') && appCore.includes('const reviewedToday=getHistoryMetrics().byDate.get(todayKey)||0;'),
   'overview history totals must reuse indexed history metrics instead of rescanning the entire history per render');
 assert.ok(appCore.includes('selectTopK(state.topics,topicVisibleLimit') && appCore.includes('selectTopK(state.history,historyVisibleLimit') &&
-  appCore.includes("const activeView=document.querySelector('.view.active')?.id||'view-overview';'),
+  appCore.includes("const activeView=document.querySelector('.view.active')?.id||'view-overview';"),
   'topic and history screens must retain only the visible top-ranked page while refreshing only the active view');
 assert.ok(appCore.includes('window.NexusCreateTopKCollector=createTopKCollector;') &&
   studyHub.includes('NexusCreateTopKCollector(studyLogHistoryLimit') && studyHub.includes('NexusCreateTopKCollector(40'),
