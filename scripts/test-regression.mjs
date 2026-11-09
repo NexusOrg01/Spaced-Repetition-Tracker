@@ -116,7 +116,7 @@ assert.ok(serviceWorker.includes('const CORE_APP_SHELL=') && serviceWorker.inclu
 const offlineQueueSource = readFileSync(resolve(root, 'offline-sync-queue.js'), 'utf8');
 assert.ok(offlineQueueSource.includes('wordCode*256+next') && offlineQueueSource.includes('returnOperationPayload===false'),
   'large snapshot compression must avoid per-byte phrase strings and callers must be able to skip unused full-payload clones');
-assert.ok(appCore.includes('function getHistoryMetrics()') && appCore.includes('const reviewedToday=getHistoryMetrics().byDate.get(today())||0;'),
+assert.ok(appCore.includes('function getHistoryMetrics()') && appCore.includes('const reviewedToday=getHistoryMetrics().byDate.get(todayKey)||0;'),
   'overview history totals must reuse indexed history metrics instead of rescanning the entire history per render');
 assert.ok(appCore.includes('const orderedHistory=getSortedHistory();') && appCore.includes("const activeView=document.querySelector('.view.active')?.id||'view-overview';"),
   'tracker rendering must reuse the sorted history cache and refresh only the visible view');
