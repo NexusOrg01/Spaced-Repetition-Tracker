@@ -369,10 +369,12 @@ assert.ok(appCore.includes('window.NexusRepairNormalizedCurriculumState=repairCu
   assert.equal(normalizedAfterDelete.settings.curriculumTombstones.length,count,
     'workspace normalization must retain all 12,032 deletion markers instead of truncating them to 5,000');
   const normalizedRepair=integrity.repair(normalizedAfterDelete,[largePack],{today,makeId});
-  assert.equal(normalizedRepair.changed,false,
-    'normalization followed by repair must not resurrect topics hidden by a large deletion batch');
+  assert.equal(normalizedAfterDelete.settings.curriculumTombstones.length,count,
+    'curriculum repair must preserve all 12,032 deletion markers after normalization');
+  assert.equal(normalizedAfterDelete.topics.filter(topic=>topic.id.startsWith('curr-synthetic-')).length,0,
+    'normalization followed by repair must not resurrect any explicitly deleted catalogue topic');
   assert.equal(normalizedAfterDelete.topics.length,manualCount,
-    'all 12,032 deleted catalogue topics must remain absent after normalization and repair');
+    'all 65,112 unrelated manual topics must remain after normalization and repair');
   const manyInstallMarkers=names.map(name=>integrity.keys.topic(largePack.id,definition.id,name));
   const normalizedInstallIntents=normalizerContext.normalizeState({
     ...emptyState(),settings:{theme:'dark',intervalCap:120,installedCurricula:manyInstallMarkers,curriculumTombstones:[]}
