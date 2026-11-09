@@ -25,6 +25,7 @@ const analyticsSandbox={
   subjectFor:topic=>analyticsSubjectById.get(String(topic.subjectId))||null,
   streamFor:subject=>analyticsStreamById.get(String(subject.streamId))||null,
   getTopic:id=>{analyticsTopicLookups++;return analyticsTopicById.get(String(id))||null;},
+  getRatingAnalyticsSelection:()=>({records:analyticsHistory}),
   save(){},
   saveFs(){analyticsSaveCount++;}
 };
@@ -51,7 +52,7 @@ assert.equal(analyticsOptions.length,152,'analytics options must retain no more 
 assert.equal(analyticsOptions.matchCount,count,'analytics options must count unique topic identities without returning every option');
 assert.ok(analyticsOptions.some(option=>option.value==='topic-'+(count-1)),'the previously selected topic must remain available outside the first page');
 assert.ok(analyticsOptions.some(option=>option.value==='ALL'),'the aggregate All option must always remain available');
-const searchedOptions=analyticsSandbox.getRatingAnalyticsEntityOptions('topic','077143',150,'topic-0');
+const searchedOptions=analyticsSandbox.getRatingAnalyticsEntityOptions('topic','77143',150,'topic-0');
 assert.equal(searchedOptions.matchCount,1,'search must narrow a large topic catalogue');
 assert.ok(searchedOptions.some(option=>option.value==='topic-77143'),'search must return a topic outside the initial alphabetical page');
 assert.ok(searchedOptions.some(option=>option.value==='topic-0'),'search must preserve the currently selected topic');
