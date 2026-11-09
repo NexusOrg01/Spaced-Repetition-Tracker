@@ -308,7 +308,22 @@ async function reconcileConcurrentSnapshot(userId,initialRemote){
   const normalizedBase=savedBase?normalizeWorkspacePayload(savedBase):null;
   const normalizedLocal=normalizeWorkspacePayload(pending.payload);
   const normalizedRemote=normalizeWorkspacePayload(remote.payload);
-  const result=merger.merge(normalizedBase,normalizedLocal,normalizedRemote);
+  status('Reconciling cloud changes…');
+  const mergeStartedAt=Date.now();
+  const usedCooperativeMerge=typeof merger.mergeAsync==='function';
+  const result=usedCooperativeMerge
+   ?await merger.mergeAsync(normalizedBase,normalizedLocal,normalizedRemote)
+   :merger.merge(normalizedBase,normalizedLocal,normalizedRemote);
+  // Cooperative merging yields to the UI. Revalidate both account and outbox version
+  // before committing, because the user may have made another local edit while it ran.
+  await assertActiveUser(userId);
+  const latestPending=queue.getPending(localStorage,userId);
+  if(!latestPending||latestPending.operationId!==pending.operationId){
+   syncDiag('workspace-merge-restarted',null,{reason:'local-outbox-changed-during-merge',durationMs:Date.now()-mergeStartedAt});
+   remote=await fetchRemote(userId);
+   continue;
+  }
+  syncDiag('workspace-merge-complete',null,{durationMs:Date.now()-mergeStartedAt,cooperative:usedCooperativeMerge,conflictCount:result.conflicts.length});
   const nextState=normalizeState(result.payload.state);
   const nextFeatures=window.NexusNormalizeFeatureState(result.payload.featureState||{});
   if(!window.NexusBackupRestoreUtils||!window.NexusStorageKey||!window.NexusFeatureStorageKey||!window.NexusSetFeatureState)throw new Error('Atomic workspace reconciliation is unavailable; local changes were preserved.');
