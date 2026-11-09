@@ -181,7 +181,7 @@
     const b=rowMap(baseRows),l=rowMap(localRows),r=rowMap(remoteRows),out=[];
     let processed=0;
     const append=async(id,bv,lv,rv)=>{
-      const value=mergeRecordValue(bv,lv,rv,path+'['+id+']',conflicts);
+      const value=mergeRecordValue(bv,lv,rv,path,id,conflicts);
       if(value!==ABSENT)out.push(value);
       processed++;
       if(processed%MERGE_YIELD_BATCH===0)await yieldToBrowser();
