@@ -151,23 +151,26 @@
     }
     return out;
   }
-  function mergeRecordValue(baseValue,localValue,remoteValue,path,conflicts){
-    return path==='state.topics'?mergeTopicRecord(baseValue,localValue,remoteValue,path,conflicts):mergeValue(baseValue,localValue,remoteValue,path,conflicts);
+  function mergeRecordValue(baseValue,localValue,remoteValue,collectionPath,id,conflicts){
+    const itemPath=collectionPath+'['+id+']';
+    return collectionPath==='state.topics'
+      ?mergeTopicRecord(baseValue,localValue,remoteValue,itemPath,conflicts)
+      :mergeValue(baseValue,localValue,remoteValue,itemPath,conflicts);
   }
   function mergeRecords(baseRows,localRows,remoteRows,path,conflicts){
     const b=rowMap(baseRows),l=rowMap(localRows),r=rowMap(remoteRows),out=[];
     for(const [id,bv] of b){
-      const value=mergeRecordValue(bv,l.has(id)?l.get(id):ABSENT,r.has(id)?r.get(id):ABSENT,path+'['+id+']',conflicts);
+      const value=mergeRecordValue(bv,l.has(id)?l.get(id):ABSENT,r.has(id)?r.get(id):ABSENT,path,id,conflicts);
       if(value!==ABSENT)out.push(value);
     }
     for(const [id,lv] of l){
       if(b.has(id))continue;
-      const value=mergeRecordValue(ABSENT,lv,r.has(id)?r.get(id):ABSENT,path+'['+id+']',conflicts);
+      const value=mergeRecordValue(ABSENT,lv,r.has(id)?r.get(id):ABSENT,path,id,conflicts);
       if(value!==ABSENT)out.push(value);
     }
     for(const [id,rv] of r){
       if(b.has(id)||l.has(id))continue;
-      const value=mergeRecordValue(ABSENT,ABSENT,rv,path+'['+id+']',conflicts);
+      const value=mergeRecordValue(ABSENT,ABSENT,rv,path,id,conflicts);
       if(value!==ABSENT)out.push(value);
     }
     return out;
