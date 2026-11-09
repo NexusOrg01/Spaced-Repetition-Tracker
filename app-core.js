@@ -283,6 +283,27 @@
     undoState={kind:'workspace-reference',value:state};
     armUndo(text);
   }
+  function startUndoEntityEdit(text,collection,item,fields){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    const before={};for(const field of fields)before[field]=item[field];
+    undoState={kind:'entity-edit',value:state,item,before};
+    armUndo(text);
+  }
+  function startUndoEntityAdd(text,collection,itemId){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    undoState={kind:'entity-add',value:state,collection,itemId};
+    armUndo(text);
+  }
+  function startUndoArrayReplacement(text,collection){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    undoState={kind:'array-reference',value:state,collection,previous:state[collection]};
+    armUndo(text);
+  }
+  function startUndoArrayItemReplacement(text,collection,index){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    undoState={kind:'array-item-reference',value:state,collection,index,previous:state[collection][index]};
+    armUndo(text);
+  }
   function startUndoReview(text,topic,reviewId){
     if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
     // A review mutates one topic and prepends one history row. Capture only the
@@ -307,6 +328,14 @@
       state=pending.value;state.topics=state.topics.filter(topic=>String(topic.id)!==String(pending.topicId));
     }else if(pending.kind==='history-reference'){
       state=pending.value;state.history=pending.history;
+    }else if(pending.kind==='entity-edit'){
+      state=pending.value;Object.assign(pending.item,pending.before);
+    }else if(pending.kind==='entity-add'){
+      state=pending.value;state[pending.collection]=state[pending.collection].filter(item=>String(item.id)!==String(pending.itemId));
+    }else if(pending.kind==='array-reference'){
+      state=pending.value;state[pending.collection]=pending.previous;
+    }else if(pending.kind==='array-item-reference'){
+      state=pending.value;state[pending.collection][pending.index]=pending.previous;
     }else state=pending.value;
     if(window.NexusUndoCascadeDelete)window.NexusUndoCascadeDelete();
     save();renderAll();$('toast').classList.remove('show');
@@ -681,14 +710,36 @@
   }
   function deleteTopic(id){const t=getTopic(id);if(!t)return;if(!confirm(`Delete “${t.name}” from the topic tracker? Existing history entries will be retained.`))return;startUndoBulkDelete('Topic deleted.');if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedTopic(state,CURRICULUM_PACKS,t);state.topics=state.topics.filter(x=>x.id!==id);save();renderAll();notify('Topic deleted. Review history is retained.',true);}
   function openStream(id=null){editStreamId=id;const st=id?state.streams.find(s=>s.id===id):null;$('streamDialogTitle').textContent=st?'Edit stream / course':'Add stream / course';$('streamNameInput').value=st?.name||'';$('streamDialog').showModal();}
-  function saveStream(e){e.preventDefault();const name=$('streamNameInput').value.trim();if(!name)return;const duplicate=state.streams.find(s=>s.id!==editStreamId&&s.name.toLocaleLowerCase()===name.toLocaleLowerCase());if(duplicate){notify('A stream with that name already exists.');return;}startUndo('Stream saved.');if(editStreamId){const st=state.streams.find(s=>s.id===editStreamId);if(st)st.name=name;}else state.streams.push({id:makeId('stream'),name});save();$('streamDialog').close();renderAll();notify('Stream saved.',true);}
+  function saveStream(e){
+    e.preventDefault();const name=$('streamNameInput').value.trim();if(!name)return;
+    const duplicate=state.streams.find(item=>item.id!==editStreamId&&item.name.toLocaleLowerCase()===name.toLocaleLowerCase());
+    if(duplicate){notify('A stream with that name already exists.');return;}
+    if(editStreamId){const stream=state.streams.find(item=>item.id===editStreamId);if(!stream)return;startUndoEntityEdit('Stream saved.','streams',stream,['name']);stream.name=name;}
+    else{const stream={id:makeId('stream'),name};startUndoEntityAdd('Stream saved.','streams',stream.id);state.streams.push(stream);}
+    save();$('streamDialog').close();renderAll();notify('Stream saved.',true);
+  }
   function openSubject(id=null,preselectedStream=null){editSubjectId=id;const sub=id?state.subjects.find(s=>s.id===id):null;$('subjectDialogTitle').textContent=sub?'Edit subject':'Add subject';refreshFilterOptions();$('subjectStreamInput').value=sub?.streamId||preselectedStream||state.streams[0]?.id||'';$('subjectNameInput').value=sub?.name||'';$('subjectDialog').showModal();}
-  function saveSubject(e){e.preventDefault();const name=$('subjectNameInput').value.trim(),streamId=$('subjectStreamInput').value;if(!name||!state.streams.some(s=>s.id===streamId))return;const dupe=state.subjects.find(s=>s.id!==editSubjectId&&s.streamId===streamId&&s.name.toLocaleLowerCase()===name.toLocaleLowerCase());if(dupe){notify('That subject already exists in this stream.');return;}startUndo('Subject saved.');if(editSubjectId){const sub=state.subjects.find(s=>s.id===editSubjectId);if(sub){sub.name=name;sub.streamId=streamId;}}else state.subjects.push({id:makeId('subject'),name,streamId,order:state.subjects.length});save();$('subjectDialog').close();renderAll();notify('Subject saved.',true);}
+  function saveSubject(e){
+    e.preventDefault();const name=$('subjectNameInput').value.trim(),streamId=$('subjectStreamInput').value;
+    if(!name||!state.streams.some(stream=>stream.id===streamId))return;
+    const duplicate=state.subjects.find(subject=>subject.id!==editSubjectId&&subject.streamId===streamId&&subject.name.toLocaleLowerCase()===name.toLocaleLowerCase());
+    if(duplicate){notify('That subject already exists in this stream.');return;}
+    if(editSubjectId){const subject=state.subjects.find(item=>item.id===editSubjectId);if(!subject)return;startUndoEntityEdit('Subject saved.','subjects',subject,['name','streamId']);subject.name=name;subject.streamId=streamId;}
+    else{const subject={id:makeId('subject'),name,streamId,order:state.subjects.length};startUndoEntityAdd('Subject saved.','subjects',subject.id);state.subjects.push(subject);}
+    save();$('subjectDialog').close();renderAll();notify('Subject saved.',true);
+  }
   function deleteSubject(id){const sub=state.subjects.find(s=>s.id===id);if(!sub)return;const topicIds=state.topics.filter(t=>t.subjectId===id).map(t=>t.id),topicIdSet=new Set(topicIds),historyCount=state.history.filter(h=>h.subjectId===id||topicIdSet.has(h.topicId)).length;if(!confirm(`Delete subject “${sub.name}” and all its data?\n\nThis permanently removes ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. This cannot be undone after you leave this page. Export a full JSON backup first if unsure.`))return;startUndoBulkDelete('Subject and its data deleted.');if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedSubject(state,CURRICULUM_PACKS,sub);if(window.NexusCascadeDeleteSubject)window.NexusCascadeDeleteSubject(id,topicIds);state.topics=state.topics.filter(t=>t.subjectId!==id);state.history=state.history.filter(h=>h.subjectId!==id&&!topicIdSet.has(h.topicId));state.subjects=state.subjects.filter(s=>s.id!==id);save();renderAll();notify('Subject and nested data deleted.',true);}
   function deleteStream(id){const st=state.streams.find(s=>s.id===id);if(!st)return;const subjectIds=state.subjects.filter(s=>s.streamId===id).map(s=>s.id),subjectIdSet=new Set(subjectIds),topicIds=state.topics.filter(t=>subjectIdSet.has(t.subjectId)).map(t=>t.id),topicIdSet=new Set(topicIds),historyCount=state.history.filter(h=>subjectIdSet.has(h.subjectId)||topicIdSet.has(h.topicId)||h.streamId===id).length;if(!confirm(`Delete stream “${st.name}” and all nested data?\n\nThis permanently removes ${subjectIds.length} subject(s), ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. This cannot be undone after you leave this page. Export a full JSON backup first if unsure.`))return;startUndoBulkDelete('Stream and its data deleted.');if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedStream(state,CURRICULUM_PACKS,st);if(window.NexusCascadeDeleteStream)window.NexusCascadeDeleteStream(id,subjectIds,topicIds);state.topics=state.topics.filter(t=>!subjectIdSet.has(t.subjectId));state.history=state.history.filter(h=>!subjectIdSet.has(h.subjectId)&&!topicIdSet.has(h.topicId)&&h.streamId!==id);state.subjects=state.subjects.filter(s=>s.streamId!==id);state.streams=state.streams.filter(s=>s.id!==id);save();renderAll();notify('Stream and nested data deleted.',true);}
   function openExam(id=null){editExamId=id;const ex=id?state.exams.find(e=>e.id===id):null;$('examDialogTitle').textContent=ex?'Edit exam or deadline':'Add exam or deadline';$('examNameInput').value=ex?.name||'';$('examDateInput').value=ex?.date||'';$('examTypeInput').value=ex?.type||'Academic exam';$('examNotesInput').value=ex?.notes||'';$('examDialog').showModal();}
-  function saveExam(e){e.preventDefault();const name=$('examNameInput').value.trim(),date=$('examDateInput').value;if(!name||!validDate(date)){notify('Enter an exam name and a valid date.');return;}startUndo('Exam saved.');const item={id:editExamId||makeId('exam'),name,date,type:$('examTypeInput').value,notes:$('examNotesInput').value.trim()};if(editExamId){const i=state.exams.findIndex(x=>x.id===editExamId);if(i>=0)state.exams[i]=item;}else state.exams.push(item);save();$('examDialog').close();renderAll();notify('Exam saved.',true);}
-  function deleteExam(id){const ex=state.exams.find(e=>e.id===id);if(!ex||!confirm(`Delete “${ex.name}”?`))return;startUndo('Exam deleted.');state.exams=state.exams.filter(e=>e.id!==id);save();renderAll();notify('Exam deleted.',true);}
+  function saveExam(e){
+    e.preventDefault();const name=$('examNameInput').value.trim(),date=$('examDateInput').value;
+    if(!name||!validDate(date)){notify('Enter an exam name and a valid date.');return;}
+    const item={id:editExamId||makeId('exam'),name,date,type:$('examTypeInput').value,notes:$('examNotesInput').value.trim()};
+    if(editExamId){const index=state.exams.findIndex(exam=>exam.id===editExamId);if(index<0)return;startUndoArrayItemReplacement('Exam saved.','exams',index);state.exams[index]=item;}
+    else{startUndoEntityAdd('Exam saved.','exams',item.id);state.exams.push(item);}
+    save();$('examDialog').close();renderAll();notify('Exam saved.',true);
+  }
+  function deleteExam(id){const exam=state.exams.find(item=>item.id===id);if(!exam||!confirm(`Delete “${exam.name}”?`))return;startUndoArrayReplacement('Exam deleted.','exams');state.exams=state.exams.filter(item=>item.id!==id);save();renderAll();notify('Exam deleted.',true);}
   function downloadFile(filename,content,type){const blob=new Blob([content],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);}
   function exportBackup(){if(typeof window.NexusExportFullBackup==='function'){window.NexusExportFullBackup();return;}const packet={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state,featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}};downloadFile(`nexus-backup-${today()}.json`,JSON.stringify(packet,null,2),'application/json;charset=utf-8');notify('Full backup downloaded. Keep it somewhere safe.');}
   const csvCell=v=>window.NexusBackupRestoreUtils.csvCell(v);
