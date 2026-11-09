@@ -117,14 +117,17 @@ function assertStableRecordIds(payload){
  validate(payload.state,['streams','subjects','topics','history','exams'],'tracker');
  validate(payload.featureState,['journal','papers','goals','studyLogs'],'Study Hub');
 }
-function normalizeWorkspacePayload(payload){
+function normalizeWorkspacePayload(payload,repairCurriculum=false){
  if(!payload||!payload.state||!Array.isArray(payload.state.streams))throw new Error('A valid workspace snapshot is required for automatic reconciliation.');
  assertStableRecordIds(payload);
- // These snapshots were already normalized when they entered local/cloud storage.
- // Keep their arrays and records by reference during the three-way comparison; normalise
- // the merged result once afterward instead of cloning all three workspaces up front.
+ // The local outbox and last verified base already come from this app's normalized
+ // state. Retain those arrays by reference. Repair the remote workspace because
+ // older cloud snapshots may lack catalogue-owned rows required by install intent.
  const features=payload.featureState&&typeof payload.featureState==='object'&&!Array.isArray(payload.featureState)?payload.featureState:{};
- return {...payload,state:payload.state,featureState:features};
+ if(!repairCurriculum)return {...payload,state:payload.state,featureState:features};
+ const normalized=normalizeState(payload.state);
+ const safeState=window.NexusRepairCurriculumState?window.NexusRepairCurriculumState(normalized):normalized;
+ return {...payload,state:safeState,featureState:window.NexusNormalizeFeatureState(Object.prototype.hasOwnProperty.call(payload,'featureState')?payload.featureState:undefined)};
 }
 function nextCloudStamp(previous){
  const policy=window.NexusCloudSyncRecovery;
@@ -329,7 +332,7 @@ async function reconcileConcurrentSnapshot(userId,initialRemote){
   const savedBase=queue.getBase(localStorage,userId);
   const normalizedBase=savedBase?normalizeWorkspacePayload(savedBase):null;
   const normalizedLocal=normalizeWorkspacePayload(pending.payload);
-  const normalizedRemote=normalizeWorkspacePayload(remote.payload);
+  const normalizedRemote=normalizeWorkspacePayload(remote.payload,true);
   status('Reconciling cloud changes…');
   const mergeStartedAt=Date.now();
   const usedCooperativeMerge=typeof merger.mergeAsync==='function';
