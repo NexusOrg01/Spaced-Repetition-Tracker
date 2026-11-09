@@ -1378,7 +1378,8 @@ for (const scenario of [
   window.NexusStorage=null;
   activeSession={user:accountA};
   networkAvailable=true;
-  const syncDiagnosticsBefore=JSON.parse(storage.getItem('nexus.syncdiag.session.v1')||'[]').length;
+  storage.setItem('nexus.syncdiag.session.v1','[]');
+  const syncDiagnosticsBefore=0;
 
   await window.NexusCloudSync.reconnect();
 
