@@ -2,13 +2,13 @@
 
 ## Format and publication
 
-Small workspaces continue to use the existing `public.nexus_user_data.payload` JSONB snapshot. When a serialized workspace reaches 1 MiB, Nexus stores it as immutable rows in `public.nexus_user_data_chunks` (256 KiB UTF-8 chunks, inserted in batches of four). The payload row then becomes the small active manifest.
+Small workspaces continue to use the existing `public.nexus_user_data.payload` JSONB snapshot. When a serialized workspace reaches 1 MiB, Nexus stores it as append-only rows in `public.nexus_user_data_chunks` (256 KiB UTF-8 chunks, inserted in batches of four and read back in pages of sixteen). The payload row then becomes the small active manifest.
 
 The manifest is published by the existing conditional write against `nexus_user_data.updated_at`. Before publication, Nexus reads every new chunk back, checks indexes/counts/UTF-8 byte lengths, reconstructs the serialized JSON, and verifies SHA-256. Only after this succeeds does the client move the active manifest pointer. A concurrent device that publishes first causes the conditional update to fail; the losing revision remains unreferenced and is eligible for later cleanup.
 
 ## Security and compatibility
 
-The chunk table has RLS policies for SELECT, INSERT, and DELETE restricted to `auth.uid() = user_id`; it has no client UPDATE grant, so chunk rows are immutable through the Data API. Explicit authenticated table grants are included because Supabase no longer automatically exposes newly created public tables after 30 October 2026. The auth.users foreign key cascades account deletion.
+The chunk table has RLS policies for SELECT, INSERT, and DELETE restricted to `auth.uid() = user_id`; it has no client UPDATE grant; clients may only delete their own rows as part of stale-revision cleanup. Explicit authenticated table grants are included because Supabase no longer automatically exposes newly created public tables after 30 October 2026. The auth.users foreign key cascades account deletion.
 
 Once a row contains a chunk manifest, a database trigger rejects legacy full-payload updates. Older clients cannot reconstruct the manifest and therefore fail closed rather than replacing the active revision with a stale snapshot. New clients always continue using chunk storage for an account once its cloud row has moved to chunked format.
 

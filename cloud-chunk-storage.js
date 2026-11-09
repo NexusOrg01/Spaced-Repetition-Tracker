@@ -10,6 +10,7 @@ const MARKER_KEY='__nexusStorage';
 const FORMAT='chunked-v1';
 const CHUNK_BYTES=256*1024;
 const INSERT_BATCH_SIZE=4;
+const READ_BATCH_SIZE=16;
 const MAX_CHUNKS=900;
 const CLEANUP_AGE_MS=7*24*60*60*1000;
 const CLEANUP_BATCH_SIZE=200;
@@ -82,16 +83,19 @@ function assertManifest(manifest){
 async function readSnapshot(client,userId,manifest){
  if(!client||typeof userId!=='string'||!userId)throw fail('A verified account is required to read cloud workspace chunks.');
  assertManifest(manifest);
- const result=await client.from(TABLE)
-  .select('chunk_index,chunk_count,chunk_bytes,chunk_data')
-  .eq('user_id',userId)
-  .eq('revision_id',manifest.revisionId)
-  .order('chunk_index',{ascending:true})
-  .range(0,manifest.chunkCount-1);
- if(result&&result.error)throw result.error;
- const rows=result&&result.data;
- if(!Array.isArray(rows)||rows.length!==manifest.chunkCount){
-  throw fail('The published cloud workspace is incomplete. This device’s local workspace and pending changes have been preserved.');
+ const rows=[];
+ for(let offset=0;offset<manifest.chunkCount;offset+=READ_BATCH_SIZE){
+  const result=await client.from(TABLE)
+   .select('chunk_index,chunk_count,chunk_bytes,chunk_data')
+   .eq('user_id',userId)
+   .eq('revision_id',manifest.revisionId)
+   .order('chunk_index',{ascending:true})
+   .range(offset,Math.min(manifest.chunkCount-1,offset+READ_BATCH_SIZE-1));
+  if(result&&result.error)throw result.error;
+  if(!result||!Array.isArray(result.data)||result.data.length!==Math.min(READ_BATCH_SIZE,manifest.chunkCount-offset)){
+   throw fail('The published cloud workspace is incomplete. This device’s local workspace and pending changes have been preserved.');
+  }
+  rows.push(...result.data);
  }
  let serialized='';
  for(let index=0;index<rows.length;index++){
@@ -178,7 +182,7 @@ async function writeSnapshot(client,userId,payload,expectedStamp,stamp,backupUti
 }
 
 return {
- TABLE,FORMAT,CHUNK_BYTES,INSERT_BATCH_SIZE,CHUNK_THRESHOLD_BYTES,
+ TABLE,FORMAT,CHUNK_BYTES,INSERT_BATCH_SIZE,READ_BATCH_SIZE,CHUNK_THRESHOLD_BYTES,
  isManifest,sameManifest,utf8ByteLength,splitUtf8,readSnapshot,writeSnapshot,cleanupOldChunks
 };
 });

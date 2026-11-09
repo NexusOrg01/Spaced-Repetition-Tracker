@@ -104,10 +104,10 @@ const makePayload=(label,repeat=6000)=>({
 });
 
 const cloud=new MemoryCloud();
-const firstPayload=makePayload('large-A',7000);
+const firstPayload=makePayload('large-A',72000);
 const first=await chunks.writeSnapshot(cloud,OWNER_A,firstPayload,null,'2026-11-09T05:00:00.000Z',backup);
 assert.ok(chunks.isManifest(first.manifest),'large workspace must publish a chunk manifest');
-assert.ok(first.manifest.totalBytes>chunks.CHUNK_THRESHOLD_BYTES,'test fixture must exceed the chunk threshold');
+assert.ok(first.manifest.totalBytes>20*1024*1024,'test fixture must approximate the real 26.9 MB workspace');
 assert.ok(first.manifest.chunkCount>1,'large workspace must be divided into multiple chunks');
 assert.equal(cloud.rows.get(OWNER_A).payload.__nexusStorage,'chunked-v1','existing snapshot row must become the active manifest only after chunk verification');
 assert.equal(cloud.chunks.filter(row=>row.user_id===OWNER_A&&row.revision_id===first.manifest.revisionId).length,first.manifest.chunkCount,'all chunks must be present before publication');
@@ -148,7 +148,19 @@ const interruptedCloud=new MemoryCloud();
 interruptedCloud.failChunkBatch=2;
 const interrupted=await chunks.writeSnapshot(interruptedCloud,OWNER_A,firstPayload,null,'2026-11-09T05:04:00.000Z',backup).then(()=>null,error=>error);
 assert.equal(interrupted.code,'57014','interrupted chunk batches must surface as failures');
-assert.equal(interruptedCloud.rows.has(OWNER_A),false,'an incomplete upload must not publish a manifest or overwrite an existing snapshot');
+assert.equal(interruptedCloud.rows.has(OWNER_A),false,'an incomplete first upload must not publish any manifest');
 assert.ok(interruptedCloud.chunks.length>0,'partial chunks must remain orphaned for delayed cleanup, not be mistaken for an active snapshot');
 
-console.log('Cloud chunk storage tests passed: UTF-8 chunking, SHA-256 reconstruction, atomic manifest publication, legacy overwrite guard, compare-and-swap conflict, corruption rejection, owner isolation, and interrupted upload recovery.');
+const preservedCloud=new MemoryCloud();
+preservedCloud.rows.set(OWNER_A,{...cloud.rows.get(OWNER_A)});
+preservedCloud.chunks=cloud.chunks.filter(row=>row.user_id===OWNER_A).map(row=>({...row}));
+const previousManifest=preservedCloud.rows.get(OWNER_A).payload;
+const previousRevision=previousManifest.revisionId;
+preservedCloud.failChunkBatch=2;
+const interruptedReplacement=await chunks.writeSnapshot(preservedCloud,OWNER_A,makePayload('interrupted-replacement',72000),preservedCloud.rows.get(OWNER_A).updated_at,'2026-11-09T05:05:00.000Z',backup).then(()=>null,error=>error);
+assert.equal(interruptedReplacement.code,'57014','interrupted replacement upload must report its failed chunk batch');
+assert.equal(preservedCloud.rows.get(OWNER_A).payload.revisionId,previousRevision,'an interrupted replacement must leave the previous manifest active');
+assert.deepEqual(await chunks.readSnapshot(preservedCloud,OWNER_A,previousManifest),secondPayload,'the previous verified snapshot must remain fully readable after an interrupted replacement');
+assert.ok(preservedCloud.chunks.some(row=>row.revision_id!==previousRevision),'abandoned replacement chunks must remain separate from the active snapshot');
+
+console.log('Cloud chunk storage tests passed: 27 MB-scale UTF-8 chunking, paginated SHA-256 reconstruction, atomic manifest publication, legacy overwrite guard, compare-and-swap conflict, corruption rejection, owner isolation, and preservation of the previous snapshot after interrupted replacement.');
