@@ -27,9 +27,10 @@ const today = () => '2026-10-22';
 const makeId = prefix => prefix + '-test-' + Math.random().toString(36).slice(2, 7);
 const copy = value => JSON.parse(JSON.stringify(value));
 
-const normalizeStart=appCore.indexOf('function normalizeState(raw){');
-const normalizeEnd=appCore.indexOf('// Curriculum rows are owned by explicit install intent',normalizeStart);
-assert.ok(normalizeStart>=0&&normalizeEnd>normalizeStart,'the real app-core workspace normalizer must be available');
+const normalizeFunctionStart=appCore.indexOf('function normalizeState(raw){');
+const normalizeLimitStart=appCore.lastIndexOf('const MAX_CURRICULUM_MARKERS=',normalizeFunctionStart);
+const normalizeEnd=appCore.indexOf('// Curriculum rows are owned by explicit install intent',normalizeFunctionStart);
+assert.ok(normalizeFunctionStart>=0&&normalizeLimitStart>=0&&normalizeEnd>normalizeFunctionStart,'the real app-core workspace normalizer and its marker limit must be available');
 const normalizerContext={
   migrateOld(){throw new Error('The normalizer test must use the current workspace schema.');},
   normalizeTopic(topic,fallbackSubjectId){return {...topic,subjectId:String(topic.subjectId||fallbackSubjectId)};},
@@ -38,7 +39,7 @@ const normalizerContext={
   today(){return '2026-11-09';}
 };
 vm.createContext(normalizerContext);
-vm.runInContext(appCore.slice(normalizeStart,normalizeEnd),normalizerContext,{filename:'app-core-normalize-state.js'});
+vm.runInContext(appCore.slice(normalizeLimitStart,normalizeEnd),normalizerContext,{filename:'app-core-normalize-state.js'});
 
 const emptyState = () => ({
   schema: 3, streams: [], subjects: [], topics: [], exams: [], history: [],
