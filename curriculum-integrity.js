@@ -7,7 +7,9 @@
 
   const isRecord = value => !!value && typeof value === 'object' && !Array.isArray(value);
   const rows = value => Array.isArray(value) ? value : [];
-  const uniqueStrings = value => Array.from(new Set(rows(value).filter(x => typeof x === 'string' && x.length > 0))).slice(-5000);
+  // Large workspaces can legitimately need more than 5k deletion markers.
+  const MAX_CURRICULUM_MARKERS = 100000;
+  const uniqueStrings = value => Array.from(new Set(rows(value).filter(x => typeof x === 'string' && x.length > 0))).slice(-MAX_CURRICULUM_MARKERS);
   const normalizeName = value => String(value || '').trim().toLocaleLowerCase();
   const packMarker = id => 'installed:pack:' + String(id);
   const subjectMarker = (id, subjectId) => 'installed:subject:' + String(id) + ':' + String(subjectId);
@@ -257,7 +259,7 @@
         }
       }
     }
-    const installed=Array.from(marker.installed).slice(-5000),tombstones=Array.from(marker.deleted).slice(-5000);
+    const installed=Array.from(marker.installed).slice(-MAX_CURRICULUM_MARKERS),tombstones=Array.from(marker.deleted).slice(-MAX_CURRICULUM_MARKERS);
     if(!sameStringList(state.settings.installedCurricula,installed)||
       !sameStringList(state.settings.curriculumTombstones,tombstones))changed=true;
     state.settings.installedCurricula=installed;
@@ -291,8 +293,8 @@
         marker.deleted.delete(deletedTopic(id, definition.id, topicName));
       }
     }
-    state.settings.installedCurricula = Array.from(marker.installed).slice(-5000);
-    state.settings.curriculumTombstones = Array.from(marker.deleted).slice(-5000);
+    state.settings.installedCurricula = Array.from(marker.installed).slice(-MAX_CURRICULUM_MARKERS);
+    state.settings.curriculumTombstones = Array.from(marker.deleted).slice(-MAX_CURRICULUM_MARKERS);
   }
   function packContext(state, packs, subject) {
     if (!subject) return null;
@@ -305,20 +307,40 @@
     }
     return null;
   }
-  function markDeletedTopic(state, packs, topic) {
-    if (!isRecord(state) || !topic) return;
-    const subject = rows(state.subjects).find(item => String(item.id) === String(topic.subjectId));
-    const context = packContext(state, packs, subject);
-    if (!context) return;
-    let catalogueName = rows(context.definition.topics).includes(String(topic.name)) ? String(topic.name) : '';
-    if (!catalogueName) catalogueName = rows(context.definition.topics).find(name =>
-      String(topic.id) === topicIdFor(context.definition, name) || String(topic.id) === oldTopicIdFor(context.definition, name)) || '';
-    if (!catalogueName) return;
+  function markDeletedTopics(state, packs, topics) {
+    if (!isRecord(state) || !Array.isArray(topics) || !topics.length) return 0;
     const marker = ensureState(state);
-    marker.deleted.add(deletedTopic(context.pack.id, context.definition.id, catalogueName));
-    marker.installed.delete(topicMarker(context.pack.id, context.definition.id, catalogueName));
-    state.settings.installedCurricula = Array.from(marker.installed).slice(-5000);
-    state.settings.curriculumTombstones = Array.from(marker.deleted).slice(-5000);
+    const subjectById = new Map(rows(state.subjects).map(subject => [String(subject.id), subject]));
+    const contextBySubjectId = new Map();
+    let marked = 0;
+    for (const topic of topics) {
+      if (!topic) continue;
+      const subjectId = String(topic.subjectId || '');
+      if (!contextBySubjectId.has(subjectId)) {
+        const subject = subjectById.get(subjectId);
+        contextBySubjectId.set(subjectId, subject ? packContext(state, packs, subject) : null);
+      }
+      const context = contextBySubjectId.get(subjectId);
+      if (!context) continue;
+      const names = rows(context.definition.topics);
+      let catalogueName = names.includes(String(topic.name)) ? String(topic.name) : '';
+      if (!catalogueName) catalogueName = names.find(name =>
+        String(topic.id) === topicIdFor(context.definition, name) ||
+        String(topic.id) === oldTopicIdFor(context.definition, name)) || '';
+      if (!catalogueName) continue;
+      const deletedMarker = deletedTopic(context.pack.id, context.definition.id, catalogueName);
+      if (!marker.deleted.has(deletedMarker)) {
+        marker.deleted.add(deletedMarker);
+        marked++;
+      }
+      marker.installed.delete(topicMarker(context.pack.id, context.definition.id, catalogueName));
+    }
+    state.settings.installedCurricula = Array.from(marker.installed).slice(-MAX_CURRICULUM_MARKERS);
+    state.settings.curriculumTombstones = Array.from(marker.deleted).slice(-MAX_CURRICULUM_MARKERS);
+    return marked;
+  }
+  function markDeletedTopic(state, packs, topic) {
+    return markDeletedTopics(state, packs, topic ? [topic] : []);
   }
   function markDeletedSubject(state, packs, subject) {
     const context = packContext(state, packs, subject);
@@ -331,9 +353,9 @@
     marker.installed.delete(subjectMarker(id, sid));
     for (const item of Array.from(marker.installed)) if (item.startsWith('installed:topic:' + id + ':' + sid + ':')) marker.installed.delete(item);
     marker.deleted.add(deletedSubject(id, sid));
-    for (const name of context.definition.topics) marker.deleted.add(deletedTopic(id, sid, name));
-    state.settings.installedCurricula = Array.from(marker.installed).slice(-5000);
-    state.settings.curriculumTombstones = Array.from(marker.deleted).slice(-5000);
+    // A subject-level tombstone already covers its topic set; avoid thousands of redundant markers.
+    state.settings.installedCurricula = Array.from(marker.installed).slice(-MAX_CURRICULUM_MARKERS);
+    state.settings.curriculumTombstones = Array.from(marker.deleted).slice(-MAX_CURRICULUM_MARKERS);
   }
   function markDeletedStream(state, packs, stream) {
     if (!isRecord(state) || !stream) return;
@@ -344,8 +366,8 @@
       for (const item of Array.from(marker.installed)) if (isInstalledMarkerForPack(item, id)) marker.installed.delete(item);
       marker.deleted.add(deletedPack(id));
     }
-    state.settings.installedCurricula = Array.from(marker.installed).slice(-5000);
-    state.settings.curriculumTombstones = Array.from(marker.deleted).slice(-5000);
+    state.settings.installedCurricula = Array.from(marker.installed).slice(-MAX_CURRICULUM_MARKERS);
+    state.settings.curriculumTombstones = Array.from(marker.deleted).slice(-MAX_CURRICULUM_MARKERS);
   }
   function diagnose(state, packs) {
     const results = [];
@@ -487,11 +509,11 @@
     mergedState.settings.installedCurricula = Array.from(merged.installed).filter(marker => {
       const parsed = intentMarkerDetails(marker);
       return !parsed || parsed.verb === 'installed';
-    }).slice(-5000);
+    }).slice(-MAX_CURRICULUM_MARKERS);
     mergedState.settings.curriculumTombstones = Array.from(merged.deleted).filter(marker => {
       const parsed = intentMarkerDetails(marker);
       return !parsed || parsed.verb === 'deleted';
-    }).slice(-5000);
+    }).slice(-MAX_CURRICULUM_MARKERS);
     return { changed, conflicts };
   }
   function restoreMissingInstalledRows(baseState, localState, remoteState, mergedState, packs) {
@@ -602,13 +624,13 @@
         }
       }
     }
-    mergedState.settings.installedCurricula = Array.from(intent.installed).slice(-5000);
-    mergedState.settings.curriculumTombstones = Array.from(intent.deleted).slice(-5000);
+    mergedState.settings.installedCurricula = Array.from(intent.installed).slice(-MAX_CURRICULUM_MARKERS);
+    mergedState.settings.curriculumTombstones = Array.from(intent.deleted).slice(-MAX_CURRICULUM_MARKERS);
     return { changed, restoredStreams, restoredSubjects, restoredTopics };
   }
   return {
     keys: { pack: packMarker, subject: subjectMarker, topic: topicMarker, deletedPack, deletedSubject, deletedTopic },
-    repair, markInstalled, markDeletedTopic, markDeletedSubject, markDeletedStream, diagnose, reconcileMergedIntents,
+    repair, markInstalled, markDeletedTopic, markDeletedTopics, markDeletedSubject, markDeletedStream, diagnose, reconcileMergedIntents,
     restoreMissingInstalledRows
   };
 });
