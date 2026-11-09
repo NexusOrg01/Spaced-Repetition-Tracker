@@ -133,6 +133,11 @@ assert.ok(studyHub.includes('for(const record of history){') && studyHub.include
 assert.ok(!appCore.slice(appCore.indexOf('  function save(){'),appCore.indexOf('  function save(){')+450).includes('repairCurriculumState(') &&
   appCore.includes('const result=repairCurriculumStateResult(state);') && appCore.includes('if(result.changed)save();'),
   'curriculum repair must run at data lifecycle boundaries rather than on every routine review save');
+assert.ok(appCore.includes('topicIdSet.has(h.topicId)') && appCore.includes('subjectIdSet.has(h.subjectId)'),
+  'subject and stream deletion must use constant-time Set membership when removing large topic and history groups');
+assert.ok(studyHub.includes('const visibleDates=new Set(dates.map') && studyHub.includes('selectedTopics.length<calendarTopicLimit') &&
+  !studyHub.includes('activeTopics().filter(t=>t.dueDate===iso'),
+  'the review calendar must index its 42-day window in one topic pass and bound selected-day DOM rows');
 assert.ok(studyHub.includes('function getTopicHistoryStats()') && studyHub.includes('const stats=getTopicHistoryStats().get(String(t.id))'),
   'Study Hub mastery and planning must reuse a per-topic history index instead of filtering all history for each topic');
 assert.ok(studyHub.includes('for(const record of state.history){const date=record&&record.reviewedAt;') && !studyHub.includes('state.history.filter(h=>h.reviewedAt===d)'),
