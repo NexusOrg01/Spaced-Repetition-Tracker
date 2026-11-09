@@ -331,7 +331,7 @@ async function reconcileConcurrentSnapshot(userId,initialRemote){
   }
   if(!remote||!remote.payload||!remote.payload.state)return {ok:false,conflicts:totalConflicts,reason:'The current cloud workspace could not be loaded.'};
   const savedBase=queue.getBase(localStorage,userId);
-  const normalizedBase=savedBase?normalizeWorkspacePayload(savedBase):null;
+  const normalizedBase=savedBase?normalizeWorkspacePayload({...savedBase,schema:4}):null;
   const normalizedLocal=normalizeWorkspacePayload(pending.payload);
   const normalizedRemote=normalizeWorkspacePayload(remote.payload,true);
   status('Reconciling cloud changes…');
