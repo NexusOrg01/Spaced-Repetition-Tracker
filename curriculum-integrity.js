@@ -124,7 +124,7 @@
     const id=String(pack.id),definitions=rows(pack.subjects),streamIds=new Set(rows(state.streams)
       .filter(item=>(pack.streamId&&String(item.id)===String(pack.streamId))||
         normalizeName(item.name)===normalizeName(pack.streamName)).map(item=>String(item.id)));
-    const subjectIds=new Set(),topicIds=new Set(),deletedTopicNames=[];
+    const subjectIds=new Set(),topicIds=new Set(),deletedTopicIds=new Set(),deletedTopicNames=new Set();
     const definitionById=new Map(definitions.map(definition=>[String(definition.id),definition]));
     const deletedPackScope=deleted.has(deletedPack(id));
     const prefixes=definitions.filter(definition=>deletedPackScope||deleted.has(deletedSubject(id,definition.id)))
@@ -146,22 +146,19 @@
       }
     }else{
       for(const definition of definitions){
+        const subject=rows(state.subjects).find(item=>
+          (definition.workspaceId&&String(item.id)===String(definition.workspaceId))||
+          (streamIds.has(String(item.streamId))&&normalizeName(item.name)===normalizeName(definition.name)));
         for(const name of rows(definition.topics)){
           if(!deleted.has(deletedTopic(id,definition.id,name)))continue;
-          const ids=new Set([topicIdFor(definition,name),oldTopicIdFor(definition,name)].filter(Boolean));
-          const subject=rows(state.subjects).find(item=>
-            (definition.workspaceId&&String(item.id)===String(definition.workspaceId))||
-            (streamIds.has(String(item.streamId))&&normalizeName(item.name)===normalizeName(definition.name)));
-          deletedTopicNames.push({subjectId:subject?String(subject.id):'',name:String(name)});
-          for(const topic of rows(state.topics)){
-            const currentId=String(topic.id||'');
-            if(ids.has(currentId)||(subject&&String(topic.subjectId)===String(subject.id)&&String(topic.name)===String(name)))topicIds.add(currentId);
-          }
+          for(const topicId of [topicIdFor(definition,name),oldTopicIdFor(definition,name)].filter(Boolean))deletedTopicIds.add(String(topicId));
+          if(subject)deletedTopicNames.add(String(subject.id)+'\u0000'+String(name));
         }
       }
       for(const topic of rows(state.topics)){
-        const currentId=String(topic.id||'');
-        if(subjectIds.has(String(topic.subjectId))||prefixes.some(prefix=>currentId.startsWith(prefix)))topicIds.add(currentId);
+        const currentId=String(topic.id||''),subjectNameKey=String(topic.subjectId)+'\u0000'+String(topic.name);
+        if(subjectIds.has(String(topic.subjectId))||prefixes.some(prefix=>currentId.startsWith(prefix))||
+          deletedTopicIds.has(currentId)||deletedTopicNames.has(subjectNameKey))topicIds.add(currentId);
       }
     }
     const oldTopicCount=rows(state.topics).length,oldSubjectCount=rows(state.subjects).length;
@@ -175,10 +172,9 @@
         normalizeName(item.name)!==normalizeName(pack.streamName));
     }else{
       if(subjectIds.size||topicIds.size||deletedTopicNames.length){
-        state.history=rows(state.history).filter(entry=>{
-          if(subjectIds.has(String(entry.subjectId))||topicIds.has(String(entry.topicId)))return false;
-          return !deletedTopicNames.some(item=>item.subjectId&&String(entry.subjectId||'')===item.subjectId&&String(entry.topicName||'')===item.name);
-        });
+        state.history=rows(state.history).filter(entry=>
+          !subjectIds.has(String(entry.subjectId))&&!topicIds.has(String(entry.topicId))&&
+          !deletedTopicNames.has(String(entry.subjectId||'')+'\u0000'+String(entry.topicName||'')));
       }
       if(subjectIds.size)state.subjects=rows(state.subjects).filter(subject=>!subjectIds.has(String(subject.id)));
     }
@@ -225,9 +221,13 @@
         const definition=entry.definition;
         if(marker.deleted.has(deletedSubject(id,definition.id)))continue;
         const oldSubjectLength=state.subjects.length;
+        const oldSubject=rows(state.subjects).find(item=>
+          (definition.workspaceId&&String(item.id)===String(definition.workspaceId))||
+          (String(item.streamId)===String(stream.id)&&normalizeName(item.name)===normalizeName(definition.name)));
+        const oldSubjectStream=oldSubject&&oldSubject.streamId,oldSubjectOrder=oldSubject&&oldSubject.order;
         const subject=ensureSubject(state,pack,definition,stream,opts.makeId);
         if(state.subjects.length>oldSubjectLength){restoredSubjects++;changed=true;}
-        else if(String(subject.streamId)!==String(stream.id)){changed=true;}
+        else if(String(subject.streamId)!==String(oldSubjectStream)||subject.order!==oldSubjectOrder){changed=true;}
         for(const name of entry.topics){
           if(marker.deleted.has(deletedTopic(id,definition.id,name)))continue;
           const existing=topicByCatalogIdentity(state,definition,name,subject);
