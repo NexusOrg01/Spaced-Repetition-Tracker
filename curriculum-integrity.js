@@ -165,10 +165,12 @@
           if(subject)deletedTopicNames.add(String(subject.id)+'\u0000'+String(name));
         }
       }
-      for(const topic of rows(state.topics)){
-        const currentId=String(topic.id||''),subjectNameKey=String(topic.subjectId)+'\u0000'+String(topic.name);
-        if(subjectIds.has(String(topic.subjectId))||prefixes.some(prefix=>currentId.startsWith(prefix))||
-          deletedTopicIds.has(currentId)||deletedTopicNames.has(subjectNameKey))topicIds.add(currentId);
+      if(subjectIds.size||prefixes.length||deletedTopicIds.size||deletedTopicNames.size){
+        for(const topic of rows(state.topics)){
+          const currentId=String(topic.id||''),subjectNameKey=String(topic.subjectId)+'\u0000'+String(topic.name);
+          if(subjectIds.has(String(topic.subjectId))||prefixes.some(prefix=>currentId.startsWith(prefix))||
+            deletedTopicIds.has(currentId)||deletedTopicNames.has(subjectNameKey))topicIds.add(currentId);
+        }
       }
     }
     const oldTopicCount=rows(state.topics).length,oldSubjectCount=rows(state.subjects).length;
