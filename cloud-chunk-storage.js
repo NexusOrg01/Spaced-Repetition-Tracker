@@ -31,8 +31,8 @@ function utf8ByteLength(value){
 }
 function splitUtf8Ranges(value){
  const ranges=[];
- let start=0,bytes=0;
- for(let offset=0;offset<value.length;){
+ let start=0,bytes=0,offset=0;
+ for(;offset<value.length;){
   const code=value.codePointAt(offset),length=code>0xffff?2:1;
   const size=code<=0x7f?1:code<=0x7ff?2:code<=0xffff?3:4;
   if(bytes&&bytes+size>CHUNK_BYTES){
@@ -56,8 +56,8 @@ function yieldToBrowser(){
 }
 async function splitUtf8RangesAsync(value){
  const ranges=[];
- let start=0,bytes=0,lastYield=0;
- for(let offset=0;offset<value.length;){
+ let start=0,bytes=0,lastYield=0,offset=0;
+ for(;offset<value.length;){
   const code=value.codePointAt(offset),length=code>0xffff?2:1;
   const size=code<=0x7f?1:code<=0x7ff?2:code<=0xffff?3:4;
   if(bytes&&bytes+size>CHUNK_BYTES){
