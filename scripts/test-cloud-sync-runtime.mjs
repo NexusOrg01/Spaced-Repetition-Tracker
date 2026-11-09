@@ -1298,4 +1298,112 @@ for (const scenario of [
   await window.NexusCloudSync.reconnect();
 }
 
-console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, and target-account pending-snapshot isolation.');
+
+// End-to-end second-device regression: Device 2 starts with the old verified
+// 77,144-topic snapshot. Device 1 has removed a 12,032-topic subject and its
+// review history from the cloud. Reconnect must apply that deletion, retain the
+// 65,112 unrelated topics, and clear the outbox only after the merged cloud
+// snapshot is verified.
+{
+  const totalTopics=77144,deletedCount=12032,retainedCount=totalTopics-deletedCount;
+  const baseStamp='2026-11-09T00:00:00.000Z';
+  const remoteStamp='2026-11-09T00:00:01.000Z';
+  const baseState={
+    schema:3,
+    streams:[
+      {id:'large-target-stream',name:'Large target stream'},
+      {id:'large-manual-stream',name:'Unrelated manual stream'}
+    ],
+    subjects:[
+      {id:'large-deleted-subject',name:'Subject deleted on Device 1',streamId:'large-target-stream',order:0},
+      {id:'large-retained-subject',name:'Unrelated retained subject',streamId:'large-manual-stream',order:0}
+    ],
+    topics:[],
+    exams:[],
+    history:[],
+    settings:{theme:'system',intervalCap:120,installedCurricula:[],curriculumTombstones:[]}
+  };
+  for(let index=0;index<deletedCount;index++){
+    const id='device-sync-deleted-'+index;
+    baseState.topics.push({
+      id,name:'Deleted topic '+index,subjectId:'large-deleted-subject',
+      notes:'',custom:true,createdAt:'2026-10-01',lastReviewed:'2026-11-01',
+      lastRating:4,dueDate:'2026-11-10',intervalDays:7,reviewCount:1,
+      streak:1,lapses:0,archived:false
+    });
+    baseState.history.push({
+      id:'device-sync-deleted-review-'+index,topicId:id,streamId:'large-target-stream',
+      subjectId:'large-deleted-subject',streamName:'Large target stream',
+      subjectName:'Subject deleted on Device 1',topicName:'Deleted topic '+index,
+      reviewedAt:'2026-11-01',rating:4,intervalDays:7,dueDate:'2026-11-10',note:''
+    });
+  }
+  for(let index=0;index<retainedCount;index++){
+    baseState.topics.push({
+      id:'device-sync-retained-'+index,name:'Retained topic '+index,
+      subjectId:'large-retained-subject',notes:'',custom:true,createdAt:'2026-10-01',
+      lastReviewed:'',lastRating:null,dueDate:'',intervalDays:0,reviewCount:0,
+      streak:0,lapses:0,archived:false
+    });
+  }
+  baseState.history.push({
+    id:'device-sync-retained-review',topicId:'device-sync-retained-0',
+    streamId:'large-manual-stream',subjectId:'large-retained-subject',
+    streamName:'Unrelated manual stream',subjectName:'Unrelated retained subject',
+    topicName:'Retained topic 0',reviewedAt:'2026-11-01',rating:3,
+    intervalDays:4,dueDate:'2026-11-05',note:'keep'
+  });
+  assert.equal(baseState.topics.length,totalTopics);
+  const remoteState={
+    ...JSON.parse(JSON.stringify(baseState)),
+    streams:baseState.streams.filter(item=>item.id!=='large-target-stream'),
+    subjects:baseState.subjects.filter(item=>item.id!=='large-deleted-subject'),
+    topics:baseState.topics.filter(topic=>topic.subjectId!=='large-deleted-subject'),
+    history:baseState.history.filter(entry=>entry.subjectId!=='large-deleted-subject')
+  };
+  assert.equal(remoteState.topics.length,retainedCount);
+  assert.equal(remoteState.history.length,1);
+  const basePayload={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:baseStamp,state:baseState,featureState:featuresFor(null)};
+  const remotePayload={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:remoteStamp,state:remoteState,featureState:featuresFor(null)};
+
+  queue.forgetAccount(storage,accountA.id);
+  storage.setItem(OWNER,accountA.id);
+  storage.setItem(STATE_KEY,JSON.stringify(baseState));
+  storage.setItem(FEATURE_KEY,JSON.stringify(basePayload.featureState));
+  context.state=JSON.parse(JSON.stringify(baseState));
+  queue.rememberBase(storage,accountA.id,basePayload,baseStamp);
+  queue.rememberStamp(storage,accountA.id,baseStamp);
+  rows.set(accountA.id,{user_id:accountA.id,payload:remotePayload,updated_at:remoteStamp});
+  window.NexusStorage=null;
+  activeSession={user:accountA};
+  networkAvailable=true;
+
+  await window.NexusCloudSync.reconnect();
+
+  const downloaded=JSON.parse(storage.getItem(STATE_KEY));
+  const verifiedCloud=rows.get(accountA.id)?.payload?.state;
+  assert.equal(downloaded.topics.length,retainedCount,
+    'Device 2 must apply the 12,032-topic deletion instead of retaining its stale 77,144-topic snapshot');
+  assert.equal(downloaded.subjects.length,1,'the deleted subject must be absent on Device 2');
+  assert.equal(downloaded.subjects[0].id,'large-retained-subject');
+  assert.equal(downloaded.topics.some(topic=>topic.subjectId==='large-deleted-subject'),false,
+    'no topic from the deleted subject may survive on Device 2');
+  assert.equal(downloaded.topics[0].id,'device-sync-retained-0',
+    'the unrelated manual topics must remain available after deletion sync');
+  assert.equal(downloaded.history.length,1,
+    'review history belonging to the deleted subject must be removed while unrelated history remains');
+  assert.equal(downloaded.history[0].id,'device-sync-retained-review');
+  assert.equal(verifiedCloud?.topics?.length,retainedCount,
+    'the verified cloud state must retain exactly the unrelated topic records');
+  assert.equal(verifiedCloud?.history?.length,1,
+    'the verified cloud state must not restore deleted review history');
+  assert.equal(queue.hasPending(storage,accountA.id),false,
+    'Device 2 may clear its pending queue only after the merged snapshot is verified');
+  assert.equal(getElement('cloudStatus').textContent,'Synced',
+    'Device 2 must report Synced only after its large deletion reconciliation completes');
+  const verifiedBase=queue.getBase(storage,accountA.id);
+  assert.equal(verifiedBase.state.topics.length,retainedCount,
+    'the next sync baseline must advance to the verified post-deletion snapshot');
+}
+ 
+console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, target-account pending-snapshot isolation, and 77,144-record second-device deletion reconciliation.');
