@@ -299,6 +299,21 @@
     undoState={kind:'array-item-reference',value:state,collection,index,previous:state[collection][index]};
     armUndo(text);
   }
+  function startUndoTopicBatch(text,topics,fields){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    const changes=[];
+    const uniqueTopics=new Set();
+    for(const topic of topics||[]){
+      if(!topic||uniqueTopics.has(topic))continue;
+      uniqueTopics.add(topic);
+      const before={};for(const field of fields||[])before[field]=topic[field];
+      changes.push({topic,before});
+    }
+    undoState={kind:'topic-batch-edit',value:state,changes};
+    armUndo(text);
+  }
+  window.NexusStartUndoBulkDelete=startUndoBulkDelete;
+  window.NexusStartUndoTopicBatch=startUndoTopicBatch;
   function startUndoReview(text,topic,reviewId){
     if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
     // A review mutates one topic and prepends one history row. Capture only the
@@ -331,6 +346,8 @@
       state=pending.value;state[pending.collection]=pending.previous;
     }else if(pending.kind==='array-item-reference'){
       state=pending.value;state[pending.collection][pending.index]=pending.previous;
+    }else if(pending.kind==='topic-batch-edit'){
+      state=pending.value;for(const change of pending.changes)Object.assign(change.topic,change.before);
     }else state=pending.value;
     if(window.NexusUndoCascadeDelete)window.NexusUndoCascadeDelete();
     save();renderAll();$('toast').classList.remove('show');
@@ -880,18 +897,6 @@
       undoBtnEl.style.display = 'none';
       toastEl.classList.remove('undoable');
     }
-
-    window.startUndo = function(msg){
-      if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
-      clearToastTimers();
-      clearTimeout(undoTimer);
-      undoTimer = null;
-      clearTimeout(clearUndoAfterCloseTimer);
-      clearUndoAfterCloseTimer = null;
-      undoState = clone(state);
-      toastTextEl.textContent = msg;
-      showUndoAction();
-    };
 
     window.notify = function(msg, isPersistent){
       clearToastTimers();
