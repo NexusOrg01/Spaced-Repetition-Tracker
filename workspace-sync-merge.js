@@ -176,7 +176,47 @@
     return out;
   }
   const MERGE_YIELD_BATCH=400;
+  const SAME_YIELD_BATCH=2048;
   function yieldToBrowser(){return new Promise(resolve=>setTimeout(resolve,0));}
+  async function sameAsync(a,b){
+    // Iterative structural comparison avoids giant stable-JSON strings and recursive
+    // call-stack growth. A frame is retained per nesting level, not per record.
+    const stack=[{a,b,entered:false}],hasOwn=Object.prototype.hasOwnProperty;
+    let inspected=0;
+    while(stack.length){
+      const frame=stack[stack.length-1];
+      if(!frame.entered){
+        frame.entered=true;
+        if(frame.a===frame.b){stack.pop();continue;}
+        if(frame.a===null||frame.b===null){return false;}
+        const typeA=typeof frame.a,typeB=typeof frame.b;
+        if(typeA!=='object'||typeB!=='object'){
+          if(!Object.is(frame.a,frame.b))return false;
+          stack.pop();continue;
+        }
+        const arrayA=Array.isArray(frame.a),arrayB=Array.isArray(frame.b);
+        if(arrayA!==arrayB)return false;
+        frame.isArray=arrayA;
+        if(arrayA){
+          if(frame.a.length!==frame.b.length)return false;
+          frame.length=frame.a.length;
+        }else{
+          if(!isObject(frame.a)||!isObject(frame.b))return false;
+          frame.keys=Object.keys(frame.a);
+          if(frame.keys.length!==Object.keys(frame.b).length)return false;
+          for(const key of frame.keys)if(!hasOwn.call(frame.b,key))return false;
+        }
+        frame.index=0;
+      }
+      const length=frame.isArray?frame.length:frame.keys.length;
+      if(frame.index>=length){stack.pop();continue;}
+      const key=frame.isArray?frame.index++:frame.keys[frame.index++];
+      stack.push({a:frame.a[key],b:frame.b[key],entered:false});
+      inspected++;
+      if(inspected%SAME_YIELD_BATCH===0)await yieldToBrowser();
+    }
+    return true;
+  }
   async function indexRowsAsync(index,value,side){
     const source=rows(value);
     for(let i=0;i<source.length;i++){
@@ -290,5 +330,5 @@
     const featureState=await mergeSectionAsync(base.featureState,localPayload.featureState||{},remotePayload.featureState||{},'featureState',['journal','papers','goals','studyLogs'],conflicts);
     return finishMerge(base,localPayload,remotePayload,state,featureState,conflicts);
   }
-  return {merge,mergeAsync,stable};
+  return {merge,mergeAsync,stable,sameAsync};
 });
