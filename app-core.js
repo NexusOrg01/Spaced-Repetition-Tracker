@@ -898,79 +898,45 @@
       return origConfirm(title + "\n\n" + desc);
     };
     
-    // Patch delete functions with extra protection
-    const origDeleteTopic = window.deleteTopic;
-    window.deleteTopic = function(id){
-      const t = state.topics.find(x=>x.id===id);
-      if(!t) return;
-      if(!confirm(`Delete topic?\n\nTopic: "${t.name}"\nReviews: ${t.reviewCount||0}\nDue: ${t.dueDate||'—'}\n\nThis will also remove its history.\n\nYou can UNDO with the persistent bar that will appear at bottom.`)) return;
-      startUndo('Topic deleted');
-      state.topics = state.topics.filter(x=>x.id!==id);
-      state.history = state.history.filter(h=>h.topicId!==id);
-      save(); renderAll();
-    };
-    
-    const origDeleteSubject = window.deleteSubject;
-    window.deleteSubject = function(id){
-      // Use the core cascade-aware handler so topics, review history, and linked records are cleaned up together.
-      if(typeof origDeleteSubject === 'function') return origDeleteSubject(id);
-      console.error('Subject deletion handler is unavailable; no data was changed.');
-    };
-    
-    const origDeleteStream = window.deleteStream;
-    window.deleteStream = function(id){
-      // Use the core cascade-aware handler so nested subjects, topics, and linked records are cleaned up together.
-      if(typeof origDeleteStream === 'function') return origDeleteStream(id);
-      console.error('Stream deletion handler is unavailable; no data was changed.');
-    };
-    
-    const origDeleteExam = window.deleteExam;
-    window.deleteExam = function(id){
-      const ex = state.exams.find(x=>x.id===id);
-      if(!confirm(`Delete exam "${ex?.name}" on ${ex?.date}?`)) return;
-      startUndo('Exam deleted');
-      state.exams = state.exams.filter(x=>x.id!==id);
-      save(); renderAll();
-    };
-    
-    // Patch history delete - extra protection
+    // Route legacy/global entry points through the primary handlers. Older wrappers
+    // deep-cloned the entire workspace and removed review history when a topic was
+    // deleted, bypassing the bounded Undo and history-retention behavior above.
+    window.deleteTopic = id => deleteTopic(id);
+    window.deleteSubject = id => deleteSubject(id);
+    window.deleteStream = id => deleteStream(id);
+    window.deleteExam = id => deleteExam(id);
+
     const historyList = document.getElementById('historyList');
     if(historyList){
-      historyList.addEventListener('click', function(e){
-        const b = e.target.closest('button[data-action="delete-history"]');
-        if(!b) return;
-        e.stopImmediatePropagation();
-        e.preventDefault();
-        const id = b.dataset.id;
-        const h = state.history.find(x=>x.id===id);
-        if(!h) return;
-        if(!confirm(`DANGER ZONE — Delete this review record?\n\nTopic: "${h.topicName}"\nDate: ${h.reviewedAt}\nRating: ${h.rating}/5\n\nThis review will be removed from rating analytics and future history exports. The topic schedule will not change. Use Undo immediately or restore a backup if needed.`)) return;
-        startUndo('History entry deleted');
-        state.history = state.history.filter(x=>x.id!==id);
-        historyInsightsDirty=true;
-        save(); renderHistory();
-      }, true);
+      historyList.addEventListener('click',function(e){
+        const button=e.target.closest('button[data-action="delete-history"]');
+        if(!button)return;
+        e.stopImmediatePropagation();e.preventDefault();
+        const id=button.dataset.id,entry=state.history.find(item=>item.id===id);
+        if(!entry)return;
+        if(!confirm('DANGER ZONE — Delete this review record?\\n\\nThis review will disappear from rating analytics and future history exports. The topic schedule will not change. Use Undo immediately or restore a backup if needed. Continue?'))return;
+        startUndoHistoryChange('History entry deleted.');
+        state.history=state.history.filter(item=>item.id!==id);
+        historyInsightsDirty=true;save();renderHistory();
+      },true);
     }
-    
+
     window.clearHistory = function(){
-      if(!confirm(`Clear ALL history?\n\nThis will delete ${state.history.length} records. Schedules stay but past reviews lost.\n\nExport backup first!`)) return;
-      if(!confirm('Are you absolutely sure? This is permanent without backup.')) return;
-      startUndo('All history cleared');
-      state.history = [];
-      save(); renderAll();
+      if(!confirm('Clear ALL history?\\n\\nThis will delete '+state.history.length+' records. Schedules stay but past reviews are retained.\\n\\nExport a backup first!'))return;
+      if(!confirm('Are you absolutely sure?'))return;
+      startUndoHistoryChange('All history cleared.');
+      state.history=[];save();renderAll();
     };
-    
+
     window.resetAll = function(){
-      if(!confirm('Reset ALL data?\n\nDeletes ALL topics, subjects, streams, exams, history, settings.\nDefault Sinhala syllabus (Accounting, BS, Econ) will be restored on next load.\n\nExport backup first!')) return;
-      const typed = prompt('To confirm, type RESET in capital letters:');
-      if(typed!=='RESET'){ alert('Cancelled'); return; }
-      startUndo('All data reset.');
-      localStorage.removeItem(STORAGE_KEY);
-      OLD_KEYS.forEach(k=>localStorage.removeItem(k));
-      state = baseState();
-      save(); renderAll();
+      if(!confirm('Reset ALL data?\\n\\nThis deletes topics, subjects, streams, exams, history and settings. Export a backup first.'))return;
+      const typed=prompt('To confirm, type RESET in capital letters:');
+      if(typed!=='RESET'){alert('Cancelled');return;}
+      startUndoWorkspaceReplace('All data reset.');
+      localStorage.removeItem(STORAGE_KEY);OLD_KEYS.forEach(key=>localStorage.removeItem(key));
+      state=baseState();save();renderAll();
     };
-    
+
     // Dropdown filters toggle
     document.getElementById('toggleTopicFilters')?.addEventListener('click', ()=>{
       const bar = document.getElementById('topicFiltersBar');
