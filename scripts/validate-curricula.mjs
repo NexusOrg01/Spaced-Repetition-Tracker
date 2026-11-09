@@ -313,10 +313,9 @@ assert(runtimeStart >= 0 && runtimeEnd > runtimeStart, 'bootstrap must define an
 const runtimeBody = runtimeStart >= 0 && runtimeEnd > runtimeStart ? bootstrapSource.slice(runtimeStart, runtimeEnd) : '';
 const runtimeAssets = [...runtimeBody.matchAll(/'([^']+)'/g)].map(match => match[1]);
 const expectedRuntimeAssets = [
-  'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
+  'workspace-isolation-guard.js', 'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
   'explore-curriculum.js', 'app-core.js', 'fsrs-bundle.js', 'study-hub.js', 'nexus-build-config.js',
-  'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-sync.js',
-  'nexus-app-inline.js', 'workspace-isolation-guard.js'
+  'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-sync.js', 'nexus-app-inline.js'
 ];
 assert(JSON.stringify(runtimeAssets) === JSON.stringify(expectedRuntimeAssets),
   'bootstrap must initialize storage before loading the runtime in dependency-safe order.');
