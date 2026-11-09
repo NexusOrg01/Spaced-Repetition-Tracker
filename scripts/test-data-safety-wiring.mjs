@@ -118,6 +118,32 @@ assert.ok(cloudSync.includes("syncDiag('upload-start',diagnosticWorkspace()") &&
   !cloudSync.includes("syncDiag('upload-start',snapshot()"),
   'diagnostic-only upload events must not deep-clone the entire workspace when diagnostics are disabled');
 
+const overviewLargeWorkspace=section(appCore,'function insertSortedLimit(items,item,limit,compare){','function addHistoryMetricRecord(metrics,record)','bounded Overview rendering');
+assert.ok(overviewLargeWorkspace.includes('for(const topic of topics)') &&
+  overviewLargeWorkspace.includes('insertSortedLimit(queue,{topic,status:topicStatus},7,queueCompare)') &&
+  !overviewLargeWorkspace.includes('topics.slice().sort('),
+  'Overview summary queues must retain/sort only the visible seven topics, not sort the full workspace');
+const upcomingLargeWorkspace=section(appCore,'function renderUpcomingQueue(){','function renderHistoryInsights()','bounded upcoming queue');
+assert.ok(upcomingLargeWorkspace.includes('insertSortedLimit(items,topic,7,compare)') &&
+  !upcomingLargeWorkspace.includes('.sort('),
+  'the seven-row upcoming list must use bounded selection rather than sorting the full catalogue');
+const plannerSource=section(studyHub,'function buildPlan(limitBudget=true){','function hubCard(','Study Hub large planner');
+assert.ok(plannerSource.includes('const buckets=new Map()') &&
+  plannerSource.includes('priorityKeys=Array.from(buckets.keys()).sort') &&
+  !plannerSource.includes('.slice().sort((a,b)=>topicPriority'),
+  'planner ordering must use stable priority buckets rather than a full topic sort');
+const plannerRender=section(studyHub,'function renderPlanner(){','function renderMastery()','Study Hub planner rendering');
+assert.ok(plannerRender.includes('scheduledByDate=new Map()') &&
+  !plannerRender.includes('activeTopics().filter(t=>t.dueDate===d'),
+  'planner calendar counts must be aggregated once rather than rescanning all topics for every day');
+const topicHistoryCache=section(studyHub,'function getTopicHistoryStats(){','function featureMeta(t){','bounded topic history cache');
+assert.ok(topicHistoryCache.includes('item.recent') && topicHistoryCache.includes('recent.length>5') &&
+  !topicHistoryCache.includes('item.hs.push'),
+  'mastery metadata must retain only the latest five history records per topic plus aggregates');
+assert.ok(cloudSync.includes("activeView.id==='view-studyhub'") &&
+  !cloudSync.includes('if(window.NexusRenderHub)window.NexusRenderHub();'),
+  'sync application must not render the hidden Study Hub and force expensive planner work during initial cloud restoration');
+
 assert.ok(cloudChunkStorage.includes('async function writeSnapshot(') && cloudChunkStorage.includes('await verifySnapshotChunks(client,userId,manifest,serialized,ranges)') && cloudChunkStorage.includes('sha256'), 'large cloud snapshots must be chunked, read back against the source string, and SHA-256 verified before publication');
 assert.ok(cloudChunkStorage.includes('const READ_BATCH_SIZE=16') && cloudChunkStorage.includes('offset+=READ_BATCH_SIZE'), 'large chunked snapshots must be read back in bounded pages rather than one oversized API response');
 assert.ok(chunkMigration.includes('chunk_count <= 900') && chunkLimitMigration.includes('chunk_count <= 900'), 'the database and client must enforce the same bounded chunk-count limit');
