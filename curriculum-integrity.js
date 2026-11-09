@@ -149,9 +149,20 @@
         const subject=rows(state.subjects).find(item=>
           (definition.workspaceId&&String(item.id)===String(definition.workspaceId))||
           (streamIds.has(String(item.streamId))&&normalizeName(item.name)===normalizeName(definition.name)));
-        for(const name of rows(definition.topics)){
+        const names=rows(definition.topics),topicIndexes=new Map();
+        for(let index=0;index<names.length;index++){
+          const name=String(names[index]);
+          if(!topicIndexes.has(name))topicIndexes.set(name,index+1);
+        }
+        const canonical=canonicalPrefix(definition),legacy=legacyPrefix(definition);
+        for(const name of names){
           if(!deleted.has(deletedTopic(id,definition.id,name)))continue;
-          for(const topicId of [topicIdFor(definition,name),oldTopicIdFor(definition,name)].filter(Boolean))deletedTopicIds.add(String(topicId));
+          const index=topicIndexes.get(String(name));
+          if(index){
+            const suffix=String(index).padStart(2,'0');
+            if(canonical)deletedTopicIds.add(canonical+'-'+suffix);
+            if(legacy)deletedTopicIds.add(legacy+'-'+suffix);
+          }
           if(subject)deletedTopicNames.add(String(subject.id)+'\u0000'+String(name));
         }
       }
