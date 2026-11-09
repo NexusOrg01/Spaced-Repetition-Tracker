@@ -318,15 +318,25 @@
       const subjectId = String(topic.subjectId || '');
       if (!contextBySubjectId.has(subjectId)) {
         const subject = subjectById.get(subjectId);
-        contextBySubjectId.set(subjectId, subject ? packContext(state, packs, subject) : null);
+        const context = subject ? packContext(state, packs, subject) : null;
+        if (!context) contextBySubjectId.set(subjectId, null);
+        else {
+          const names = rows(context.definition.topics);
+          const namesSet = new Set(names.map(String));
+          const nameById = new Map();
+          const canonical = canonicalPrefix(context.definition), legacy = legacyPrefix(context.definition);
+          for (let index=0;index<names.length;index++) {
+            const name=String(names[index]),suffix=String(index+1).padStart(2,'0');
+            if(canonical)nameById.set(canonical+'-'+suffix,name);
+            if(legacy)nameById.set(legacy+'-'+suffix,name);
+          }
+          contextBySubjectId.set(subjectId,{context,namesSet,nameById});
+        }
       }
-      const context = contextBySubjectId.get(subjectId);
-      if (!context) continue;
-      const names = rows(context.definition.topics);
-      let catalogueName = names.includes(String(topic.name)) ? String(topic.name) : '';
-      if (!catalogueName) catalogueName = names.find(name =>
-        String(topic.id) === topicIdFor(context.definition, name) ||
-        String(topic.id) === oldTopicIdFor(context.definition, name)) || '';
+      const cached = contextBySubjectId.get(subjectId);
+      if (!cached) continue;
+      const {context,namesSet,nameById}=cached;
+      const catalogueName = namesSet.has(String(topic.name)) ? String(topic.name) : nameById.get(String(topic.id)) || '';
       if (!catalogueName) continue;
       const deletedMarker = deletedTopic(context.pack.id, context.definition.id, catalogueName);
       if (!marker.deleted.has(deletedMarker)) {
