@@ -1366,6 +1366,11 @@ for (const scenario of [
   assert.equal(remoteState.history.length,1);
   const basePayload={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:baseStamp,state:baseState,featureState:featuresFor(null)};
   const remotePayload={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:remoteStamp,state:remoteState,featureState:featuresFor(null)};
+  const directMerge=await window.NexusWorkspaceSyncMerge.mergeAsync(
+    {state:baseState,featureState:basePayload.featureState},basePayload,remotePayload
+  );
+  assert.equal(directMerge.payload.state.topics.length,retainedCount,
+    'the direct three-way merge must preserve a one-sided remote subject deletion before cloud initialization is involved');
 
   if(queue.hasPending(storage,accountA.id))queue.archive(storage,accountA.id,'large-second-device-sync-test-reset');
   storage.setItem(OWNER,accountA.id);
@@ -1393,7 +1398,7 @@ for (const scenario of [
     pendingTopics:queue.getPending(storage,accountA.id)?.payload?.state?.topics?.length||0,
     baseTopics:debugBase?.state?.topics?.length||0,
     message:getElement('cloudHelpText').textContent,
-    stages:syncDiagnostics.map(event=>({stage:event.stage,workspace:event.workspace,extra:event.errorCode||event.reason||event.durationMs||null}))};
+    stages:syncDiagnostics.map(event=>({stage:event.stage,workspace:event.workspace,extra:Object.fromEntries(Object.entries(event).filter(([key])=>['durationMs','cooperative','baseTopicCount','localTopicCount','remoteTopicCount','conflictCount','topicCount','storageEnabled','reason','errorCode'].includes(key)))}))};
   assert.equal(downloaded.topics.length,retainedCount,
     'Device 2 must apply the 12,032-topic deletion instead of retaining its stale 77,144-topic snapshot: '+JSON.stringify(syncDebug));
   assert.equal(downloaded.subjects.length,1,'the deleted subject must be absent on Device 2');
