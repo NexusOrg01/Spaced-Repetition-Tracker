@@ -121,11 +121,10 @@
     return marker === packMarker(id) || marker.startsWith('installed:subject:' + id + ':') || marker.startsWith('installed:topic:' + id + ':');
   }
   function purgeDeletedScope(state, pack, deleted) {
-    const id=String(pack.id),definitions=rows(pack.subjects),streamIds=new Set(rows(state.streams)
+    const id=String(pack.id),definitions=rows(pack.subjects),stream=findStream(state,pack),streamIds=new Set(rows(state.streams)
       .filter(item=>(pack.streamId&&String(item.id)===String(pack.streamId))||
         normalizeName(item.name)===normalizeName(pack.streamName)).map(item=>String(item.id)));
     const subjectIds=new Set(),topicIds=new Set(),deletedTopicIds=new Set(),deletedTopicNames=new Set();
-    const definitionById=new Map(definitions.map(definition=>[String(definition.id),definition]));
     const deletedPackScope=deleted.has(deletedPack(id));
     const prefixes=definitions.filter(definition=>deletedPackScope||deleted.has(deletedSubject(id,definition.id)))
       .flatMap(definition=>[canonicalPrefix(definition)+'-',legacyPrefix(definition)+'-']);
@@ -148,7 +147,7 @@
       for(const definition of definitions){
         const subject=rows(state.subjects).find(item=>
           (definition.workspaceId&&String(item.id)===String(definition.workspaceId))||
-          (streamIds.has(String(item.streamId))&&normalizeName(item.name)===normalizeName(definition.name)));
+          (stream&&String(item.streamId)===String(stream.id)&&normalizeName(item.name)===normalizeName(definition.name)));
         const names=rows(definition.topics),topicIndexes=new Map();
         for(let index=0;index<names.length;index++){
           const name=String(names[index]);
@@ -182,7 +181,7 @@
       state.streams=rows(state.streams).filter(item=>!(pack.streamId&&String(item.id)===String(pack.streamId))&&
         normalizeName(item.name)!==normalizeName(pack.streamName));
     }else{
-      if(subjectIds.size||topicIds.size||deletedTopicNames.length){
+      if(subjectIds.size||topicIds.size||deletedTopicNames.size){
         state.history=rows(state.history).filter(entry=>
           !subjectIds.has(String(entry.subjectId))&&!topicIds.has(String(entry.topicId))&&
           !deletedTopicNames.has(String(entry.subjectId||'')+'\u0000'+String(entry.topicName||'')));
