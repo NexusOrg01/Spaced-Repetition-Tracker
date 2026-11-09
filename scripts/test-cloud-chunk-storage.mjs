@@ -9,6 +9,16 @@ const chunks=require('../cloud-chunk-storage.js');
 const OWNER_A='10000000-0000-4000-8000-000000000001';
 const OWNER_B='20000000-0000-4000-8000-000000000002';
 
+const unicodeBoundary='a'.repeat(chunks.CHUNK_BYTES-1)+'😀'+'b'.repeat(12);
+for(const source of ['', 'plain ASCII', 'සිංහල தமிழ் 😀', unicodeBoundary]){
+ const pieces=chunks.splitUtf8(source);
+ assert.equal(pieces.join(''),source,'UTF-8 splitting must reconstruct the original text exactly');
+ assert.ok(pieces.every(piece=>chunks.utf8ByteLength(piece)<=chunks.CHUNK_BYTES),
+  'every UTF-8 range must stay within the configured byte limit');
+}
+assert.ok(chunks.splitUtf8(unicodeBoundary).length>1,
+ 'a four-byte code point crossing a chunk boundary must start intact in the next chunk');
+
 class MemoryCloud {
  constructor(){this.rows=new Map();this.chunks=[];this.activeUser=OWNER_A;this.failChunkBatch=null;this.chunkBatchCount=0;}
  from(table){return new Query(this,table);}
