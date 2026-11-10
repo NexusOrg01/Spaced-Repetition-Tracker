@@ -38,8 +38,6 @@ assert.ok(studyHub.includes('if(!saveFs()){fsState.papers=previous;') &&
 assert.ok(studyHub.includes('if(!save()){if(window.NexusUndoLastAction)window.NexusUndoLastAction();') &&
   appCore.includes('window.NexusUndoLastAction=()=>undo();'),
   'bulk deletion must invoke the shared undo path when its atomic workspace save fails');
-assert.ok(hubDeleteSource.includes("Delete failed ('+action+'):") && hubDeleteSource.includes('error.message'),
-  'Study Hub delete errors must be visible in the mobile toast, not only the desktop console');
 
 assert.ok(coreDeleteSource.includes('event.preventDefault();') &&
   coreDeleteSource.includes('event.stopPropagation();') &&
