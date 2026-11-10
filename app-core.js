@@ -177,8 +177,26 @@
     for(const source of items)collector.add(project(source));
     return collector.finish();
   }
+  // Large list filtering remains O(n), but it must not monopolise the UI thread.
+  // Yield between bounded batches and abandon obsolete searches/renders immediately.
+  const LARGE_LIST_SCAN_BATCH=400;
+  let topicRenderSequence=0,historyRenderSequence=0;
+  async function selectTopKCooperative(items,limit,compare,project=value=>value,isCurrent=()=>true){
+    const collector=createTopKCollector(limit,compare),length=items.length;
+    for(let start=0;start<length;start+=LARGE_LIST_SCAN_BATCH){
+      const end=Math.min(length,start+LARGE_LIST_SCAN_BATCH);
+      for(let index=start;index<end;index++)collector.add(project(items[index]));
+      if(end<length){
+        if(!isCurrent())return null;
+        await new Promise(resolve=>setTimeout(resolve,0));
+        if(!isCurrent())return null;
+      }
+    }
+    return isCurrent()?collector.finish():null;
+  }
   window.NexusCreateTopKCollector=createTopKCollector;
   window.NexusSelectTopK=selectTopK;
+  window.NexusSelectTopKCooperative=selectTopKCooperative;
   function today(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
   function validDate(s){if(!/^\d{4}-\d{2}-\d{2}$/.test(String(s||'')))return false;const [y,m,d]=s.split('-').map(Number);const x=new Date(y,m-1,d);return x.getFullYear()===y&&x.getMonth()===m-1&&x.getDate()===d;}
   function plusDays(date,days){if(!validDate(date))return '';const d=new Date(date+'T12:00:00');d.setDate(d.getDate()+Number(days));return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
@@ -725,9 +743,12 @@
     if(controller)return controller.install(packId,subjectId,topicName);
     return false;
   }
-  function renderTopics(){
-    // Keep both intermediate memory and the DOM bounded. The tracker can contain
-    // tens of thousands of topics; retain only the current page while scanning it.
+  async function renderTopics(){
+    const renderId=++topicRenderSequence,source=state.topics;
+    const isCurrent=()=>renderId===topicRenderSequence&&source===state.topics&&
+      document.querySelector('.view.active')?.id==='view-topics';
+    // Stream/subject counts come from the shared workspace aggregate. Only older
+    // runtimes without that provider need the compatibility full scan.
     renderStructureList();
     const q=$('topicSearch').value.trim().toLocaleLowerCase(),streamId=$('topicStreamFilter').value,subjectId=$('topicSubjectFilter').value,stat=$('topicStatusFilter').value,sort=$('topicSort').value;
     const subjectById=new Map(state.subjects.map(subject=>[String(subject.id),subject]));
@@ -739,7 +760,8 @@
       return dueRank(a.status)-dueRank(b.status)||(a.topic.dueDate||'9999').localeCompare(b.topic.dueDate||'9999')||naturalCompare(a.topic.name,b.topic.name)||a.order-b.order;
     };
     let activeCount=0,topicOrder=0;
-    const selection=selectTopK(state.topics,topicVisibleLimit,compare,topic=>{
+    if(!$('topicGrid').children.length)$('topicGrid').innerHTML='<div class="empty">Loading topics…</div>';
+    const selection=await selectTopKCooperative(source,topicVisibleLimit,compare,topic=>{
       const order=topicOrder++;
       if(topic.archived)return null;
       activeCount++;
@@ -750,7 +772,8 @@
       if(subjectId!=='ALL'&&topic.subjectId!==subjectId)return null;
       if(stat!=='ALL'&&(stat==='due-now'?!['overdue','due'].includes(topicStatus):topicStatus!==stat))return null;
       return {topic,status:topicStatus,subject:subject?.name||'Unknown subject',stream:stream?.name||'Unknown stream',order};
-    });
+    },isCurrent);
+    if(!selection||!isCurrent())return;
     const visible=selection.items,remaining=selection.count-visible.length;
     $('topicCountLabel').textContent=`Showing ${visible.length} of ${selection.count} matching topics (${activeCount} active)`;
     const cards=visible.map(({topic:t,status:s,subject,stream})=>`<article class="topic-card"><div class="topic-card-top"><div style="min-width:0"><div class="topic-name">${esc(t.name)}</div><div class="topic-sub">${esc(stream)} · ${esc(subject)}</div></div><span class="pill ${s}">${statusText(s)}</span></div>${t.notes?`<div class="topic-note">${esc(t.notes)}</div>`:''}<div class="topic-details"><span>Last: ${fmtDate(t.lastReviewed)}</span><span>Next: ${fmtDate(t.dueDate)}</span><span>Interval: ${t.intervalDays||'—'}d</span><span>Reviews: ${t.reviewCount}</span></div><div class="topic-actions"><button class="btn btn-sm btn-primary" data-action="review" data-id="${esc(t.id)}">Review</button><button class="btn btn-sm" data-action="edit-topic" data-id="${esc(t.id)}">Edit</button><span class="spacer"></span><button type="button" class="btn btn-sm btn-danger" data-action="delete-topic" data-id="${esc(t.id)}">Delete</button></div></article>`).join('');
@@ -758,37 +781,46 @@
     $('topicGrid').innerHTML=cards||`<div class="panel" style="grid-column:1/-1"><div class="empty"><strong>No matching topics</strong>Change the filters or add a topic.</div></div>`;
     if(more)$('topicGrid').insertAdjacentHTML('beforeend',more);
   }
-  function compareHistoryRows(a,b){return b.reviewedAt.localeCompare(a.reviewedAt)||String(b.id).localeCompare(String(a.id));}
-  function renderHistory(){
+    function compareHistoryRows(a,b){return b.reviewedAt.localeCompare(a.reviewedAt)||String(b.id).localeCompare(String(a.id));}
+  async function renderHistory(){
+    const renderId=++historyRenderSequence,source=state.history;
+    const isCurrent=()=>renderId===historyRenderSequence&&source===state.history&&
+      document.querySelector('.view.active')?.id==='view-history';
     const q=$('historySearch').value.trim().toLocaleLowerCase(),streamId=$('historyStreamFilter').value,subjectId=$('historySubjectFilter').value;
     const subjectById=new Map(state.subjects.map(x=>[String(x.id),x])),subjectByName=new Map(state.subjects.map(x=>[String(x.name),x]));
     const streamById=new Map(state.streams.map(x=>[String(x.id),x])),streamByName=new Map(state.streams.map(x=>[String(x.name),x]));
     const compare=(a,b)=>compareHistoryRows(a.record,b.record)||a.order-b.order;
     let historyOrder=0;
-    const selection=selectTopK(state.history,historyVisibleLimit,compare,h=>{
+    if(!$('historyList').children.length)$('historyList').innerHTML='<div class="empty">Loading review history…</div>';
+    const selection=await selectTopKCooperative(source,historyVisibleLimit,compare,h=>{
       const order=historyOrder++;
       const subject=subjectById.get(String(h.subjectId||''))||subjectByName.get(String(h.subjectName||''));
       const stream=streamById.get(String(h.streamId||''))||streamByName.get(String(h.streamName||''))||streamById.get(String(subject?.streamId||''));
       const matches=(!q||[h.topicName,h.subjectName,h.streamName,h.note].some(x=>String(x||'').toLocaleLowerCase().includes(q)))&&
         (streamId==='ALL'||stream?.id===streamId)&&(subjectId==='ALL'||subject?.id===subjectId);
       return matches?{record:h,order}:null;
-    });
+    },isCurrent);
+    if(!selection||!isCurrent())return;
     const visible=selection.items.map(item=>item.record);
     $('historyList').innerHTML=visible.length?visible.map(h=>`<article class="history-entry"><div><h3>${esc(h.topicName)}</h3><p>${esc(h.streamName)} · ${esc(h.subjectName)} · ${fmtDate(h.reviewedAt)}</p><p>Next: ${fmtDate(h.dueDate)} · ${h.intervalDays} day interval</p>${h.note?`<div class="history-note">${esc(h.note)}</div>`:''}<div class="history-actions"><button type="button" class="btn btn-sm btn-danger" data-action="delete-history" data-id="${esc(h.id)}">Delete entry</button></div></div><div class="history-score">${h.rating}/5<br><span class="muted small">${esc(RATING_LABELS[h.rating])}</span></div></article>`).join(''):`<div class="panel"><div class="empty"><strong>No review records found</strong>Completed reviews will appear here.</div></div>`;
-    $('historyCountLabel').textContent=`Showing ${visible.length} of ${selection.count} matching records (${state.history.length} total). Deleting an entry also removes that review from Analytics and future exports; topic schedules remain unchanged.`;
+    $('historyCountLabel').textContent=`Showing ${visible.length} of ${selection.count} matching records (${source.length} total). Deleting an entry also removes that review from Analytics and future exports; topic schedules remain unchanged.`;
     $('historyPagination').hidden=visible.length>=selection.count;
     if(historyInsightsDirty){renderHistoryInsights();historyInsightsDirty=false;}
   }
-  function renderStructureList(){
+    function renderStructureList(){
+    const shared=window.NexusGetOverviewTopicMetrics?.();
+    const sharedCounts=shared?.progressBySubject||null;
     const topicCounts=new Map(),subjectsByStream=new Map();
-    for(const topic of state.topics)if(!topic.archived)topicCounts.set(topic.subjectId,(topicCounts.get(topic.subjectId)||0)+1);
+    // The normal path reads already-computed subject totals. Keep a compatibility
+    // fallback for isolated tests and older runtime embeddings.
+    if(!sharedCounts)for(const topic of state.topics)if(!topic.archived)topicCounts.set(topic.subjectId,(topicCounts.get(topic.subjectId)||0)+1);
     for(const subject of state.subjects){
       if(!subjectsByStream.has(subject.streamId))subjectsByStream.set(subject.streamId,[]);
       subjectsByStream.get(subject.streamId).push(subject);
     }
     const streamsMarkup=state.streams.map(st=>{
       const subjects=subjectsByStream.get(st.id)||[];
-      return `<div class="entity"><div><strong>${esc(st.name)}</strong><small>${subjects.length} subject${subjects.length===1?'':'s'}</small>${subjects.map(s=>`<div class="entity" style="padding:8px 0 0 10px"><div><strong style="font-size:12px">${esc(s.name)}</strong><small>${topicCounts.get(s.id)||0} active topics</small></div><div class="inline-actions"><button class="btn btn-sm" data-action="edit-subject" data-id="${esc(s.id)}">Edit</button><button type="button" class="btn btn-sm btn-danger" data-action="delete-subject" data-id="${esc(s.id)}">Delete</button></div></div>`).join('')}</div><div class="inline-actions"><button class="btn btn-sm" data-action="add-subject-to-stream" data-id="${esc(st.id)}">＋ Subject</button><button class="btn btn-sm" data-action="edit-stream" data-id="${esc(st.id)}">Edit</button><button type="button" class="btn btn-sm btn-danger" data-action="delete-stream" data-id="${esc(st.id)}">Delete</button></div></div>`;
+      return `<div class="entity"><div><strong>${esc(st.name)}</strong><small>${subjects.length} subject${subjects.length===1?'':'s'}</small>${subjects.map(s=>`<div class="entity" style="padding:8px 0 0 10px"><div><strong style="font-size:12px">${esc(s.name)}</strong><small>${sharedCounts?(sharedCounts.get(s.id)?.total||0):(topicCounts.get(s.id)||0)} active topics</small></div><div class="inline-actions"><button class="btn btn-sm" data-action="edit-subject" data-id="${esc(s.id)}">Edit</button><button type="button" class="btn btn-sm btn-danger" data-action="delete-subject" data-id="${esc(s.id)}">Delete</button></div></div>`).join('')}</div><div class="inline-actions"><button class="btn btn-sm" data-action="add-subject-to-stream" data-id="${esc(st.id)}">＋ Subject</button><button class="btn btn-sm" data-action="edit-stream" data-id="${esc(st.id)}">Edit</button><button type="button" class="btn btn-sm btn-danger" data-action="delete-stream" data-id="${esc(st.id)}">Delete</button></div></div>`;
     }).join('');
     $('structureList').innerHTML=streamsMarkup||'<div class="empty">No streams created.</div>';
   }
