@@ -211,7 +211,7 @@ assert.equal(incrementedIndex.byDate.get('2026-11-10'),3,'a newly prepended revi
 assert.equal(incrementedIndex.byTopic.get('t1').count,4,'a newly prepended review must update the shared topic index');
 assert.equal(incrementedIndex.byTopic.get('t1').recent[0].id,'r1','same-day prepends preserve stable order for existing history rows');
 
-const consistencyStart=studyHub.indexOf('  let homeConsistencyMetricsCache=null;');
+const consistencyStart=studyHub.indexOf('  let homeConsistencyMetricsCache=null,homeTopicMetricsCache=null,homeStudyLogMetricsCache=null;');
 const consistencyEnd=studyHub.indexOf('  window.NexusRefreshHomeConsistencySummary=renderHomeConsistencySummary;',consistencyStart);
 assert.ok(consistencyStart>=0&&consistencyEnd>consistencyStart,'shared Overview metrics and full renderer must be independently testable');
 const consistencySource=studyHub.slice(consistencyStart,consistencyEnd);
