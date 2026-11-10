@@ -15,7 +15,9 @@
   let focusGoalCacheKey='',focusGoalLoggedMinutes=0;
   function saveFs(){
     focusGoalCacheKey='';
-    window.NexusInvalidateHomeConsistencyCache?.();
+    // Do not evict the large topic/history aggregate for journal, paper, goal or other
+    // unrelated Study Hub saves. Relevant inputs are tracked by the aggregate cache key:
+    // studyLogs reference/count, active tracker arrays, date range, heatmap period and goal.
     try{
       if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');
       window.NexusDeleteDiagnosticPhase?.('hub:save:serialize-feature-state');
@@ -1967,8 +1969,10 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
   // Home is the normal startup view: avoid building the hidden Study Hub planner.
   // Preserve correct startup rendering if another flow has already activated Study Hub.
   const studyHubView=hubEl('view-studyhub');
-  if(studyHubView?.classList.contains('active'))renderHub();
-  try{renderHomeConsistencySummary();}catch(error){console.error('Nexus Overview consistency summary failed',error);}
+  if(!window.NexusDeferInitialRender&&studyHubView?.classList.contains('active'))renderHub();
+  if(!window.NexusDeferInitialRender){
+    try{renderHomeConsistencySummary();}catch(error){console.error('Nexus Overview consistency summary failed',error);}
+  }
   const restoreFocusUi=()=>{if(focusStart)openFocusMode();else refreshLiveFocusUi();};
   if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',restoreFocusUi,{once:true});}else{restoreFocusUi();}
 })();
