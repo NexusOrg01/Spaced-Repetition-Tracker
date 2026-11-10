@@ -81,17 +81,24 @@
     return out;
   }
   function nearestFutureExam(){return state.exams.filter(e=>safeDate(e.date)&&e.date>=today()).sort((a,b)=>a.date.localeCompare(b.date))[0]||null;}
+  let hubKpiCache=null;
   function updateKpis(){
-    let activeCount=0,due=0,weak=0,mastered=0;
-    for(const topic of state.topics){
-      if(topic.archived)continue;activeCount++;
-      const st=status(topic),meta=featureMeta(topic);
-      if(st==='overdue'||st==='due')due++;
-      if(meta.weak)weak++;
-      if(topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&st!=='overdue')mastered++;
+    const target=hubEl('hubKpis');if(!target)return;
+    const todayKey=today(),topics=state.topics,history=state.history;
+    let metrics=hubKpiCache;
+    if(!metrics||metrics.topics!==topics||metrics.history!==history||metrics.historyLength!==history.length||metrics.today!==todayKey){
+      let activeCount=0,due=0,weak=0,mastered=0;
+      for(const topic of topics){
+        if(topic.archived)continue;activeCount++;
+        const st=status(topic),meta=featureMeta(topic);
+        if(st==='overdue'||st==='due')due++;
+        if(meta.weak)weak++;
+        if(topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&st!=='overdue')mastered++;
+      }
+      metrics=hubKpiCache={topics,history,historyLength:history.length,today:todayKey,activeCount,due,weak,mastered};
     }
     const todayDone=loggedMinutesToday()+liveFocusMinutesToday();
-    hubEl('hubKpis').innerHTML='<div class="hub-kpi"><strong>'+due+'</strong><span>Due or overdue</span></div><div class="hub-kpi"><strong>'+weak+'</strong><span>Topics needing attention</span></div><div class="hub-kpi"><strong>'+mastered+'/'+activeCount+'</strong><span>Mastered topics</span></div><div class="hub-kpi"><strong>'+formatStudyDuration(todayDone*60)+'</strong><span>Study time today</span></div>';
+    target.innerHTML='<div class="hub-kpi"><strong>'+metrics.due+'</strong><span>Due or overdue</span></div><div class="hub-kpi"><strong>'+metrics.weak+'</strong><span>Topics needing attention</span></div><div class="hub-kpi"><strong>'+metrics.mastered+'/'+metrics.activeCount+'</strong><span>Mastered topics</span></div><div class="hub-kpi"><strong>'+formatStudyDuration(todayDone*60)+'</strong><span>Study time today</span></div>';
   }
   function topicPriority(t,meta=featureMeta(t)){
     const st=status(t),mastered=t.reviewCount>=2&&meta.avg>=3.5&&t.intervalDays>=4&&st!=='overdue';
@@ -245,14 +252,19 @@
 
   const RATING_ANALYTICS_COLORS={1:'#ef4444',2:'#f97316',3:'#eab308',4:'#84cc16',5:'#059669'};
 
+  let ratingAnalyticsSelectionCache=null;
   function getRatingAnalyticsSelection(){
     const allowed=['week','month','year','custom'],period=allowed.includes(String(fsState.analyticsPeriod||'week'))?String(fsState.analyticsPeriod||'week'):'week',now=today();let from=now,to=now;
     if(period==='week'){const offset=(new Date(now+'T12:00:00').getDay()+6)%7;from=dateShift(now,-offset);to=dateShift(from,6);}
     else if(period==='month'){from=now.slice(0,7)+'-01';const p=now.split('-'),last=new Date(Number(p[0]),Number(p[1]),0).getDate();to=now.slice(0,7)+'-'+String(last).padStart(2,'0');}
     else if(period==='year'){from=now.slice(0,4)+'-01-01';to=now.slice(0,4)+'-12-31';}
     else{from=safeDate(fsState.analyticsCustomStart)?fsState.analyticsCustomStart:dateShift(now,-29);to=safeDate(fsState.analyticsCustomEnd)?fsState.analyticsCustomEnd:now;}
-    const valid=safeDate(from)&&safeDate(to)&&from<=to,records=valid?state.history.filter(h=>safeDate(h.reviewedAt)&&h.reviewedAt>=from&&h.reviewedAt<=to):[];
-    return {range:period,from,to,records,label:({week:'This week',month:'This month',year:'This year',custom:'Custom date range'})[period],valid};
+    const source=state.history,historyLength=source.length,cache=ratingAnalyticsSelectionCache;
+    if(cache&&cache.source===source&&cache.historyLength===historyLength&&cache.period===period&&cache.from===from&&cache.to===to)return cache.selection;
+    const valid=safeDate(from)&&safeDate(to)&&from<=to,records=valid?source.filter(h=>safeDate(h.reviewedAt)&&h.reviewedAt>=from&&h.reviewedAt<=to):[];
+    const selection={range:period,from,to,records,label:({week:'This week',month:'This month',year:'This year',custom:'Custom date range'})[period],valid};
+    ratingAnalyticsSelectionCache={source,historyLength,period,from,to,selection};
+    return selection;
   }
   const RATING_ANALYTICS_ENTITY_OPTION_LIMIT=150;
   function getRatingAnalyticsEntityOptions(level,search='',limit=RATING_ANALYTICS_ENTITY_OPTION_LIMIT,currentValue=String(fsState.analyticsRatingEntity||'ALL')){
@@ -1107,7 +1119,7 @@
       '</div>';
   }
 
-  let analyticsSection='presses',analyticsEntityQuery='';
+  let analyticsSection='presses',analyticsEntityQuery='',analyticsEntitySearchTimer=0;
   function renderAnalytics(){
     const selection=getRatingAnalyticsSelection(),from=selection.from,to=selection.to,valid=selection.valid!==false,recent=selection.records||[],rangeDays=valid?Math.max(1,dayDiff(from,to)+1):30;
     const keys=['presses','papers','activity'];if(!keys.includes(analyticsSection))analyticsSection='presses';
@@ -1179,10 +1191,11 @@
     if(panel.parentElement===target&&analyticsDefaultParent)analyticsDefaultParent.insertBefore(panel,analyticsDefaultNext&&analyticsDefaultNext.parentElement===analyticsDefaultParent?analyticsDefaultNext:null);
     const parent=panel.parentElement||analyticsDefaultParent,next=panel.nextSibling;
     try{
+      document.body.classList.add('analytics-mode');
       const level=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic';
       ensureAnalyticsEntityForRange(level);hubTab='analytics';renderHub();
       analyticsReturnParent=parent;analyticsReturnNext=next;
-      target.appendChild(panel);standalone.hidden=false;document.body.classList.add('analytics-mode');
+      target.appendChild(panel);standalone.hidden=false;
       window.scrollTo({top:0,behavior:'auto'});
     }catch(error){
       document.body.classList.remove('analytics-mode');standalone.hidden=true;
@@ -1200,7 +1213,9 @@
     if(panel&&parent)parent.insertBefore(panel,next&&next.parentElement===parent?next:null);
     if(standalone)standalone.hidden=true;
     analyticsReturnParent=null;analyticsReturnNext=null;hubTab='planner';
-    try{renderHub();}catch(error){console.error('Nexus Study Hub failed to return from Analytics',error);notify('The Study Hub could not refresh. Please reload the app.');}
+    if(hubEl('view-studyhub')?.classList.contains('active')){
+      try{renderHub();}catch(error){console.error('Nexus Study Hub failed to return from Analytics',error);notify('The Study Hub could not refresh. Please reload the app.');}
+    }
     window.scrollTo({top:0,behavior:'auto'});
   }
   function openDangerZone(){if(document.body.classList.contains('danger-mode'))return;renderHistory();$('dangerZoneStandalone').hidden=false;document.body.classList.add('danger-mode');window.scrollTo({top:0,behavior:'auto'});}
@@ -1233,7 +1248,8 @@
   function renderHub(){
     const content=hubEl('hubContent');if(!content)return;
     try{
-      updateKpis();document.querySelectorAll('[data-hub-tab]').forEach(b=>b.classList.toggle('active',b.dataset.hubTab===hubTab));
+      if(!document.body.classList.contains('analytics-mode'))updateKpis();
+      document.querySelectorAll('[data-hub-tab]').forEach(b=>b.classList.toggle('active',b.dataset.hubTab===hubTab));
       const renderers={planner:renderPlanner,mastery:renderMastery,papers:renderPapers,journal:renderJournal,analytics:renderAnalytics,tools:renderTools};
       content.innerHTML=(renderers[hubTab]||renderPlanner)();
       if(hubTab==='tools')renderGlobalResults();
@@ -1242,10 +1258,9 @@
       if(hubTab==='analytics')content.innerHTML='<div class="hub-empty analytics-render-error"><strong>This analytics section could not be displayed.</strong><p>Your saved data has not been changed. Retry the section; if the problem repeats, reload the app and report the failure.</p><button type="button" class="btn btn-primary" data-hub-action="analytics-retry">Retry analytics</button></div>';
       else notify('The Study Hub could not refresh. Please try again.');
     }
-    try{renderHomeConsistencySummary();}catch(error){console.error('Nexus Overview consistency summary failed',error);}
   }
   function renderGlobalResults(){const inp=hubEl('hubGlobalSearch'),out=hubEl('hubSearchResults');if(!inp||!out)return;inp.value=inp.dataset.q||'';out.innerHTML=globalSearchMarkup(inp.value);}
-  function hubSwitch(tab){hubTab=tab;renderHub();try{hubEl('view-studyhub').scrollIntoView({behavior:'smooth',block:'start'});}catch(_){}}
+  function hubSwitch(tab){hubTab=tab;renderHub();try{hubEl('view-studyhub').scrollIntoView({behavior:'auto',block:'nearest'});}catch(_){}}
   function persistAndRender(base=false){saveFs();if(base){save();renderAll();}renderHub();}
   function downloadBlob(filename,text,type){const blob=new Blob([text],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;a.rel='noopener';a.style.position='fixed';a.style.left='-10000px';document.body.appendChild(a);try{a.click();}finally{a.remove();setTimeout(()=>URL.revokeObjectURL(url),15000);}}
   function csvCellHub(v){return window.NexusBackupRestoreUtils.csvCell(v);}
@@ -1416,7 +1431,7 @@
   function balanceWorkload(){const days=Math.max(1,Math.min(90,Number(hubEl('hubWorkloadDays')?.value)||7));fsState.settings.workloadDays=days;const candidates=activeTopics().filter(t=>!t.archived&&['overdue','due','new'].includes(status(t))).sort((a,b)=>topicPriority(b)-topicPriority(a));if(!candidates.length){saveFs();renderHub();notify('No active due, overdue, or new topics to balance.');return;}if(!confirm(`Distribute ${candidates.length} due/new topic(s) across ${days} day(s)? This changes due dates only and does not add review history.`)){saveFs();return;}window.NexusStartUndoTopicBatch('Study workload balanced',candidates,['dueDate']);const loads=Array(days).fill(0);const buckets=Array.from({length:days},()=>[]);for(const t of candidates){const mins=estimateMinutes(t);let best=0;for(let i=1;i<days;i++){if(loads[i]<loads[best])best=i;}buckets[best].push(t);loads[best]+=mins;}buckets.forEach((items,i)=>items.forEach(t=>{t.dueDate=dateShift(today(),i);}));save();saveFs();renderAll();renderHub();notify(`Balanced ${candidates.length} topics over ${days} days. Review history was not changed.`,true);}
   function saveRecallSession(e){e.preventDefault();const val=id=>hubEl(id)?.value?.trim()||'';const recalled=val('hubRecallRecalled'),gaps=val('hubRecallGaps');if(!recalled&&!gaps){alert('Record what you recalled or at least one gap to fix.');return;}const subjectId=val('hubRecallSubject'),topicId=val('hubRecallTopic'),quality=Number(val('hubRecallConfidence'))||3,method=val('hubRecallMethod');fsState.journal.unshift({id:fid(),date:today(),category:'Theory recall',subjectId,topicId,severity:quality<=2?3:quality===3?2:1,issue:`Method: ${method}. Recall quality: ${quality}/5.
 Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded.',solved:!gaps});fsState.studyLogs.unshift({id:fid(),date:today(),minutes:0,type:'Theory recall',note:`${method}; quality ${quality}/5${topicId?' · '+(getTopic(topicId)?.name||'topic'):''}`});saveFs();renderHub();notify('Theory recall session saved to your journal.');}
-  function bulkAction(action){const selectedIds=new Set(fsState.selectedTopicIds);const chosen=state.topics.filter(t=>selectedIds.has(t.id));if(!chosen.length){notify('Select topics in search results first.');return;}if(action==='bulk-export'){exportHubCsv('selected');return;}if(action==='bulk-clear'){fsState.selectedTopicIds=[];saveFs();renderHub();return;}if(action==='bulk-delete'){if(!confirm('Permanently delete '+chosen.length+' selected topic(s) and their saved review history? This cannot be undone. Export a backup first if unsure.'))return;const ids=new Set(chosen.map(t=>t.id));window.NexusStartUndoBulkDelete('Bulk topic deletion');cascadeUndoState=captureCascadeUndo();if(window.NexusCurriculumIntegrity&&typeof window.NexusCurriculumIntegrity.markDeletedTopics==='function')window.NexusCurriculumIntegrity.markDeletedTopics(state,window.NexusCurriculumPacks||[],chosen);state.topics=state.topics.filter(t=>!ids.has(t.id));state.history=state.history.filter(h=>!ids.has(h.topicId));fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!ids.has(id));save();renderAll();saveFs();renderHub();notify('Deleted '+chosen.length+' topic(s) and associated review history.');return;}let dueDate=today();if(action==='bulk-due-custom'){dueDate=hubEl('hubBulkDueDate')?.value||'';if(!safeDate(dueDate)){notify('Choose a valid custom due date first.');return;}}const label=action==='bulk-due-today'?'Set due date to today for':action==='bulk-due-custom'?'Set custom due date for':action==='bulk-archive'?'Archive':'Unarchive';if(!confirm(label+' '+chosen.length+' selected topic(s)?'))return;window.NexusStartUndoTopicBatch('Bulk topic update',chosen,(action==='bulk-due-today'||action==='bulk-due-custom')?['dueDate']:['archived']);chosen.forEach(t=>{if(action==='bulk-due-today'||action==='bulk-due-custom')t.dueDate=dueDate;if(action==='bulk-archive')t.archived=true;if(action==='bulk-unarchive')t.archived=false;});save();renderAll();saveFs();renderHub();notify('Updated '+chosen.length+' topic(s).',true);}
+  function bulkAction(action){const selectedIds=new Set(fsState.selectedTopicIds);const chosen=state.topics.filter(t=>selectedIds.has(t.id));if(!chosen.length){notify('Select topics in search results first.');return;}if(action==='bulk-export'){exportHubCsv('selected');return;}if(action==='bulk-clear'){fsState.selectedTopicIds=[];saveFs();renderHub();return;}if(action==='bulk-delete'){if(!confirm('Delete '+chosen.length+' selected topic(s) and their saved review history? You can use Undo immediately after deletion. Export a full backup first if you may need to restore these records later.'))return;const ids=new Set(chosen.map(t=>t.id));window.NexusStartUndoBulkDelete('Bulk topic deletion');cascadeUndoState=captureCascadeUndo();if(window.NexusCurriculumIntegrity&&typeof window.NexusCurriculumIntegrity.markDeletedTopics==='function')window.NexusCurriculumIntegrity.markDeletedTopics(state,window.NexusCurriculumPacks||[],chosen);state.topics=state.topics.filter(t=>!ids.has(t.id));state.history=state.history.filter(h=>!ids.has(h.topicId));fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!ids.has(id));save();renderAll();saveFs();renderHub();notify('Deleted '+chosen.length+' topic(s) and associated review history.');return;}let dueDate=today();if(action==='bulk-due-custom'){dueDate=hubEl('hubBulkDueDate')?.value||'';if(!safeDate(dueDate)){notify('Choose a valid custom due date first.');return;}}const label=action==='bulk-due-today'?'Set due date to today for':action==='bulk-due-custom'?'Set custom due date for':action==='bulk-archive'?'Archive':'Unarchive';if(!confirm(label+' '+chosen.length+' selected topic(s)?'))return;window.NexusStartUndoTopicBatch('Bulk topic update',chosen,(action==='bulk-due-today'||action==='bulk-due-custom')?['dueDate']:['archived']);chosen.forEach(t=>{if(action==='bulk-due-today'||action==='bulk-due-custom')t.dueDate=dueDate;if(action==='bulk-archive')t.archived=true;if(action==='bulk-unarchive')t.archived=false;});save();renderAll();saveFs();renderHub();notify('Updated '+chosen.length+' topic(s).',true);}
   function maybeNotify(){if(!fsState.settings.reminders)return;const now=new Date(),hh=String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');if(hh!==fsState.settings.reminderTime||fsState.lastReminderAt===today())return;const count=activeTopics().filter(t=>['overdue','due'].includes(status(t))).length;fsState.lastReminderAt=today();saveFs();if(count&&'Notification'in window&&Notification.permission==='granted'){try{new Notification('Nexus study reminder',{body:`${count} topic(s) are due or overdue. Open Nexus to plan your session.`});}catch(_){notify(`Study reminder: ${count} topic(s) due or overdue.`);}}else if(count)notify(`Study reminder: ${count} topic(s) due or overdue.`);}
   function savePaper(e){e.preventDefault();const val=id=>hubEl(id)?.value?.trim()||'';const name=val('hubPaperName');if(!name)return;const score=val('hubPaperScore')===''?null:Number(val('hubPaperScore')),max=val('hubPaperMax')===''?null:Number(val('hubPaperMax'));if(score!==null&&max!==null&&(score<0||max<=0||score>max)){alert('Score must be between zero and the maximum score.');return;}const p={id:fid(),name:name.slice(0,160),subjectId:val('hubPaperSubject'),kind:val('hubPaperKind'),date:val('hubPaperDate')||today(),score:score===null?null:score,maxScore:max===null?null:max,duration:Math.max(0,Number(val('hubPaperDuration'))||0),errorCount:Math.max(0,Number(val('hubPaperErrors'))||0),weakAreas:val('hubPaperWeak').slice(0,1000),notes:val('hubPaperNotes').slice(0,2000)};fsState.papers.unshift(p);saveFs();renderHub();notify('Paper/practice record saved.');}
   function saveJournal(e){e.preventDefault();const val=id=>hubEl(id)?.value?.trim()||'';const issue=val('hubJournalIssue');if(!issue)return;fsState.journal.unshift({id:fid(),date:today(),category:val('hubJournalCategory'),subjectId:val('hubJournalSubject'),topicId:val('hubJournalTopic'),severity:Number(val('hubJournalSeverity'))||2,issue:issue.slice(0,3000),fix:val('hubJournalFix').slice(0,3000),solved:false});saveFs();renderHub();notify('Journal entry saved.');}
@@ -1432,7 +1447,7 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
   interval=function(rating,previous){const r=Number(rating),prev=Math.max(0,Number(previous)||0);if(fsState.settings.scheduler!=='fsrs-lite')return classicInterval(r,prev);const topic=(typeof reviewTopicId!=='undefined'&&reviewTopicId)?getTopic(reviewTopicId):null;const meta=topic?featureMeta(topic):{avg:topic?.lastRating||3};const avg=meta.avg||3;const multipliers={1:0.55,2:1.1,3:1.75,4:2.35,5:3.0};let days;if(r===1)days=1;else if(prev===0)days=({1:1,2:2,3:4,4:7,5:12})[r]||4;else days=Math.round(prev*(multipliers[r]||1.5)*(0.78+avg*0.09));return Math.max(1,Math.min(Math.max(120,Math.min(365,Number(fsState.settings.maxInterval)||120)),days));};
   // Preserve existing topic/review behavior while refreshing Hub views after core data changes.
   const baseRenderAll=renderAll;
-  renderAll=function(){baseRenderAll();renderHomeConsistencySummary();if(hubEl('view-studyhub')&&hubEl('view-studyhub').classList.contains('active'))renderHub();};
+  renderAll=function(){hubKpiCache=null;baseRenderAll();if(hubEl('view-studyhub')&&hubEl('view-studyhub').classList.contains('active'))renderHub();};
   const baseExportBackup=exportBackup;
   exportBackup=function(){fullBackup();};
   const baseImportBackup=importBackup;
@@ -1452,10 +1467,19 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
       }
       saveFs();renderHub();}else if(el.dataset.hubAction==='check-task'){markTask(el.dataset.id,el.checked);}else if(el.dataset.hubAction==='select-topic'){const a=new Set(fsState.selectedTopicIds);el.checked?a.add(el.dataset.id):a.delete(el.dataset.id);fsState.selectedTopicIds=Array.from(a);saveFs();const inp=hubEl('hubGlobalSearch');if(inp){inp.dataset.q=inp.value;renderGlobalResults();}}});
   hubEl('hubContent').addEventListener('submit',e=>{if(e.target.id==='hubPaperForm')savePaper(e);if(e.target.id==='hubJournalForm')saveJournal(e);if(e.target.id==='hubGoalForm')saveGoal(e);if(e.target.id==='hubRecallForm')saveRecallSession(e);});
-  hubEl('hubContent').addEventListener('click',e=>{const b=e.target.closest('[data-hub-action]');if(!b)return;const a=b.dataset.hubAction,id=b.dataset.id;
-    if(['analytics-card-toggle','analytics-section','analytics-toggle-rating','analytics-custom-apply','analytics-export-pdf','analytics-export','analytics-retry'].includes(a))return;
-    if(a==='analytics-card-toggle'){const card=b.closest('[data-analytics-collapsible]'),content=card?.querySelector('.analytics-card-content');if(!card||!content)return;content.hidden=!content.hidden;b.setAttribute('aria-expanded',String(!content.hidden));b.textContent=content.hidden?'Expand':'Collapse';return;}
-    if(a==='analytics-section'){const next=b.dataset.analyticsSection;if(['presses','papers','activity'].includes(next)){analyticsSection=next;renderHub();}return;}
+  hubEl('hubContent').addEventListener('click',e=>{
+    const b=e.target.closest('[data-hub-action]');if(!b)return;
+    const a=b.dataset.hubAction,id=b.dataset.id;
+    if(a==='analytics-card-toggle'){
+      const card=b.closest('[data-analytics-collapsible]'),content=card?.querySelector('.analytics-card-content');
+      if(!card||!content)return;
+      content.hidden=!content.hidden;b.setAttribute('aria-expanded',String(!content.hidden));b.textContent=content.hidden?'Expand':'Collapse';return;
+    }
+    if(a==='analytics-section'){
+      const next=b.dataset.analyticsSection;
+      if(['presses','papers','activity'].includes(next)){analyticsSection=next;renderHub();}
+      return;
+    }
     if(a==='analytics-toggle-rating'){
       const rating=Number(b.dataset.ratingToggle),current=getVisibleAnalyticsRatings();
       if(!Number.isInteger(rating)||rating<1||rating>5)return;
@@ -1465,8 +1489,22 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
       }else fsState.analyticsVisibleRatings=[...current,rating].sort((x,y)=>x-y);
       saveFs();renderHub();return;
     }
+    if(a==='analytics-custom-apply'){
+      const from=hubEl('hubRatingCustomStart')?.value||'',to=hubEl('hubRatingCustomEnd')?.value||'';
+      if(!safeDate(from)||!safeDate(to)||from>to){notify('Choose valid dates. The From date must be on or before the To date.');return;}
+      fsState.analyticsCustomStart=from;fsState.analyticsCustomEnd=to;fsState.analyticsPeriod='custom';saveFs();renderHub();return;
+    }
+    if(a==='analytics-export-pdf'){
+      try{openAnalyticsPdfDialog();}catch(error){console.error('Nexus Analytics PDF export failed',error);notify('Could not generate the PDF report. Allow pop-ups and try again.');}
+      return;
+    }
+    if(a==='analytics-export'){
+      try{exportAnalyticsCsv();}catch(error){console.error('Nexus Analytics CSV export failed',error);notify('Could not export analytics CSV. Please try again.');}
+      return;
+    }
+    if(a==='analytics-retry'){renderHub();return;}
     if(a==='review-topic'){openReview(id);return;}if(a==='open-calendar'){openReviewCalendar();return;}if(a==='edit-topic'){switchView('topics');openTopic(id);return;}
-    if(a==='analytics-custom-apply'){const from=hubEl('hubRatingCustomStart')?.value||'',to=hubEl('hubRatingCustomEnd')?.value||'';if(!safeDate(from)||!safeDate(to)||from>to){notify('Choose valid dates. The From date must be on or before the To date.');return;}fsState.analyticsCustomStart=from;fsState.analyticsCustomEnd=to;fsState.analyticsPeriod='custom';saveFs();renderHub();return;}if(a==='analytics-export-pdf'){exportAnalyticsPdf();return;}if(a==='analytics-export'){const selection=getRatingAnalyticsSelection(),from=selection.from,to=selection.to,rows=[['Metric','Value'],['From',from],['To',to],['Reviews',state.history.filter(h=>h.reviewedAt>=from&&h.reviewedAt<=to).length],['Mean recall rating',(()=>{const r=state.history.filter(h=>h.reviewedAt>=from&&h.reviewedAt<=to);return r.length?(r.reduce((n,h)=>n+fNum(h.rating),0)/r.length).toFixed(2):'N/A';})()],['Active topics',activeTopics().length],['Mastered topics',activeTopics().filter(isMastered).length],['Overdue topics',activeTopics().filter(t=>status(t)==='overdue').length],['Study minutes in range',fsState.studyLogs.filter(l=>l.date>=from&&l.date<=to).reduce((n,l)=>n+studyLogMinutes(l),0)],['Generated at',new Date().toISOString()]],csv=rows.map(row=>row.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\\r\\n');downloadBlob('nexus-analytics-'+from+'-to-'+to+'.csv',csv,'text/csv;charset=utf-8');notify('Analytics CSV exported.');return;}if(a==='refresh-plan'){renderHub();return;}if(a==='toggle-final-revision'){fsState.settings.finalRevision=!fsState.settings.finalRevision;saveFs();renderHub();notify(fsState.settings.finalRevision?'Final-revision mode enabled. Non-mastered topics get higher priority.':'Final-revision mode disabled.');return;}if(a==='balance-workload'){balanceWorkload();return;}if(a==='backlog-plan'){spreadBacklog();return;}
+    if(a==='refresh-plan'){renderHub();return;}if(a==='toggle-final-revision'){fsState.settings.finalRevision=!fsState.settings.finalRevision;saveFs();renderHub();notify(fsState.settings.finalRevision?'Final-revision mode enabled. Non-mastered topics get higher priority.':'Final-revision mode disabled.');return;}if(a==='balance-workload'){balanceWorkload();return;}if(a==='backlog-plan'){spreadBacklog();return;}
     if(a==='save-planner-settings'){savePlannerSettings();return;}if(a==='focus-start'){startFocus();return;}if(a==='focus-stop'){logFocusStop();return;}if(a==='focus-discard'){discardFocusSession();return;}if(a==='study-history-toggle'){const target=hubEl(b.dataset.target);if(!target)return;target.hidden=!target.hidden;b.setAttribute('aria-expanded',String(!target.hidden));b.textContent=target.hidden?'Expand':'Collapse';return;}if(a==='study-history-more'){studyLogHistoryLimit+=100;renderHub();return;}if(a==='delete-study-log'){deleteStudyLog(id);return;}if(a==='save-targets'){saveTargets();return;}
     if(a==='delete-paper'){if(confirm('Delete this paper/practice record?')){fsState.papers=fsState.papers.filter(p=>p.id!==id);saveFs();renderHub();}return;}if(a==='export-papers'){exportHubCsv('papers');return;}
     if(a==='toggle-journal'){const j=fsState.journal.find(x=>x.id===id);if(j){j.solved=!j.solved;saveFs();renderHub();}return;}if(a==='delete-journal'){if(confirm('Delete this journal entry?')){fsState.journal=fsState.journal.filter(j=>j.id!==id);saveFs();renderHub();}return;}
@@ -1475,6 +1513,7 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
     if(a==='bulk-due-today'||a==='bulk-due-custom'||a==='bulk-archive'||a==='bulk-unarchive'||a==='bulk-export'||a==='bulk-delete'||a==='bulk-clear'){bulkAction(a);return;}
     if(a==='delete-goal'){if(confirm('Delete this milestone?')){fsState.goals=fsState.goals.filter(g=>g.id!==id);saveFs();renderHub();}return;}if(a==='goal-plus'){const g=fsState.goals.find(g=>g.id===id);if(g){g.progress=(g.progress||0)+1;saveFs();renderHub();}return;}
   });
+
   document.addEventListener('click',e=>{
     const toggle=e.target.closest('[data-home-collapse]');if(!toggle)return;
     const target=document.getElementById(toggle.dataset.homeCollapse);if(!target)return;
@@ -1483,41 +1522,9 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
   });
   document.addEventListener('click',e=>{
     const openButton=e.target.closest('#homeOpenAnalytics');
-    if(openButton){e.preventDefault();openAnalyticsWindow();return;}
-    const button=e.target.closest('[data-hub-action]');if(!button)return;
-    const action=button.dataset.hubAction;
-    if(!['analytics-card-toggle','analytics-section','analytics-toggle-rating','analytics-custom-apply','analytics-export-pdf','analytics-export','analytics-retry'].includes(action))return;
-    if(!button.closest('#analyticsStandalone')&&!document.body.classList.contains('analytics-mode'))return;
-    e.preventDefault();
-    try{
-      if(action==='analytics-card-toggle'){
-        const card=button.closest('[data-analytics-collapsible]'),content=card?.querySelector('.analytics-card-content');
-        if(!card||!content)return;
-        content.hidden=!content.hidden;button.setAttribute('aria-expanded',String(!content.hidden));button.textContent=content.hidden?'Expand':'Collapse';return;
-      }
-      if(action==='analytics-section'){const next=button.dataset.analyticsSection;if(['presses','papers','activity'].includes(next)){analyticsSection=next;renderHub();}return;}
-      if(action==='analytics-toggle-rating'){
-        const rating=Number(button.dataset.ratingToggle),current=getVisibleAnalyticsRatings();
-        if(!Number.isInteger(rating)||rating<1||rating>5)return;
-        if(current.includes(rating)){
-          if(current.length===1){notify('Keep at least one rating selected.');return;}
-          fsState.analyticsVisibleRatings=current.filter(r=>r!==rating);
-        }else fsState.analyticsVisibleRatings=[...current,rating].sort((x,y)=>x-y);
-        saveFs();renderHub();return;
-      }
-      if(action==='analytics-custom-apply'){
-        const from=hubEl('hubRatingCustomStart')?.value||'',to=hubEl('hubRatingCustomEnd')?.value||'';
-        if(!safeDate(from)||!safeDate(to)||from>to){notify('Choose valid dates. The From date must be on or before the To date.');return;}
-        fsState.analyticsCustomStart=from;fsState.analyticsCustomEnd=to;fsState.analyticsPeriod='custom';saveFs();renderHub();return;
-      }
-      if(action==='analytics-export-pdf'){openAnalyticsPdfDialog();return;}
-      if(action==='analytics-export'){exportAnalyticsCsv();return;}
-      if(action==='analytics-retry'){renderHub();return;}
-    }catch(error){
-      console.error('Nexus Analytics action failed ('+action+')',error);
-      notify(action==='analytics-export-pdf'?'Could not generate the PDF report. Allow pop-ups and try again.':action==='analytics-export'?'Could not export analytics CSV. Please try again.':'Analytics could not update. Please try again.');
-    }
+    if(openButton){e.preventDefault();openAnalyticsWindow();}
   });
+
   document.addEventListener('change',e=>{
     const el=e.target;if(!el)return;
     if(['hubRatingGrouping','hubRatingEntity','hubRatingPeriod'].includes(el.id)){
@@ -1542,15 +1549,21 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
     }
     if(e.target.id==='hubRatingEntitySearch'){
       analyticsEntityQuery=e.target.value;
-      const level=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic';
-      const select=hubEl('hubRatingEntity'),current=String(select?.value||fsState.analyticsRatingEntity||'ALL');
-      const options=getRatingAnalyticsEntityOptions(level,analyticsEntityQuery,150,current);
-      if(select){
-        select.innerHTML=selectOptions(options.map(option=>[option.value,option.label+' — '+option.subtitle]),current);
-        select.value=current;
-      }
-      const hint=hubEl('hubRatingEntityHint');
-      if(hint)hint.textContent=options.matchCount>options.limit?'Showing the first '+options.limit+' of '+options.matchCount+' matches. Search to narrow the list.':options.matchCount+' matching entries.';
+      const query=analyticsEntityQuery;
+      clearTimeout(analyticsEntitySearchTimer);
+      analyticsEntitySearchTimer=setTimeout(()=>{
+        const search=hubEl('hubRatingEntitySearch');
+        if(!search||search.value!==query)return;
+        const level=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic';
+        const select=hubEl('hubRatingEntity'),current=String(select?.value||fsState.analyticsRatingEntity||'ALL');
+        const options=getRatingAnalyticsEntityOptions(level,query,150,current);
+        if(select){
+          select.innerHTML=selectOptions(options.map(option=>[option.value,option.label+' — '+option.subtitle]),current);
+          select.value=current;
+        }
+        const hint=hubEl('hubRatingEntityHint');
+        if(hint)hint.textContent=options.matchCount>options.limit?'Showing the first '+options.limit+' of '+options.matchCount+' matches. Search to narrow the list.':options.matchCount+' matching entries.';
+      },120);
     }
   });
   hubEl('hubContent').addEventListener('change',async e=>{if(e.target.id==='hubStudyTimeGrouping')return;if(e.target.id==='hubStudyTimeGrouping'){fsState.studyTimeGrouping=e.target.value==='topic'?'topic':'subject';saveFs();renderHub();return;}if(e.target.id==='hubStudyTopic'){focusTopicId=e.target.value;const t=getTopic(focusTopicId);focusSubjectId=t?(subjectFor(t)?.id||''):focusSubjectId;fsState.focusTopicId=focusTopicId;fsState.focusSubjectId=focusSubjectId;saveFs();return;}if(e.target.id==='hubTimerMinutes'){fsState.settings.sessionMinutes=Math.max(5,Math.min(240,Number(e.target.value)||25));saveFs();return;}if(e.target.id==='hubCalendarWindow'){fsState.calendarWindow=e.target.value;saveFs();renderHub();return;}if(e.target.id==='hubImportFile'){const f=e.target.files?.[0];e.target.value='';if(f)await restoreOrMerge(f);}});

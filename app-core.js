@@ -373,7 +373,7 @@
     if(name==='explore')renderExplore();
     if(name==='history'){refreshFilterOptions();renderHistory();}
     if(name==='setup')renderSetup();
-    window.scrollTo({top:0,behavior:'smooth'});
+    window.scrollTo({top:0,behavior:'auto'});
   }
   function statCard(label,value,foot){return `<div class="stat"><div class="stat-label">${esc(label)}</div><div class="stat-value">${esc(value)}</div><div class="stat-foot">${esc(foot)}</div></div>`;}
   function insertSortedLimit(items,item,limit,compare){
@@ -959,21 +959,6 @@
     window.deleteSubject = id => deleteSubject(id);
     window.deleteStream = id => deleteStream(id);
     window.deleteExam = id => deleteExam(id);
-
-    const historyList = document.getElementById('historyList');
-    if(historyList){
-      historyList.addEventListener('click',function(e){
-        const button=e.target.closest('button[data-action="delete-history"]');
-        if(!button)return;
-        e.stopImmediatePropagation();e.preventDefault();
-        const id=button.dataset.id,entry=state.history.find(item=>item.id===id);
-        if(!entry)return;
-        if(!confirm('DANGER ZONE — Delete this review record?\\n\\nThis review will disappear from rating analytics and future history exports. The topic schedule will not change. Use Undo immediately or restore a backup if needed. Continue?'))return;
-        startUndoHistoryChange('History entry deleted.');
-        state.history=state.history.filter(item=>item.id!==id);
-        historyInsightsDirty=true;save();renderHistory();
-      },true);
-    }
 
     window.clearHistory = function(){
       if(!confirm('Clear ALL history?\\n\\nThis will delete '+state.history.length+' records. Schedules stay but past reviews are retained.\\n\\nExport a backup first!'))return;

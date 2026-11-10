@@ -16,6 +16,7 @@ concurrency:
 jobs:
   android-build:
     name: Build F-Droid debug and unsigned release APKs
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[web-only]') }}
     permissions:
       contents: read
     runs-on: ubuntu-latest
