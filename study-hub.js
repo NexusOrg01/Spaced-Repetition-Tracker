@@ -27,7 +27,8 @@
     fsState.papers=fsState.papers.filter(item=>item.subjectId!==subjectId);
     delete fsState.syllabusTargets[subjectId];
     fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIdSet.has(id));
-    saveFs();renderHub();
+    if(!saveFs()){if(cascadeUndoState){Object.assign(fsState,cascadeUndoState);cascadeUndoState=null;}renderHub();return false;}
+    renderHub();return true;
   };
   window.NexusCascadeDeleteStream=(streamId,subjectIds,topicIds)=>{
     const subjectIdSet=new Set(subjectIds),topicIdSet=new Set(topicIds);cascadeUndoState=captureCascadeUndo();
@@ -35,7 +36,8 @@
     fsState.papers=fsState.papers.filter(item=>!subjectIdSet.has(item.subjectId));
     for(const id of subjectIds)delete fsState.syllabusTargets[id];
     fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIdSet.has(id));
-    saveFs();renderHub();
+    if(!saveFs()){if(cascadeUndoState){Object.assign(fsState,cascadeUndoState);cascadeUndoState=null;}renderHub();return false;}
+    renderHub();return true;
   };
   window.NexusUndoCascadeDelete=()=>{
     if(!cascadeUndoState)return;
@@ -197,7 +199,7 @@
     const more=count>visible.length?`<div class="hub-actions"><button type="button" class="btn btn-sm btn-soft" data-hub-action="study-history-more">Show 100 older entries (${count-visible.length} remaining)</button></div>`:'';
     return `<div class="nexus-study-log-history-toolbar"><div><strong>${count} entr${count===1?'y':'ies'}</strong><span class="nexus-study-log-total">${formatStudyDuration(totalSeconds)} total recorded</span></div><button type="button" class="btn btn-sm btn-soft" data-hub-action="study-history-toggle" data-target="hubStudyLogHistory" aria-controls="hubStudyLogHistory" aria-expanded="true">Collapse</button></div><div id="hubStudyLogHistory" role="region" aria-label="Study-time history" tabindex="0">${rows||'<div class="nexus-study-log-empty">No study-time entries yet. Completed focus sessions will appear here.</div>'}</div>${more}`;
   }
-  function deleteStudyLog(id){const entry=fsState.studyLogs.find(item=>item&&String(item.id)===String(id));if(!entry){notify('That study-time entry could not be found. Refresh the history and try again.');return;}const subject=state.subjects.find(s=>s.id===entry.subjectId)?.name||entry.subjectName||'Unassigned subject',topic=getTopic(entry.topicId)?.name||entry.topicName||'',time=studyLogTimeInfo(entry).label,duration=formatStudyDuration(studyLogMinutes(entry)*60),description=(topic?subject+' · '+topic:subject)+'\n'+(safeDate(entry.date)?fmtDate(entry.date):String(entry.date||'Date unavailable'))+(time?' · '+time:'')+'\n'+String(entry.type||'Study session')+' · '+duration;if(!confirm(`Delete this study-time entry?\n\n${description}\n\nIt will be removed from study-time history, totals, charts, and future exports. Related review, journal, and paper records will be kept. This cannot be undone.`))return;fsState.studyLogs=fsState.studyLogs.filter(item=>!item||String(item.id)!==String(id));saveFs();renderHub();notify('Study-time entry deleted. Study-time totals and exports updated.');}
+  function deleteStudyLog(id){const entry=fsState.studyLogs.find(item=>item&&String(item.id)===String(id));if(!entry){notify('That study-time entry could not be found. Refresh the history and try again.');return;}const subject=state.subjects.find(s=>s.id===entry.subjectId)?.name||entry.subjectName||'Unassigned subject',topic=getTopic(entry.topicId)?.name||entry.topicName||'',time=studyLogTimeInfo(entry).label,duration=formatStudyDuration(studyLogMinutes(entry)*60),description=(topic?subject+' · '+topic:subject)+'\n'+(safeDate(entry.date)?fmtDate(entry.date):String(entry.date||'Date unavailable'))+(time?' · '+time:'')+'\n'+String(entry.type||'Study session')+' · '+duration;if(!confirm(`Delete this study-time entry?\n\n${description}\n\nIt will be removed from study-time history, totals, charts, and future exports. Related review, journal, and paper records will be kept. This cannot be undone.`))return;const previous=fsState.studyLogs;fsState.studyLogs=fsState.studyLogs.filter(item=>!item||String(item.id)!==String(id));if(!saveFs()){fsState.studyLogs=previous;renderHub();notify('Study-time deletion was not saved. The previous entry has been restored.',true);return;}renderHub();notify('Study-time entry deleted. Study-time totals and exports updated.');}
   function renderPlanner(){const plan=buildPlan(true),done=new Set(fsState.taskChecks[today()]||[]),allPlan=plan.length?plan.reduce((n,x)=>n+x.minutes,0):0,doneMins=loggedMinutesToday()+liveFocusMinutesToday();const daily=fNum(fsState.settings.dailyMinutes)||90,session=fNum(fsState.settings.sessionMinutes)||25,week=weeklyReviewCount(),goal=fNum(fsState.settings.weeklyReviewGoal)||100;const nearest=nearestFutureExam();const left=nearest?Math.max(0,dayDiff(today(),nearest.date)):null;let remainingMins=0;for(const topic of state.topics){if(topic.archived)continue;const st=status(topic),meta=featureMeta(topic),mastered=topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&st!=='overdue';if(!mastered)remainingMins+=Math.max(6,Math.min(30,Math.round(10+(meta.weak?7:0)+(meta.avg&&meta.avg<3?5:0)+(st==='overdue'?Math.min(5,Math.ceil(Math.max(0,dayDiff(topic.dueDate,today()))/5)):0))));}const perDay=left!==null&&left>0?Math.ceil(remainingMins/left):remainingMins;
     const tasks=plan.length?plan.map(x=>`<div class="hub-task"><div><div class="hub-task-name">${localEsc(x.topic.name)}</div><div class="hub-task-meta">${localEsc(subjectFor(x.topic)?.name||'')} · estimated ${x.minutes} min · ${localEsc(statusText(x.status))}</div></div><button class="btn btn-sm btn-primary" data-hub-action="review-topic" data-id="${localEsc(x.topic.id)}">Review</button></div>`).join(''):`<div class="hub-empty">No due or new topics fit the current budget. You can still choose any topic for a longer focus session.</div>`;
     const calWindow=Number(fsState.calendarWindow)||14,calendarStart=today(),scheduledByDate=new Map();for(const topic of state.topics){if(topic.archived)continue;const date=topic.dueDate||topic.createdAt||'';if(date){const dayOffset=dayDiff(calendarStart,date);if(dayOffset>=0&&dayOffset<calWindow)scheduledByDate.set(date,(scheduledByDate.get(date)||0)+1);}}const nextDays=Array.from({length:calWindow},(_,i)=>{const d=dateShift(calendarStart,i),count=scheduledByDate.get(d)||0,exams=state.exams.filter(e=>e.date===d);return {d,count,exams};});
@@ -241,6 +243,7 @@
     }).join('');
     return `<div class="hub-grid">${hubCard('Syllabus coverage map','Metrics are based on topics represented in this tracker. Set an expected topic count to estimate coverage against a full syllabus.',`<div class="hub-table-wrap"><table class="hub-table"><thead><tr><th>Subject</th><th>Topics</th><th>Reviewed</th><th>Mastered</th><th>Avg rating</th><th>Weak</th><th>Coverage</th></tr></thead><tbody>${subjectRows}</tbody></table></div>`,true)}${hubCard('Expected syllabus size','Optional estimated denominator by subject; leave blank to show progress only among currently entered topics.',`${targetInputs}<div class="hub-actions"><button class="btn btn-primary" data-hub-action="save-targets">Save syllabus targets</button></div>`)}${hubCard('Weakness detector & topic mastery','Top 40 topics ordered by estimated mastery, with repeated lapses, low recent ratings and overdue status flagged.',`<div class="hub-list">${detailed||'<div class="hub-empty">No topics yet.</div>'}</div>`,true)}</div>`;
   }
+  function paperRows(){return fsState.papers.slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'')).map(p=>{const pct=p.score!==null&&p.score!==undefined&&p.maxScore>0?Math.round(p.score/p.maxScore*100):null;return `<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(p.name)} ${p.kind?`<span class="hub-pill">${localEsc(p.kind)}</span>`:''}</div><div class="hub-row-meta">${localEsc(state.subjects.find(s=>s.id===p.subjectId)?.name||'No subject')} · ${localEsc(fmtDate(p.date))}${p.duration?` · ${p.duration} min`:''}${p.errorCount?` · ${p.errorCount} error(s)`:''}</div>${pct!==null?`<div class="hub-meter"><span style="width:${Math.max(0,Math.min(100,pct))}%;background:${pct<50?'var(--red)':pct<75?'var(--amber)':'var(--accent)'}"></span></div><div class="hub-row-meta">${p.score}/${p.maxScore} · ${pct}%</div>`:''}${p.weakAreas?`<div class="hub-row-meta">Weak areas: ${localEsc(p.weakAreas)}</div>`:''}${p.notes?`<div class="hub-note">${localEsc(p.notes)}</div>`:''}</div><div class="hub-row-actions"><button type="button" class="btn btn-sm btn-danger" data-hub-action="delete-paper" data-id="${localEsc(p.id)}">Delete</button></div></div>`;}).join('');}
   function renderPapers(){const n=fsState.papers.length,scored=fsState.papers.filter(p=>p.score!==null&&p.score!==undefined&&p.maxScore>0),avg=scored.length?Math.round(scored.reduce((s,p)=>s+p.score/p.maxScore*100,0)/scored.length):0,minutes=fsState.papers.reduce((s,p)=>s+fNum(p.duration),0),err=fsState.papers.reduce((s,p)=>s+fNum(p.errorCount),0);const exam=nearestFutureExam();const form=`<form id="hubPaperForm" class="hub-form">${inputField('Paper / practice name','hubPaperName','','text','required maxlength="160" placeholder="e.g. Economics 2022 Paper II"')}<div class="hub-field"><label for="hubPaperSubject">Subject</label><select id="hubPaperSubject">${subjectOptions('',true)}</select></div><div class="hub-field"><label for="hubPaperKind">Practice type</label><select id="hubPaperKind">${selectOptions([['Past paper','Past paper'],['Timed section','Timed section'],['Calculation drill','Calculation drill'],['Theory recall','Theory recall'],['Mock exam','Mock exam'],['Other','Other']],'Past paper')}</select></div>${inputField('Date','hubPaperDate',today(),'date','required')}${inputField('Score achieved','hubPaperScore','','number','min="0" step="any" placeholder="Optional"')}${inputField('Maximum score','hubPaperMax','','number','min="0.01" step="any" placeholder="Optional"')}${inputField('Duration (minutes)','hubPaperDuration','','number','min="0" max="10000" step="1"')}${inputField('Errors / questions missed','hubPaperErrors','0','number','min="0" max="10000" step="1"')}<div class="hub-field full"><label for="hubPaperWeak">Weak areas / missed concepts</label><input id="hubPaperWeak" maxlength="1000" placeholder="e.g. elasticity calculations, company accounts"></div><div class="hub-field full"><label for="hubPaperNotes">Notes and next actions</label><textarea id="hubPaperNotes" maxlength="2000" placeholder="Why marks were lost, what to practise next"></textarea></div><div class="hub-actions full"><button class="btn btn-primary" type="submit">Save paper / practice log</button></div></form>`;
     const stats=`<div class="hub-kpis" style="margin-bottom:0"><div class="hub-kpi"><strong>${n}</strong><span>Practices logged</span></div><div class="hub-kpi"><strong>${avg}%</strong><span>Average scored result</span></div><div class="hub-kpi"><strong>${minutes}</strong><span>Paper minutes logged</span></div><div class="hub-kpi"><strong>${err}</strong><span>Missed items recorded</span></div></div>`;
     const examCard=exam?`<div class="hub-note"><strong>${localEsc(exam.name)}</strong>: ${dayDiff(today(),exam.date)} day(s) left. Plan subject-specific paper attempts alongside spaced reviews; this tracker does not assume that a completed review equals exam readiness.</div>`:`<div class="hub-note">Add your exam date in Setup & data to enable countdown planning.</div>`;
@@ -1474,34 +1477,38 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
     const action=button.dataset.hubAction,id=button.dataset.id;
     if(!['delete-study-log','delete-paper','delete-journal','delete-goal','bulk-delete'].includes(action))return;
     event.preventDefault();
-    event.stopImmediatePropagation();
+    event.stopPropagation();
     try{
       if(action==='delete-study-log')deleteStudyLog(id);
       else if(action==='delete-paper'){
         const paper=fsState.papers.find(item=>String(item.id)===String(id));
         if(!paper){notify('That paper/practice record could not be found. Refresh the list and try again.');return;}
         if(confirm('Delete this paper/practice record?')){
-          fsState.papers=fsState.papers.filter(item=>String(item.id)!==String(id));
-          saveFs();renderHub();
+          const previous=fsState.papers;fsState.papers=fsState.papers.filter(item=>String(item.id)!==String(id));
+          if(!saveFs()){fsState.papers=previous;renderHub();notify('Paper deletion was not saved. The previous record has been restored.',true);return;}
+          renderHub();
         }
       }else if(action==='delete-journal'){
         const entry=fsState.journal.find(item=>String(item.id)===String(id));
         if(!entry){notify('That journal entry could not be found. Refresh the list and try again.');return;}
         if(confirm('Delete this journal entry?')){
-          fsState.journal=fsState.journal.filter(item=>String(item.id)!==String(id));
-          saveFs();renderHub();
+          const previous=fsState.journal;fsState.journal=fsState.journal.filter(item=>String(item.id)!==String(id));
+          if(!saveFs()){fsState.journal=previous;renderHub();notify('Journal deletion was not saved. The previous entry has been restored.',true);return;}
+          renderHub();
         }
       }else if(action==='delete-goal'){
         const goal=fsState.goals.find(item=>String(item.id)===String(id));
         if(!goal){notify('That milestone could not be found. Refresh the list and try again.');return;}
         if(confirm('Delete this milestone?')){
-          fsState.goals=fsState.goals.filter(item=>String(item.id)!==String(id));
-          saveFs();renderHub();
+          const previous=fsState.goals;fsState.goals=fsState.goals.filter(item=>String(item.id)!==String(id));
+          if(!saveFs()){fsState.goals=previous;renderHub();notify('Milestone deletion was not saved. The previous milestone has been restored.',true);return;}
+          renderHub();
         }
       }else if(action==='bulk-delete')bulkAction(action);
     }catch(error){
       console.error('Nexus Study Hub delete action failed ('+action+')',error);
-      notify('Nexus could not complete this deletion. Reload and try again.');
+      const detail=String(error&&error.message||error||'Unknown error').replace(/\\s+/g,' ').slice(0,180);
+      notify('Delete failed ('+action+'): '+detail,true);
     }
   }
   document.addEventListener('click',handleStudyHubDeleteClick,true);
