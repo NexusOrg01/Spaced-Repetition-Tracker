@@ -129,6 +129,7 @@
   window.NexusDeleteDiagnosticPhase=markDeleteDiagnosticPhase;
   window.NexusDeleteDiagnosticNoteError=noteDeleteDiagnosticError;
   window.NexusDeleteDiagnosticComplete=completeDeleteDiagnostic;
+  window.NexusDeleteDiagnosticFail=failDeleteDiagnostic;
   window.NexusGetLastDeleteDiagnostic=()=>{
     if(window.NexusLastDeleteDiagnostic)return window.NexusLastDeleteDiagnostic;
     try{const raw=window.sessionStorage?.getItem(DELETE_DIAGNOSTIC_STORAGE_KEY);return raw?JSON.parse(raw):null;}catch(_){return null;}
