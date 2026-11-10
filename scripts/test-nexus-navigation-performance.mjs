@@ -79,20 +79,18 @@ const hubClickEnd = studyHub.indexOf("\n  document.addEventListener('click',e=>{
 assert.ok(hubClickStart >= 0 && hubClickEnd > hubClickStart,
   'Study Hub actions must have one local delegated click handler');
 const hubClickSource = studyHub.slice(hubClickStart, hubClickEnd);
-for (const action of ['analytics-card-toggle','analytics-section','analytics-toggle-rating',
-  'analytics-custom-apply','analytics-export-pdf','analytics-export','analytics-retry']) {
-  assert.ok(hubClickSource.includes("a==='" + action + "'"),
-    'Study Hub delegate must handle ' + action + ' in both embedded and standalone Analytics');
-}
-assert.ok(!hubClickSource.includes("if(['analytics-card-toggle','analytics-section'"),
-  'Analytics controls must not be short-circuited by the Study Hub delegate');
+assert.ok(hubClickSource.includes("if(['analytics-card-toggle','analytics-section','analytics-toggle-rating','analytics-custom-apply','analytics-export-pdf','analytics-export','analytics-retry'].includes(a))return;"),
+  'the Study Hub handler must defer standalone Analytics controls to their single owner');
 
 const analyticsDocStart = studyHub.indexOf("document.addEventListener('click',e=>{\n    const openButton=e.target.closest('#homeOpenAnalytics');");
 const analyticsDocEnd = studyHub.indexOf("\n  document.addEventListener('change',e=>{", analyticsDocStart);
 assert.ok(analyticsDocStart >= 0 && analyticsDocEnd > analyticsDocStart,
   'Home Analytics launch action must remain available');
-assert.ok(!studyHub.slice(analyticsDocStart, analyticsDocEnd).includes('dataset.hubAction'),
-  'Analytics buttons must not depend on a standalone-only document handler');
+const analyticsDocSource = studyHub.slice(analyticsDocStart, analyticsDocEnd);
+assert.ok(analyticsDocSource.includes("if(action==='analytics-export'){exportAnalyticsCsv();return;}") &&
+  analyticsDocSource.includes("if(action==='analytics-export-pdf'){openAnalyticsPdfDialog();return;}") &&
+  analyticsDocSource.includes("!button.closest('#analyticsStandalone')&&!document.body.classList.contains('analytics-mode')"),
+  'standalone Analytics must retain its guarded document-level PDF/CSV/action handler');
 
 assert.ok(studyHub.includes('clearTimeout(analyticsEntitySearchTimer);') &&
   studyHub.includes('analyticsEntitySearchTimer=setTimeout(()=>{') &&

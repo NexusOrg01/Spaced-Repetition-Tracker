@@ -160,6 +160,7 @@ if (analyticsFunctionNames.every(name => analyticsFunctionSources[name])) {
     const testContext = {
       fsState:{analyticsPeriod:'week',analyticsCustomStart:'2026-10-10',analyticsCustomEnd:fixedToday,studyLogs:[{date:'2026-10-12',minutes:25,subjectId:'science-bio'},{date:'2026-10-15',minutes:50,subjectId:'science-chem'},{date:'2026-10-16',minutes:0,subjectId:'science-bio'}]},
       chartGradientCounter:0,
+      ratingAnalyticsSelectionCache:null,
       state:{history:sampleHistory.map((item,index)=>({...item,subjectId:index%2?'science-chem':'science-bio'})),subjects:[{id:'science-bio',name:'Biology'},{id:'science-chem',name:'Chemistry'}]},
       today:() => fixedToday,
       safeDate:validCalendarDate,

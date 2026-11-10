@@ -1470,6 +1470,7 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
   hubEl('hubContent').addEventListener('click',e=>{
     const b=e.target.closest('[data-hub-action]');if(!b)return;
     const a=b.dataset.hubAction,id=b.dataset.id;
+    if(['analytics-card-toggle','analytics-section','analytics-toggle-rating','analytics-custom-apply','analytics-export-pdf','analytics-export','analytics-retry'].includes(a))return;
     if(a==='analytics-card-toggle'){
       const card=b.closest('[data-analytics-collapsible]'),content=card?.querySelector('.analytics-card-content');
       if(!card||!content)return;
@@ -1522,7 +1523,40 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
   });
   document.addEventListener('click',e=>{
     const openButton=e.target.closest('#homeOpenAnalytics');
-    if(openButton){e.preventDefault();openAnalyticsWindow();}
+    if(openButton){e.preventDefault();openAnalyticsWindow();return;}
+    const button=e.target.closest('[data-hub-action]');if(!button)return;
+    const action=button.dataset.hubAction;
+    if(!['analytics-card-toggle','analytics-section','analytics-toggle-rating','analytics-custom-apply','analytics-export-pdf','analytics-export','analytics-retry'].includes(action))return;
+    if(!button.closest('#analyticsStandalone')&&!document.body.classList.contains('analytics-mode'))return;
+    e.preventDefault();
+    try{
+      if(action==='analytics-card-toggle'){
+        const card=button.closest('[data-analytics-collapsible]'),content=card?.querySelector('.analytics-card-content');
+        if(!card||!content)return;
+        content.hidden=!content.hidden;button.setAttribute('aria-expanded',String(!content.hidden));button.textContent=content.hidden?'Expand':'Collapse';return;
+      }
+      if(action==='analytics-section'){const next=button.dataset.analyticsSection;if(['presses','papers','activity'].includes(next)){analyticsSection=next;renderHub();}return;}
+      if(action==='analytics-toggle-rating'){
+        const rating=Number(button.dataset.ratingToggle),current=getVisibleAnalyticsRatings();
+        if(!Number.isInteger(rating)||rating<1||rating>5)return;
+        if(current.includes(rating)){
+          if(current.length===1){notify('Keep at least one rating selected.');return;}
+          fsState.analyticsVisibleRatings=current.filter(r=>r!==rating);
+        }else fsState.analyticsVisibleRatings=[...current,rating].sort((x,y)=>x-y);
+        saveFs();renderHub();return;
+      }
+      if(action==='analytics-custom-apply'){
+        const from=hubEl('hubRatingCustomStart')?.value||'',to=hubEl('hubRatingCustomEnd')?.value||'';
+        if(!safeDate(from)||!safeDate(to)||from>to){notify('Choose valid dates. The From date must be on or before the To date.');return;}
+        fsState.analyticsCustomStart=from;fsState.analyticsCustomEnd=to;fsState.analyticsPeriod='custom';saveFs();renderHub();return;
+      }
+      if(action==='analytics-export-pdf'){openAnalyticsPdfDialog();return;}
+      if(action==='analytics-export'){exportAnalyticsCsv();return;}
+      if(action==='analytics-retry'){renderHub();return;}
+    }catch(error){
+      console.error('Nexus Analytics action failed ('+action+')',error);
+      notify(action==='analytics-export-pdf'?'Could not generate the PDF report. Allow pop-ups and try again.':action==='analytics-export'?'Could not export analytics CSV. Please try again.':'Analytics could not update. Please try again.');
+    }
   });
 
   document.addEventListener('change',e=>{
