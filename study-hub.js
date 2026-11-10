@@ -1063,7 +1063,7 @@
     else{from=safeDate(fsState.analyticsCustomStart)?fsState.analyticsCustomStart:dateShift(now,-29);to=safeDate(fsState.analyticsCustomEnd)?fsState.analyticsCustomEnd:now;}
     const valid=safeDate(from)&&safeDate(to)&&from<=to;
     const rangeDays=valid?Math.max(1,dayDiff(from,to)+1):30;
-    const heatDays=({7:7,30:30,84:84,180:180,365:365})[Number(fsState.heatmapPeriod]||84]||84;
+    const heatDays=({7:7,30:30,84:84,180:180,365:365})[Number(fsState.heatmapPeriod)]||84;
     const dailyTarget=Math.max(1,fNum(fsState.settings.dailyMinutes)||90);
     const cache=homeConsistencyMetricsCache;
     if(cache&&cache.topics===state.topics&&cache.history===state.history&&cache.studyLogs===fsState.studyLogs&&
