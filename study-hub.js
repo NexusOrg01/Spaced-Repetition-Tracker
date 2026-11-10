@@ -1208,6 +1208,14 @@
   }
   // Core Overview consumes the same cached topic aggregates as this panel.
   window.NexusGetOverviewTopicMetrics=()=>getHomeConsistencyMetrics();
+  // Settings may need subject totals before the analytics cache has been built.
+  // Expose only a validated cache hit so navigation never forces a full scan.
+  window.NexusGetCachedOverviewTopicMetrics=()=>{
+    const cache=homeTopicMetricsCache;
+    if(!cache||cache.topics!==state.topics||cache.topicCount!==state.topics.length||
+       cache.history!==state.history||cache.historyCount!==state.history.length||cache.today!==today())return null;
+    return cache;
+  };
   function renderHomeConsistencySummary(){
     const target=hubEl('homeConsistencySummary');
     // Call sites decide when this summary should refresh. Do not silently skip
