@@ -232,7 +232,7 @@ const trackedTopics=new Proxy(fixtureTopics,{
   }
 });
 const overviewTarget={innerHTML:''};
-const consistencySandbox={
+let rendererErrors=0;\nconst consistencySandbox={
   window:{NexusGetHistoryActivityIndex:()=>{indexReads++;return fixtureIndex;}},
   state:{topics:trackedTopics,history:fixtureHistory},
   fsState:{analyticsPeriod:'month',heatmapPeriod:365,settings:{dailyMinutes:90},studyLogs:fixtureLogs},
@@ -249,7 +249,8 @@ const consistencySandbox={
   currentStudyStreak:()=>2,
   hubEl:id=>id==='homeConsistencySummary'?overviewTarget:{classList:{contains:()=>false}},
   localEsc:value=>String(value),
-  selectOptions:options=>options.map(([value,label])=>'<option value="'+value+'">'+label+'</option>').join('')
+  selectOptions:options=>options.map(([value,label])=>'<option value="'+value+'">'+label+'</option>').join(''),
+  console:{error(){rendererErrors++;}}
 };
 vm.createContext(consistencySandbox);
 vm.runInContext(consistencySource,consistencySandbox,{filename:'home-consistency-runtime.js'});
@@ -258,7 +259,15 @@ assert.ok(overviewTarget.innerHTML.includes('19286 of 77144 active topics'),'ren
 assert.ok(overviewTarget.innerHTML.includes('Review activity heatmap'),'the Overview renderer must populate the heatmap');
 assert.ok(overviewTarget.innerHTML.includes('value="365"'),'the Overview renderer must expose the 12-month period');
 assert.equal((overviewTarget.innerHTML.match(/class="hub-heat"/g)||[]).length,365,'the 12-month heatmap must render exactly 365 cells');
-assert.equal(topicArrayPasses,1,'initial Overview aggregation must traverse the full topic catalogue once');
+for(const days of [7,30,84,180,365]){
+  consistencySandbox.fsState.heatmapPeriod=days;
+  consistencySandbox.renderHomeConsistencySummary();
+  assert.equal(consistencySandbox.window.NexusGetOverviewTopicMetrics().heat.length,days,
+    'the '+days+'-day heatmap option must produce the exact requested number of cells');
+  assert.equal((overviewTarget.innerHTML.match(/class="hub-heat"/g)||[]).length,days,
+    'the '+days+'-day heatmap renderer must populate every requested cell');
+}
+assert.equal(topicArrayPasses,1,'initial Overview aggregation and every heatmap-period change must traverse the full topic catalogue only once');
 const firstTopicVisits=topicVisits,firstLogVisits=logVisits,firstIndexReads=indexReads;
 const expectedMasteryChecks=0;
 assert.equal(firstTopicVisits,expectedMasteryChecks,'the shared aggregate must read per-topic history statistics directly instead of allocating featureMeta objects');
@@ -370,7 +379,21 @@ assert.ok(indexHtml.includes('class="muted small consistency-loading"'),
 assert.ok(bootstrap.includes('Consistency insights could not be initialized.')&&bootstrap.includes('Consistency insights could not be rendered.'),
   'a missing or non-rendering consistency module must produce a visible diagnostic instead of a silent blank panel');
 
-console.log('Overview consistency runtime tests passed: shared history index, 77,144 topics, 48,000 history rows, 24,000 study logs, 365-cell heatmap, selective cache reuse, and deferred startup rendering.');
+// Exercise the renderer's actual failure boundary. A failed heatmap calculation
+// must produce a visible diagnostic and must not leave the panel silently blank.
+const originalReviewActivity=consistencySandbox.reviewActivity;
+consistencySandbox.window.NexusInvalidateHomeConsistencyCache();
+consistencySandbox.reviewActivity=()=>{throw new Error('fixture heatmap failure');};
+consistencySandbox.renderHomeConsistencySummary();
+assert.equal(rendererErrors,1,'a heatmap-render failure must be logged exactly once');
+assert.ok(overviewTarget.innerHTML.includes('Consistency metrics could not be displayed.'),
+  'a heatmap-render failure must replace stale/blank content with a visible recovery message');
+consistencySandbox.reviewActivity=originalReviewActivity;
+consistencySandbox.renderHomeConsistencySummary();
+assert.ok(overviewTarget.innerHTML.includes('Review activity heatmap'),
+  'the consistency renderer must recover on the next successful render');
+
+console.log('Overview consistency runtime tests passed: shared history index, 77,144 topics, 48,000 history rows, 24,000 study logs, all five heatmap periods, renderer error recovery, selective cache reuse, and deferred startup rendering.');
 
 assert.ok(studyHub.includes('window.NexusGetFeatureStateForCommit=()=>fsState;'),
   'ordinary tracker saves must be able to reuse the live Study Hub state during the synchronous queue commit');
