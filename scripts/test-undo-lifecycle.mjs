@@ -103,10 +103,15 @@ const undoSandbox={
  undoState:{kind:'feature-array-reference',value:{topics:[],history:[]},collection:'studyLogs',previous},
  undoTimer:1,undoSilent:true,clearTimeout(){},
  window:{NexusRestoreFeatureArray:(collection,array)=>{feature[collection]=array;return true;},NexusUndoCascadeDelete:()=>false},
- save(){saveCalls++;return true;},renderAll(){renderCalls++;},$:id=>undoNodes.get(id)
+ save(){saveCalls++;return true;},renderAll(){renderCalls++;},notify(){},$:id=>undoNodes.get(id)
 };
+const clearUndoStart=appCore.indexOf('  function clearUndoPresentation(){');
+const clearUndoEnd=appCore.indexOf('  function scheduleUndoExpiry',clearUndoStart);
+assert.ok(clearUndoStart>=0&&clearUndoEnd>clearUndoStart,
+  'the real shared Undo cleanup helper must be included in the restore test');
 vm.createContext(undoSandbox);
-vm.runInContext(appCore.slice(undoStart,undoEnd)+'\nthis.runUndo=undo;',undoSandbox);
+vm.runInContext(appCore.slice(clearUndoStart,clearUndoEnd)+'\n'+
+  appCore.slice(undoStart,undoEnd)+'\nthis.runUndo=undo;',undoSandbox);
 undoSandbox.runUndo();
 assert.strictEqual(feature.studyLogs,previous);
 assert.equal(saveCalls,1);assert.equal(renderCalls,1);
