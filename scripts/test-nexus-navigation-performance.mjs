@@ -76,6 +76,11 @@ const coreRouterSandbox = {
   deleteSubject: id => coreRouteCalls.push(['delete-subject', id]),
   deleteStream: id => coreRouteCalls.push(['delete-stream', id]),
   deleteExam: id => coreRouteCalls.push(['delete-exam', id]),
+  beginDeleteDiagnostic() {},
+  markDeleteDiagnosticPhase() {},
+  completeDeleteDiagnostic() {},
+  failDeleteDiagnostic() { return null; },
+  $: () => ({ style: { display: '' } }),
   notify() {}
 };
 vm.createContext(coreRouterSandbox);
