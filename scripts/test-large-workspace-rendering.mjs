@@ -428,8 +428,25 @@ consistencySandbox.reviewActivity=originalReviewActivity;
 consistencySandbox.renderHomeConsistencySummary();
 assert.ok(overviewTarget.innerHTML.includes('Review activity heatmap'),
   'the consistency renderer must recover on the next successful render');
+assert.ok(studyHub.includes('data-action="retry-home-consistency"') &&
+  studyHub.includes("event.target?.closest?.('[data-action=\\"retry-home-consistency\\"]')"),
+  'a runtime rendering failure must offer a working delegated Retry action');
 
-console.log('Overview consistency runtime tests passed: shared history index, 77,144 topics, 48,000 history rows, 24,000 study logs, all five heatmap periods, renderer error recovery, selective cache reuse, and deferred startup rendering.');
+// Empty review history must still produce a valid zero-filled heatmap, not an
+// exception or a missing panel.
+fixtureHistory.length=0;
+fixtureDateCounts.clear();
+consistencySandbox.window.NexusInvalidateHomeConsistencyCache();
+consistencySandbox.renderHomeConsistencySummary();
+assert.ok(overviewTarget.innerHTML.includes('Review activity heatmap'),
+  'empty history must still render the Consistency panel and heatmap');
+assert.equal((overviewTarget.innerHTML.match(/class="hub-heat"/g)||[]).length,365,
+  'empty history must render the complete requested heatmap window');
+assert.equal((overviewTarget.innerHTML.match(/data-count="0"/g)||[]).length,365,
+  'empty history must render zero activity for every heatmap day');
+assert.equal(rendererErrors,1,'empty history must not introduce another renderer failure');
+
+console.log('Overview consistency runtime tests passed: shared history index, 77,144 topics, 48,000 history rows, 24,000 study logs, all five heatmap periods, empty-history output, renderer error recovery, selective cache reuse, and deferred startup rendering.');
 
 assert.ok(studyHub.includes('window.NexusGetFeatureStateForCommit=()=>fsState;'),
   'ordinary tracker saves must be able to reuse the live Study Hub state during the synchronous queue commit');
