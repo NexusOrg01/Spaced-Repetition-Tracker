@@ -10,6 +10,12 @@ const androidAssets = read('scripts/build-android-assets.mjs');
 const androidWorkflow = read('.github/workflows/android-build.yml');
 const fdroidWorkflow = read('.github/workflows/fdroid-validation.yml');
 
+assert.ok(appCore.includes('async function buildTopicCountsCooperative') &&
+  appCore.includes('buildTopicCountsCooperative(source,isCurrent).then') &&
+  appCore.includes('window.NexusGetCachedOverviewTopicMetrics?.()') &&
+  studyHub.includes('window.NexusGetCachedOverviewTopicMetrics=()=>'),
+  'Settings and the shared structure tree must use cache hits or cooperative topic counting, never force a synchronous aggregate rebuild');
+
 assert.ok(appCore.includes("startUndoHistoryChange('History entry deleted.',{silent:true});") &&
   !appCore.includes("notify('History entry deleted.',true);"),
   'review-history deletion must use the silent Undo-only notification rather than a competing success message');
