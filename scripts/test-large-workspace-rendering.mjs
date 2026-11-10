@@ -286,9 +286,9 @@ const trackedTopics=new Proxy(fixtureTopics,{
   }
 });
 const overviewTarget={innerHTML:''};
-let rendererErrors=0;
+let rendererErrors=0,consistencyClickHandler=null;
 const consistencySandbox={
-  document:{addEventListener(){}},
+  document:{addEventListener(type,handler){if(type==='click')consistencyClickHandler=handler;}},
   window:{NexusGetHistoryActivityIndex:()=>{indexReads++;return fixtureIndex;}},
   state:{topics:trackedTopics,history:fixtureHistory},
   fsState:{analyticsPeriod:'month',heatmapPeriod:365,settings:{dailyMinutes:90},studyLogs:fixtureLogs},
