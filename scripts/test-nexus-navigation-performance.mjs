@@ -27,7 +27,9 @@ assert.ok(coreDeleteSource.includes('event.preventDefault();') &&
   appCore.includes("document.addEventListener('click',handleCoreDeleteClick,true);"),
   'core delete actions must be intercepted before container handlers and form submission');
 assert.ok(!appCore.includes("$('historyList').addEventListener('click'") &&
-  !appCore.includes("if(action==='delete-topic')deleteTopic(id)"),
+  !appCore.includes("$('topicGrid').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='edit-topic')openTopic(id);if(action==='delete-topic')deleteTopic(id);") &&
+  !appCore.includes("$('structureList').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='edit-stream')openStream(id);if(action==='delete-stream')deleteStream(id);") &&
+  !appCore.includes("$('examList').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;if(b.dataset.action==='edit-exam')openExam(b.dataset.id);if(b.dataset.action==='delete-exam')deleteExam(b.dataset.id);"),
   'old per-container delete handling must not duplicate core deletion');
 
 const hubDeleteStart = studyHub.indexOf('function handleStudyHubDeleteClick(event){');
