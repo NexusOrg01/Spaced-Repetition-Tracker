@@ -63,7 +63,7 @@ const largeCascadeState={
   syllabusTargets:{'subject-a':{target:1},'subject-b':{target:2}},
   selectedTopicIds:Array.from({length:20000},(_,index)=>'topic-'+index)
 };
-const cascadeSandbox={fsState:largeCascadeState,saveFs(){cascadeSaveCalls++;return true;},renderHub(){cascadeRenderCalls++;}};
+const cascadeSandbox={window:{},fsState:largeCascadeState,saveFs(){cascadeSaveCalls++;return true;},renderHub(){cascadeRenderCalls++;}};
 vm.createContext(cascadeSandbox);
 vm.runInContext(studyHub.slice(cascadeStart,cascadeEnd),cascadeSandbox,{filename:'large-cascade-delete.js'});
 const deletedIds=Array.from({length:20000},(_,index)=>'topic-'+index);
