@@ -429,7 +429,8 @@ consistencySandbox.renderHomeConsistencySummary();
 assert.ok(overviewTarget.innerHTML.includes('Review activity heatmap'),
   'the consistency renderer must recover on the next successful render');
 assert.ok(studyHub.includes('data-action="retry-home-consistency"') &&
-  studyHub.includes("event.target?.closest?.('[data-action=\\"retry-home-consistency\\"]')"),
+  studyHub.includes("document.addEventListener('click',event=>") &&
+  studyHub.includes('renderHomeConsistencySummary();'),
   'a runtime rendering failure must offer a working delegated Retry action');
 
 // Empty review history must still produce a valid zero-filled heatmap, not an
