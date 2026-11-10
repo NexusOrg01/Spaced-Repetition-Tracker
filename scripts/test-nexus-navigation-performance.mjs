@@ -121,6 +121,10 @@ const hubRouterSandbox = {
   saveFs: () => true,
   renderHub() {},
   deleteStudyLog: id => hubRouteCalls.push(['delete-study-log', id]),
+  deleteStudyHubRecord(collection, id) {
+    const rows = this.fsState[collection];
+    this.fsState[collection] = rows.filter(item => String(item.id) !== String(id));
+  },
   bulkAction: action => hubRouteCalls.push([action]),
   console
 };

@@ -1589,7 +1589,7 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
       console.error('Nexus Study Hub delete action failed ('+action+')',diagnostic||error);
       const detail=String(error&&error.message||error||'Unknown error').replace(/\s+/g,' ').slice(0,180);
       if(diagnosticButton)diagnosticButton.style.display='';
-      notify('Delete failed ('+action+'): '+(diagnostic?.failedAt?'['+diagnostic.failedAt+'] ':'')+detail,Boolean(undoState),{showMessage:true});
+      notify('Delete failed ('+action+'): '+(diagnostic?.failedAt?'['+diagnostic.failedAt+'] ':'')+detail,Boolean(window.NexusHasPendingUndo?.()),{showMessage:true});
     }finally{
       window.NexusDeleteDiagnosticComplete?.();
     }

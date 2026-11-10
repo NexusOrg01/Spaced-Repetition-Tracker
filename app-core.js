@@ -411,6 +411,7 @@
   window.NexusStartUndoBulkDelete=startUndoBulkDelete;
   window.NexusStartUndoTopicBatch=startUndoTopicBatch;
   window.NexusUndoLastAction=()=>undo();
+  window.NexusHasPendingUndo=()=>Boolean(undoState);
   window.NexusStartUndoFeatureArrayDelete=(collection,previous)=>{
     if(!['studyLogs','papers','journal','goals'].includes(collection)||!Array.isArray(previous))return false;
     if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
