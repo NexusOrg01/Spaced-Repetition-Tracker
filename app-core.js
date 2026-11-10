@@ -555,7 +555,7 @@
     $('dueQueue').innerHTML=queue.length?queue.map(({topic,status:st})=>{const d=subjectDisplay(topic);return '<div class="due-item"><div style="min-width:0"><div class="due-title">'+esc(topic.name)+'</div><div class="due-meta"><span>'+esc(d.subject)+'</span><span>·</span><span>'+esc(d.stream)+'</span><span class="pill '+st+'">'+statusText(st)+'</span></div></div><button type="button" class="btn btn-sm btn-primary" data-action="review" data-id="'+esc(topic.id)+'">Review</button></div>';}).join(''):'<div class="empty"><strong>You\'re all caught up</strong>No overdue or due topics at the moment. New topics are available under Topics.</div>';
     const subjectGroups=state.subjects.map(sub=>{const stats=progressBySubject.get(sub.id)||{total:0,done:0};return {s:sub,total:stats.total,done:stats.done,stream:streamFor(sub)?.name||''};}).filter(x=>x.total||state.subjects.length<8);
     $('progressList').innerHTML=subjectGroups.length?subjectGroups.map(g=>{const p=g.total?Math.round(g.done/g.total*100):0;return '<div class="progress-row"><div class="progress-label"><strong>'+esc(g.s.name)+'</strong><span>'+g.done+'/'+g.total+' · '+p+'%</span></div><div class="progress-track"><div class="progress-fill" style="width:'+p+'%"></div></div><div class="muted small" style="margin-top:4px">'+esc(g.stream)+'</div></div>';}).join(''):'<div class="empty">Add a subject to see progress.</div>';
-    renderUpcomingQueue();renderOverviewAnalytics();
+    renderUpcomingQueue(sharedOverview);renderOverviewAnalytics();
   }
   function addTopicHistoryMetric(metrics,record){
     const id=String(record&&record.topicId||'');if(!id)return;
@@ -657,12 +657,18 @@
     const series=dailyReviewSeries(7);
     $('overviewAnalytics').innerHTML=`<div class="insight-metrics">${metricMarkup(recent.length,'Reviews this week')}${metricMarkup(average?average.toFixed(1)+'/5':'—','Average recall rating')}${metricMarkup(currentStudyStreak()+'d','Current study streak')}</div><div class="chart-heading"><span>Daily reviews</span><small>7-day activity</small></div>${state.history.length?overviewLineChartMarkup(series):'<div class="chart-empty">Your chart will fill in after your first review.</div>'}`;
   }
-  function renderUpcomingQueue(){
+  function renderUpcomingQueue(sharedMetrics=null){
     const todayKey=today(),limit=plusDays(todayKey,7),items=[];
-    const compare=(a,b)=>a.dueDate.localeCompare(b.dueDate)||naturalCompare(a.name,b.name);
-    for(const topic of state.topics){
-      if(topic.archived||!validDate(topic.dueDate)||topic.dueDate<=todayKey||topic.dueDate>limit)continue;
-      insertSortedLimit(items,topic,7,compare);
+    if(Array.isArray(sharedMetrics?.upcomingQueue)){
+      // Reuse the bounded top-seven list from the shared Overview aggregate.
+      // This avoids a second full scan of tens of thousands of topics.
+      items.push(...sharedMetrics.upcomingQueue);
+    }else{
+      const compare=(a,b)=>a.dueDate.localeCompare(b.dueDate)||naturalCompare(a.name,b.name);
+      for(const topic of state.topics){
+        if(topic.archived||!validDate(topic.dueDate)||topic.dueDate<=todayKey||topic.dueDate>limit)continue;
+        insertSortedLimit(items,topic,7,compare);
+      }
     }
     $('upcomingCount').textContent=items.length+' scheduled';
     $('upcomingQueue').innerHTML=items.length?items.map(t=>{const d=subjectDisplay(t),days=dayDiff(todayKey,t.dueDate);return '<div class="due-item upcoming-row"><div style="min-width:0"><div class="due-title">'+esc(t.name)+'</div><div class="due-meta"><span>'+esc(d.subject)+'</span><span class="pill upcoming">In '+days+' day'+(days===1?'':'s')+'</span></div></div><div class="upcoming-date"><strong>'+esc(fmtDate(t.dueDate))+'</strong><button type="button" class="btn btn-sm" data-action="review" data-id="'+esc(t.id)+'">Review</button></div></div>';}).join(''):'<div class="empty"><strong>No reviews scheduled this week</strong>Upcoming topics will appear here when their next review date falls within seven days.</div>';
