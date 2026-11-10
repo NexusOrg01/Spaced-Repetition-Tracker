@@ -127,9 +127,10 @@ assert.ok(appCore.includes('function getHistoryMetrics()') &&
   appCore.includes('window.NexusGetOverviewTopicMetrics?.()') &&
   appCore.includes('reviewedToday=getHistoryMetrics().byDate.get(todayKey)||0;'),
   'Overview history and topic totals must use the shared revision-aware metrics cache, with an indexed-history fallback during early startup');
-assert.ok(appCore.includes('selectTopK(state.topics,topicVisibleLimit') && appCore.includes('selectTopK(state.history,historyVisibleLimit') &&
+assert.ok(appCore.includes('selectTopKCooperative(source,topicVisibleLimit') && appCore.includes('selectTopKCooperative(source,historyVisibleLimit') &&
+  appCore.includes('await new Promise(resolve=>setTimeout(resolve,0))') &&
   appCore.includes("const activeView=document.querySelector('.view.active')?.id||'view-overview';"),
-  'topic and history screens must retain only the visible top-ranked page while refreshing only the active view');
+  'topic and history screens must retain only the visible top-ranked page, yield during large scans, and refresh only the active view');
 assert.ok(appCore.includes('window.NexusCreateTopKCollector=createTopKCollector;') &&
   studyHub.includes('NexusCreateTopKCollector(studyLogHistoryLimit') && studyHub.includes('NexusCreateTopKCollector(40'),
   'Study Hub mastery and study-log history must use the same bounded top-K collector');
