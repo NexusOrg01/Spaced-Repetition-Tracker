@@ -805,12 +805,12 @@
   }
   function deleteTopic(id){
     markDeleteDiagnosticPhase('topic:lookup');
-    const topic=getTopic(id);if(!topic)return;
-    if(!confirm(`Delete “${topic.name}” from the topic tracker? Existing history entries will be retained.`))return;
+    const t=getTopic(id);if(!t)return;
+    if(!confirm(`Delete “${t.name}” from the topic tracker? Existing history entries will be retained.`))return;
     markDeleteDiagnosticPhase('topic:undo-snapshot');
     startUndoBulkDelete('Topic deleted.');
     markDeleteDiagnosticPhase('topic:curriculum-tombstone');
-    if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedTopic(state,CURRICULUM_PACKS,topic);
+    if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedTopic(state,CURRICULUM_PACKS,t);
     markDeleteDiagnosticPhase('topic:filter-tracker');
     state.topics=state.topics.filter(item=>item.id!==id);
     markDeleteDiagnosticPhase('topic:save');
