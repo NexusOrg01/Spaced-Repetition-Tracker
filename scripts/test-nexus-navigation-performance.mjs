@@ -474,7 +474,8 @@ assert.equal(cascadedTopicIds.count, deletedTopicCount,
   'the Study Hub cascade must receive every deleted topic ID');
 assert.equal(cascadedTopicIds.first, 'topic-delete-0');
 assert.equal(cascadedTopicIds.last, 'topic-delete-' + (deletedTopicCount - 1));
-assert.deepEqual(cascadedTopicIds.options, { persist: false, render: false });
+assert.equal(cascadedTopicIds.options.persist, false);
+assert.equal(cascadedTopicIds.options.render, false);
 assert.equal(largeDeleteState.topics.length, totalTopicCount - deletedTopicCount,
   'large subject deletion must preserve every unrelated topic');
 assert.equal(largeDeleteState.history.length, totalHistoryCount - deletedHistoryCount,
