@@ -825,7 +825,7 @@
       else if(action==='delete-exam')deleteExam(id);
     }catch(error){
       console.error('Nexus delete action failed ('+action+')',error);
-      const detail=String(error&&error.message||error||'Unknown error').replace(/\\s+/g,' ').slice(0,180);
+      const detail=String(error&&error.message||error||'Unknown error').replace(/\s+/g,' ').slice(0,180);
       notify('Delete failed ('+action+'): '+detail,Boolean(undoState));
     }
   }
