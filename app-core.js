@@ -790,6 +790,10 @@
     const exams=state.exams.slice().sort((a,b)=>a.date.localeCompare(b.date));$('examList').innerHTML=exams.length?exams.map(ex=>`<div class="entity"><div><strong>${esc(ex.name)}</strong><small>${fmtDate(ex.date)} · ${esc(ex.type)}${validDate(ex.date)&&ex.date>=today()?` · ${dayDiff(today(),ex.date)} day(s) left`:''}</small>${ex.notes?`<small>${esc(ex.notes)}</small>`:''}</div><div class="inline-actions"><button class="btn btn-sm" data-action="edit-exam" data-id="${esc(ex.id)}">Edit</button><button type="button" class="btn btn-sm btn-danger" data-action="delete-exam" data-id="${esc(ex.id)}">Delete</button></div></div>`).join(''):'<div class="empty"><strong>No exams scheduled</strong>Add an exam or deadline.</div>';
   }
   function renderAll(){
+    if(window.NexusDeferInitialRender){
+      window.NexusDeferredRenderRequested=true;
+      return;
+    }
     historyInsightsDirty=true;
     const activeView=document.querySelector('.view.active')?.id||'view-overview';
     if(activeView==='view-overview'){markDeleteDiagnosticPhase('render:overview');renderOverview();if(window.NexusRefreshHomeConsistencySummary){markDeleteDiagnosticPhase('render:home-consistency');window.NexusRefreshHomeConsistencySummary();}}
@@ -799,6 +803,9 @@
     else if(activeView==='view-explore'){markDeleteDiagnosticPhase('render:explore');renderExplore();}
     markDeleteDiagnosticPhase('render:theme');applyTheme();
   }
+  // Bootstrap invokes this after every runtime module has loaded. The closure reads
+  // the current renderAll binding, including the Study Hub wrapper installed later.
+  window.NexusRenderAll=()=>renderAll();
   function openReview(id){
     const t=getTopic(id);if(!t)return;
     reviewTopicId=t.id;selectedReviewRating=null;
