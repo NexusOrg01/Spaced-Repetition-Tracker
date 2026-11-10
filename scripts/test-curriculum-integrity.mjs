@@ -288,11 +288,11 @@ assert.ok(staleCloudState.topics.some(topic => topic.id === 'manual-topic-2'));
 // boundary is included in both online and offline paths.
 // The Library's stream/subject tree lives in a separate shared DOM region. It must
 // be regenerated with the topic cards rather than waiting for a Settings-tab visit.
-assert.ok(appCore.includes('function renderStructureList(){'),
+assert.ok(appCore.includes('function renderStructureList(topicCountsBySubject=null){'),
   'streams and subjects must have a dedicated renderer shared by Settings and Library');
-const libraryRenderer = appCore.slice(appCore.indexOf('function renderTopics()'), appCore.indexOf('function compareHistoryRows'));
-assert.ok(libraryRenderer.includes('renderStructureList();'),
-  'opening or refreshing the Library must render its stream and subject hierarchy');
+const libraryRenderer = appCore.slice(appCore.indexOf('async function renderTopics()'), appCore.indexOf('function compareHistoryRows'));
+assert.ok(libraryRenderer.includes('renderStructureList(topicCountsBySubject)'),
+  'the Library must render its stream and subject hierarchy using the topic counts from its cooperative scan');
 const settingsRenderer = appCore.slice(appCore.indexOf('function renderSetup()'), appCore.indexOf('function renderAll()'));
 assert.ok(settingsRenderer.includes('renderStructureList();'),
   'Settings must use the same stream/subject renderer as Library');
