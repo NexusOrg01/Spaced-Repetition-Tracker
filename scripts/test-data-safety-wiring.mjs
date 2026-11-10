@@ -128,15 +128,18 @@ const upcomingLargeWorkspace=section(appCore,'function renderUpcomingQueue(){','
 assert.ok(upcomingLargeWorkspace.includes('insertSortedLimit(items,topic,7,compare)') &&
   !upcomingLargeWorkspace.includes('.sort('),
   'the seven-row upcoming list must use bounded selection rather than sorting the full catalogue');
-const plannerSource=section(studyHub,'function buildPlan(limitBudget=true){','function hubCard(','Study Hub large planner');
+const plannerSource=section(studyHub,'let plannerMetricsCache=null;','function hubCard(','Study Hub large planner');
 assert.ok(plannerSource.includes('const buckets=new Map()') &&
   plannerSource.includes('priorityKeys=Array.from(buckets.keys()).sort') &&
-  !plannerSource.includes('.slice().sort((a,b)=>topicPriority'),
-  'planner ordering must use stable priority buckets rather than a full topic sort');
+  plannerSource.includes('const scheduledByDate=new Map()') &&
+  plannerSource.includes('plannerMetricsCache='),
+  'planner ordering, workload estimates and calendar counts must be retained in one revision-aware metrics cache');
 const plannerRender=section(studyHub,'function renderPlanner(){','function renderMastery()','Study Hub planner rendering');
-assert.ok(plannerRender.includes('scheduledByDate=new Map()') &&
-  !plannerRender.includes('activeTopics().filter(t=>t.dueDate===d'),
-  'planner calendar counts must be aggregated once rather than rescanning all topics for every day');
+assert.ok(plannerRender.includes('scheduledByDate=planner.scheduledByDate') &&
+  plannerRender.includes('const remainingMins=planner.remainingMins') &&
+  !plannerRender.includes('for(const topic of state.topics)') &&
+  !plannerRender.includes('scheduledByDate=new Map()'),
+  'planner rendering must reuse cached workload/calendar results without rescanning the full topic catalogue');
 const topicHistoryCache=section(studyHub,'function getTopicHistoryStats(){','function featureMeta(t){','bounded topic history cache');
 assert.ok(topicHistoryCache.includes('item.recent') && topicHistoryCache.includes('recent.length>5') &&
   !topicHistoryCache.includes('item.hs.push'),
