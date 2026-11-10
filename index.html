@@ -92,6 +92,7 @@
     #toast.toast.show{transform:translateX(-50%) translateY(0) scale(1);opacity:1;pointer-events:auto}
     #toastText{font-size:13px;font-weight:620;line-height:1.45;flex:1;min-width:0;overflow-wrap:anywhere}
     #undoBtn{display:inline-flex;align-items:center;justify-content:center;gap:6px;background:var(--accentSoft);color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 34%,var(--border));padding:8px 12px;border-radius:10px;font-weight:760;font-size:13px;white-space:nowrap;flex:none;box-shadow:none;transition:background .18s ease,transform .18s ease,border-color .18s ease}
+    #deleteDiagnosticBtn{display:inline-flex;align-items:center;justify-content:center;background:var(--surface);color:var(--text);border:1px solid var(--border);padding:8px 10px;border-radius:10px;font-weight:700;font-size:12px;white-space:nowrap;flex:none}
     #undoBtn:hover{background:color-mix(in srgb,var(--accentSoft) 74%,var(--surface));border-color:var(--accent);transform:translateY(-1px)}
     #undoBtn:focus-visible,#closeUndoBtn:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
     #closeUndoBtn{width:32px;height:32px;flex:none;border-radius:9px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);display:grid;place-items:center;font-size:16px;margin-left:0;transition:background .18s ease,color .18s ease,border-color .18s ease}
@@ -1172,6 +1173,7 @@ body :not(dialog):not(.standalone-screen):not(.menu-pop){overscroll-behavior-y:a
   <div class="toast" id="toast" role="status" aria-live="polite">
     <span id="toastText">Saved.</span>
     <button id="undoBtn" style="display:none">Undo</button>
+    <button id="deleteDiagnosticBtn" type="button" style="display:none">Copy details</button>
     <button id="closeUndoBtn" aria-label="Dismiss notification"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
   </div>
 
