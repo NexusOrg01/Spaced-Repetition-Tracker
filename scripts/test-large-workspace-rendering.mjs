@@ -54,7 +54,7 @@ assert.ok(studyHub.includes('if(options.render!==false)renderHub()'),
   'cascade helpers must allow the caller to avoid redundant large Study Hub renders');
 
 const cascadeStart=studyHub.indexOf('let cascadeUndoState=null;');
-const cascadeEnd=studyHub.indexOf('let topicHistoryStatsCache=',cascadeStart);
+const cascadeEnd=studyHub.indexOf('let topicHistoryStatsFallback=',cascadeStart);
 assert.ok(cascadeStart>=0&&cascadeEnd>cascadeStart,'cascade helpers must be independently testable');
 let cascadeSaveCalls=0,cascadeRenderCalls=0;
 const largeCascadeState={
