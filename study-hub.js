@@ -1087,8 +1087,8 @@
       return '<div class="paper-trend-panel"><div class="paper-trend-head"><strong>'+localEsc(group.name)+'</strong><span>'+items.length+' scored attempt'+(items.length===1?'':'s')+' · latest '+last+'%'+changeText+sampleNote+'</span></div><div class="paper-trend-chart" tabindex="0" role="region" aria-label="Scrollable '+localEsc(group.name)+' score chart">'+svg+'</div></div>';
     }).join('');
   }
-  let homeConsistencyMetricsCache=null;
-  window.NexusInvalidateHomeConsistencyCache=()=>{homeConsistencyMetricsCache=null;};
+  let homeConsistencyMetricsCache=null,homeTopicMetricsCache=null,homeStudyLogMetricsCache=null;
+  window.NexusInvalidateHomeConsistencyCache=()=>{homeConsistencyMetricsCache=null;homeTopicMetricsCache=null;homeStudyLogMetricsCache=null;};
   function getHomeConsistencyMetrics(){
     const now=today(),allowed=['week','month','year','custom'];
     const requestedPeriod=String(fsState.analyticsPeriod||'week');
@@ -1122,53 +1122,74 @@
         else if(date>=priorStart&&date<from)priorCount+=count;
       }
     }
-    let activeCount=0,mastered=0,overdue=0,dueSoon=0,dueCount=0,newCount=0,reviewedCount=0,weakCount=0;
-    const homeWeekEnd=dateShift(now,6),upcomingEnd=dateShift(now,7),progressBySubject=new Map(),queue=[],upcomingQueue=[];
-    const topicHistory=shared&&shared.byTopic&&typeof shared.byTopic.get==='function'?shared.byTopic:null;
-    const queueCompare=(a,b)=>({overdue:0,due:1,new:2,upcoming:3}[a.status]??4)-({overdue:0,due:1,new:2,upcoming:3}[b.status]??4)||
-      (a.topic.dueDate||'9999').localeCompare(b.topic.dueDate||'9999')||
-      naturalCompare(a.topic.name,b.topic.name);
-    const addQueue=(item)=>{
-      let low=0,high=queue.length;
-      while(low<high){const mid=(low+high)>>1;if(queueCompare(queue[mid],item)<=0)low=mid+1;else high=mid;}
-      if(low>=7)return;queue.splice(low,0,item);if(queue.length>7)queue.pop();
-    };
-    const addUpcoming=(topic)=>{
-      let low=0,high=upcomingQueue.length;
-      while(low<high){
-        const mid=(low+high)>>1,other=upcomingQueue[mid];
-        const order=(other.dueDate||'9999').localeCompare(topic.dueDate||'9999')||naturalCompare(other.name,topic.name);
-        if(order<=0)low=mid+1;else high=mid;
+    // Topic-level totals are independent of the selected analytics range and heatmap
+    // window. Reuse this 77k+ record pass when a user changes only those controls.
+    let topicMetrics=homeTopicMetricsCache;
+    if(!topicMetrics||topicMetrics.topics!==state.topics||topicMetrics.topicCount!==state.topics.length||
+       topicMetrics.history!==state.history||topicMetrics.historyCount!==state.history.length||topicMetrics.today!==now){
+      let activeCount=0,mastered=0,overdue=0,dueSoon=0,dueCount=0,newCount=0,reviewedCount=0,weakCount=0;
+      const homeWeekEnd=dateShift(now,6),upcomingEnd=dateShift(now,7),progressBySubject=new Map(),queue=[],upcomingQueue=[];
+      const topicHistory=shared&&shared.byTopic&&typeof shared.byTopic.get==='function'?shared.byTopic:null;
+      const queueCompare=(a,b)=>({overdue:0,due:1,new:2,upcoming:3}[a.status]??4)-({overdue:0,due:1,new:2,upcoming:3}[b.status]??4)||
+        (a.topic.dueDate||'9999').localeCompare(b.topic.dueDate||'9999')||
+        naturalCompare(a.topic.name,b.topic.name);
+      const addQueue=(item)=>{
+        let low=0,high=queue.length;
+        while(low<high){const mid=(low+high)>>1;if(queueCompare(queue[mid],item)<=0)low=mid+1;else high=mid;}
+        if(low>=7)return;queue.splice(low,0,item);if(queue.length>7)queue.pop();
+      };
+      const addUpcoming=(topic)=>{
+        let low=0,high=upcomingQueue.length;
+        while(low<high){
+          const mid=(low+high)>>1,other=upcomingQueue[mid];
+          const order=(other.dueDate||'9999').localeCompare(topic.dueDate||'9999')||naturalCompare(other.name,topic.name);
+          if(order<=0)low=mid+1;else high=mid;
+        }
+        if(low>=7)return;upcomingQueue.splice(low,0,topic);if(upcomingQueue.length>7)upcomingQueue.pop();
+      };
+      for(const topic of state.topics){
+        if(topic.archived)continue;
+        activeCount++;
+        const topicStatus=status(topic);
+        if(topicStatus==='overdue'||topicStatus==='due'){dueCount++;if(topicStatus==='overdue')overdue++;}
+        if(topicStatus==='new')newCount++;
+        if(topic.reviewCount>0)reviewedCount++;
+        let progress=progressBySubject.get(topic.subjectId);
+        if(!progress){progress={total:0,done:0};progressBySubject.set(topic.subjectId,progress);}
+        progress.total++;if(topic.reviewCount>0)progress.done++;
+        if(topicStatus==='overdue'||topicStatus==='due'||topicStatus==='new')addQueue({topic,status:topicStatus});
+        if(safeDate(topic.dueDate)&&topic.dueDate>=now&&topic.dueDate<=homeWeekEnd)dueSoon++;
+        if(safeDate(topic.dueDate)&&topic.dueDate>now&&topic.dueDate<=upcomingEnd)addUpcoming(topic);
+        // Read compact aggregates directly instead of allocating featureMeta objects
+        // for every topic. The same values also feed the Study Hub KPI strip.
+        const topicStats=topicHistory?.get(String(topic.id));
+        const recent=topicStats?.recent||[];
+        const avg=recent.length?topicStats.avg:(topic.lastRating||0);
+        const longOverdue=topicStatus==='overdue'&&dayDiff(topic.dueDate,now)>5;
+        if(topic.lapses||avg&&avg<3||longOverdue)weakCount++;
+        if(topic.reviewCount>=2&&topic.intervalDays>=4&&topicStatus!=='overdue'&&avg>=3.5)mastered++;
       }
-      if(low>=7)return;upcomingQueue.splice(low,0,topic);if(upcomingQueue.length>7)upcomingQueue.pop();
-    };
-    for(const topic of state.topics){
-      if(topic.archived)continue;
-      activeCount++;
-      const topicStatus=status(topic);
-      if(topicStatus==='overdue'||topicStatus==='due'){dueCount++;if(topicStatus==='overdue')overdue++;}
-      if(topicStatus==='new')newCount++;
-      if(topic.reviewCount>0)reviewedCount++;
-      let progress=progressBySubject.get(topic.subjectId);
-      if(!progress){progress={total:0,done:0};progressBySubject.set(topic.subjectId,progress);}
-      progress.total++;if(topic.reviewCount>0)progress.done++;
-      if(topicStatus==='overdue'||topicStatus==='due'||topicStatus==='new')addQueue({topic,status:topicStatus});
-      if(safeDate(topic.dueDate)&&topic.dueDate>=now&&topic.dueDate<=homeWeekEnd)dueSoon++;
-      if(safeDate(topic.dueDate)&&topic.dueDate>now&&topic.dueDate<=upcomingEnd)addUpcoming(topic);
-      // Read compact aggregates directly instead of allocating featureMeta objects
-      // for every topic. The same values also feed the Study Hub KPI strip.
-      const topicStats=topicHistory?.get(String(topic.id));
-      const recent=topicStats?.recent||[];
-      const avg=recent.length?topicStats.avg:(topic.lastRating||0);
-      const longOverdue=topicStatus==='overdue'&&dayDiff(topic.dueDate,now)>5;
-      if(topic.lapses||avg&&avg<3||longOverdue)weakCount++;
-      if(topic.reviewCount>=2&&topic.intervalDays>=4&&topicStatus!=='overdue'&&avg>=3.5)mastered++;
+      topicMetrics={topics:state.topics,topicCount:state.topics.length,history:state.history,
+        historyCount:state.history.length,today:now,activeCount,mastered,overdue,dueSoon,dueCount,
+        newCount,reviewedCount,weakCount,progressBySubject,queue,upcomingQueue};
+      homeTopicMetricsCache=topicMetrics;
     }
+    // Weekly study totals have a separate cache. A changed study-log collection
+    // refreshes the total without repeating the full topic/history aggregation.
     const weekStart=dateShift(now,-6);
-    let weeklyMinutes=0;
-    for(const log of fsState.studyLogs){
-      if(safeDate(log.date)&&log.date>=weekStart&&log.date<=now)weeklyMinutes+=studyLogMinutes(log);
+    let studyLogMetrics=homeStudyLogMetricsCache;
+    if(!studyLogMetrics||studyLogMetrics.logs!==fsState.studyLogs||studyLogMetrics.length!==fsState.studyLogs.length||
+       studyLogMetrics.today!==now||studyLogMetrics.weekStart!==weekStart){
+      let weeklyMinutes=0;
+      for(const log of fsState.studyLogs){
+        if(safeDate(log.date)&&log.date>=weekStart&&log.date<=now)weeklyMinutes+=studyLogMinutes(log);
+      }
+      studyLogMetrics={logs:fsState.studyLogs,length:fsState.studyLogs.length,today:now,weekStart,weeklyMinutes};
+      homeStudyLogMetricsCache=studyLogMetrics;
     }
+    const {activeCount,mastered,overdue,dueSoon,dueCount,newCount,reviewedCount,weakCount,
+      progressBySubject,queue,upcomingQueue}=topicMetrics;
+    const weeklyMinutes=studyLogMetrics.weeklyMinutes;
     const weeklyTarget=dailyTarget*7,weeklyPct=Math.min(100,Math.round(weeklyMinutes/weeklyTarget*100));
     const masteryPct=activeCount?Math.round(mastered/activeCount*100):0;
     const value={
