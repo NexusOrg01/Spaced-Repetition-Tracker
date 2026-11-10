@@ -10,9 +10,9 @@ const androidAssets = read('scripts/build-android-assets.mjs');
 const androidWorkflow = read('.github/workflows/android-build.yml');
 const fdroidWorkflow = read('.github/workflows/fdroid-validation.yml');
 
-assert.ok(appCore.includes("notify('History entry deleted.',true);") &&
-  appCore.includes("startUndoHistoryChange('History entry deleted.');"),
-  'review-history deletion must retain confirmation, Undo, and success feedback');
+assert.ok(appCore.includes("startUndoHistoryChange('History entry deleted.',{silent:true});") &&
+  !appCore.includes("notify('History entry deleted.',true);"),
+  'review-history deletion must use the silent Undo-only notification rather than a competing success message');
 
 const coreDeleteStart = appCore.indexOf('function handleCoreDeleteClick(event){');
 const coreDeleteEnd = appCore.indexOf("\n  document.addEventListener('click',handleCoreDeleteClick,true);", coreDeleteStart);

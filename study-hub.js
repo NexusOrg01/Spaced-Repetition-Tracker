@@ -83,6 +83,10 @@
   };
   window.NexusClearCascadeUndo=()=>{cascadeUndoState=null;};
   window.NexusRenderHub=()=>renderHub();
+  window.NexusRestoreFeatureArray=(collection,previous)=>{
+    if(!['studyLogs','papers','journal','goals'].includes(collection)||!Array.isArray(previous))return false;
+    fsState[collection]=previous;focusGoalCacheKey='';return true;
+  };
   let topicHistoryStatsCache={source:null,length:-1,byTopic:new Map()};
   function getTopicHistoryStats(){
     const history=state.history,cache=topicHistoryStatsCache;
@@ -237,7 +241,38 @@
     const more=count>visible.length?`<div class="hub-actions"><button type="button" class="btn btn-sm btn-soft" data-hub-action="study-history-more">Show 100 older entries (${count-visible.length} remaining)</button></div>`:'';
     return `<div class="nexus-study-log-history-toolbar"><div><strong>${count} entr${count===1?'y':'ies'}</strong><span class="nexus-study-log-total">${formatStudyDuration(totalSeconds)} total recorded</span></div><button type="button" class="btn btn-sm btn-soft" data-hub-action="study-history-toggle" data-target="hubStudyLogHistory" aria-controls="hubStudyLogHistory" aria-expanded="true">Collapse</button></div><div id="hubStudyLogHistory" role="region" aria-label="Study-time history" tabindex="0">${rows||'<div class="nexus-study-log-empty">No study-time entries yet. Completed focus sessions will appear here.</div>'}</div>${more}`;
   }
-  function deleteStudyLog(id){const entry=fsState.studyLogs.find(item=>item&&String(item.id)===String(id));if(!entry){notify('That study-time entry could not be found. Refresh the history and try again.');return;}const subject=state.subjects.find(s=>s.id===entry.subjectId)?.name||entry.subjectName||'Unassigned subject',topic=getTopic(entry.topicId)?.name||entry.topicName||'',time=studyLogTimeInfo(entry).label,duration=formatStudyDuration(studyLogMinutes(entry)*60),description=(topic?subject+' · '+topic:subject)+'\n'+(safeDate(entry.date)?fmtDate(entry.date):String(entry.date||'Date unavailable'))+(time?' · '+time:'')+'\n'+String(entry.type||'Study session')+' · '+duration;if(!confirm(`Delete this study-time entry?\n\n${description}\n\nIt will be removed from study-time history, totals, charts, and future exports. Related review, journal, and paper records will be kept. This cannot be undone.`))return;const previous=fsState.studyLogs;fsState.studyLogs=fsState.studyLogs.filter(item=>!item||String(item.id)!==String(id));if(!saveFs()){fsState.studyLogs=previous;renderHub();notify('Study-time deletion was not saved. The previous entry has been restored.',true);return;}renderHub();notify('Study-time entry deleted. Study-time totals and exports updated.');}
+  function deleteStudyHubRecord(collection,id,options={}){
+    const previous=fsState[collection];
+    if(!Array.isArray(previous)){notify('This Study Hub record type is unavailable.');return false;}
+    const index=previous.findIndex(item=>item&&String(item.id)===String(id));
+    if(index<0){notify(options.missingMessage||'That record could not be found. Refresh the list and try again.');return false;}
+    if(!confirm(options.confirmMessage||'Delete this record?'))return false;
+    if(!window.NexusStartUndoFeatureArrayDelete||!window.NexusStartUndoFeatureArrayDelete(collection,previous)){
+      notify('Undo could not be prepared. Nothing was deleted.');return false;
+    }
+    fsState[collection]=previous.filter((_item,itemIndex)=>itemIndex!==index);
+    if(!saveFs()){
+      fsState[collection]=previous;window.NexusCancelUndoAction?.();renderHub();
+      notify(options.failureMessage||'Deletion was not saved. The previous record has been restored.');
+      return false;
+    }
+    renderHub();window.NexusRefreshUndoTimeout?.();return true;
+  }
+  function deleteStudyLog(id){
+    const entry=fsState.studyLogs.find(item=>item&&String(item.id)===String(id));
+    if(!entry){notify('That study-time entry could not be found. Refresh the history and try again.');return;}
+    const subject=state.subjects.find(s=>s.id===entry.subjectId)?.name||entry.subjectName||'Unassigned subject';
+    const topic=getTopic(entry.topicId)?.name||entry.topicName||'';
+    const time=studyLogTimeInfo(entry).label,duration=formatStudyDuration(studyLogMinutes(entry)*60);
+    const description=(topic?subject+' · '+topic:subject)+'\\n'+
+      (safeDate(entry.date)?fmtDate(entry.date):String(entry.date||'Date unavailable'))+
+      (time?' · '+time:'')+'\\n'+String(entry.type||'Study session')+' · '+duration;
+    deleteStudyHubRecord('studyLogs',id,{
+      confirmMessage:`Delete this study-time entry?\\n\\n${description}\\n\\nIt will be removed from study-time history, totals, charts, and future exports. Related review, journal, and paper records will be kept. Undo is available for 15 seconds after deletion.`,
+      missingMessage:'That study-time entry could not be found. Refresh the history and try again.',
+      failureMessage:'Study-time deletion was not saved. The previous entry has been restored.'
+    });
+  }
   function renderPlanner(){const plan=buildPlan(true),done=new Set(fsState.taskChecks[today()]||[]),allPlan=plan.length?plan.reduce((n,x)=>n+x.minutes,0):0,doneMins=loggedMinutesToday()+liveFocusMinutesToday();const daily=fNum(fsState.settings.dailyMinutes)||90,session=fNum(fsState.settings.sessionMinutes)||25,week=weeklyReviewCount(),goal=fNum(fsState.settings.weeklyReviewGoal)||100;const nearest=nearestFutureExam();const left=nearest?Math.max(0,dayDiff(today(),nearest.date)):null;let remainingMins=0;for(const topic of state.topics){if(topic.archived)continue;const st=status(topic),meta=featureMeta(topic),mastered=topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&st!=='overdue';if(!mastered)remainingMins+=Math.max(6,Math.min(30,Math.round(10+(meta.weak?7:0)+(meta.avg&&meta.avg<3?5:0)+(st==='overdue'?Math.min(5,Math.ceil(Math.max(0,dayDiff(topic.dueDate,today()))/5)):0))));}const perDay=left!==null&&left>0?Math.ceil(remainingMins/left):remainingMins;
     const tasks=plan.length?plan.map(x=>`<div class="hub-task"><div><div class="hub-task-name">${localEsc(x.topic.name)}</div><div class="hub-task-meta">${localEsc(subjectFor(x.topic)?.name||'')} · estimated ${x.minutes} min · ${localEsc(statusText(x.status))}</div></div><button class="btn btn-sm btn-primary" data-hub-action="review-topic" data-id="${localEsc(x.topic.id)}">Review</button></div>`).join(''):`<div class="hub-empty">No due or new topics fit the current budget. You can still choose any topic for a longer focus session.</div>`;
     const calWindow=Number(fsState.calendarWindow)||14,calendarStart=today(),scheduledByDate=new Map();for(const topic of state.topics){if(topic.archived)continue;const date=topic.dueDate||topic.createdAt||'';if(date){const dayOffset=dayDiff(calendarStart,date);if(dayOffset>=0&&dayOffset<calWindow)scheduledByDate.set(date,(scheduledByDate.get(date)||0)+1);}}const nextDays=Array.from({length:calWindow},(_,i)=>{const d=dateShift(calendarStart,i),count=scheduledByDate.get(d)||0,exams=state.exams.filter(e=>e.date===d);return {d,count,exams};});
@@ -1492,7 +1527,7 @@
   function balanceWorkload(){const days=Math.max(1,Math.min(90,Number(hubEl('hubWorkloadDays')?.value)||7));fsState.settings.workloadDays=days;const candidates=activeTopics().filter(t=>!t.archived&&['overdue','due','new'].includes(status(t))).sort((a,b)=>topicPriority(b)-topicPriority(a));if(!candidates.length){saveFs();renderHub();notify('No active due, overdue, or new topics to balance.');return;}if(!confirm(`Distribute ${candidates.length} due/new topic(s) across ${days} day(s)? This changes due dates only and does not add review history.`)){saveFs();return;}window.NexusStartUndoTopicBatch('Study workload balanced',candidates,['dueDate']);const loads=Array(days).fill(0);const buckets=Array.from({length:days},()=>[]);for(const t of candidates){const mins=estimateMinutes(t);let best=0;for(let i=1;i<days;i++){if(loads[i]<loads[best])best=i;}buckets[best].push(t);loads[best]+=mins;}buckets.forEach((items,i)=>items.forEach(t=>{t.dueDate=dateShift(today(),i);}));save();saveFs();renderAll();renderHub();notify(`Balanced ${candidates.length} topics over ${days} days. Review history was not changed.`,true);}
   function saveRecallSession(e){e.preventDefault();const val=id=>hubEl(id)?.value?.trim()||'';const recalled=val('hubRecallRecalled'),gaps=val('hubRecallGaps');if(!recalled&&!gaps){alert('Record what you recalled or at least one gap to fix.');return;}const subjectId=val('hubRecallSubject'),topicId=val('hubRecallTopic'),quality=Number(val('hubRecallConfidence'))||3,method=val('hubRecallMethod');fsState.journal.unshift({id:fid(),date:today(),category:'Theory recall',subjectId,topicId,severity:quality<=2?3:quality===3?2:1,issue:`Method: ${method}. Recall quality: ${quality}/5.
 Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded.',solved:!gaps});fsState.studyLogs.unshift({id:fid(),date:today(),minutes:0,type:'Theory recall',note:`${method}; quality ${quality}/5${topicId?' · '+(getTopic(topicId)?.name||'topic'):''}`});saveFs();renderHub();notify('Theory recall session saved to your journal.');}
-  function bulkAction(action){const selectedIds=new Set(fsState.selectedTopicIds);const chosen=state.topics.filter(t=>selectedIds.has(t.id));if(!chosen.length){notify('Select topics in search results first.');return;}if(action==='bulk-export'){exportHubCsv('selected');return;}if(action==='bulk-clear'){fsState.selectedTopicIds=[];saveFs();renderHub();return;}if(action==='bulk-delete'){if(!confirm('Delete '+chosen.length+' selected topic(s) and their saved review history? You can use Undo immediately after deletion. Export a full backup first if you may need to restore these records later.'))return;const ids=new Set(chosen.map(t=>t.id));window.NexusStartUndoBulkDelete('Bulk topic deletion');cascadeUndoState=captureCascadeUndo();if(window.NexusCurriculumIntegrity&&typeof window.NexusCurriculumIntegrity.markDeletedTopics==='function')window.NexusCurriculumIntegrity.markDeletedTopics(state,window.NexusCurriculumPacks||[],chosen);state.topics=state.topics.filter(t=>!ids.has(t.id));state.history=state.history.filter(h=>!ids.has(h.topicId));fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!ids.has(id));if(!save()){if(window.NexusUndoLastAction)window.NexusUndoLastAction();notify('Bulk deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}renderAll();renderHub();notify('Deleted '+chosen.length+' topic(s) and associated review history.',true);return;}let dueDate=today();if(action==='bulk-due-custom'){dueDate=hubEl('hubBulkDueDate')?.value||'';if(!safeDate(dueDate)){notify('Choose a valid custom due date first.');return;}}const label=action==='bulk-due-today'?'Set due date to today for':action==='bulk-due-custom'?'Set custom due date for':action==='bulk-archive'?'Archive':'Unarchive';if(!confirm(label+' '+chosen.length+' selected topic(s)?'))return;window.NexusStartUndoTopicBatch('Bulk topic update',chosen,(action==='bulk-due-today'||action==='bulk-due-custom')?['dueDate']:['archived']);chosen.forEach(t=>{if(action==='bulk-due-today'||action==='bulk-due-custom')t.dueDate=dueDate;if(action==='bulk-archive')t.archived=true;if(action==='bulk-unarchive')t.archived=false;});save();renderAll();saveFs();renderHub();notify('Updated '+chosen.length+' topic(s).',true);}
+  function bulkAction(action){const selectedIds=new Set(fsState.selectedTopicIds);const chosen=state.topics.filter(t=>selectedIds.has(t.id));if(!chosen.length){notify('Select topics in search results first.');return;}if(action==='bulk-export'){exportHubCsv('selected');return;}if(action==='bulk-clear'){fsState.selectedTopicIds=[];saveFs();renderHub();return;}if(action==='bulk-delete'){if(!confirm('Delete '+chosen.length+' selected topic(s) and their saved review history? You can use Undo immediately after deletion. Export a full backup first if you may need to restore these records later.'))return;const ids=new Set(chosen.map(t=>t.id));window.NexusStartUndoBulkDelete('Bulk topic deletion');cascadeUndoState=captureCascadeUndo();if(window.NexusCurriculumIntegrity&&typeof window.NexusCurriculumIntegrity.markDeletedTopics==='function')window.NexusCurriculumIntegrity.markDeletedTopics(state,window.NexusCurriculumPacks||[],chosen);state.topics=state.topics.filter(t=>!ids.has(t.id));state.history=state.history.filter(h=>!ids.has(h.topicId));fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!ids.has(id));if(!save()){if(window.NexusUndoLastAction)window.NexusUndoLastAction();notify('Bulk deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}renderAll();renderHub();window.NexusRefreshUndoTimeout?.();return;}let dueDate=today();if(action==='bulk-due-custom'){dueDate=hubEl('hubBulkDueDate')?.value||'';if(!safeDate(dueDate)){notify('Choose a valid custom due date first.');return;}}const label=action==='bulk-due-today'?'Set due date to today for':action==='bulk-due-custom'?'Set custom due date for':action==='bulk-archive'?'Archive':'Unarchive';if(!confirm(label+' '+chosen.length+' selected topic(s)?'))return;window.NexusStartUndoTopicBatch('Bulk topic update',chosen,(action==='bulk-due-today'||action==='bulk-due-custom')?['dueDate']:['archived']);chosen.forEach(t=>{if(action==='bulk-due-today'||action==='bulk-due-custom')t.dueDate=dueDate;if(action==='bulk-archive')t.archived=true;if(action==='bulk-unarchive')t.archived=false;});save();renderAll();saveFs();renderHub();notify('Updated '+chosen.length+' topic(s).',true);}
   function maybeNotify(){if(!fsState.settings.reminders)return;const now=new Date(),hh=String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');if(hh!==fsState.settings.reminderTime||fsState.lastReminderAt===today())return;const count=activeTopics().filter(t=>['overdue','due'].includes(status(t))).length;fsState.lastReminderAt=today();saveFs();if(count&&'Notification'in window&&Notification.permission==='granted'){try{new Notification('Nexus study reminder',{body:`${count} topic(s) are due or overdue. Open Nexus to plan your session.`});}catch(_){notify(`Study reminder: ${count} topic(s) due or overdue.`);}}else if(count)notify(`Study reminder: ${count} topic(s) due or overdue.`);}
   function savePaper(e){e.preventDefault();const val=id=>hubEl(id)?.value?.trim()||'';const name=val('hubPaperName');if(!name)return;const score=val('hubPaperScore')===''?null:Number(val('hubPaperScore')),max=val('hubPaperMax')===''?null:Number(val('hubPaperMax'));if(score!==null&&max!==null&&(score<0||max<=0||score>max)){alert('Score must be between zero and the maximum score.');return;}const p={id:fid(),name:name.slice(0,160),subjectId:val('hubPaperSubject'),kind:val('hubPaperKind'),date:val('hubPaperDate')||today(),score:score===null?null:score,maxScore:max===null?null:max,duration:Math.max(0,Number(val('hubPaperDuration'))||0),errorCount:Math.max(0,Number(val('hubPaperErrors'))||0),weakAreas:val('hubPaperWeak').slice(0,1000),notes:val('hubPaperNotes').slice(0,2000)};fsState.papers.unshift(p);saveFs();renderHub();notify('Paper/practice record saved.');}
   function saveJournal(e){e.preventDefault();const val=id=>hubEl(id)?.value?.trim()||'';const issue=val('hubJournalIssue');if(!issue)return;fsState.journal.unshift({id:fid(),date:today(),category:val('hubJournalCategory'),subjectId:val('hubJournalSubject'),topicId:val('hubJournalTopic'),severity:Number(val('hubJournalSeverity'))||2,issue:issue.slice(0,3000),fix:val('hubJournalFix').slice(0,3000),solved:false});saveFs();renderHub();notify('Journal entry saved.');}
@@ -1543,36 +1578,18 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
       window.NexusDeleteDiagnosticPhase?.('hub:dispatch-'+action);
       if(action==='delete-study-log')deleteStudyLog(id);
       else if(action==='delete-paper'){
-        const paper=fsState.papers.find(item=>String(item.id)===String(id));
-        if(!paper){notify('That paper/practice record could not be found. Refresh the list and try again.');return;}
-        if(confirm('Delete this paper/practice record?')){
-          const previous=fsState.papers;fsState.papers=fsState.papers.filter(item=>String(item.id)!==String(id));
-          if(!saveFs()){fsState.papers=previous;renderHub();notify('Paper deletion was not saved. The previous record has been restored.',true);return;}
-          renderHub();
-        }
+        deleteStudyHubRecord('papers',id,{confirmMessage:'Delete this paper/practice record?',missingMessage:'That paper/practice record could not be found. Refresh the list and try again.',failureMessage:'Paper deletion was not saved. The previous record has been restored.'});
       }else if(action==='delete-journal'){
-        const entry=fsState.journal.find(item=>String(item.id)===String(id));
-        if(!entry){notify('That journal entry could not be found. Refresh the list and try again.');return;}
-        if(confirm('Delete this journal entry?')){
-          const previous=fsState.journal;fsState.journal=fsState.journal.filter(item=>String(item.id)!==String(id));
-          if(!saveFs()){fsState.journal=previous;renderHub();notify('Journal deletion was not saved. The previous entry has been restored.',true);return;}
-          renderHub();
-        }
+        deleteStudyHubRecord('journal',id,{confirmMessage:'Delete this journal entry?',missingMessage:'That journal entry could not be found. Refresh the list and try again.',failureMessage:'Journal deletion was not saved. The previous entry has been restored.'});
       }else if(action==='delete-goal'){
-        const goal=fsState.goals.find(item=>String(item.id)===String(id));
-        if(!goal){notify('That milestone could not be found. Refresh the list and try again.');return;}
-        if(confirm('Delete this milestone?')){
-          const previous=fsState.goals;fsState.goals=fsState.goals.filter(item=>String(item.id)!==String(id));
-          if(!saveFs()){fsState.goals=previous;renderHub();notify('Milestone deletion was not saved. The previous milestone has been restored.',true);return;}
-          renderHub();
-        }
+        deleteStudyHubRecord('goals',id,{confirmMessage:'Delete this milestone?',missingMessage:'That milestone could not be found. Refresh the list and try again.',failureMessage:'Milestone deletion was not saved. The previous milestone has been restored.'});
       }else if(action==='bulk-delete')bulkAction(action);
     }catch(error){
       const diagnostic=window.NexusDeleteDiagnosticFail?window.NexusDeleteDiagnosticFail(error):null;
       console.error('Nexus Study Hub delete action failed ('+action+')',diagnostic||error);
       const detail=String(error&&error.message||error||'Unknown error').replace(/\s+/g,' ').slice(0,180);
       if(diagnosticButton)diagnosticButton.style.display='';
-      notify('Delete failed ('+action+'): '+(diagnostic?.failedAt?'['+diagnostic.failedAt+'] ':'')+detail,true);
+      notify('Delete failed ('+action+'): '+(diagnostic?.failedAt?'['+diagnostic.failedAt+'] ':'')+detail,Boolean(undoState),{showMessage:true});
     }finally{
       window.NexusDeleteDiagnosticComplete?.();
     }

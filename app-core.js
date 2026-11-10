@@ -63,7 +63,8 @@
     'Economics':'ආර්ථික විද්‍යාව','ECON':'ආර්ථික විද්‍යාව'
   };
   const RATING_LABELS = {1:'Again',2:'Hard',3:'Good',4:'Very good',5:'Easy'};
-  let state, undoState=null, undoTimer=null, toastTimer=null, editTopicId=null, reviewTopicId=null, selectedReviewRating=null, editStreamId=null, editSubjectId=null, editExamId=null, installPrompt=window.NexusInstallPrompt||null, topicVisibleLimit=100, historyVisibleLimit=100, historyInsightsDirty=true, historyMetricsCache=null;
+  let state, undoState=null, undoTimer=null, toastTimer=null, undoSilent=false, editTopicId=null, reviewTopicId=null, selectedReviewRating=null, editStreamId=null, editSubjectId=null, editExamId=null, installPrompt=window.NexusInstallPrompt||null, topicVisibleLimit=100, historyVisibleLimit=100, historyInsightsDirty=true, historyMetricsCache=null;
+  const UNDO_TIMEOUT_MS=15000;
   let activeDeleteDiagnostic=null;
   const DELETE_DIAGNOSTIC_STORAGE_KEY='nexus:last-delete-diagnostic';
   function markDeleteDiagnosticPhase(name){
@@ -326,19 +327,32 @@
       return false;
     }
   }
-  function notify(text,undoable=false){$('toastText').textContent=text;$('undoBtn').style.display=undoable?'':'none';$('toast').classList.toggle('undoable',undoable);$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),6500);}
-  function armUndo(text){
-    clearTimeout(undoTimer);notify(text,true);
-    undoTimer=setTimeout(()=>{undoState=null;$('undoBtn').style.display='none';},6500);
+  function notify(text,undoable=false,options={}){$('toastText').textContent=text;$('undoBtn').style.display=undoable?'':'none';$('toast').classList.toggle('undoable',undoable);$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),2600);}
+  function clearUndoPresentation(){
+    $('undoBtn').style.display='none';
+    $('toastText').hidden=false;
+    $('toast').classList.remove('show','undoable','undo-only');
   }
-  function startUndoBulkDelete(text){
+  function scheduleUndoExpiry(){
+    clearTimeout(undoTimer);
+    undoTimer=setTimeout(()=>{
+      undoTimer=null;undoState=null;undoSilent=false;
+      clearUndoPresentation();
+    },UNDO_TIMEOUT_MS);
+  }
+  function armUndo(text,options={}){
+    undoSilent=Boolean(options.silent);
+    notify(text,true);
+    scheduleUndoExpiry();
+  }
+  function startUndoBulkDelete(text,options={}){
     markDeleteDiagnosticPhase('undo:clear-cascade-snapshot');
     if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
     // Bulk deletes replace top-level arrays and only mutate the small settings
     // tombstone object. Keep the original large topic/history arrays by reference.
     markDeleteDiagnosticPhase('undo:clone-settings');
     undoState={kind:'state-reference',value:state,streams:state.streams,subjects:state.subjects,topics:state.topics,history:state.history,settings:clone(state.settings)};
-    armUndo(text);
+    armUndo(text,{silent:options.silent!==false});
   }
   function startUndoTopicEdit(text,topic){
     if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
@@ -350,10 +364,10 @@
     undoState={kind:'topic-add',value:state,topicId};
     armUndo(text);
   }
-  function startUndoHistoryChange(text){
+  function startUndoHistoryChange(text,options={}){
     if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
     undoState={kind:'history-reference',value:state,history:state.history};
-    armUndo(text);
+    armUndo(text,{silent:options.silent===true});
   }
   function startUndoWorkspaceReplace(text){
     if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
@@ -371,10 +385,10 @@
     undoState={kind:'entity-add',value:state,collection,itemId};
     armUndo(text);
   }
-  function startUndoArrayReplacement(text,collection){
+  function startUndoArrayReplacement(text,collection,options={}){
     if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
     undoState={kind:'array-reference',value:state,collection,previous:state[collection]};
-    armUndo(text);
+    armUndo(text,{silent:options.silent===true});
   }
   function startUndoArrayItemReplacement(text,collection,index){
     if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
@@ -397,6 +411,18 @@
   window.NexusStartUndoBulkDelete=startUndoBulkDelete;
   window.NexusStartUndoTopicBatch=startUndoTopicBatch;
   window.NexusUndoLastAction=()=>undo();
+  window.NexusStartUndoFeatureArrayDelete=(collection,previous)=>{
+    if(!['studyLogs','papers','journal','goals'].includes(collection)||!Array.isArray(previous))return false;
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    undoState={kind:'feature-array-reference',value:state,collection,previous};
+    armUndo('',{silent:true});
+    return true;
+  };
+  window.NexusRefreshUndoTimeout=()=>{
+    if(!undoState)return false;
+    scheduleUndoExpiry();
+    return true;
+  };
   function startUndoReview(text,topic,reviewId){
     if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
     // A review mutates one topic and prepends one history row. Capture only the
@@ -408,7 +434,7 @@
   }
   function undo(){
     if(!undoState)return;
-    const pending=undoState;undoState=null;clearTimeout(undoTimer);
+    const pending=undoState;undoState=null;undoSilent=false;clearTimeout(undoTimer);undoTimer=null;
     if(pending.kind==='review'){
       state=pending.value;Object.assign(pending.topic,pending.topicBefore);
       if(state.history.length===pending.historyLength+1&&state.history[0]?.id===pending.reviewId)state.history.shift();
@@ -429,11 +455,22 @@
       state=pending.value;state[pending.collection]=pending.previous;
     }else if(pending.kind==='array-item-reference'){
       state=pending.value;state[pending.collection][pending.index]=pending.previous;
+    }else if(pending.kind==='feature-array-reference'){
+      state=pending.value;
+      if(!window.NexusRestoreFeatureArray||!window.NexusRestoreFeatureArray(pending.collection,pending.previous)){
+        clearUndoPresentation();
+        notify('Undo could not restore this Study Hub record. Export a backup and reload before continuing.');
+        return;
+      }
     }else if(pending.kind==='topic-batch-edit'){
       state=pending.value;for(const change of pending.changes)Object.assign(change.topic,change.before);
     }else state=pending.value;
     const restoredCascade=window.NexusUndoCascadeDelete?window.NexusUndoCascadeDelete({persist:false,render:false}):false;
-    save();renderAll();if(restoredCascade&&window.NexusRenderHub)window.NexusRenderHub();$('toast').classList.remove('show');
+    const persisted=save();
+    renderAll();
+    if(restoredCascade&&window.NexusRenderHub)window.NexusRenderHub();
+    clearUndoPresentation();
+    if(!persisted)notify('Undo was applied on this device, but saving failed. Export a backup before closing.');
   }
   function subjectFor(topic){return state.subjects.find(s=>s.id===topic.subjectId)||null;}
   function streamFor(subject){return state.streams.find(s=>s.id===subject?.streamId)||null;}
@@ -808,7 +845,7 @@
     const t=getTopic(id);if(!t)return;
     if(!confirm(`Delete “${t.name}” from the topic tracker? Existing history entries will be retained.`))return;
     markDeleteDiagnosticPhase('topic:undo-snapshot');
-    startUndoBulkDelete('Topic deleted.');
+    startUndoBulkDelete('Topic deleted.',{silent:true});
     markDeleteDiagnosticPhase('topic:curriculum-tombstone');
     if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedTopic(state,CURRICULUM_PACKS,t);
     markDeleteDiagnosticPhase('topic:filter-tracker');
@@ -816,7 +853,7 @@
     markDeleteDiagnosticPhase('topic:save');
     if(!save()){markDeleteDiagnosticPhase('topic:rollback');undo();notify('Topic deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}
     markDeleteDiagnosticPhase('topic:render-all');
-    renderAll();notify('Topic deleted. Review history is retained.',true);
+    renderAll();window.NexusRefreshUndoTimeout?.();
   }
   function openStream(id=null){editStreamId=id;const st=id?state.streams.find(s=>s.id===id):null;$('streamDialogTitle').textContent=st?'Edit stream / course':'Add stream / course';$('streamNameInput').value=st?.name||'';$('streamDialog').showModal();}
   function saveStream(e){
@@ -855,9 +892,9 @@
     for(const entry of state.history){
       if(entry.subjectId===id||topicIdSet.has(entry.topicId))historyCount++;
     }
-    if(!confirm(`Delete subject “${subject.name}” and all its data?\n\nThis permanently removes ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. This cannot be undone after you leave this page. Export a full JSON backup first if unsure.`))return;
+    if(!confirm(`Delete subject “${subject.name}” and all its data?\n\nThis permanently removes ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. Undo is available for 15 seconds after deletion. Export a full JSON backup first if unsure.`))return;
     markDeleteDiagnosticPhase('subject:undo-snapshot');
-    startUndoBulkDelete('Subject and its data deleted.');
+    startUndoBulkDelete('Subject and its data deleted.',{silent:true});
     markDeleteDiagnosticPhase('subject:curriculum-tombstone');
     if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedSubject(state,CURRICULUM_PACKS,subject);
     markDeleteDiagnosticPhase('subject:study-hub-cascade');
@@ -880,7 +917,7 @@
     renderAll();
     markDeleteDiagnosticPhase('subject:render-study-hub');
     if(window.NexusRenderHub)window.NexusRenderHub();
-    notify('Subject and nested data deleted.',true);
+    window.NexusRefreshUndoTimeout?.();
   }
   function deleteStream(id){
     markDeleteDiagnosticPhase('stream:lookup');
@@ -901,9 +938,9 @@
     for(const entry of state.history){
       if(subjectIdSet.has(entry.subjectId)||topicIdSet.has(entry.topicId)||entry.streamId===id)historyCount++;
     }
-    if(!confirm(`Delete stream “${stream.name}” and all nested data?\n\nThis permanently removes ${subjectIds.length} subject(s), ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. This cannot be undone after you leave this page. Export a full JSON backup first if unsure.`))return;
+    if(!confirm(`Delete stream “${stream.name}” and all nested data?\n\nThis permanently removes ${subjectIds.length} subject(s), ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. Undo is available for 15 seconds after deletion. Export a full JSON backup first if unsure.`))return;
     markDeleteDiagnosticPhase('stream:undo-snapshot');
-    startUndoBulkDelete('Stream and its data deleted.');
+    startUndoBulkDelete('Stream and its data deleted.',{silent:true});
     markDeleteDiagnosticPhase('stream:curriculum-tombstone');
     if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedStream(state,CURRICULUM_PACKS,stream);
     markDeleteDiagnosticPhase('stream:study-hub-cascade');
@@ -928,7 +965,7 @@
     renderAll();
     markDeleteDiagnosticPhase('stream:render-study-hub');
     if(window.NexusRenderHub)window.NexusRenderHub();
-    notify('Stream and nested data deleted.',true);
+    window.NexusRefreshUndoTimeout?.();
   }
   function openExam(id=null){editExamId=id;const ex=id?state.exams.find(e=>e.id===id):null;$('examDialogTitle').textContent=ex?'Edit exam or deadline':'Add exam or deadline';$('examNameInput').value=ex?.name||'';$('examDateInput').value=ex?.date||'';$('examTypeInput').value=ex?.type||'Academic exam';$('examNotesInput').value=ex?.notes||'';$('examDialog').showModal();}
   function saveExam(e){
@@ -943,13 +980,13 @@
     markDeleteDiagnosticPhase('exam:lookup');
     const exam=state.exams.find(item=>item.id===id);if(!exam||!confirm(`Delete “${exam.name}”?`))return;
     markDeleteDiagnosticPhase('exam:undo-snapshot');
-    startUndoArrayReplacement('Exam deleted.','exams');
+    startUndoArrayReplacement('Exam deleted.','exams',{silent:true});
     markDeleteDiagnosticPhase('exam:filter');
     state.exams=state.exams.filter(item=>item.id!==id);
     markDeleteDiagnosticPhase('exam:save');
     if(!save()){markDeleteDiagnosticPhase('exam:rollback');undo();notify('Exam deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}
     markDeleteDiagnosticPhase('exam:render-all');
-    renderAll();notify('Exam deleted.',true);
+    renderAll();window.NexusRefreshUndoTimeout?.();
   }
   function downloadFile(filename,content,type){const blob=new Blob([content],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);}
   function exportBackup(){if(typeof window.NexusExportFullBackup==='function'){window.NexusExportFullBackup();return;}const packet={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state,featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}};downloadFile(`nexus-backup-${today()}.json`,JSON.stringify(packet,null,2),'application/json;charset=utf-8');notify('Full backup downloaded. Keep it somewhere safe.');}
@@ -1001,16 +1038,16 @@
     markDeleteDiagnosticPhase('history:lookup');
     const entry=state.history.find(item=>String(item.id)===String(id));
     if(!entry){notify('That review-history entry could not be found. Refresh the history and try again.');return;}
-    if(!confirm('DANGER ZONE — Delete this review record?\n\nThis review will disappear from rating analytics and future history exports. The topic schedule will not change. Use Undo immediately or restore a backup if needed. Continue?'))return;
+    if(!confirm('DANGER ZONE — Delete this review record?\n\nThis review will disappear from rating analytics and future history exports. The topic schedule will not change. Undo is available for 15 seconds after deletion. Continue?'))return;
     markDeleteDiagnosticPhase('history:undo-snapshot');
-    startUndoHistoryChange('History entry deleted.');
+    startUndoHistoryChange('History entry deleted.',{silent:true});
     markDeleteDiagnosticPhase('history:filter');
     state.history=state.history.filter(item=>String(item.id)!==String(id));
     historyInsightsDirty=true;
     markDeleteDiagnosticPhase('history:save');
     if(!save()){markDeleteDiagnosticPhase('history:rollback');undo();notify('Review-history deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}
     markDeleteDiagnosticPhase('history:render');
-    renderHistory();notify('History entry deleted.',true);
+    renderHistory();window.NexusRefreshUndoTimeout?.();
   }
   function handleCoreDeleteClick(event){
     const origin=event.target&&event.target.nodeType===1?event.target:event.target&&event.target.parentElement;
@@ -1035,7 +1072,7 @@
       console.error('Nexus delete action failed ('+action+')',diagnostic||error);
       const detail=String(error&&error.message||error||'Unknown error').replace(/\s+/g,' ').slice(0,180);
       $('deleteDiagnosticBtn').style.display='';
-      notify('Delete failed ('+action+'): '+(diagnostic?.failedAt?'['+diagnostic.failedAt+'] ':'')+detail,Boolean(undoState));
+      notify('Delete failed ('+action+'): '+(diagnostic?.failedAt?'['+diagnostic.failedAt+'] ':'')+detail,Boolean(undoState),{showMessage:true});
     }
   }
   document.addEventListener('click',handleCoreDeleteClick,true);
@@ -1125,93 +1162,64 @@
   window.addEventListener('appinstalled',()=>{installPrompt=null;window.NexusInstallPrompt=null;$('installBtn').classList.add('is-installed');$('installBtnLabel').textContent='Installed';notify('Nexus installed on this device.');});
   // Service-worker registration is handled once by nexus-app-bootstrap.js before app modules load.
 
-  // --- Persistent Undo toast: one source of truth for message, visibility, and timers. ---
+  // --- Shared notification and Undo lifecycle. ---
   (function(){
-    const toastEl = document.getElementById('toast');
-    const toastTextEl = document.getElementById('toastText');
-    const undoBtnEl = document.getElementById('undoBtn');
-    const closeUndoBtnEl = document.getElementById('closeUndoBtn');
-    let transientToastTimer = null;
-    let clearUndoAfterCloseTimer = null;
-
+    const toastEl=document.getElementById('toast');
+    const toastTextEl=document.getElementById('toastText');
+    const undoBtnEl=document.getElementById('undoBtn');
+    const closeUndoBtnEl=document.getElementById('closeUndoBtn');
+    let transientToastTimer=null;
     function clearToastTimers(){
-      clearTimeout(toastTimer);
-      toastTimer = null;
-      clearTimeout(transientToastTimer);
-      transientToastTimer = null;
+      clearTimeout(toastTimer);toastTimer=null;
+      clearTimeout(transientToastTimer);transientToastTimer=null;
     }
-    function showUndoAction(){
-      undoBtnEl.style.display = 'inline-flex';
+    function showUndoAction(showMessage=false){
+      if(undoSilent&&!showMessage){
+        toastTextEl.textContent='';toastTextEl.hidden=true;
+        toastEl.classList.add('undo-only');
+      }else{
+        toastTextEl.hidden=false;toastEl.classList.remove('undo-only');
+      }
+      undoBtnEl.style.display='inline-flex';
       toastEl.classList.add('undoable','show');
     }
     function clearUndoAction(){
-      undoBtnEl.style.display = 'none';
-      toastEl.classList.remove('undoable');
+      undoBtnEl.style.display='none';toastTextEl.hidden=false;
+      toastEl.classList.remove('undoable','undo-only');
     }
-
-    window.notify = function(msg, isPersistent){
+    window.notify=function(msg,isPersistent,options={}){
       clearToastTimers();
       if(undoState){
-        // Theme changes and unrelated notifications must not hide an active Undo action.
-        if(isPersistent) toastTextEl.textContent = msg;
-        showUndoAction();
-        return;
+        const showMessage=options&&options.showMessage===true;
+        if(showMessage||(isPersistent&&!undoSilent)){
+          toastTextEl.textContent=msg;toastTextEl.hidden=false;
+        }
+        showUndoAction(showMessage);return;
       }
-
-      toastTextEl.textContent = msg;
-      clearUndoAction();
-      toastEl.classList.add('show');
-      transientToastTimer = setTimeout(()=>{
-        if(!undoState) toastEl.classList.remove('show');
-      },2600);
+      toastTextEl.hidden=false;toastTextEl.textContent=msg;
+      clearUndoAction();toastEl.classList.add('show');
+      transientToastTimer=setTimeout(()=>{if(!undoState)toastEl.classList.remove('show');},2600);
     };
-
-    window.hideUndo = function(){
-      toastEl.classList.remove('show');
+    window.NexusCancelUndoAction=function(){
+      clearToastTimers();clearTimeout(undoTimer);undoTimer=null;
+      undoState=null;undoSilent=false;clearUndoAction();toastEl.classList.remove('show');
     };
+    window.hideUndo=()=>window.NexusCancelUndoAction();
+    if(closeUndoBtnEl)closeUndoBtnEl.addEventListener('click',()=>window.NexusCancelUndoAction());
 
-    undoBtnEl.addEventListener('click',()=>{
-      clearToastTimers();
-      clearTimeout(clearUndoAfterCloseTimer);
-      undoState = null;
-      clearUndoAction();
-      toastEl.classList.remove('show');
-    });
+    const origConfirm=window.confirm;
+    window.confirmAction=function({title,desc}){return origConfirm(title+"\n\n"+desc);};
 
-    if(closeUndoBtnEl){
-      closeUndoBtnEl.addEventListener('click',()=>{
-        clearTimeout(clearUndoAfterCloseTimer);
-        toastEl.classList.remove('show');
-        clearUndoAfterCloseTimer = setTimeout(()=>{
-          // A new undoable action may have started while the close animation was running.
-          if(!toastEl.classList.contains('show')){
-            undoState = null;
-            clearUndoAction();
-          }
-          clearUndoAfterCloseTimer = null;
-        },300);
-      });
-    }
-
-    // Enhanced confirm for data protection
-    const origConfirm = window.confirm;
-    window.confirmAction = function({title, desc}){
-      // Use native confirm but with detailed message for now, wrapped in custom later
-      return origConfirm(title + "\n\n" + desc);
-    };
-    
     // These handlers are top-level declarations in this classic script and are
     // already exposed on window. Do not reassign arrow wrappers here: each wrapper
     // would overwrite its own global binding and recursively call itself.
-
-    window.clearHistory = function(){
+    window.clearHistory=function(){
       if(!confirm('Clear ALL history?\\n\\nThis will delete '+state.history.length+' records. Schedules stay but past reviews are retained.\\n\\nExport a backup first!'))return;
       if(!confirm('Are you absolutely sure?'))return;
       startUndoHistoryChange('All history cleared.');
       state.history=[];save();renderAll();
     };
-
-    window.resetAll = function(){
+    window.resetAll=function(){
       if(!confirm('Reset ALL data?\\n\\nThis deletes topics, subjects, streams, exams, history and settings. Export a backup first.'))return;
       const typed=prompt('To confirm, type RESET in capital letters:');
       if(typed!=='RESET'){alert('Cancelled');return;}
@@ -1219,24 +1227,16 @@
       localStorage.removeItem(STORAGE_KEY);OLD_KEYS.forEach(key=>localStorage.removeItem(key));
       state=baseState();save();renderAll();
     };
-
-    // Dropdown filters toggle
-    document.getElementById('toggleTopicFilters')?.addEventListener('click', ()=>{
-      const bar = document.getElementById('topicFiltersBar');
-      if(!bar) return;
-      bar.style.display = bar.style.display==='none' ? 'flex' : 'none';
-      if(bar.style.display!=='none'){ bar.style.animation='slideDown .35s ease'; }
+    document.getElementById('toggleTopicFilters')?.addEventListener('click',()=>{
+      const bar=document.getElementById('topicFiltersBar');if(!bar)return;
+      bar.style.display=bar.style.display==='none'?'flex':'none';
+      if(bar.style.display!=='none')bar.style.animation='slideDown .35s ease';
     });
-    document.getElementById('toggleHistoryFilters')?.addEventListener('click', ()=>{
-      const bar = document.getElementById('historyFiltersBar');
-      if(!bar) return;
-      bar.style.display = bar.style.display==='none' ? 'flex' : 'none';
-      if(bar.style.display!=='none'){ bar.style.animation='slideDown .35s ease'; }
+    document.getElementById('toggleHistoryFilters')?.addEventListener('click',()=>{
+      const bar=document.getElementById('historyFiltersBar');if(!bar)return;
+      bar.style.display=bar.style.display==='none'?'flex':'none';
+      if(bar.style.display!=='none')bar.style.animation='slideDown .35s ease';
     });
-    
-    // Overview collapse/expand is handled by explicit labelled buttons in the markup.
-    // Do not re-add legacy arrow-only controls or click handlers to panel headers.
-
   })();
 
   state=loadState();save();renderAll();
