@@ -219,3 +219,10 @@ assert.equal(logVisits,firstLogVisits+fixtureLogs.length,'explicit cache invalid
 assert.ok(indexReads>firstIndexReads,'invalidated Overview metrics must read the latest shared history index');
 
 console.log('Overview consistency runtime tests passed: shared history index, 77,144 topics, 48,000 history rows, 24,000 study logs, 365-cell heatmap, and cache reuse/invalidation.');
+
+assert.ok(studyHub.includes('window.NexusGetFeatureStateForCommit=()=>fsState;'),
+  'ordinary tracker saves must be able to reuse the live Study Hub state during the synchronous queue commit');
+assert.ok(appCore.includes('window.NexusGetFeatureStateForCommit') &&
+  appCore.includes("workspaceEntries.push({key:window.NexusFeatureStorageKey,value:JSON.stringify(featureState)})") &&
+  appCore.includes('noteCommittedLocalSave({state,featureState})'),
+  'tracker and Study Hub state must be written with one queue commit, without a duplicate full-snapshot requeue');

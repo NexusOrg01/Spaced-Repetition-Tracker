@@ -1238,6 +1238,14 @@ for (const scenario of [
     'a local save must update the queued payload rather than allowing an older snapshot to overwrite it');
   assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics.length, changedState.topics.length,
     'queueing a local save must not remove or alter the locally persisted workspace');
+
+  const pendingBeforeCommittedNote=queue.getPending(storage,accountB.id);
+  window.NexusCloudSync.noteCommittedLocalSave({state:changedState,featureState:currentFeatures});
+  const pendingAfterCommittedNote=queue.getPending(storage,accountB.id);
+  assert.equal(pendingAfterCommittedNote.operationId,pendingBeforeCommittedNote.operationId,
+    'a save already committed by app-core must not create a second queue snapshot');
+  assert.ok(pendingAfterCommittedNote.payload.state.topics.some(topic=>topic.id==='local-save-after-pending'),
+    'the lightweight committed-save hook must leave the already-committed queue payload intact');
 }
 
 // A different authenticated account must recover only its own cached local workspace

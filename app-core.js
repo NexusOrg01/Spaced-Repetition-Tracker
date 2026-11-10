@@ -287,14 +287,27 @@
       // Curriculum repair runs at hydration, import/restore, cloud-merge, and catalogue
       // boundaries. Repeating a full catalogue scan on every ordinary review/save would
       // make a large workspace pay for repair work even when no catalogue state changed.
-      const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():(()=>{
-        try{const x=JSON.parse(localStorage.getItem('recall.study.features.v1')||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{}}catch(_){return {}}
-      })();
+      // The queue commits synchronously and serializes its payload before returning,
+      // so this save can safely pass the live feature-state reference instead of
+      // allocating a second deep copy of the entire Study Hub workspace.
+      const featureState=window.NexusGetFeatureStateForCommit
+        ?window.NexusGetFeatureStateForCommit()
+        :window.NexusGetFeatureState?window.NexusGetFeatureState():(()=>{
+          try{const x=JSON.parse(localStorage.getItem('recall.study.features.v1')||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{}}catch(_){return {}}
+        })();
       if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');
       markDeleteDiagnosticPhase('save:serialize-tracker');
       const trackerSnapshot=JSON.stringify(state);
+      const workspaceEntries=[{key:STORAGE_KEY,value:trackerSnapshot}];
+      if(window.NexusFeatureStorageKey){
+        markDeleteDiagnosticPhase('save:serialize-feature-state-storage');
+        workspaceEntries.push({key:window.NexusFeatureStorageKey,value:JSON.stringify(featureState)});
+      }
       markDeleteDiagnosticPhase('save:offline-queue-commit');
-      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[{key:STORAGE_KEY,value:trackerSnapshot}],{state,featureState},{returnOperationPayload:false});
+      // Persist tracker, Study Hub state and the pending cloud snapshot in one atomic
+      // queue commit. The cloud hook below only records that this commit has happened;
+      // it must not serialize and enqueue the same workspace a second time.
+      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,workspaceEntries,{state,featureState},{returnOperationPayload:false});
       const storage=window.NexusStorage;
       if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function'){
         const saveRevision=++storageSaveRevision;
@@ -316,7 +329,8 @@
         $('saveStatus').style.color='';
       }
       markDeleteDiagnosticPhase('save:cloud-sync-record');
-      if(window.NexusCloudSync&&window.NexusCloudSync.recordLocalSave)window.NexusCloudSync.recordLocalSave({state,featureState});
+      if(window.NexusCloudSync&&window.NexusCloudSync.noteCommittedLocalSave)window.NexusCloudSync.noteCommittedLocalSave({state,featureState});
+      else if(window.NexusCloudSync&&window.NexusCloudSync.recordLocalSave)window.NexusCloudSync.recordLocalSave({state,featureState});
       markDeleteDiagnosticPhase('save:cloud-sync-schedule');
       if(window.NexusCloudSync)window.NexusCloudSync.schedule();
       return true;
