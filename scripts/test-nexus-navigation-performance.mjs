@@ -10,13 +10,48 @@ const androidAssets = read('scripts/build-android-assets.mjs');
 const androidWorkflow = read('.github/workflows/android-build.yml');
 const fdroidWorkflow = read('.github/workflows/fdroid-validation.yml');
 
-const historyDelegates = appCore.match(/\$\('historyList'\)\.addEventListener\('click'/g) || [];
-assert.equal(historyDelegates.length, 1,
-  'review-history deletion must have exactly one delegated click handler');
-assert.ok(!appCore.includes("const historyList = document.getElementById('historyList');"),
-  'the duplicate capture-phase history deletion handler must stay removed');
-assert.ok(appCore.includes("notify('History entry deleted.',true);"),
-  'the single history delete handler must retain its Undo notification');
+assert.ok(appCore.includes("notify('History entry deleted.',true);") &&
+  appCore.includes("startUndoHistoryChange('History entry deleted.');"),
+  'review-history deletion must retain confirmation, Undo, and success feedback');
+
+const coreDeleteStart = appCore.indexOf('function handleCoreDeleteClick(event){');
+const coreDeleteEnd = appCore.indexOf("\n  document.addEventListener('click',handleCoreDeleteClick,true);", coreDeleteStart);
+assert.ok(coreDeleteStart >= 0 && coreDeleteEnd > coreDeleteStart,
+  'core delete actions must use one stable document capture handler');
+const coreDeleteSource = appCore.slice(coreDeleteStart, coreDeleteEnd);
+for (const action of ['delete-topic','delete-history','delete-subject','delete-stream','delete-exam']) {
+  assert.ok(coreDeleteSource.includes("'" + action + "'"), 'core delete capture handler must route ' + action);
+}
+assert.ok(coreDeleteSource.includes('event.preventDefault();') &&
+  coreDeleteSource.includes('event.stopImmediatePropagation();') &&
+  appCore.includes("document.addEventListener('click',handleCoreDeleteClick,true);"),
+  'core delete actions must be intercepted before container handlers and form submission');
+assert.ok(!appCore.includes("$('historyList').addEventListener('click'") &&
+  !appCore.includes("if(action==='delete-topic')deleteTopic(id)"),
+  'old per-container delete handling must not duplicate core deletion');
+
+const hubDeleteStart = studyHub.indexOf('function handleStudyHubDeleteClick(event){');
+const hubDeleteEnd = studyHub.indexOf("\n  document.addEventListener('click',handleStudyHubDeleteClick,true);", hubDeleteStart);
+assert.ok(hubDeleteStart >= 0 && hubDeleteEnd > hubDeleteStart,
+  'Study Hub delete actions must use one stable document capture handler');
+const hubDeleteSource = studyHub.slice(hubDeleteStart, hubDeleteEnd);
+for (const action of ['delete-study-log','delete-paper','delete-journal','delete-goal','bulk-delete']) {
+  assert.ok(hubDeleteSource.includes("'" + action + "'"), 'Study Hub delete capture handler must route ' + action);
+}
+assert.ok(hubDeleteSource.includes('event.preventDefault();') &&
+  hubDeleteSource.includes('event.stopImmediatePropagation();') &&
+  studyHub.includes("document.addEventListener('click',handleStudyHubDeleteClick,true);"),
+  'Study Hub delete actions must be intercepted before form submission and bubbling');
+
+for (const action of ['delete-topic','delete-history','delete-subject','delete-stream','delete-exam']) {
+  assert.ok(appCore.includes('type="button" class="btn btn-sm btn-danger" data-action="' + action + '"'),
+    action + ' must be a non-submit button');
+}
+for (const action of ['delete-study-log','delete-paper','delete-journal','delete-goal','bulk-delete']) {
+  assert.ok(studyHub.includes('type="button" class="btn btn-sm btn-danger" data-hub-action="' + action + '"') ||
+    studyHub.includes('type="button" class="btn btn-danger" data-hub-action="' + action + '"'),
+    action + ' must be a non-submit Study Hub button');
+}
 
 const selectionCacheStart = studyHub.indexOf('let ratingAnalyticsSelectionCache=null;');
 const selectionCacheEnd = studyHub.indexOf('const RATING_ANALYTICS_ENTITY_OPTION_LIMIT', selectionCacheStart);
