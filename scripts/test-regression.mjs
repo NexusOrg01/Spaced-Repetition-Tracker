@@ -158,12 +158,12 @@ assert.ok(appCore.includes('function startUndoTopicEdit(text,topic)') && appCore
   'topic edits/additions/deletions, history clearing/deletion, imports and resets must use lightweight undo records or old-state references');
 assert.ok(appCore.includes('function startUndoEntityEdit(text,collection,item,fields)') &&
   appCore.includes('function startUndoEntityAdd(text,collection,itemId)') &&
-  appCore.includes('function startUndoArrayReplacement(text,collection)') &&
+  appCore.includes('function startUndoArrayReplacement(text,collection,options={})') &&
   appCore.includes('function startUndoArrayItemReplacement(text,collection,index)') &&
   appCore.includes("startUndoEntityEdit('Stream saved.','streams',stream,['name'])") &&
   appCore.includes("startUndoEntityEdit('Subject saved.','subjects',subject,['name','streamId'])") &&
   appCore.includes("startUndoArrayItemReplacement('Exam saved.','exams',index)") &&
-  appCore.includes("startUndoArrayReplacement('Exam deleted.','exams')") &&
+  appCore.includes("startUndoArrayReplacement('Exam deleted.','exams',{silent:true})") &&
   !appCore.includes("undoState={kind:'snapshot',value:clone(state)}") &&
   !appCore.includes('function startUndo(text)'),
   'all common CRUD and Undo paths must avoid deep-cloning the complete workspace');
