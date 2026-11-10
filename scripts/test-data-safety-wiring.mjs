@@ -140,7 +140,7 @@ assert.ok(plannerRender.includes('scheduledByDate=planner.scheduledByDate') &&
   !plannerRender.includes('for(const topic of state.topics)') &&
   !plannerRender.includes('scheduledByDate=new Map()'),
   'planner rendering must reuse cached workload/calendar results without rescanning the full topic catalogue');
-const topicHistoryCache=section(studyHub,'function getTopicHistoryStats(){','function featureMeta(t){','bounded topic history cache');
+const topicHistoryCache=section(studyHub,'function getTopicHistoryStats(){','function featureMeta(t,topicStatus=status(t)){','bounded topic history cache');
 assert.ok(topicHistoryCache.includes('item.recent') && topicHistoryCache.includes('recent.length>5') &&
   !topicHistoryCache.includes('item.hs.push'),
   'mastery metadata must retain only the latest five history records per topic plus aggregates');
