@@ -17,6 +17,13 @@ const createCollector=sandbox.window.NexusCreateTopKCollector;
 assert.equal(typeof selectTopK,'function');
 assert.equal(typeof createCollector,'function');
 
+const cooperativeSandbox={window:{},setTimeout(callback,delay){cooperativeYields++;return setTimeout(callback,delay);}};
+let cooperativeYields=0;
+vm.createContext(cooperativeSandbox);
+vm.runInContext(appCore.slice(helperStart,helperEnd),cooperativeSandbox,{filename:'cooperative-list-selection.js'});
+const selectTopKCooperative=cooperativeSandbox.window.NexusSelectTopKCooperative;
+assert.equal(typeof selectTopKCooperative,'function','the app must expose its cooperative top-K selector for regression tests');
+
 const count=77144;
 const records=Array.from({length:count},(_,id)=>({id,rank:count-id,group:id%7}));
 const compare=(a,b)=>a.rank-b.rank||a.id-b.id;
@@ -31,6 +38,22 @@ assert.equal(result.items.length,100,'the selector must retain only the requeste
 assert.deepEqual(Array.from(result.items,record=>record.id),expected,'bounded selection must match the exact first page from a full sort');
 assert.ok(comparisons<=count*16+1000,'selection work must scale with page size rather than sorting the complete catalogue');
 
+let cooperativeVisited=0;
+const cooperativeResult=await selectTopKCooperative(records,100,compare,record=>{cooperativeVisited++;return record;});
+assert.equal(cooperativeResult.count,count,'cooperative selection must count the entire accepted collection');
+assert.deepEqual(Array.from(cooperativeResult.items,record=>record.id),expected,
+  'cooperative selection must retain the same exact top-K page as synchronous selection');
+assert.equal(cooperativeVisited,count,'cooperative selection must visit every input record exactly once');
+assert.ok(cooperativeYields>=Math.ceil(count/400)-1,
+  'cooperative selection must yield between bounded 400-record batches');
+
+let cancelChecks=0,cancelVisited=0;
+const cancelled=await selectTopKCooperative(records,25,compare,record=>{cancelVisited++;return record;},()=>{
+  cancelChecks++;return cancelChecks<3;
+});
+assert.equal(cancelled,null,'a superseded list selection must cancel without returning stale rows');
+assert.ok(cancelVisited<count,'cancellation must stop scanning before the entire collection is processed');
+
 const projected=selectTopK(records,37,compare,record=>record.group===0?record:null);
 const projectedExpected=records.filter(record=>record.group===0).slice().sort(compare).slice(0,37).map(record=>record.id);
 assert.equal(projected.count,Math.ceil(count/7),'projection must count all matching records without retaining them all');
@@ -41,6 +64,18 @@ for(const record of records)collector.add(record);
 const streamed=collector.finish();
 assert.equal(streamed.count,count);
 assert.deepEqual(Array.from(streamed.items,record=>record.id),records.slice().sort(compare).slice(0,40).map(record=>record.id));
+
+assert.ok(appCore.includes('async function renderTopics()')&&
+  appCore.includes('selectTopKCooperative(source,topicVisibleLimit')&&
+  appCore.includes('async function renderHistory()')&&
+  appCore.includes('selectTopKCooperative(source,historyVisibleLimit'),
+  'Topics and History must use cooperative, cancellable scans rather than blocking full-array top-K loops');
+assert.ok(appCore.includes('document.querySelector(\'.view.active\')?.id===\'view-topics\'')&&
+  appCore.includes('document.querySelector(\'.view.active\')?.id===\'view-history\''),
+  'outdated list scans must cancel when the user navigates away');
+assert.ok(appCore.includes('renderStructureList(topicCountsBySubject)')&&
+  appCore.includes('topicCountsBySubject.set(topic.subjectId'),
+  'the structure tree must reuse the topic counts collected during the Topics scan');
 
 assert.ok(studyHub.includes('NexusCreateTopKCollector(studyLogHistoryLimit'),'study logs must use bounded collection');
 assert.ok(studyHub.includes('NexusCreateTopKCollector(40'),'mastery details must use bounded collection');
