@@ -259,4 +259,101 @@ for (const [name, source] of [['Android build', androidWorkflow], ['F-Droid vali
     name + ' must skip explicitly web-only source commits while retaining manual dispatch');
 }
 
+
+const diagnosticHelperStart = appCore.indexOf('  let activeDeleteDiagnostic=null;');
+const diagnosticHelperEnd = appCore.indexOf('  const $ = id =>', diagnosticHelperStart);
+assert.ok(diagnosticHelperStart >= 0 && diagnosticHelperEnd > diagnosticHelperStart,
+  'core must expose a bounded, independently testable deletion diagnostic helper');
+const diagnosticHelperSource = appCore.slice(diagnosticHelperStart, diagnosticHelperEnd);
+const diagnosticStorage = new Map();
+const diagnosticSandbox = {
+  state: { streams: [{}], subjects: [{}, {}], topics: [{}, {}, {}], history: [{}] },
+  window: { sessionStorage: {
+    setItem: (key, value) => diagnosticStorage.set(key, value),
+    getItem: key => diagnosticStorage.get(key) ?? null,
+    removeItem: key => diagnosticStorage.delete(key)
+  } },
+  Date, JSON, String
+};
+vm.createContext(diagnosticSandbox);
+vm.runInContext(diagnosticHelperSource, diagnosticSandbox, { filename: 'delete-diagnostic-helper.js' });
+diagnosticSandbox.beginDeleteDiagnostic('delete-subject');
+diagnosticSandbox.markDeleteDiagnosticPhase('subject:study-hub-cascade');
+const stackOverflow = new RangeError('Maximum call stack size exceeded');
+const savedDiagnostic = diagnosticSandbox.failDeleteDiagnostic(stackOverflow);
+assert.equal(savedDiagnostic.status, 'failed');
+assert.equal(savedDiagnostic.failedAt, 'subject:study-hub-cascade',
+  'the failed phase must be retained instead of reporting only the generic event action');
+assert.equal(savedDiagnostic.error.name, 'RangeError');
+assert.match(savedDiagnostic.error.stack, /Maximum call stack size exceeded/);
+assert.deepEqual(
+  Object.keys(savedDiagnostic.counts).sort(),
+  ['history', 'streams', 'subjects', 'topics'],
+  'diagnostics must capture record counts without exposing user study content'
+);
+const persistedDiagnostic = JSON.parse(diagnosticStorage.get('nexus:last-delete-diagnostic'));
+assert.equal(persistedDiagnostic.failedAt, 'subject:study-hub-cascade',
+  'the mobile diagnostic must survive the toast closing for later copy');
+
+const coreHandlerStart = appCore.indexOf('  function handleCoreDeleteClick(event){');
+const coreHandlerEnd = appCore.indexOf("\n  document.addEventListener('click',handleCoreDeleteClick,true);", coreHandlerStart);
+assert.ok(coreHandlerStart >= 0 && coreHandlerEnd > coreHandlerStart,
+  'the instrumented core delete event handler must remain independently testable');
+const deleteDiagnosticButton = { style: { display: '' } };
+const coreNotifications = [];
+const coreHandlerSandbox = {
+  state: { streams: [], subjects: [{}], topics: [{}], history: [] },
+  undoState: null,
+  window: { sessionStorage: {
+    setItem: (key, value) => diagnosticStorage.set(key, value),
+    getItem: key => diagnosticStorage.get(key) ?? null,
+    removeItem: key => diagnosticStorage.delete(key)
+  } },
+  document: {
+    getElementById: id => id === 'deleteDiagnosticBtn' ? deleteDiagnosticButton : null,
+    addEventListener(type, handler, capture) {
+      assert.equal(type, 'click');
+      assert.equal(capture, true);
+      this.deleteHandler = handler;
+    }
+  },
+  console: { error() {} },
+  $: id => id === 'deleteDiagnosticBtn' ? deleteDiagnosticButton : null,
+  notify: message => coreNotifications.push(String(message)),
+  deleteTopic() {}, deleteHistoryEntry() {}, deleteStream() {}, deleteExam() {}
+};
+vm.createContext(coreHandlerSandbox);
+vm.runInContext(diagnosticHelperSource + "\n" +
+  appCore.slice(coreHandlerStart, coreHandlerEnd) +
+  "\ndocument.addEventListener('click',handleCoreDeleteClick,true);",
+  coreHandlerSandbox, { filename: 'core-delete-diagnostic-handler.js' });
+coreHandlerSandbox.deleteSubject = () => {
+  coreHandlerSandbox.markDeleteDiagnosticPhase('test:subject-cascade');
+  throw new RangeError('Maximum call stack size exceeded');
+};
+coreHandlerSandbox.document.deleteHandler({
+  target: { nodeType: 1, closest: () => ({ dataset: { action: 'delete-subject', id: 'subject-test' } }) },
+  preventDefault() {}, stopPropagation() {}
+});
+assert.equal(coreHandlerSandbox.window.NexusLastDeleteDiagnostic.failedAt, 'test:subject-cascade',
+  'the real document capture handler must retain the throwing deletion phase');
+assert.ok(coreNotifications.at(-1).includes('[test:subject-cascade]'),
+  'the mobile error toast must identify the failing phase');
+assert.equal(deleteDiagnosticButton.style.display, '',
+  'the mobile copy-details control must appear after a failed deletion');
+
+assert.ok(appCore.includes("markDeleteDiagnosticPhase('save:serialize-tracker')") &&
+  appCore.includes("markDeleteDiagnosticPhase('save:offline-queue-commit')") &&
+  appCore.includes("markDeleteDiagnosticPhase('render:setup')") &&
+  appCore.includes("markDeleteDiagnosticPhase('subject:render-study-hub')"),
+  'core deletion diagnostics must distinguish snapshot, persistence, and render phases');
+assert.ok(studyHub.includes("window.NexusDeleteDiagnosticPhase?.('cascade:subject:filter-journal')") &&
+  studyHub.includes("window.NexusDeleteDiagnosticPhase?.('hub:save:serialize-feature-state')") &&
+  studyHub.includes("window.NexusDeleteDiagnosticPhase?.('render:study-hub:'+hubTab)"),
+  'Study Hub deletion diagnostics must distinguish cascade, persistence, and render phases');
+assert.ok(indexHtml.includes('id="deleteDiagnosticBtn"') &&
+  appCore.includes("navigator.clipboard.writeText(report)") &&
+  appCore.includes("window.prompt('Copy this deletion diagnostic"),
+  'mobile users must be able to copy the stored stack trace without desktop developer tools');
+
 console.log('Nexus navigation/analytics cache, embedded Analytics actions, single-owner deletion, and web/APK install split regressions passed.');
