@@ -33,8 +33,11 @@ assert.ok(studyHub.includes('function paperRows(){') &&
 assert.ok(studyHub.includes('if(!saveFs()){fsState.papers=previous;') &&
   studyHub.includes('if(!saveFs()){fsState.journal=previous;') &&
   studyHub.includes('if(!saveFs()){fsState.goals=previous;') &&
-  studyHub.includes('if(!saveFs()){if(cascadeUndoState){Object.assign(fsState,cascadeUndoState);'),
+  studyHub.includes('if(options.persist!==false&&!saveFs()){if(cascadeUndoState){Object.assign(fsState,cascadeUndoState);'),
   'Study Hub deletions and curriculum cascades must restore in-memory data when persistence fails');
+assert.ok(appCore.includes('NexusCascadeDeleteSubject(id,topicIds,{persist:false,render:false})') &&
+  studyHub.includes('window.NexusUndoCascadeDelete=(options={})=>'),
+  'large subject cascades must defer persistence and rendering to one combined workspace transaction');
 assert.ok(studyHub.includes('if(!save()){if(window.NexusUndoLastAction)window.NexusUndoLastAction();') &&
   appCore.includes('window.NexusUndoLastAction=()=>undo();'),
   'bulk deletion must invoke the shared undo path when its atomic workspace save fails');
