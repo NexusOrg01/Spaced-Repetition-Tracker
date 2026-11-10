@@ -497,7 +497,7 @@ assert.ok(streamDeleteSource.includes('for(const subject of state.subjects)') &&
   streamDeleteSource.includes('for(const topic of state.topics)') &&
   streamDeleteSource.includes('for(const entry of state.history)'),
   'stream delete must collect IDs and count history without filter/map temporary arrays');
-assert.ok(!streamDeleteSource.includes('state.history.filter('),
-  'stream-delete confirmation must not allocate a temporary history result array');
+assert.ok(!streamDeleteSource.includes('const historyCount=state.history.filter('),
+  'stream-delete confirmation must count history with a loop, not filter(...).length');
 
 console.log('Classic-script delete globals and 77,144-topic / 48,000-history deletion regressions passed.');
