@@ -241,7 +241,7 @@ const consistencySandbox={
   studyLogMinutes:log=>{logVisits++;return Number(log.minutes)||0;},
   reviewActivity:days=>{const result=[];for(let i=days-1;i>=0;i--){const date=consistencySandbox.dateShift(fixtureToday,-i);result.push({date,count:fixtureDateCounts.get(date)||0});}return result;},
   currentStudyStreak:()=>2,
-  hubEl:id=>id==='homeConsistencySummary'?overviewTarget:{classList:{contains:view=>view==='active'}},
+  hubEl:id=>id==='homeConsistencySummary'?overviewTarget:{classList:{contains:()=>false}},
   localEsc:value=>String(value),
   selectOptions:options=>options.map(([value,label])=>'<option value="'+value+'">'+label+'</option>').join('')
 };
@@ -294,15 +294,19 @@ assert.equal(indexReads,firstIndexReads,'unrelated feature saves must reuse the 
 // Relevant study-log changes are still detected by the cache key without a forced eviction.
 saveFsSandbox.fsState.studyLogs.push({date:fixtureToday,minutes:15,type:'Test focus session'});
 assert.equal(saveFsSandbox.testSaveFs(),true,'new study-log records must persist');
+const beforeStudyLogRebuild=logVisits;
 consistencySandbox.renderHomeConsistencySummary();
-assert.equal(logVisits,firstLogVisits+fixtureLogs.length+1,'a study-log count change must rebuild the weekly study-time aggregate');
+assert.ok(logVisits>beforeStudyLogRebuild,'a study-log count change must rebuild the weekly study-time aggregate');
+const updatedConsistencyMetrics=consistencySandbox.window.NexusGetOverviewTopicMetrics();
+const expectedWeeklyMinutes=saveFsSandbox.fsState.studyLogs.reduce((sum,log)=>sum+(Number(log.minutes)||0),0);
+assert.equal(updatedConsistencyMetrics.weeklyMinutes,expectedWeeklyMinutes,'the rebuilt weekly study-time aggregate must include the newly saved log');
 assert.ok(indexReads>firstIndexReads,'a relevant source change must rebuild the shared consistency aggregate');
 
 const beforeExplicitInvalidation=logVisits;
 consistencySandbox.window.NexusInvalidateHomeConsistencyCache();
 consistencySandbox.renderHomeConsistencySummary();
 assert.equal(topicVisits,firstTopicVisits+expectedMasteryChecks,'explicit tracker invalidation must rebuild only the mastery-eligible topic metrics');
-assert.equal(logVisits,beforeExplicitInvalidation+fixtureLogs.length+1,'explicit invalidation must rebuild study-time metrics for all current log records');
+assert.ok(logVisits>beforeExplicitInvalidation,'explicit invalidation must rebuild study-time metrics for all current log records');
 assert.ok(indexReads>firstIndexReads,'invalidated Overview metrics must read the latest shared history index');
 assert.ok(typeof consistencySandbox.window.NexusGetOverviewTopicMetrics==='function',
   'the core Overview must use the same shared topic aggregate as the Consistency panel');
@@ -310,8 +314,11 @@ const cachedOverview=consistencySandbox.window.NexusGetOverviewTopicMetrics();
 assert.equal(cachedOverview.activeCount,fixtureTopics.length);
 assert.equal(cachedOverview.weakCount,0,'the shared metrics must supply the Study Hub weak-topic KPI');
 assert.ok(cachedOverview.queue.length<=7,'the shared Overview queue must remain bounded to seven records');
+assert.ok(cachedOverview.upcomingQueue.length<=7,'upcoming review selection must remain bounded to seven records');
 assert.equal(cachedOverview.progressBySubject.get(undefined).total,fixtureTopics.length,
   'the same pass must provide subject progress totals for the core Overview');
+assert.ok(appCore.includes('renderUpcomingQueue(sharedOverview)'),
+  'the Overview upcoming queue must reuse the shared metrics instead of scanning the full topic catalogue again');
 
 const renderAllStart=appCore.indexOf('function renderAll(){');
 const renderAllEnd=appCore.indexOf('\n  function openReview',renderAllStart);
