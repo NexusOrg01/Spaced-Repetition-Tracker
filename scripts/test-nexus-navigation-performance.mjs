@@ -102,11 +102,14 @@ for (const action of ['delete-topic','delete-history','delete-subject','delete-s
 
 const hubRouteCalls = [];
 const hubRouterSandbox = {
-  document: { addEventListener(type, handler, capture) {
-    assert.equal(type, 'click');
-    assert.equal(capture, true);
-    this.deleteHandler = handler;
-  } },
+  document: {
+    getElementById: id => id === 'deleteDiagnosticBtn' ? { style: { display: '' } } : null,
+    addEventListener(type, handler, capture) {
+      assert.equal(type, 'click');
+      assert.equal(capture, true);
+      this.deleteHandler = handler;
+    }
+  },
   window: {},
   fsState: {
     papers: [{ id: 'paper-test' }],
