@@ -269,6 +269,7 @@ assert.equal(logVisits,firstLogVisits,'changing the heatmap window must reuse th
 assert.equal(consistencySandbox.window.NexusGetOverviewTopicMetrics().heat.length,7,'the revised heatmap window must still render the requested day count');
 consistencySandbox.fsState.heatmapPeriod=365;
 consistencySandbox.renderHomeConsistencySummary();
+const indexReadsAfterDisplayRangeChanges=indexReads;
 
 // A journal/paper/goal save must not evict the 77k-topic/48k-history consistency cache.
 const saveFsStart=studyHub.indexOf('function saveFs(){');
@@ -299,7 +300,7 @@ assert.equal(invalidationCalls,0,'unrelated Study Hub saves must not discard the
 consistencySandbox.renderHomeConsistencySummary();
 assert.equal(topicVisits,firstTopicVisits,'unrelated feature saves must reuse topic aggregates');
 assert.equal(logVisits,firstLogVisits,'unrelated feature saves must reuse study-log aggregates');
-assert.equal(indexReads,firstIndexReads,'unrelated feature saves must reuse the shared history index');
+assert.equal(indexReads,indexReadsAfterDisplayRangeChanges,'unrelated feature saves must reuse the shared history index');
 
 // Relevant study-log changes are still detected by the cache key without a forced eviction.
 saveFsSandbox.fsState.studyLogs.push({date:fixtureToday,minutes:15,type:'Test focus session'});
@@ -310,7 +311,7 @@ assert.ok(logVisits>beforeStudyLogRebuild,'a study-log count change must rebuild
 const updatedConsistencyMetrics=consistencySandbox.window.NexusGetOverviewTopicMetrics();
 const expectedWeeklyMinutes=saveFsSandbox.fsState.studyLogs.reduce((sum,log)=>sum+(Number(log.minutes)||0),0);
 assert.equal(updatedConsistencyMetrics.weeklyMinutes,expectedWeeklyMinutes,'the rebuilt weekly study-time aggregate must include the newly saved log');
-assert.ok(indexReads>firstIndexReads,'a relevant source change must rebuild the shared consistency aggregate');
+assert.ok(indexReads>indexReadsAfterDisplayRangeChanges,'a relevant source change must rebuild the shared consistency aggregate');
 
 const beforeExplicitInvalidation=logVisits;
 consistencySandbox.window.NexusInvalidateHomeConsistencyCache();
