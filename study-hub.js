@@ -1220,9 +1220,18 @@
       target.innerHTML=intelligence+'<div class="home-heatmap-head"><div><strong>Review activity heatmap</strong><small>Each square represents a day. Darker squares indicate more saved reviews.</small></div><div class="ra-field"><label for="homeHeatmapPeriod">Heatmap period</label><select class="hub-input" id="homeHeatmapPeriod">'+selectOptions([['7','7 days'],['30','30 days'],['84','12 weeks'],['180','6 months'],['365','12 months']],String(metrics.heatDays))+'</select></div></div><div class="hub-heatmap analytics-heatmap home-activity-heatmap">'+heat+'</div>';
     }catch(error){
       console.error('Nexus Overview consistency summary failed',error);
-      target.innerHTML='<div class="analytics-render-error"><strong>Consistency metrics could not be displayed.</strong><p>Your saved workspace has not been changed. Reopen Overview to retry. If the problem continues, report the error to Nexus support.</p></div>';
+      target.innerHTML='<div class="analytics-render-error"><strong>Consistency metrics could not be displayed.</strong><p>Your saved workspace has not been changed. Retry the calculation. If the problem continues, report the error to Nexus support.</p><button type="button" class="btn btn-sm btn-primary" data-action="retry-home-consistency">Retry consistency metrics</button></div>';
     }
-  }  window.NexusRefreshHomeConsistencySummary=renderHomeConsistencySummary;
+  }
+  // The error state remains recoverable without reloading the application.
+  document.addEventListener('click',event=>{
+    const retry=event.target?.closest?.('[data-action="retry-home-consistency]');
+    if(!retry)return;
+    event.preventDefault();
+    window.NexusInvalidateHomeConsistencyCache?.();
+    renderHomeConsistencySummary();
+  });
+  window.NexusRefreshHomeConsistencySummary=renderHomeConsistencySummary;
   function renderActivityAnalytics(selection){
     const pdfScope=selection?.pdfScope||null;
      const studyLogMinutes=record=>{const seconds=record&&record.durationSeconds;if(seconds!==undefined&&seconds!==null&&Number.isFinite(Number(seconds)))return Math.max(0,Number(seconds))/60;return Math.max(0,Number(record&&record.minutes)||0);};
