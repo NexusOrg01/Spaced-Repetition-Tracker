@@ -224,11 +224,17 @@ const fixtureHistory=Array.from({length:48000},(_,index)=>({id:'history-'+index,
 const fixtureDateCounts=new Map([['2026-11-10',12],['2026-11-09',8],['2026-10-31',5],['2026-10-30',2]]);
 const fixtureIndex={byDate:fixtureDateCounts,dates:new Set(fixtureDateCounts.keys()),byTopic:new Map()};
 const fixtureLogs=Array.from({length:24000},(_,index)=>({date:index%2?'2026-11-10':'2026-11-09',minutes:5}));
-let topicVisits=0,logVisits=0,indexReads=0;
+let topicVisits=0,logVisits=0,indexReads=0,topicArrayPasses=0;
+const trackedTopics=new Proxy(fixtureTopics,{
+  get(target,property,receiver){
+    if(property===Symbol.iterator)return function*(){topicArrayPasses++;yield* target;};
+    return Reflect.get(target,property,receiver);
+  }
+});
 const overviewTarget={innerHTML:''};
 const consistencySandbox={
   window:{NexusGetHistoryActivityIndex:()=>{indexReads++;return fixtureIndex;}},
-  state:{topics:fixtureTopics,history:fixtureHistory},
+  state:{topics:trackedTopics,history:fixtureHistory},
   fsState:{analyticsPeriod:'month',heatmapPeriod:365,settings:{dailyMinutes:90},studyLogs:fixtureLogs},
   today:()=>fixtureToday,
   dateShift:(date,days)=>{const d=new Date(date+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+days);return d.toISOString().slice(0,10);},
@@ -252,6 +258,7 @@ assert.ok(overviewTarget.innerHTML.includes('19286 of 77144 active topics'),'ren
 assert.ok(overviewTarget.innerHTML.includes('Review activity heatmap'),'the Overview renderer must populate the heatmap');
 assert.ok(overviewTarget.innerHTML.includes('value="365"'),'the Overview renderer must expose the 12-month period');
 assert.equal((overviewTarget.innerHTML.match(/class="hub-heat"/g)||[]).length,365,'the 12-month heatmap must render exactly 365 cells');
+assert.equal(topicArrayPasses,1,'initial Overview aggregation must traverse the full topic catalogue once');
 const firstTopicVisits=topicVisits,firstLogVisits=logVisits,firstIndexReads=indexReads;
 const expectedMasteryChecks=0;
 assert.equal(firstTopicVisits,expectedMasteryChecks,'the shared aggregate must read per-topic history statistics directly instead of allocating featureMeta objects');
@@ -259,6 +266,7 @@ consistencySandbox.renderHomeConsistencySummary();
 assert.equal(topicVisits,firstTopicVisits,'reopening Overview must reuse cached topic metrics when the workspace is unchanged');
 assert.equal(logVisits,firstLogVisits,'reopening Overview must reuse cached study-time metrics when the workspace is unchanged');
 assert.equal(indexReads,firstIndexReads,'reopening Overview must reuse shared aggregate history metrics when the workspace is unchanged');
+assert.equal(topicArrayPasses,1,'reopening Overview must not traverse the topic catalogue again');
 
 // Changing the heatmap window should rebuild only the small display layer, not the
 // 77k-topic aggregate or the full study-log total.
@@ -266,8 +274,17 @@ consistencySandbox.fsState.heatmapPeriod=7;
 consistencySandbox.renderHomeConsistencySummary();
 assert.equal(topicVisits,firstTopicVisits,'changing the heatmap window must reuse topic-level aggregates');
 assert.equal(logVisits,firstLogVisits,'changing the heatmap window must reuse the weekly study-time aggregate');
+assert.equal(topicArrayPasses,1,'changing the heatmap window must not rescan the topic catalogue');
 assert.equal(consistencySandbox.window.NexusGetOverviewTopicMetrics().heat.length,7,'the revised heatmap window must still render the requested day count');
 consistencySandbox.fsState.heatmapPeriod=365;
+consistencySandbox.renderHomeConsistencySummary();
+consistencySandbox.fsState.analyticsPeriod='year';
+consistencySandbox.renderHomeConsistencySummary();
+const yearMetrics=consistencySandbox.window.NexusGetOverviewTopicMetrics();
+assert.equal(yearMetrics.rangeDays,365,'analytics range changes must refresh the date summary');
+assert.equal(topicArrayPasses,1,'changing the analytics range must reuse topic aggregates');
+assert.equal(logVisits,firstLogVisits,'changing the analytics range must reuse weekly study-time totals');
+consistencySandbox.fsState.analyticsPeriod='month';
 consistencySandbox.renderHomeConsistencySummary();
 const indexReadsAfterDisplayRangeChanges=indexReads;
 
@@ -301,6 +318,7 @@ consistencySandbox.renderHomeConsistencySummary();
 assert.equal(topicVisits,firstTopicVisits,'unrelated feature saves must reuse topic aggregates');
 assert.equal(logVisits,firstLogVisits,'unrelated feature saves must reuse study-log aggregates');
 assert.equal(indexReads,indexReadsAfterDisplayRangeChanges,'unrelated feature saves must reuse the shared history index');
+assert.equal(topicArrayPasses,1,'unrelated Study Hub saves must reuse the topic aggregate');
 
 // Relevant study-log changes are still detected by the cache key without a forced eviction.
 saveFsSandbox.fsState.studyLogs.push({date:fixtureToday,minutes:15,type:'Test focus session'});
@@ -312,12 +330,14 @@ const updatedConsistencyMetrics=consistencySandbox.window.NexusGetOverviewTopicM
 const expectedWeeklyMinutes=saveFsSandbox.fsState.studyLogs.reduce((sum,log)=>sum+(Number(log.minutes)||0),0);
 assert.equal(updatedConsistencyMetrics.weeklyMinutes,expectedWeeklyMinutes,'the rebuilt weekly study-time aggregate must include the newly saved log');
 assert.ok(indexReads>indexReadsAfterDisplayRangeChanges,'a relevant source change must rebuild the shared consistency aggregate');
+assert.equal(topicArrayPasses,1,'a study-log-only change must not rescan the topic catalogue');
 
 const beforeExplicitInvalidation=logVisits;
 consistencySandbox.window.NexusInvalidateHomeConsistencyCache();
 consistencySandbox.renderHomeConsistencySummary();
 assert.equal(topicVisits,firstTopicVisits+expectedMasteryChecks,'explicit tracker invalidation must rebuild only the mastery-eligible topic metrics');
 assert.ok(logVisits>beforeExplicitInvalidation,'explicit invalidation must rebuild study-time metrics for all current log records');
+assert.equal(topicArrayPasses,2,'explicit tracker invalidation must rebuild the topic aggregate exactly once');
 assert.ok(indexReads>firstIndexReads,'invalidated Overview metrics must read the latest shared history index');
 assert.ok(typeof consistencySandbox.window.NexusGetOverviewTopicMetrics==='function',
   'the core Overview must use the same shared topic aggregate as the Consistency panel');
