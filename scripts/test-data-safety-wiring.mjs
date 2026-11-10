@@ -124,10 +124,12 @@ assert.ok(overviewLargeWorkspace.includes('for(const topic of topics)') &&
   overviewLargeWorkspace.includes('insertSortedLimit(queue,{topic,status:topicStatus},7,queueCompare)') &&
   !overviewLargeWorkspace.includes('topics.slice().sort('),
   'Overview summary queues must retain/sort only the visible seven topics, not sort the full workspace');
-const upcomingLargeWorkspace=section(appCore,'function renderUpcomingQueue(){','function renderHistoryInsights()','bounded upcoming queue');
-assert.ok(upcomingLargeWorkspace.includes('insertSortedLimit(items,topic,7,compare)') &&
-  !upcomingLargeWorkspace.includes('.sort('),
-  'the seven-row upcoming list must use bounded selection rather than sorting the full catalogue');
+const upcomingLargeWorkspace=section(appCore,'function renderUpcomingQueue(sharedMetrics=null){','function renderHistoryInsights()','bounded upcoming queue');
+assert.ok(upcomingLargeWorkspace.includes('sharedMetrics?.upcomingQueue') &&
+  upcomingLargeWorkspace.includes('insertSortedLimit(items,topic,7,compare)') &&
+  !upcomingLargeWorkspace.includes('.sort(') &&
+  appCore.includes('renderUpcomingQueue(sharedOverview)'),
+  'the seven-row upcoming list must reuse the shared bounded selection and retain its safe fallback');
 const plannerSource=section(studyHub,'let plannerMetricsCache=null;','function hubCard(','Study Hub large planner');
 assert.ok(plannerSource.includes('const buckets=new Map()') &&
   plannerSource.includes('priorityKeys=Array.from(buckets.keys()).sort') &&
