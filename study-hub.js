@@ -1225,7 +1225,7 @@
   }
   // The error state remains recoverable without reloading the application.
   document.addEventListener('click',event=>{
-    const retry=event.target?.closest?.('[data-action="retry-home-consistency]');
+    const retry=event.target?.closest?.('[data-action="retry-home-consistency"]');
     if(!retry)return;
     event.preventDefault();
     window.NexusInvalidateHomeConsistencyCache?.();
