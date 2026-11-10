@@ -113,13 +113,13 @@
     }
     topicHistoryStatsFallback={source:history,length:history.length,byTopic};return byTopic;
   }
-  function featureMeta(t){
+  function featureMeta(t,topicStatus=status(t)){
     const stats=getTopicHistoryStats().get(String(t.id)),hs=stats?.recent||[],avg=hs.length?stats.avg:(t.lastRating||0),allAvg=hs.length?stats.allAvg:(t.lastRating||0);
-    const weak=Boolean(t.lapses||avg&&avg<3||status(t)==='overdue'&&dayDiff(t.dueDate,today())>5);let score=0;
+    const weak=Boolean(t.lapses||avg&&avg<3||topicStatus==='overdue'&&dayDiff(t.dueDate,today())>5);let score=0;
     if(t.reviewCount>0){score=Math.round(Math.max(0,Math.min(100,(avg/5)*65+Math.min(t.reviewCount,6)/6*20+Math.min(t.intervalDays,30)/30*15)));if(t.lastRating===1)score=Math.max(5,score-15);}
     return {hs,avg,allAvg,score,weak};
   }
-  function estimateMinutes(t){const m=featureMeta(t);return Math.max(6,Math.min(30,Math.round(10+(m.weak?7:0)+(m.avg&&m.avg<3?5:0)+(status(t)==='overdue'?Math.min(5,Math.ceil(Math.max(0,dayDiff(t.dueDate,today()))/5)):0))));}
+  function estimateMinutes(t,meta=featureMeta(t),topicStatus=status(t)){return Math.max(6,Math.min(30,Math.round(10+(meta.weak?7:0)+(meta.avg&&meta.avg<3?5:0)+(topicStatus==='overdue'?Math.min(5,Math.ceil(Math.max(0,dayDiff(t.dueDate,today()))/5)):0))));}
   function weeklyReviewCount(){const end=today(),start=dateShift(end,-6);let count=0;for(const entry of state.history)if(entry&&entry.reviewedAt>=start&&entry.reviewedAt<=end)count++;return count;}
   function isMastered(t){const m=featureMeta(t);return t.reviewCount>=2&&m.avg>=3.5&&t.intervalDays>=4&&status(t)!=='overdue';}
   function streakCount(){return currentStudyStreak();}
@@ -163,38 +163,56 @@
     const todayDone=loggedMinutesToday()+liveFocusMinutesToday();
     target.innerHTML='<div class="hub-kpi"><strong>'+metrics.due+'</strong><span>Due or overdue</span></div><div class="hub-kpi"><strong>'+metrics.weak+'</strong><span>Topics needing attention</span></div><div class="hub-kpi"><strong>'+metrics.mastered+'/'+metrics.activeCount+'</strong><span>Mastered topics</span></div><div class="hub-kpi"><strong>'+formatStudyDuration(todayDone*60)+'</strong><span>Study time today</span></div>';
   }
-  function topicPriority(t,meta=featureMeta(t)){
-    const st=status(t),mastered=t.reviewCount>=2&&meta.avg>=3.5&&t.intervalDays>=4&&st!=='overdue';
+  function topicPriority(t,meta=featureMeta(t),topicStatus=status(t)){
+    const mastered=t.reviewCount>=2&&meta.avg>=3.5&&t.intervalDays>=4&&topicStatus!=='overdue';
     const revisionBoost=fsState.settings.finalRevision&&!mastered?45:0;
-    return revisionBoost+(st==='overdue'?100+Math.min(30,Math.max(0,dayDiff(t.dueDate,today()))):st==='due'?80:st==='new'?60:st==='upcoming'?10:0)+(meta.weak?30:0)+(meta.avg&&meta.avg<2.5?20:0)+(t.lapses||0)*3-(meta.score/20);
+    return revisionBoost+(topicStatus==='overdue'?100+Math.min(30,Math.max(0,dayDiff(t.dueDate,today()))):topicStatus==='due'?80:topicStatus==='new'?60:topicStatus==='upcoming'?10:0)+(meta.weak?30:0)+(meta.avg&&meta.avg<2.5?20:0)+(t.lapses||0)*3-(meta.score/20);
   }
+  let plannerMetricsCache=null;
+  window.NexusInvalidatePlannerCache=()=>{plannerMetricsCache=null;};
   function buildPlan(limitBudget=true){
     const ts=state.topics,daily=Math.max(10,Math.min(720,fNum(fsState.settings.dailyMinutes)||90));
     const backlog=fsState.settings.backlogDays||7,cap=limitBudget?daily:Math.max(720,ts.length*30);
-    const buckets=new Map(),selected=[];let sum=0;
-    // Grouping by the exact priority preserves source order within equal-priority
-    // buckets and avoids sorting the full catalogue.
+    const now=today(),calendarWindow=Math.max(1,Math.min(90,Number(fsState.calendarWindow)||14));
+    const cache=plannerMetricsCache;
+    if(cache&&cache.topics===ts&&cache.history===state.history&&cache.historyLength===state.history.length&&
+       cache.today===now&&cache.limitBudget===limitBudget&&cache.daily===daily&&cache.backlog===backlog&&
+       cache.finalRevision===Boolean(fsState.settings.finalRevision)&&cache.calendarWindow===calendarWindow){
+      return cache.value;
+    }
+    const buckets=new Map(),selected=[];let sum=0,remainingMins=0;
+    const scheduledByDate=new Map(),calendarEnd=dateShift(now,calendarWindow-1);
+    // One topic pass builds priority buckets, non-mastered workload, and calendar
+    // counts. Planner rendering no longer repeats two additional full catalogue scans.
     for(const topic of ts){
       if(topic.archived)continue;
-      const st=status(topic);
-      if(!['overdue','due','new'].includes(st)||(st==='overdue'&&backlog===0))continue;
-      const key=topicPriority(topic);
+      const topicStatus=status(topic),meta=featureMeta(topic,topicStatus);
+      const mastered=topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&topicStatus!=='overdue';
+      if(!mastered)remainingMins+=estimateMinutes(topic,meta,topicStatus);
+      const date=topic.dueDate||topic.createdAt||'';
+      if(date&&date>=now&&date<=calendarEnd)scheduledByDate.set(date,(scheduledByDate.get(date)||0)+1);
+      if(!['overdue','due','new'].includes(topicStatus)||(topicStatus==='overdue'&&backlog===0))continue;
+      const key=topicPriority(topic,meta,topicStatus);
       let bucket=buckets.get(key);if(!bucket){bucket=[];buckets.set(key,bucket);}
-      bucket.push(topic);
+      bucket.push({topic,meta,status:topicStatus});
     }
     const priorityKeys=Array.from(buckets.keys()).sort((a,b)=>b-a);
     for(const key of priorityKeys){
-      for(const topic of buckets.get(key)){
-        const st=status(topic),minutes=estimateMinutes(topic);
+      for(const item of buckets.get(key)){
+        const minutes=estimateMinutes(item.topic,item.meta,item.status);
         if(sum+minutes>cap&&selected.length>0)continue;
         if(sum+minutes>cap&&selected.length===0&&limitBudget)continue;
-        selected.push({topic,minutes,priority:key,status:st});sum+=minutes;
+        selected.push({topic:item.topic,minutes,priority:key,status:item.status});sum+=minutes;
         if(sum>=cap)break;
       }
       if(sum>=cap)break;
     }
-    return selected;
+    const value={plan:selected,remainingMins,scheduledByDate,calendarWindow};
+    plannerMetricsCache={topics:ts,history:state.history,historyLength:state.history.length,today:now,
+      limitBudget,daily,backlog,finalRevision:Boolean(fsState.settings.finalRevision),calendarWindow,value};
+    return value;
   }
+  window.NexusGetPlannerMetrics=()=>buildPlan(true);
   function hubCard(title,desc,body,wide=false){
     const inAnalytics=hubTab==='analytics',collapsible=inAnalytics&&!/(summary|trend|graph|chart|heatmap|consistency|daily review|daily study|review difficulty)/i.test(String(title||''));
     if(!inAnalytics)return `<section class="hub-card${wide?' wide':''}"><div class="hub-card-head"><div><h3>${title}</h3>${desc?`<p>${desc}</p>`:''}</div></div>${body}</section>`;
@@ -292,9 +310,15 @@
       failureMessage:'Study-time deletion was not saved. The previous entry has been restored.'
     });
   }
-  function renderPlanner(){const plan=buildPlan(true),done=new Set(fsState.taskChecks[today()]||[]),allPlan=plan.length?plan.reduce((n,x)=>n+x.minutes,0):0,doneMins=loggedMinutesToday()+liveFocusMinutesToday();const daily=fNum(fsState.settings.dailyMinutes)||90,session=fNum(fsState.settings.sessionMinutes)||25,week=weeklyReviewCount(),goal=fNum(fsState.settings.weeklyReviewGoal)||100;const nearest=nearestFutureExam();const left=nearest?Math.max(0,dayDiff(today(),nearest.date)):null;let remainingMins=0;for(const topic of state.topics){if(topic.archived)continue;const st=status(topic),meta=featureMeta(topic),mastered=topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&st!=='overdue';if(!mastered)remainingMins+=Math.max(6,Math.min(30,Math.round(10+(meta.weak?7:0)+(meta.avg&&meta.avg<3?5:0)+(st==='overdue'?Math.min(5,Math.ceil(Math.max(0,dayDiff(topic.dueDate,today()))/5)):0))));}const perDay=left!==null&&left>0?Math.ceil(remainingMins/left):remainingMins;
+  function renderPlanner(){
+    const planner=buildPlan(true),plan=planner.plan,done=new Set(fsState.taskChecks[today()]||[]);
+    const allPlan=plan.length?plan.reduce((n,x)=>n+x.minutes,0):0,doneMins=loggedMinutesToday()+liveFocusMinutesToday();
+    const daily=fNum(fsState.settings.dailyMinutes)||90,session=fNum(fsState.settings.sessionMinutes)||25;
+    const week=weeklyReviewCount(),goal=fNum(fsState.settings.weeklyReviewGoal)||100;
+    const nearest=nearestFutureExam(),left=nearest?Math.max(0,dayDiff(today(),nearest.date)):null;
+    const remainingMins=planner.remainingMins,perDay=left!==null&&left>0?Math.ceil(remainingMins/left):remainingMins;
     const tasks=plan.length?plan.map(x=>`<div class="hub-task"><div><div class="hub-task-name">${localEsc(x.topic.name)}</div><div class="hub-task-meta">${localEsc(subjectFor(x.topic)?.name||'')} · estimated ${x.minutes} min · ${localEsc(statusText(x.status))}</div></div><button class="btn btn-sm btn-primary" data-hub-action="review-topic" data-id="${localEsc(x.topic.id)}">Review</button></div>`).join(''):`<div class="hub-empty">No due or new topics fit the current budget. You can still choose any topic for a longer focus session.</div>`;
-    const calWindow=Number(fsState.calendarWindow)||14,calendarStart=today(),scheduledByDate=new Map();for(const topic of state.topics){if(topic.archived)continue;const date=topic.dueDate||topic.createdAt||'';if(date){const dayOffset=dayDiff(calendarStart,date);if(dayOffset>=0&&dayOffset<calWindow)scheduledByDate.set(date,(scheduledByDate.get(date)||0)+1);}}const nextDays=Array.from({length:calWindow},(_,i)=>{const d=dateShift(calendarStart,i),count=scheduledByDate.get(d)||0,exams=state.exams.filter(e=>e.date===d);return {d,count,exams};});
+    const calWindow=planner.calendarWindow,calendarStart=today(),scheduledByDate=planner.scheduledByDate;const nextDays=Array.from({length:calWindow},(_,i)=>{const d=dateShift(calendarStart,i),count=scheduledByDate.get(d)||0,exams=state.exams.filter(e=>e.date===d);return {d,count,exams};});
     const cal=nextDays.map(x=>`<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(new Date(x.d+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'}))}${x.d===today()?' · Today':''}</div><div class="hub-row-meta">${x.count} scheduled topic(s)${x.exams.length?' · '+x.exams.map(e=>localEsc(e.name)).join(', '):''}</div></div><span class="hub-badge ${x.count?'warn':''}">${x.count}</span></div>`).join('');
     const focus=focusStart?`<div class="hub-note">⏱ Focus session running · <strong id="hubFocusClock">${formatElapsed(Date.now()-focusStart)}</strong><br>Timer is saved locally and calculates elapsed time from its start timestamp when you return, even after closing the tab. It cannot verify that you were studying while away. <button class="btn btn-sm btn-primary" data-hub-action="focus-stop" style="margin-top:8px">Stop & log session</button> <button class="btn btn-sm btn-danger" data-hub-action="focus-discard" style="margin-top:8px">Discard without logging</button></div>`:'';
     const planBody=`<div class="hub-inline" style="justify-content:space-between;margin-bottom:10px"><div><div class="hub-score"><span id="hubDoneMinutes">${formatStudyDuration(doneMins*60)}</span>/${daily} min</div><div class="hub-muted">Completed planned time today · Daily budget ${daily} min · Weekly reviews ${week}/${goal}</div></div><span id="hubGoalBadge" class="hub-badge ${doneMins>=daily?'good':'warn'}">${Math.round(doneMins/Math.max(1,daily)*100)}% of daily goal</span></div><div class="hub-meter"><span id="hubGoalMeter" style="width:${Math.min(100,doneMins/Math.max(1,daily)*100)}%"></span></div><div class="hub-workload-summary"><div><strong>${plan.length} suggested topics</strong><span>${allPlan} estimated minutes · not a fixed 10-minute allocation</span></div><button class="btn btn-sm" data-hub-action="refresh-plan">Refresh estimates</button><button class="btn btn-sm btn-soft" data-hub-action="backlog-plan">Spread overdue backlog</button></div><div class="hub-list" style="margin-top:12px">${tasks}</div><div class="hub-note">The daily budget is a planning target, not a per-topic limit. Choose a topic and set a session length that matches the work.</div>`;

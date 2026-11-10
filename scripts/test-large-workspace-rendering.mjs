@@ -142,6 +142,48 @@ assert.equal(analyticsSaveCount,1,'analytics fallback should persist only the si
 assert.ok(studyHub.includes('id="hubRatingEntitySearch"')&&studyHub.includes('getRatingAnalyticsEntityOptions(ratingLevel,analyticsEntityQuery,150'),
   'the analytics selector must expose bounded, searchable entity options');
 
+
+const plannerStart=studyHub.indexOf('  let plannerMetricsCache=null;');
+const plannerEnd=studyHub.indexOf('  function hubCard(',plannerStart);
+assert.ok(plannerStart>=0&&plannerEnd>plannerStart,'cached planner metrics must be independently testable');
+const plannerSource=studyHub.slice(plannerStart,plannerEnd);
+const plannerTopics=Array.from({length:77144},(_,index)=>({
+  id:'plan-topic-'+index,archived:false,reviewCount:index%4===0?2:0,
+  intervalDays:index%4===0?8:0,dueDate:index%100===0?'2026-11-12':'',
+  createdAt:'2026-11-10',lastRating:4
+}));
+let plannerTopicVisits=0,plannerStatusVisits=0;
+const plannerSandbox={
+  window:{},state:{topics:plannerTopics,history:[]},
+  fsState:{settings:{dailyMinutes:90,backlogDays:7,finalRevision:false},calendarWindow:14},
+  today:()=> '2026-11-10',
+  dateShift:(date,days)=>{const d=new Date(date+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+days);return d.toISOString().slice(0,10);},
+  dayDiff:(from,to)=>Math.round((Date.parse(to+'T12:00:00Z')-Date.parse(from+'T12:00:00Z'))/86400000),
+  status:topic=>{plannerStatusVisits++;return topic.reviewCount?'due':'new';},
+  featureMeta:(topic,topicStatus)=>{plannerTopicVisits++;return {avg:topic.reviewCount?4:0,weak:false,score:50};},
+  topicPriority:(topic,meta,topicStatus)=>topicStatus==='due'?80:60,
+  estimateMinutes:(topic,meta,topicStatus)=>10,
+  fNum:value=>Number.isFinite(Number(value))?Number(value):0
+};
+vm.createContext(plannerSandbox);
+vm.runInContext(plannerSource,plannerSandbox,{filename:'cached-planner-metrics.js'});
+const firstPlanner=plannerSandbox.window.NexusGetPlannerMetrics();
+assert.equal(firstPlanner.remainingMins,578580,'remaining study workload should be calculated during the planner topic pass');
+assert.equal(firstPlanner.plan.length,9,'the daily plan should respect the 90-minute budget');
+assert.equal(Array.from(firstPlanner.scheduledByDate.values()).reduce((sum,count)=>sum+count,0),plannerTopics.length,
+  'the calendar totals must be built during the same topic pass');
+assert.equal(plannerTopicVisits,plannerTopics.length,'the first planner calculation should inspect each topic once');
+assert.equal(plannerStatusVisits,plannerTopics.length,'the first planner calculation should calculate topic status once per topic');
+plannerSandbox.window.NexusGetPlannerMetrics();
+assert.equal(plannerTopicVisits,plannerTopics.length,'reopening the planner must reuse its cached metrics');
+assert.equal(plannerStatusVisits,plannerTopics.length,'reopening the planner must not repeat the topic scan');
+plannerSandbox.window.NexusInvalidatePlannerCache();
+plannerSandbox.window.NexusGetPlannerMetrics();
+assert.equal(plannerTopicVisits,plannerTopics.length*2,'a tracker save must invalidate the planner cache before the next calculation');
+assert.equal(plannerStatusVisits,plannerTopics.length*2);
+
+console.log('Planner scalability tests passed: one 77,144-topic pass, bounded daily plan, cached workload/calendar totals, and invalidation.');
+
 const historyMetricsStart=appCore.indexOf('  function addTopicHistoryMetric(');
 const historyMetricsEnd=appCore.indexOf('  function recentHistoryCount(',historyMetricsStart);
 assert.ok(historyMetricsStart>=0&&historyMetricsEnd>historyMetricsStart,'the shared review-history index must be independently testable');
@@ -240,3 +282,8 @@ assert.ok(appCore.includes('window.NexusGetFeatureStateForCommit') &&
 assert.ok(studyHub.includes('const shared=window.NexusGetOverviewTopicMetrics?.();') &&
   studyHub.includes('weak:shared.weakCount'),
   'Study Hub top KPIs must reuse the shared Overview metrics instead of scanning all topics again');
+assert.ok(studyHub.includes('window.NexusInvalidatePlannerCache=()=>{plannerMetricsCache=null;}') &&
+  studyHub.includes('window.NexusGetPlannerMetrics=()=>buildPlan(true);') &&
+  studyHub.includes('const remainingMins=planner.remainingMins') &&
+  studyHub.includes('scheduledByDate=planner.scheduledByDate'),
+  'Study Hub Planner must cache one-pass topic workload and calendar calculations rather than scan the catalogue three times');

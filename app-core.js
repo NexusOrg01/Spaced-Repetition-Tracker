@@ -283,6 +283,7 @@
   function save(){
     try{
       window.NexusInvalidateHomeConsistencyCache?.();
+      window.NexusInvalidatePlannerCache?.();
       markDeleteDiagnosticPhase('save:feature-state-snapshot');
       // Curriculum repair runs at hydration, import/restore, cloud-merge, and catalogue
       // boundaries. Repeating a full catalogue scan on every ordinary review/save would
