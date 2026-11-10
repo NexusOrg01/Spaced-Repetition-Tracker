@@ -208,15 +208,24 @@ assert.ok(overviewTarget.innerHTML.includes('Review activity heatmap'),'the Over
 assert.ok(overviewTarget.innerHTML.includes('value="365"'),'the Overview renderer must expose the 12-month period');
 assert.equal((overviewTarget.innerHTML.match(/class="hub-heat"/g)||[]).length,365,'the 12-month heatmap must render exactly 365 cells');
 const firstTopicVisits=topicVisits,firstLogVisits=logVisits,firstIndexReads=indexReads;
+const expectedMasteryChecks=Math.ceil(fixtureTopics.length/4);
+assert.equal(firstTopicVisits,expectedMasteryChecks,'mastery rating lookups should be skipped for topics that cannot qualify as mastered');
 consistencySandbox.renderHomeConsistencySummary();
 assert.equal(topicVisits,firstTopicVisits,'reopening Overview must reuse cached topic metrics when the workspace is unchanged');
 assert.equal(logVisits,firstLogVisits,'reopening Overview must reuse cached study-time metrics when the workspace is unchanged');
 assert.equal(indexReads,firstIndexReads,'reopening Overview must reuse shared aggregate history metrics when the workspace is unchanged');
 consistencySandbox.window.NexusInvalidateHomeConsistencyCache();
 consistencySandbox.renderHomeConsistencySummary();
-assert.equal(topicVisits,firstTopicVisits+fixtureTopics.length,'explicit cache invalidation must rebuild topic metrics after a save');
+assert.equal(topicVisits,firstTopicVisits+expectedMasteryChecks,'explicit cache invalidation must rebuild only the mastery-eligible topic metrics after a save');
 assert.equal(logVisits,firstLogVisits+fixtureLogs.length,'explicit cache invalidation must rebuild study-time metrics after a save');
 assert.ok(indexReads>firstIndexReads,'invalidated Overview metrics must read the latest shared history index');
+assert.ok(typeof consistencySandbox.window.NexusGetOverviewTopicMetrics==='function',
+  'the core Overview must use the same shared topic aggregate as the Consistency panel');
+const cachedOverview=consistencySandbox.window.NexusGetOverviewTopicMetrics();
+assert.equal(cachedOverview.activeCount,fixtureTopics.length);
+assert.ok(cachedOverview.queue.length<=7,'the shared Overview queue must remain bounded to seven records');
+assert.equal(cachedOverview.progressBySubject.get(undefined).total,fixtureTopics.length,
+  'the same pass must provide subject progress totals for the core Overview');
 
 console.log('Overview consistency runtime tests passed: shared history index, 77,144 topics, 48,000 history rows, 24,000 study logs, 365-cell heatmap, and cache reuse/invalidation.');
 

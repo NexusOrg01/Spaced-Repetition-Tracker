@@ -1089,15 +1089,29 @@
         else if(date>=priorStart&&date<from)priorCount+=count;
       }
     }
-    let activeCount=0,mastered=0,overdue=0,dueSoon=0;
-    const homeWeekEnd=dateShift(now,6);
+    let activeCount=0,mastered=0,overdue=0,dueSoon=0,dueCount=0,newCount=0,reviewedCount=0;
+    const homeWeekEnd=dateShift(now,6),progressBySubject=new Map(),queue=[];
+    const queueCompare=(a,b)=>({overdue:0,due:1,new:2,upcoming:3}[a.status]??4)-({overdue:0,due:1,new:2,upcoming:3}[b.status]??4)||
+      (a.topic.dueDate||'9999').localeCompare(b.topic.dueDate||'9999')||
+      naturalCompare(a.topic.name,b.topic.name);
+    const addQueue=(item)=>{
+      let low=0,high=queue.length;
+      while(low<high){const mid=(low+high)>>1;if(queueCompare(queue[mid],item)<=0)low=mid+1;else high=mid;}
+      if(low>=7)return;queue.splice(low,0,item);if(queue.length>7)queue.pop();
+    };
     for(const topic of state.topics){
       if(topic.archived)continue;
       activeCount++;
-      const topicStatus=status(topic),meta=featureMeta(topic);
-      if(topicStatus==='overdue')overdue++;
+      const topicStatus=status(topic);
+      if(topicStatus==='overdue'||topicStatus==='due'){dueCount++;if(topicStatus==='overdue')overdue++;}
+      if(topicStatus==='new')newCount++;
+      if(topic.reviewCount>0)reviewedCount++;
+      let progress=progressBySubject.get(topic.subjectId);
+      if(!progress){progress={total:0,done:0};progressBySubject.set(topic.subjectId,progress);}
+      progress.total++;if(topic.reviewCount>0)progress.done++;
+      if(topicStatus==='overdue'||topicStatus==='due'||topicStatus==='new')addQueue({topic,status:topicStatus});
       if(safeDate(topic.dueDate)&&topic.dueDate>=now&&topic.dueDate<=homeWeekEnd)dueSoon++;
-      if(topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&topicStatus!=='overdue')mastered++;
+      if(topic.reviewCount>=2&&topic.intervalDays>=4&&topicStatus!=='overdue'&&featureMeta(topic).avg>=3.5)mastered++;
     }
     const weekStart=dateShift(now,-6);
     let weeklyMinutes=0;
@@ -1108,6 +1122,8 @@
     const masteryPct=activeCount?Math.round(mastered/activeCount*100):0;
     const value={
       activeCount,mastered,overdue,dueSoon,masteryPct,weeklyMinutes,weeklyTarget,weeklyPct,
+      dueCount,newCount,reviewedCount,progressBySubject,queue,
+      reviewedToday:byDate.get(now)||0,
       momentum:priorCount?Math.round((recentCount-priorCount)/priorCount*100):null,
       rangeDays,heatDays,heat:reviewActivity(heatDays),streak:currentStudyStreak()
     };
@@ -1118,6 +1134,8 @@
     };
     return value;
   }
+  // Core Overview consumes the same cached topic aggregates as this panel.
+  window.NexusGetOverviewTopicMetrics=()=>getHomeConsistencyMetrics();
   function renderHomeConsistencySummary(){
     const target=hubEl('homeConsistencySummary');
     if(!target||!fsState||!state||!hubEl('view-overview')?.classList.contains('active'))return;
