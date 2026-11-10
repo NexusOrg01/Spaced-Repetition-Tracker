@@ -22,8 +22,27 @@ const coreDeleteSource = appCore.slice(coreDeleteStart, coreDeleteEnd);
 for (const action of ['delete-topic','delete-history','delete-subject','delete-stream','delete-exam']) {
   assert.ok(coreDeleteSource.includes("'" + action + "'"), 'core delete capture handler must route ' + action);
 }
+assert.ok(coreDeleteSource.includes("Delete failed ('+action+'):") &&
+  coreDeleteSource.includes('error.message') &&
+  appCore.includes("if(!save()){undo();notify('Topic deletion was not saved."),
+  'core deletion must expose actionable errors and roll back when local persistence fails');
+assert.ok(studyHub.includes('function paperRows(){') &&
+  studyHub.includes('data-hub-action="delete-paper"') &&
+  studyHub.includes('type="button" class="btn btn-sm btn-danger" data-hub-action="delete-paper"'),
+  'Papers history must render its delete control using the restored paperRows renderer');
+assert.ok(studyHub.includes('if(!saveFs()){fsState.papers=previous;') &&
+  studyHub.includes('if(!saveFs()){fsState.journal=previous;') &&
+  studyHub.includes('if(!saveFs()){fsState.goals=previous;') &&
+  studyHub.includes('if(!saveFs()){if(cascadeUndoState){Object.assign(fsState,cascadeUndoState);'),
+  'Study Hub deletions and curriculum cascades must restore in-memory data when persistence fails');
+assert.ok(studyHub.includes('if(!save()){if(window.NexusUndoLastAction)window.NexusUndoLastAction();') &&
+  appCore.includes('window.NexusUndoLastAction=()=>undo();'),
+  'bulk deletion must invoke the shared undo path when its atomic workspace save fails');
+assert.ok(hubDeleteSource.includes("Delete failed ('+action+'):") && hubDeleteSource.includes('error.message'),
+  'Study Hub delete errors must be visible in the mobile toast, not only the desktop console');
+
 assert.ok(coreDeleteSource.includes('event.preventDefault();') &&
-  coreDeleteSource.includes('event.stopImmediatePropagation();') &&
+  coreDeleteSource.includes('event.stopPropagation();') &&
   appCore.includes("document.addEventListener('click',handleCoreDeleteClick,true);"),
   'core delete actions must be intercepted before container handlers and form submission');
 assert.ok(!appCore.includes("$('historyList').addEventListener('click'") &&
@@ -37,11 +56,11 @@ const hubDeleteEnd = studyHub.indexOf("\n  document.addEventListener('click',han
 assert.ok(hubDeleteStart >= 0 && hubDeleteEnd > hubDeleteStart,
   'Study Hub delete actions must use one stable document capture handler');
 const hubDeleteSource = studyHub.slice(hubDeleteStart, hubDeleteEnd);
-for (const action of ['delete-study-log','delete-journal','delete-goal','bulk-delete']) {
+for (const action of ['delete-study-log','delete-paper','delete-journal','delete-goal','bulk-delete']) {
   assert.ok(hubDeleteSource.includes("'" + action + "'"), 'Study Hub delete capture handler must route ' + action);
 }
 assert.ok(hubDeleteSource.includes('event.preventDefault();') &&
-  hubDeleteSource.includes('event.stopImmediatePropagation();') &&
+  hubDeleteSource.includes('event.stopPropagation();') &&
   studyHub.includes("document.addEventListener('click',handleStudyHubDeleteClick,true);"),
   'Study Hub delete actions must be intercepted before form submission and bubbling');
 
@@ -49,7 +68,7 @@ for (const action of ['delete-topic','delete-history','delete-subject','delete-s
   assert.ok(appCore.includes('type="button" class="btn btn-sm btn-danger" data-action="' + action + '"'),
     action + ' must be a non-submit button');
 }
-for (const action of ['delete-study-log','delete-journal','delete-goal','bulk-delete']) {
+for (const action of ['delete-study-log','delete-paper','delete-journal','delete-goal','bulk-delete']) {
   assert.ok(studyHub.includes('type="button" class="btn btn-sm btn-danger" data-hub-action="' + action + '"') ||
     studyHub.includes('type="button" class="btn btn-danger" data-hub-action="' + action + '"'),
     action + ' must be a non-submit Study Hub button');
