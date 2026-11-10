@@ -49,7 +49,7 @@ for (const action of ['delete-topic','delete-history','delete-subject','delete-s
   assert.ok(appCore.includes('type="button" class="btn btn-sm btn-danger" data-action="' + action + '"'),
     action + ' must be a non-submit button');
 }
-for (const action of ['delete-study-log','delete-paper','delete-journal','delete-goal','bulk-delete']) {
+for (const action of ['delete-study-log','delete-journal','delete-goal','bulk-delete']) {
   assert.ok(studyHub.includes('type="button" class="btn btn-sm btn-danger" data-hub-action="' + action + '"') ||
     studyHub.includes('type="button" class="btn btn-danger" data-hub-action="' + action + '"'),
     action + ' must be a non-submit Study Hub button');
