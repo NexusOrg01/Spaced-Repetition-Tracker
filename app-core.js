@@ -723,7 +723,7 @@
     }
     save();$('topicDialog').close();renderAll();switchView('topics');notify('Topic saved.'+(customDue?' Custom date set.':''),true);
   }
-  function deleteTopic(id){const t=getTopic(id);if(!t)return;if(!confirm(`Delete “${t.name}” from the topic tracker? Existing history entries will be retained.`))return;startUndoBulkDelete('Topic deleted.');if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedTopic(state,CURRICULUM_PACKS,t);state.topics=state.topics.filter(x=>x.id!==id);save();renderAll();notify('Topic deleted. Review history is retained.',true);}
+  function deleteTopic(id){const t=getTopic(id);if(!t)return;if(!confirm(`Delete “${t.name}” from the topic tracker? Existing history entries will be retained.`))return;startUndoBulkDelete('Topic deleted.');if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedTopic(state,CURRICULUM_PACKS,t);state.topics=state.topics.filter(x=>x.id!==id);if(!save()){undo();notify('Topic deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}renderAll();notify('Topic deleted. Review history is retained.',true);}
   function openStream(id=null){editStreamId=id;const st=id?state.streams.find(s=>s.id===id):null;$('streamDialogTitle').textContent=st?'Edit stream / course':'Add stream / course';$('streamNameInput').value=st?.name||'';$('streamDialog').showModal();}
   function saveStream(e){
     e.preventDefault();const name=$('streamNameInput').value.trim();if(!name)return;
@@ -743,8 +743,8 @@
     else{const subject={id:makeId('subject'),name,streamId,order:state.subjects.length};startUndoEntityAdd('Subject saved.','subjects',subject.id);state.subjects.push(subject);}
     save();$('subjectDialog').close();renderAll();notify('Subject saved.',true);
   }
-  function deleteSubject(id){const sub=state.subjects.find(s=>s.id===id);if(!sub)return;const topicIds=state.topics.filter(t=>t.subjectId===id).map(t=>t.id),topicIdSet=new Set(topicIds),historyCount=state.history.filter(h=>h.subjectId===id||topicIdSet.has(h.topicId)).length;if(!confirm(`Delete subject “${sub.name}” and all its data?\n\nThis permanently removes ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. This cannot be undone after you leave this page. Export a full JSON backup first if unsure.`))return;startUndoBulkDelete('Subject and its data deleted.');if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedSubject(state,CURRICULUM_PACKS,sub);if(window.NexusCascadeDeleteSubject)window.NexusCascadeDeleteSubject(id,topicIds);state.topics=state.topics.filter(t=>t.subjectId!==id);state.history=state.history.filter(h=>h.subjectId!==id&&!topicIdSet.has(h.topicId));state.subjects=state.subjects.filter(s=>s.id!==id);save();renderAll();notify('Subject and nested data deleted.',true);}
-  function deleteStream(id){const st=state.streams.find(s=>s.id===id);if(!st)return;const subjectIds=state.subjects.filter(s=>s.streamId===id).map(s=>s.id),subjectIdSet=new Set(subjectIds),topicIds=state.topics.filter(t=>subjectIdSet.has(t.subjectId)).map(t=>t.id),topicIdSet=new Set(topicIds),historyCount=state.history.filter(h=>subjectIdSet.has(h.subjectId)||topicIdSet.has(h.topicId)||h.streamId===id).length;if(!confirm(`Delete stream “${st.name}” and all nested data?\n\nThis permanently removes ${subjectIds.length} subject(s), ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. This cannot be undone after you leave this page. Export a full JSON backup first if unsure.`))return;startUndoBulkDelete('Stream and its data deleted.');if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedStream(state,CURRICULUM_PACKS,st);if(window.NexusCascadeDeleteStream)window.NexusCascadeDeleteStream(id,subjectIds,topicIds);state.topics=state.topics.filter(t=>!subjectIdSet.has(t.subjectId));state.history=state.history.filter(h=>!subjectIdSet.has(h.subjectId)&&!topicIdSet.has(h.topicId)&&h.streamId!==id);state.subjects=state.subjects.filter(s=>s.streamId!==id);state.streams=state.streams.filter(s=>s.id!==id);save();renderAll();notify('Stream and nested data deleted.',true);}
+  function deleteSubject(id){const sub=state.subjects.find(s=>s.id===id);if(!sub)return;const topicIds=state.topics.filter(t=>t.subjectId===id).map(t=>t.id),topicIdSet=new Set(topicIds),historyCount=state.history.filter(h=>h.subjectId===id||topicIdSet.has(h.topicId)).length;if(!confirm(`Delete subject “${sub.name}” and all its data?\n\nThis permanently removes ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. This cannot be undone after you leave this page. Export a full JSON backup first if unsure.`))return;startUndoBulkDelete('Subject and its data deleted.');if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedSubject(state,CURRICULUM_PACKS,sub);if(window.NexusCascadeDeleteSubject&&window.NexusCascadeDeleteSubject(id,topicIds)===false){undo();notify('Subject deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}state.topics=state.topics.filter(t=>t.subjectId!==id);state.history=state.history.filter(h=>h.subjectId!==id&&!topicIdSet.has(h.topicId));state.subjects=state.subjects.filter(s=>s.id!==id);if(!save()){undo();notify('Subject deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}renderAll();notify('Subject and nested data deleted.',true);}
+  function deleteStream(id){const st=state.streams.find(s=>s.id===id);if(!st)return;const subjectIds=state.subjects.filter(s=>s.streamId===id).map(s=>s.id),subjectIdSet=new Set(subjectIds),topicIds=state.topics.filter(t=>subjectIdSet.has(t.subjectId)).map(t=>t.id),topicIdSet=new Set(topicIds),historyCount=state.history.filter(h=>subjectIdSet.has(h.subjectId)||topicIdSet.has(h.topicId)||h.streamId===id).length;if(!confirm(`Delete stream “${st.name}” and all nested data?\n\nThis permanently removes ${subjectIds.length} subject(s), ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. This cannot be undone after you leave this page. Export a full JSON backup first if unsure.`))return;startUndoBulkDelete('Stream and its data deleted.');if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedStream(state,CURRICULUM_PACKS,st);if(window.NexusCascadeDeleteStream&&window.NexusCascadeDeleteStream(id,subjectIds,topicIds)===false){undo();notify('Stream deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}state.topics=state.topics.filter(t=>!subjectIdSet.has(t.subjectId));state.history=state.history.filter(h=>!subjectIdSet.has(h.subjectId)&&!topicIdSet.has(h.topicId)&&h.streamId!==id);state.subjects=state.subjects.filter(s=>s.streamId!==id);state.streams=state.streams.filter(s=>s.id!==id);if(!save()){undo();notify('Stream deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}renderAll();notify('Stream and nested data deleted.',true);}
   function openExam(id=null){editExamId=id;const ex=id?state.exams.find(e=>e.id===id):null;$('examDialogTitle').textContent=ex?'Edit exam or deadline':'Add exam or deadline';$('examNameInput').value=ex?.name||'';$('examDateInput').value=ex?.date||'';$('examTypeInput').value=ex?.type||'Academic exam';$('examNotesInput').value=ex?.notes||'';$('examDialog').showModal();}
   function saveExam(e){
     e.preventDefault();const name=$('examNameInput').value.trim(),date=$('examDateInput').value;
@@ -754,7 +754,7 @@
     else{startUndoEntityAdd('Exam saved.','exams',item.id);state.exams.push(item);}
     save();$('examDialog').close();renderAll();notify('Exam saved.',true);
   }
-  function deleteExam(id){const exam=state.exams.find(item=>item.id===id);if(!exam||!confirm(`Delete “${exam.name}”?`))return;startUndoArrayReplacement('Exam deleted.','exams');state.exams=state.exams.filter(item=>item.id!==id);save();renderAll();notify('Exam deleted.',true);}
+  function deleteExam(id){const exam=state.exams.find(item=>item.id===id);if(!exam||!confirm(`Delete “${exam.name}”?`))return;startUndoArrayReplacement('Exam deleted.','exams');state.exams=state.exams.filter(item=>item.id!==id);if(!save()){undo();notify('Exam deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}renderAll();notify('Exam deleted.',true);}
   function downloadFile(filename,content,type){const blob=new Blob([content],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);}
   function exportBackup(){if(typeof window.NexusExportFullBackup==='function'){window.NexusExportFullBackup();return;}const packet={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state,featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}};downloadFile(`nexus-backup-${today()}.json`,JSON.stringify(packet,null,2),'application/json;charset=utf-8');notify('Full backup downloaded. Keep it somewhere safe.');}
   const csvCell=v=>window.NexusBackupRestoreUtils.csvCell(v);
@@ -807,7 +807,7 @@
     if(!confirm('DANGER ZONE — Delete this review record?\n\nThis review will disappear from rating analytics and future history exports. The topic schedule will not change. Use Undo immediately or restore a backup if needed. Continue?'))return;
     startUndoHistoryChange('History entry deleted.');
     state.history=state.history.filter(item=>String(item.id)!==String(id));
-    historyInsightsDirty=true;save();renderHistory();notify('History entry deleted.',true);
+    historyInsightsDirty=true;if(!save()){undo();notify('Review-history deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}renderHistory();notify('History entry deleted.',true);
   }
   function handleCoreDeleteClick(event){
     const origin=event.target&&event.target.nodeType===1?event.target:event.target&&event.target.parentElement;
@@ -816,7 +816,7 @@
     const action=button.dataset.action,id=button.dataset.id;
     if(!['delete-topic','delete-history','delete-subject','delete-stream','delete-exam'].includes(action))return;
     event.preventDefault();
-    event.stopImmediatePropagation();
+    event.stopPropagation();
     try{
       if(action==='delete-topic')deleteTopic(id);
       else if(action==='delete-history')deleteHistoryEntry(id);
@@ -825,7 +825,8 @@
       else if(action==='delete-exam')deleteExam(id);
     }catch(error){
       console.error('Nexus delete action failed ('+action+')',error);
-      notify('Nexus could not complete this deletion. Reload and try again.');
+      const detail=String(error&&error.message||error||'Unknown error').replace(/\\s+/g,' ').slice(0,180);
+      notify('Delete failed ('+action+'): '+detail,Boolean(undoState));
     }
   }
   document.addEventListener('click',handleCoreDeleteClick,true);
