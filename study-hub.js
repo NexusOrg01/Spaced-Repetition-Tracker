@@ -1470,7 +1470,7 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
   hubEl('hubContent').addEventListener('click',e=>{
     const b=e.target.closest('[data-hub-action]');if(!b)return;
     const a=b.dataset.hubAction,id=b.dataset.id;
-    if(['analytics-card-toggle','analytics-section','analytics-toggle-rating','analytics-custom-apply','analytics-export-pdf','analytics-export','analytics-retry'].includes(a))return;
+    if(['analytics-card-toggle','analytics-section','analytics-toggle-rating','analytics-custom-apply','analytics-export-pdf','analytics-export','analytics-retry'].includes(a)&&(b.closest('#analyticsStandalone')||document.body.classList.contains('analytics-mode')))return;
     if(a==='analytics-card-toggle'){
       const card=b.closest('[data-analytics-collapsible]'),content=card?.querySelector('.analytics-card-content');
       if(!card||!content)return;
