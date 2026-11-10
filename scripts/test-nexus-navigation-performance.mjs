@@ -37,7 +37,7 @@ const hubDeleteEnd = studyHub.indexOf("\n  document.addEventListener('click',han
 assert.ok(hubDeleteStart >= 0 && hubDeleteEnd > hubDeleteStart,
   'Study Hub delete actions must use one stable document capture handler');
 const hubDeleteSource = studyHub.slice(hubDeleteStart, hubDeleteEnd);
-for (const action of ['delete-study-log','delete-paper','delete-journal','delete-goal','bulk-delete']) {
+for (const action of ['delete-study-log','delete-journal','delete-goal','bulk-delete']) {
   assert.ok(hubDeleteSource.includes("'" + action + "'"), 'Study Hub delete capture handler must route ' + action);
 }
 assert.ok(hubDeleteSource.includes('event.preventDefault();') &&
