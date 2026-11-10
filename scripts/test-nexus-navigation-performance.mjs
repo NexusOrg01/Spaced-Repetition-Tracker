@@ -500,4 +500,66 @@ assert.ok(streamDeleteSource.includes('for(const subject of state.subjects)') &&
 assert.ok(!streamDeleteSource.includes('const historyCount=state.history.filter('),
   'stream-delete confirmation must count history with a loop, not filter(...).length');
 
+
+// Large-workspace Tools view regressions: O(topics + selected IDs), not
+// O(topics * selected IDs), and bounded journal/paper search-result storage.
+const selectedCountStart = studyHub.indexOf('  function countSelectedTopics(){');
+const selectedCountEnd = studyHub.indexOf('\n  function renderTools()', selectedCountStart);
+assert.ok(selectedCountStart >= 0 && selectedCountEnd > selectedCountStart,
+  'Tools must expose a dedicated selected-topic counter');
+const selectedCountSandbox = {
+  state: { topics: Array.from({ length: 77144 }, (_, index) => ({ id: 'topic-' + index })) },
+  fsState: { selectedTopicIds: Array.from({ length: 20000 }, (_, index) => 'topic-' + index).concat(['deleted-topic']) }
+};
+vm.createContext(selectedCountSandbox);
+vm.runInContext(studyHub.slice(selectedCountStart, selectedCountEnd) +
+  '\nthis.runSelectedTopicCount = countSelectedTopics;', selectedCountSandbox,
+  { filename: 'large-selected-topic-count.js' });
+assert.equal(selectedCountSandbox.runSelectedTopicCount(), 20000,
+  'selected-topic count must match active catalogue identities and ignore stale IDs');
+
+const globalSearchStart = studyHub.indexOf('  function globalSearchMarkup(q){');
+const globalSearchEnd = studyHub.indexOf('\n  function countSelectedTopics()', globalSearchStart);
+assert.ok(globalSearchStart >= 0 && globalSearchEnd > globalSearchStart,
+  'global search must remain independently testable');
+const globalSearchSource = studyHub.slice(globalSearchStart, globalSearchEnd);
+assert.ok(globalSearchSource.includes('for(const journal of fsState.journal)') &&
+  globalSearchSource.includes('for(const paper of fsState.papers)') &&
+  !globalSearchSource.includes('fsState.journal.filter(') &&
+  !globalSearchSource.includes('fsState.papers.filter('),
+  'global search must retain at most 25 journal and paper matches without full filtered-array allocations');
+const globalSearchSandbox = {
+  state: { topics: [], subjects: [] },
+  fsState: {
+    selectedTopicIds: [],
+    journal: Array.from({ length: 5000 }, (_, index) => ({
+      id: 'journal-' + index, category: 'Practice', issue: 'needle journal ' + index,
+      fix: '', subjectId: '', date: '2026-11-10'
+    })),
+    papers: Array.from({ length: 5000 }, (_, index) => ({
+      id: 'paper-' + index, name: 'needle paper ' + index,
+      weakAreas: '', notes: '', subjectId: '', date: '2026-11-10'
+    }))
+  },
+  streamFor: () => null,
+  subjectFor: () => null,
+  localEsc: value => String(value || ''),
+  fmtDate: value => String(value || ''),
+  status: () => 'due',
+  statusText: () => 'Due'
+};
+vm.createContext(globalSearchSandbox);
+vm.runInContext(globalSearchSource + '\nthis.runGlobalSearch = globalSearchMarkup;',
+  globalSearchSandbox, { filename: 'bounded-global-search.js' });
+const globalSearchHtml = globalSearchSandbox.runGlobalSearch('needle');
+assert.equal((globalSearchHtml.match(/class="hub-row"/g) || []).length, 50,
+  'global search must render no more than 25 journal and 25 paper rows');
+assert.ok(globalSearchHtml.includes('needle journal 24') &&
+  !globalSearchHtml.includes('needle journal 25') &&
+  globalSearchHtml.includes('needle paper 24') &&
+  !globalSearchHtml.includes('needle paper 25'),
+  'bounded global search must keep the first 25 matching rows in source order');
+
+console.log('Large-workspace Tools selection and bounded global-search regressions passed.');
+
 console.log('Classic-script delete globals and 77,144-topic / 48,000-history deletion regressions passed.');

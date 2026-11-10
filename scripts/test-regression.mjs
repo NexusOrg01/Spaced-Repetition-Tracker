@@ -160,9 +160,14 @@ assert.ok(appCore.includes('function startUndoEntityEdit(text,collection,item,fi
   !appCore.includes("undoState={kind:'snapshot',value:clone(state)}") &&
   !appCore.includes('function startUndo(text)'),
   'all common CRUD and Undo paths must avoid deep-cloning the complete workspace');
-assert.ok(appCore.includes('window.deleteTopic = id => deleteTopic(id)') &&
-  appCore.includes('window.deleteSubject = id => deleteSubject(id)') &&
-  appCore.includes('window.deleteStream = id => deleteStream(id)') &&
+assert.ok(appCore.includes('function deleteTopic(id){') &&
+  appCore.includes('function deleteSubject(id){') &&
+  appCore.includes('function deleteStream(id){') &&
+  appCore.includes('function deleteExam(id){') &&
+  !appCore.includes('window.deleteTopic = id => deleteTopic(id)') &&
+  !appCore.includes('window.deleteSubject = id => deleteSubject(id)') &&
+  !appCore.includes('window.deleteStream = id => deleteStream(id)') &&
+  !appCore.includes('window.deleteExam = id => deleteExam(id)') &&
   appCore.includes("startUndoHistoryChange('All history cleared.')") &&
   appCore.includes("startUndoWorkspaceReplace('All data reset.')") &&
   !appCore.includes('This will also remove its history.'),
