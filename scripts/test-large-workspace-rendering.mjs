@@ -269,6 +269,7 @@ const trackedTopics=new Proxy(fixtureTopics,{
 const overviewTarget={innerHTML:''};
 let rendererErrors=0;
 const consistencySandbox={
+  document:{addEventListener(){}},
   window:{NexusGetHistoryActivityIndex:()=>{indexReads++;return fixtureIndex;}},
   state:{topics:trackedTopics,history:fixtureHistory},
   fsState:{analyticsPeriod:'month',heatmapPeriod:365,settings:{dailyMinutes:90},studyLogs:fixtureLogs},
