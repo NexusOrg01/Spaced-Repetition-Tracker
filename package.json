@@ -15,7 +15,7 @@
     "test:android": "npm run test:sync-safety && npm run test:regression && node scripts/test-android-build.mjs",
     "android:sync:fdroid": "npm run build && node scripts/restore-android-lock.mjs && npm ci --prefix android --ignore-scripts --no-audit --no-fund --omit=optional && bash scripts/build-esbuild-from-source.sh \"$ESBUILD_SOURCE_DIR\" \"$GO_SYS_SOURCE_DIR\" \"$NEXUS_ESBUILD_BINARY\" && NEXUS_REQUIRE_SOURCE_ESBUILD=1 npm run android:assets && cd android && ./node_modules/.bin/cap telemetry off && ./node_modules/.bin/cap sync android",
     "test:sync-safety": "node scripts/test-nexus-storage.mjs && node scripts/test-offline-sync-queue.mjs",
-    "test:regression": "node scripts/test-regression.mjs"
+    "test:regression": "node scripts/test-nexus-navigation-performance.mjs && node scripts/test-regression.mjs"
   },
   "license": "Apache-2.0"
 }
