@@ -4,6 +4,8 @@ import vm from 'node:vm';
 
 const appCore=readFileSync(new URL('../app-core.js',import.meta.url),'utf8');
 const studyHub=readFileSync(new URL('../study-hub.js',import.meta.url),'utf8');
+const bootstrap=readFileSync(new URL('../nexus-app-bootstrap.js',import.meta.url),'utf8');
+const indexHtml=readFileSync(new URL('../index.html',import.meta.url),'utf8');
 const helperStart=appCore.indexOf('function createTopKCollector(');
 const helperEnd=appCore.indexOf('function today()',helperStart);
 assert.ok(helperStart>=0&&helperEnd>helperStart,'the application must expose its bounded top-K helper');
@@ -257,10 +259,50 @@ consistencySandbox.renderHomeConsistencySummary();
 assert.equal(topicVisits,firstTopicVisits,'reopening Overview must reuse cached topic metrics when the workspace is unchanged');
 assert.equal(logVisits,firstLogVisits,'reopening Overview must reuse cached study-time metrics when the workspace is unchanged');
 assert.equal(indexReads,firstIndexReads,'reopening Overview must reuse shared aggregate history metrics when the workspace is unchanged');
+
+// A journal/paper/goal save must not evict the 77k-topic/48k-history consistency cache.
+const saveFsStart=studyHub.indexOf('function saveFs(){');
+const saveFsEnd=studyHub.indexOf('\n  window.NexusFeatureStorageKey',saveFsStart);
+assert.ok(saveFsStart>=0&&saveFsEnd>saveFsStart,'Study Hub save routine must remain discoverable for cache regression coverage');
+let featureSaveCommits=0,invalidationCalls=0;
+const saveFsSandbox={
+  window:{
+    NexusOfflineSyncQueue:{commitWorkspace(){featureSaveCommits++;}},
+    NexusCloudSync:{schedule(){}},
+    NexusInvalidateHomeConsistencyCache(){invalidationCalls++;},
+    NexusDeleteDiagnosticPhase(){},
+    NexusDeleteDiagnosticNoteError(){}
+  },
+  FEATURE_KEY:'recall.study.features.v1',
+  localStorage:{},
+  state:consistencySandbox.state,
+  fsState:consistencySandbox.fsState,
+  console:{error(){}},
+  notify(){}
+};
+vm.createContext(saveFsSandbox);
+vm.runInContext(studyHub.slice(saveFsStart,saveFsEnd)+'\nthis.testSaveFs=saveFs;',saveFsSandbox,{filename:'study-hub-save-cache.js'});
+saveFsSandbox.fsState.journal=[{id:'journal-unrelated',note:'A non-analytics edit'}];
+assert.equal(saveFsSandbox.testSaveFs(),true,'unrelated Study Hub edits must still persist');
+assert.equal(featureSaveCommits,1,'unrelated Study Hub edits must still use the offline-safe commit');
+assert.equal(invalidationCalls,0,'unrelated Study Hub saves must not discard the full consistency aggregate');
+consistencySandbox.renderHomeConsistencySummary();
+assert.equal(topicVisits,firstTopicVisits,'unrelated feature saves must reuse topic aggregates');
+assert.equal(logVisits,firstLogVisits,'unrelated feature saves must reuse study-log aggregates');
+assert.equal(indexReads,firstIndexReads,'unrelated feature saves must reuse the shared history index');
+
+// Relevant study-log changes are still detected by the cache key without a forced eviction.
+saveFsSandbox.fsState.studyLogs.push({date:fixtureToday,minutes:15,type:'Test focus session'});
+assert.equal(saveFsSandbox.testSaveFs(),true,'new study-log records must persist');
+consistencySandbox.renderHomeConsistencySummary();
+assert.equal(logVisits,firstLogVisits+fixtureLogs.length+1,'a study-log count change must rebuild the weekly study-time aggregate');
+assert.ok(indexReads>firstIndexReads,'a relevant source change must rebuild the shared consistency aggregate');
+
+const beforeExplicitInvalidation=logVisits;
 consistencySandbox.window.NexusInvalidateHomeConsistencyCache();
 consistencySandbox.renderHomeConsistencySummary();
-assert.equal(topicVisits,firstTopicVisits+expectedMasteryChecks,'explicit cache invalidation must rebuild only the mastery-eligible topic metrics after a save');
-assert.equal(logVisits,firstLogVisits+fixtureLogs.length,'explicit cache invalidation must rebuild study-time metrics after a save');
+assert.equal(topicVisits,firstTopicVisits+expectedMasteryChecks,'explicit tracker invalidation must rebuild only the mastery-eligible topic metrics');
+assert.equal(logVisits,beforeExplicitInvalidation+fixtureLogs.length+1,'explicit invalidation must rebuild study-time metrics for all current log records');
 assert.ok(indexReads>firstIndexReads,'invalidated Overview metrics must read the latest shared history index');
 assert.ok(typeof consistencySandbox.window.NexusGetOverviewTopicMetrics==='function',
   'the core Overview must use the same shared topic aggregate as the Consistency panel');
@@ -271,7 +313,26 @@ assert.ok(cachedOverview.queue.length<=7,'the shared Overview queue must remain 
 assert.equal(cachedOverview.progressBySubject.get(undefined).total,fixtureTopics.length,
   'the same pass must provide subject progress totals for the core Overview');
 
-console.log('Overview consistency runtime tests passed: shared history index, 77,144 topics, 48,000 history rows, 24,000 study logs, 365-cell heatmap, and cache reuse/invalidation.');
+const renderAllStart=appCore.indexOf('function renderAll(){');
+const renderAllEnd=appCore.indexOf('\n  function openReview',renderAllStart);
+assert.ok(renderAllStart>=0&&renderAllEnd>renderAllStart,'the core renderer must be available to bootstrap after all runtime modules load');
+const renderAllSource=appCore.slice(renderAllStart,renderAllEnd);
+assert.ok(renderAllSource.indexOf('if(window.NexusDeferInitialRender)')<renderAllSource.indexOf('historyInsightsDirty=true'),
+  'the first large-workspace render must be deferred before any Overview aggregation runs');
+assert.ok(appCore.includes('window.NexusRenderAll=()=>renderAll();'),
+  'bootstrap must call the current, Study Hub-wrapped renderAll binding');
+assert.ok(bootstrap.indexOf('window.NexusDeferInitialRender = true;')<bootstrap.indexOf('for (const asset of RUNTIME_ASSETS) await loadScript(asset);'),
+  'startup must defer the initial core render before loading app modules');
+assert.ok(bootstrap.indexOf('window.NexusDeferInitialRender = false;')>bootstrap.indexOf('for (const asset of RUNTIME_ASSETS) await loadScript(asset);')&&bootstrap.includes('window.NexusRenderAll();'),
+  'startup must render exactly after all runtime modules have loaded');
+assert.ok(studyHub.includes('if(!window.NexusDeferInitialRender)'),
+  'Study Hub must not duplicate the dashboard metrics pass during staged startup');
+assert.ok(indexHtml.includes('class="muted small consistency-loading"'),
+  'the consistency panel must show a startup state instead of an empty body');
+assert.ok(bootstrap.includes('Consistency insights could not be initialized.')&&bootstrap.includes('Consistency insights could not be rendered.'),
+  'a missing or non-rendering consistency module must produce a visible diagnostic instead of a silent blank panel');
+
+console.log('Overview consistency runtime tests passed: shared history index, 77,144 topics, 48,000 history rows, 24,000 study logs, 365-cell heatmap, selective cache reuse, and deferred startup rendering.');
 
 assert.ok(studyHub.includes('window.NexusGetFeatureStateForCommit=()=>fsState;'),
   'ordinary tracker saves must be able to reuse the live Study Hub state during the synchronous queue commit');
