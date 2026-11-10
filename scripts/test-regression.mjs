@@ -411,13 +411,14 @@ for(const [kind,expectedId] of [
 
 
 assert.ok(appCore.includes('topicVisibleLimit=100') &&
-  appCore.includes('selectTopK(state.topics,topicVisibleLimit') &&
+  appCore.includes('async function renderTopics()') &&
+  appCore.includes('selectTopKCooperative(source,topicVisibleLimit') &&
   appCore.includes('data-action="show-more-topics"') &&
   appCore.includes('topicVisibleLimit+=100'),
-  'the Topics view must retain only a bounded top-ranked page instead of creating a DOM card for every topic');
-assert.ok(appCore.includes('const topicCounts=new Map(),subjectsByStream=new Map();') &&
-  appCore.includes('for(const topic of state.topics)if(!topic.archived)topicCounts.set(topic.subjectId') &&
+  'the Topics view must retain only a bounded top-ranked page and yield while scanning large catalogues');
+assert.ok(appCore.includes('topicCountsBySubject.set(topic.subjectId') &&
+  appCore.includes('renderStructureList(topicCountsBySubject)') &&
   appCore.includes('for(const subject of state.subjects){'),
-  'topic counts in the Library must use one pass over the source topic array instead of copying all active topics');
+  'topic counts in the Library structure tree must reuse the cooperative Topics scan rather than starting another full topic pass');
 
 console.log('FSRS and core feature regression tests passed.');
