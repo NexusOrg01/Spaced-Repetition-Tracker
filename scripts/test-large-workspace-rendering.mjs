@@ -63,7 +63,7 @@ const structureCounts=await buildTopicCountsCooperative(structureFixture);
 const expectedStructureCounts=new Map();
 for(const topic of structureFixture)if(!topic.archived)
   expectedStructureCounts.set(topic.subjectId,(expectedStructureCounts.get(topic.subjectId)||0)+1);
-assert.deepEqual(Array.from(structureCounts.entries()).sort(),Array.from(expectedStructureCounts.entries()).sort(),
+assert.deepEqual(Array.from(structureCounts.entries(),entry=>[String(entry[0]),Number(entry[1])]).sort(),Array.from(expectedStructureCounts.entries()).sort(),
   'cooperative Settings counts must match exact active-topic totals for every subject');
 assert.ok(cooperativeYields>=2*(Math.ceil(count/400)-1),
   'the structure-count pass must also yield between bounded batches');
