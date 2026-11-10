@@ -365,3 +365,138 @@ assert.ok(indexHtml.includes('id="deleteDiagnosticBtn"') &&
   'mobile users must be able to copy the stored stack trace without desktop developer tools');
 
 console.log('Nexus navigation/analytics cache, embedded Analytics actions, single-owner deletion, and web/APK install split regressions passed.');
+
+
+// Regression: top-level classic-script delete declarations are already window globals.
+// Reassigning window.deleteSubject = id => deleteSubject(id) overwrites the binding
+// and makes the wrapper recursively call itself until the stack overflows.
+const publicDeleteHandlers = ['deleteTopic','deleteSubject','deleteStream','deleteExam'];
+for (const name of publicDeleteHandlers) {
+  assert.match(appCore, new RegExp('^  function ' + name + '\\(', 'm'),
+    name + ' must remain a top-level classic-script function declaration');
+  assert.ok(!appCore.includes('window.' + name + ' = id => ' + name + '(id);'),
+    name + ' must not be overwritten by a self-recursive global wrapper');
+}
+const globalBindingSandbox = { calls: [] };
+globalBindingSandbox.window = globalBindingSandbox;
+vm.createContext(globalBindingSandbox);
+vm.runInContext(publicDeleteHandlers.map(name =>
+  'function ' + name + '(id){calls.push(["' + name + '",id]);}'
+).join('\n'), globalBindingSandbox, { filename: 'classic-delete-globals.js' });
+for (const name of publicDeleteHandlers) {
+  assert.strictEqual(globalBindingSandbox.window[name], globalBindingSandbox[name],
+    name + ' must be directly available through window without an alias wrapper');
+  globalBindingSandbox.window[name]('global-binding-test');
+}
+assert.equal(globalBindingSandbox.calls.length, 4,
+  'each public delete handler must execute once without recursive wrapper dispatch');
+
+// Exercise the real subject-delete implementation against a 77,144-topic /
+// 48,000-history workspace. Confirmation counts must be computed without
+// allocating temporary filter arrays before the user approves the deletion.
+const subjectDeleteStart = appCore.indexOf('  function deleteSubject(id){');
+const subjectDeleteEnd = appCore.indexOf('\n  function deleteStream(id){', subjectDeleteStart);
+assert.ok(subjectDeleteStart >= 0 && subjectDeleteEnd > subjectDeleteStart,
+  'the real subject-delete implementation must remain independently testable');
+const subjectDeleteSource = appCore.slice(subjectDeleteStart, subjectDeleteEnd);
+const deletedTopicCount = 12032;
+const totalTopicCount = 77144;
+const deletedHistoryCount = 36096;
+const totalHistoryCount = 48000;
+let largeDeleteConfirmed = false;
+let subjectTopicFilterCalls = 0;
+let subjectHistoryFilterCalls = 0;
+const largeDeleteState = {
+  streams: [{ id: 'stream-a', name: 'Stream A' }],
+  subjects: [
+    { id: 'subject-delete', name: 'Subject to delete', streamId: 'stream-a' },
+    { id: 'subject-keep', name: 'Subject to keep', streamId: 'stream-a' }
+  ],
+  topics: Array.from({ length: totalTopicCount }, (_, index) => ({
+    id: index < deletedTopicCount ? 'topic-delete-' + index : 'topic-keep-' + (index - deletedTopicCount),
+    subjectId: index < deletedTopicCount ? 'subject-delete' : 'subject-keep'
+  })),
+  history: Array.from({ length: totalHistoryCount }, (_, index) => ({
+    id: 'history-' + index,
+    subjectId: index < deletedHistoryCount ? 'subject-delete' : 'subject-keep',
+    topicId: index < deletedHistoryCount
+      ? 'topic-delete-' + (index % deletedTopicCount)
+      : 'topic-keep-' + (index % (totalTopicCount - deletedTopicCount))
+  }))
+};
+const guardedFilter = (array, counterName) => {
+  const originalFilter = Array.prototype.filter;
+  array.filter = function(callback, thisArg) {
+    if (!largeDeleteConfirmed) {
+      throw new Error('Large delete must count before confirmation without allocating a filtered array.');
+    }
+    if (counterName === 'topics') subjectTopicFilterCalls++;
+    else subjectHistoryFilterCalls++;
+    return originalFilter.call(this, callback, thisArg);
+  };
+};
+guardedFilter(largeDeleteState.topics, 'topics');
+guardedFilter(largeDeleteState.history, 'history');
+let largeDeleteConfirmation = '';
+let cascadedTopicIds = null;
+const largeDeleteSandbox = {
+  state: largeDeleteState,
+  CURRICULUM_PACKS: [],
+  window: {
+    NexusCurriculumIntegrity: { markDeletedSubject() {} },
+    NexusCascadeDeleteSubject(_id, topicIds, options) {
+      cascadedTopicIds = { count: topicIds.length, first: topicIds[0], last: topicIds.at(-1), options };
+      return true;
+    },
+    NexusRenderHub() {}
+  },
+  markDeleteDiagnosticPhase() {},
+  confirm(message) {
+    largeDeleteConfirmation = String(message);
+    largeDeleteConfirmed = true;
+    return true;
+  },
+  startUndoBulkDelete() {},
+  save: () => true,
+  undo() { throw new Error('Undo must not run after a successful large deletion.'); },
+  notify() {},
+  renderAll() {}
+};
+vm.createContext(largeDeleteSandbox);
+vm.runInContext(subjectDeleteSource + '\nthis.runLargeSubjectDelete = deleteSubject;',
+  largeDeleteSandbox, { filename: 'large-subject-delete.js' });
+largeDeleteSandbox.runLargeSubjectDelete('subject-delete');
+assert.ok(largeDeleteConfirmation.includes(String(deletedTopicCount)),
+  'subject confirmation must retain the exact topic count');
+assert.ok(largeDeleteConfirmation.includes(String(deletedHistoryCount)),
+  'subject confirmation must retain the exact history count');
+assert.equal(cascadedTopicIds.count, deletedTopicCount,
+  'the Study Hub cascade must receive every deleted topic ID');
+assert.equal(cascadedTopicIds.first, 'topic-delete-0');
+assert.equal(cascadedTopicIds.last, 'topic-delete-' + (deletedTopicCount - 1));
+assert.deepEqual(cascadedTopicIds.options, { persist: false, render: false });
+assert.equal(largeDeleteState.topics.length, totalTopicCount - deletedTopicCount,
+  'large subject deletion must preserve every unrelated topic');
+assert.equal(largeDeleteState.history.length, totalHistoryCount - deletedHistoryCount,
+  'large subject deletion must preserve every unrelated history record');
+assert.ok(largeDeleteState.topics.every(topic => topic.subjectId !== 'subject-delete'));
+assert.ok(largeDeleteState.history.every(record => record.subjectId !== 'subject-delete'));
+assert.equal(subjectTopicFilterCalls, 1,
+  'the topic array should be filtered only once, after confirmation');
+assert.equal(subjectHistoryFilterCalls, 1,
+  'the history array should be filtered only once, after confirmation');
+
+// Stream deletion uses the same allocation-bounded counting strategy.
+const streamDeleteStart = appCore.indexOf('  function deleteStream(id){');
+const streamDeleteEnd = appCore.indexOf('\n  function openExam', streamDeleteStart);
+assert.ok(streamDeleteStart >= 0 && streamDeleteEnd > streamDeleteStart,
+  'the real stream-delete implementation must remain independently testable');
+const streamDeleteSource = appCore.slice(streamDeleteStart, streamDeleteEnd);
+assert.ok(streamDeleteSource.includes('for(const subject of state.subjects)') &&
+  streamDeleteSource.includes('for(const topic of state.topics)') &&
+  streamDeleteSource.includes('for(const entry of state.history)'),
+  'stream delete must collect IDs and count history without filter/map temporary arrays');
+assert.ok(!streamDeleteSource.includes('state.history.filter('),
+  'stream-delete confirmation must not allocate a temporary history result array');
+
+console.log('Classic-script delete globals and 77,144-topic / 48,000-history deletion regressions passed.');

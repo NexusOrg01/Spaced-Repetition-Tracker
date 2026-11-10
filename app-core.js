@@ -841,9 +841,20 @@
     markDeleteDiagnosticPhase('subject:lookup');
     const subject=state.subjects.find(item=>item.id===id);if(!subject)return;
     markDeleteDiagnosticPhase('subject:collect-topic-ids');
-    const topicIds=state.topics.filter(topic=>topic.subjectId===id).map(topic=>topic.id);
-    const topicIdSet=new Set(topicIds);
-    const historyCount=state.history.filter(entry=>entry.subjectId===id||topicIdSet.has(entry.topicId)).length;
+    // Build the ID list and lookup set in one pass. Avoid filter().map()'s
+    // additional full-size temporary array on large workspaces.
+    const topicIds=[];
+    const topicIdSet=new Set();
+    for(const topic of state.topics){
+      if(topic.subjectId!==id)continue;
+      topicIds.push(topic.id);
+      topicIdSet.add(topic.id);
+    }
+    // Count without allocating a temporary array of every matching history row.
+    let historyCount=0;
+    for(const entry of state.history){
+      if(entry.subjectId===id||topicIdSet.has(entry.topicId))historyCount++;
+    }
     if(!confirm(`Delete subject “${subject.name}” and all its data?\n\nThis permanently removes ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. This cannot be undone after you leave this page. Export a full JSON backup first if unsure.`))return;
     markDeleteDiagnosticPhase('subject:undo-snapshot');
     startUndoBulkDelete('Subject and its data deleted.');
@@ -875,12 +886,21 @@
     markDeleteDiagnosticPhase('stream:lookup');
     const stream=state.streams.find(item=>item.id===id);if(!stream)return;
     markDeleteDiagnosticPhase('stream:collect-subject-ids');
-    const subjectIds=state.subjects.filter(subject=>subject.streamId===id).map(subject=>subject.id);
+    const subjectIds=[];
+    for(const subject of state.subjects)if(subject.streamId===id)subjectIds.push(subject.id);
     const subjectIdSet=new Set(subjectIds);
     markDeleteDiagnosticPhase('stream:collect-topic-ids');
-    const topicIds=state.topics.filter(topic=>subjectIdSet.has(topic.subjectId)).map(topic=>topic.id);
-    const topicIdSet=new Set(topicIds);
-    const historyCount=state.history.filter(entry=>subjectIdSet.has(entry.subjectId)||topicIdSet.has(entry.topicId)||entry.streamId===id).length;
+    const topicIds=[];
+    const topicIdSet=new Set();
+    for(const topic of state.topics){
+      if(!subjectIdSet.has(topic.subjectId))continue;
+      topicIds.push(topic.id);
+      topicIdSet.add(topic.id);
+    }
+    let historyCount=0;
+    for(const entry of state.history){
+      if(subjectIdSet.has(entry.subjectId)||topicIdSet.has(entry.topicId)||entry.streamId===id)historyCount++;
+    }
     if(!confirm(`Delete stream “${stream.name}” and all nested data?\n\nThis permanently removes ${subjectIds.length} subject(s), ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. This cannot be undone after you leave this page. Export a full JSON backup first if unsure.`))return;
     markDeleteDiagnosticPhase('stream:undo-snapshot');
     startUndoBulkDelete('Stream and its data deleted.');
@@ -1180,13 +1200,9 @@
       return origConfirm(title + "\n\n" + desc);
     };
     
-    // Route legacy/global entry points through the primary handlers. Older wrappers
-    // deep-cloned the entire workspace and removed review history when a topic was
-    // deleted, bypassing the bounded Undo and history-retention behavior above.
-    window.deleteTopic = id => deleteTopic(id);
-    window.deleteSubject = id => deleteSubject(id);
-    window.deleteStream = id => deleteStream(id);
-    window.deleteExam = id => deleteExam(id);
+    // These handlers are top-level declarations in this classic script and are
+    // already exposed on window. Do not reassign arrow wrappers here: each wrapper
+    // would overwrite its own global binding and recursively call itself.
 
     window.clearHistory = function(){
       if(!confirm('Clear ALL history?\\n\\nThis will delete '+state.history.length+' records. Schedules stay but past reviews are retained.\\n\\nExport a backup first!'))return;
