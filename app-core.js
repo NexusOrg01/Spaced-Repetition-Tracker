@@ -857,7 +857,7 @@
     markDeleteDiagnosticPhase('subject:filter-topics');
     state.topics=state.topics.filter(topic=>topic.subjectId!==id);
     markDeleteDiagnosticPhase('subject:filter-history');
-    state.history=state.history.filter(entry=>entry.subjectId!==id&&!topicIdSet.has(entry.topicId));
+    state.history=state.history.filter(h=>h.subjectId!==id&&!topicIdSet.has(h.topicId));
     markDeleteDiagnosticPhase('subject:filter-subjects');
     state.subjects=state.subjects.filter(item=>item.id!==id);
     markDeleteDiagnosticPhase('subject:save');
@@ -894,7 +894,7 @@
     markDeleteDiagnosticPhase('stream:filter-topics');
     state.topics=state.topics.filter(topic=>!subjectIdSet.has(topic.subjectId));
     markDeleteDiagnosticPhase('stream:filter-history');
-    state.history=state.history.filter(entry=>!subjectIdSet.has(entry.subjectId)&&!topicIdSet.has(entry.topicId)&&entry.streamId!==id);
+    state.history=state.history.filter(h=>!subjectIdSet.has(h.subjectId)&&!topicIdSet.has(h.topicId)&&h.streamId!==id);
     markDeleteDiagnosticPhase('stream:filter-subjects');
     state.subjects=state.subjects.filter(subject=>subject.streamId!==id);
     markDeleteDiagnosticPhase('stream:filter-streams');
