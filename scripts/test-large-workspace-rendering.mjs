@@ -445,9 +445,15 @@ assert.equal(rendererErrors,1,'a heatmap-render failure must be logged exactly o
 assert.ok(overviewTarget.innerHTML.includes('Consistency metrics could not be displayed.'),
   'a heatmap-render failure must replace stale/blank content with a visible recovery message');
 consistencySandbox.reviewActivity=originalReviewActivity;
-consistencySandbox.renderHomeConsistencySummary();
+assert.equal(typeof consistencyClickHandler,'function','the consistency retry action must register a delegated click handler');
+let retryPrevented=false;
+consistencyClickHandler({
+  target:{closest(selector){assert.equal(selector,'[data-action="retry-home-consistency"]');return {}; }},
+  preventDefault(){retryPrevented=true;}
+});
+assert.equal(retryPrevented,true,'the consistency Retry control must prevent its default action');
 assert.ok(overviewTarget.innerHTML.includes('Review activity heatmap'),
-  'the consistency renderer must recover on the next successful render');
+  'the delegated Retry action must recover the complete heatmap without a page reload');
 assert.ok(studyHub.includes('data-action="retry-home-consistency"') &&
   studyHub.includes("document.addEventListener('click',event=>") &&
   studyHub.includes('renderHomeConsistencySummary();'),
