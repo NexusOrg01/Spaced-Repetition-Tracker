@@ -79,8 +79,12 @@ const hubClickEnd = studyHub.indexOf("\n  document.addEventListener('click',e=>{
 assert.ok(hubClickStart >= 0 && hubClickEnd > hubClickStart,
   'Study Hub actions must have one local delegated click handler');
 const hubClickSource = studyHub.slice(hubClickStart, hubClickEnd);
-assert.ok(hubClickSource.includes("if(['analytics-card-toggle','analytics-section','analytics-toggle-rating','analytics-custom-apply','analytics-export-pdf','analytics-export','analytics-retry'].includes(a))return;"),
-  'the Study Hub handler must defer standalone Analytics controls to their single owner');
+assert.ok(hubClickSource.includes("if(['analytics-card-toggle','analytics-section','analytics-toggle-rating','analytics-custom-apply','analytics-export-pdf','analytics-export','analytics-retry'].includes(a)&&(b.closest('#analyticsStandalone')||document.body.classList.contains('analytics-mode')))return;"),
+  'the Study Hub handler must defer only standalone Analytics controls to their single owner');
+for (const action of ['analytics-card-toggle','analytics-section','analytics-toggle-rating','analytics-custom-apply','analytics-export-pdf','analytics-export','analytics-retry']) {
+  assert.ok(hubClickSource.includes("a==='" + action + "'"),
+    'embedded Study Hub Analytics must continue handling ' + action);
+}
 
 const analyticsDocStart = studyHub.indexOf("document.addEventListener('click',e=>{\n    const openButton=e.target.closest('#homeOpenAnalytics');");
 const analyticsDocEnd = studyHub.indexOf("\n  document.addEventListener('change',e=>{", analyticsDocStart);
