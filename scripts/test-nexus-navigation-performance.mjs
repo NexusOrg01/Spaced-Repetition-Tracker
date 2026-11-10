@@ -30,11 +30,11 @@ assert.ok(studyHub.includes('function paperRows(){') &&
   studyHub.includes('data-hub-action="delete-paper"') &&
   studyHub.includes('type="button" class="btn btn-sm btn-danger" data-hub-action="delete-paper"'),
   'Papers history must render its delete control using the restored paperRows renderer');
-assert.ok(studyHub.includes('if(!saveFs()){fsState.papers=previous;') &&
-  studyHub.includes('if(!saveFs()){fsState.journal=previous;') &&
-  studyHub.includes('if(!saveFs()){fsState.goals=previous;') &&
+assert.ok(studyHub.includes('function deleteStudyHubRecord(collection,id,options={})') &&
+  studyHub.includes('if(!saveFs()){') &&
+  studyHub.includes('fsState[collection]=previous;window.NexusCancelUndoAction?.();renderHub();') &&
   studyHub.includes('if(options.persist!==false&&!saveFs()){if(cascadeUndoState){Object.assign(fsState,cascadeUndoState);'),
-  'Study Hub deletions and curriculum cascades must restore in-memory data when persistence fails');
+  'Study Hub record deletions and curriculum cascades must restore in-memory data when persistence fails');
 assert.ok(appCore.includes('NexusCascadeDeleteSubject(id,topicIds,{persist:false,render:false})') &&
   studyHub.includes('window.NexusUndoCascadeDelete=(options={})=>'),
   'large subject cascades must defer persistence and rendering to one combined workspace transaction');
