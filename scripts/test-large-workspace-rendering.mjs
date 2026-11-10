@@ -43,6 +43,42 @@ assert.deepEqual(Array.from(streamed.items,record=>record.id),records.slice().so
 assert.ok(studyHub.includes('NexusCreateTopKCollector(studyLogHistoryLimit'),'study logs must use bounded collection');
 assert.ok(studyHub.includes('NexusCreateTopKCollector(40'),'mastery details must use bounded collection');
 assert.ok(studyHub.includes('studyTopicOptionsMarkup(fsState.studyTopicQuery,focusTopicId,150'),'focus topic options must be capped on large workspaces');
+
+assert.ok(appCore.includes('NexusCascadeDeleteSubject(id,topicIds,{persist:false,render:false})'),
+  'subject deletion must defer the Study Hub save/render until the combined workspace commit');
+assert.ok(appCore.includes('NexusCascadeDeleteStream(id,subjectIds,topicIds,{persist:false,render:false})'),
+  'stream deletion must defer the Study Hub save/render until the combined workspace commit');
+assert.ok(studyHub.includes('if(options.persist!==false&&!saveFs())'),
+  'cascade helpers must support a single combined persistence transaction');
+assert.ok(studyHub.includes('if(options.render!==false)renderHub()'),
+  'cascade helpers must allow the caller to avoid redundant large Study Hub renders');
+
+const cascadeStart=studyHub.indexOf('let cascadeUndoState=null;');
+const cascadeEnd=studyHub.indexOf('let topicHistoryStatsCache=',cascadeStart);
+assert.ok(cascadeStart>=0&&cascadeEnd>cascadeStart,'cascade helpers must be independently testable');
+let cascadeSaveCalls=0,cascadeRenderCalls=0;
+const largeCascadeState={
+  journal:Array.from({length:25000},(_,index)=>({id:'journal-'+index,subjectId:index%2?'subject-a':'subject-b',topicId:'topic-'+(index%1000)})),
+  papers:Array.from({length:12000},(_,index)=>({id:'paper-'+index,subjectId:index%2?'subject-a':'subject-b'})),
+  syllabusTargets:{'subject-a':{target:1},'subject-b':{target:2}},
+  selectedTopicIds:Array.from({length:20000},(_,index)=>'topic-'+index)
+};
+const cascadeSandbox={fsState:largeCascadeState,saveFs(){cascadeSaveCalls++;return true;},renderHub(){cascadeRenderCalls++;}};
+vm.createContext(cascadeSandbox);
+vm.runInContext(studyHub.slice(cascadeStart,cascadeEnd),cascadeSandbox,{filename:'large-cascade-delete.js'});
+const deletedIds=Array.from({length:20000},(_,index)=>'topic-'+index);
+assert.equal(cascadeSandbox.window.NexusCascadeDeleteSubject('subject-a',deletedIds,{persist:false,render:false}),true);
+assert.equal(cascadeSaveCalls,0,'deferred subject cascade must not serialize/commit the pre-delete workspace');
+assert.equal(cascadeRenderCalls,0,'deferred subject cascade must not render the large Study Hub twice');
+assert.ok(cascadeSandbox.fsState.journal.every(item=>item.subjectId!=='subject-a'));
+assert.ok(cascadeSandbox.fsState.papers.every(item=>item.subjectId!=='subject-a'));
+assert.equal(cascadeSandbox.fsState.selectedTopicIds.length,0);
+assert.equal(cascadeSandbox.window.NexusUndoCascadeDelete({persist:false,render:false}),true);
+assert.equal(cascadeSandbox.fsState.journal.length,25000,'cascade undo must restore the original journal array by reference');
+assert.equal(cascadeSandbox.fsState.papers.length,12000,'cascade undo must restore the original papers array by reference');
+assert.equal(cascadeSaveCalls,0,'deferred undo must leave persistence to the caller');
+assert.equal(cascadeRenderCalls,0,'deferred undo must leave rendering to the caller');
+
 console.log(`Bounded list-selection regression passed: ${count} records, pages of 100 and 40; ${elapsed} ms, ${comparisons} comparator calls.`);
 
 const analyticsStart=studyHub.indexOf('const RATING_ANALYTICS_ENTITY_OPTION_LIMIT=');
