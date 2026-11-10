@@ -191,6 +191,7 @@ const consistencySandbox={
   dayDiff:(from,to)=>Math.round((Date.parse(to+'T12:00:00Z')-Date.parse(from+'T12:00:00Z'))/86400000),
   safeDate:value=>/^\d{4}-\d{2}-\d{2}$/.test(String(value||'')),
   fNum:value=>Number.isFinite(Number(value))?Number(value):0,
+  naturalCompare:(a,b)=>String(a??'').localeCompare(String(b??''),undefined,{numeric:true,sensitivity:'base'}),
   status:topic=>topic.dueDate?'upcoming':'new',
   featureMeta:topic=>{topicVisits++;return {avg:topic.reviewCount?4:0};},
   studyLogMinutes:log=>{logVisits++;return Number(log.minutes)||0;},
