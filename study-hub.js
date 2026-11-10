@@ -143,15 +143,22 @@
     const todayKey=today(),topics=state.topics,history=state.history;
     let metrics=hubKpiCache;
     if(!metrics||metrics.topics!==topics||metrics.history!==history||metrics.historyLength!==history.length||metrics.today!==todayKey){
-      let activeCount=0,due=0,weak=0,mastered=0;
-      for(const topic of topics){
-        if(topic.archived)continue;activeCount++;
-        const st=status(topic),meta=featureMeta(topic);
-        if(st==='overdue'||st==='due')due++;
-        if(meta.weak)weak++;
-        if(topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&st!=='overdue')mastered++;
+      const shared=window.NexusGetOverviewTopicMetrics?.();
+      if(shared){
+        metrics=hubKpiCache={topics,history,historyLength:history.length,today:todayKey,
+          activeCount:shared.activeCount,due:shared.dueCount,weak:shared.weakCount,mastered:shared.mastered};
+      }else{
+        // Startup fallback for builds where the core Overview metrics provider is absent.
+        let activeCount=0,due=0,weak=0,mastered=0;
+        for(const topic of topics){
+          if(topic.archived)continue;activeCount++;
+          const st=status(topic),meta=featureMeta(topic);
+          if(st==='overdue'||st==='due')due++;
+          if(meta.weak)weak++;
+          if(topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&st!=='overdue')mastered++;
+        }
+        metrics=hubKpiCache={topics,history,historyLength:history.length,today:todayKey,activeCount,due,weak,mastered};
       }
-      metrics=hubKpiCache={topics,history,historyLength:history.length,today:todayKey,activeCount,due,weak,mastered};
     }
     const todayDone=loggedMinutesToday()+liveFocusMinutesToday();
     target.innerHTML='<div class="hub-kpi"><strong>'+metrics.due+'</strong><span>Due or overdue</span></div><div class="hub-kpi"><strong>'+metrics.weak+'</strong><span>Topics needing attention</span></div><div class="hub-kpi"><strong>'+metrics.mastered+'/'+metrics.activeCount+'</strong><span>Mastered topics</span></div><div class="hub-kpi"><strong>'+formatStudyDuration(todayDone*60)+'</strong><span>Study time today</span></div>';
@@ -1089,8 +1096,9 @@
         else if(date>=priorStart&&date<from)priorCount+=count;
       }
     }
-    let activeCount=0,mastered=0,overdue=0,dueSoon=0,dueCount=0,newCount=0,reviewedCount=0;
+    let activeCount=0,mastered=0,overdue=0,dueSoon=0,dueCount=0,newCount=0,reviewedCount=0,weakCount=0;
     const homeWeekEnd=dateShift(now,6),progressBySubject=new Map(),queue=[];
+    const topicHistory=shared&&shared.byTopic&&typeof shared.byTopic.get==='function'?shared.byTopic:null;
     const queueCompare=(a,b)=>({overdue:0,due:1,new:2,upcoming:3}[a.status]??4)-({overdue:0,due:1,new:2,upcoming:3}[b.status]??4)||
       (a.topic.dueDate||'9999').localeCompare(b.topic.dueDate||'9999')||
       naturalCompare(a.topic.name,b.topic.name);
@@ -1111,7 +1119,14 @@
       progress.total++;if(topic.reviewCount>0)progress.done++;
       if(topicStatus==='overdue'||topicStatus==='due'||topicStatus==='new')addQueue({topic,status:topicStatus});
       if(safeDate(topic.dueDate)&&topic.dueDate>=now&&topic.dueDate<=homeWeekEnd)dueSoon++;
-      if(topic.reviewCount>=2&&topic.intervalDays>=4&&topicStatus!=='overdue'&&featureMeta(topic).avg>=3.5)mastered++;
+      // Read compact aggregates directly instead of allocating featureMeta objects
+      // for every topic. The same values also feed the Study Hub KPI strip.
+      const topicStats=topicHistory?.get(String(topic.id));
+      const recent=topicStats?.recent||[];
+      const avg=recent.length?topicStats.avg:(topic.lastRating||0);
+      const longOverdue=topicStatus==='overdue'&&dayDiff(topic.dueDate,now)>5;
+      if(topic.lapses||avg&&avg<3||longOverdue)weakCount++;
+      if(topic.reviewCount>=2&&topic.intervalDays>=4&&topicStatus!=='overdue'&&avg>=3.5)mastered++;
     }
     const weekStart=dateShift(now,-6);
     let weeklyMinutes=0;
@@ -1122,7 +1137,7 @@
     const masteryPct=activeCount?Math.round(mastered/activeCount*100):0;
     const value={
       activeCount,mastered,overdue,dueSoon,masteryPct,weeklyMinutes,weeklyTarget,weeklyPct,
-      dueCount,newCount,reviewedCount,progressBySubject,queue,
+      dueCount,newCount,reviewedCount,weakCount,progressBySubject,queue,
       reviewedToday:byDate.get(now)||0,
       momentum:priorCount?Math.round((recentCount-priorCount)/priorCount*100):null,
       rangeDays,heatDays,heat:reviewActivity(heatDays),streak:currentStudyStreak()

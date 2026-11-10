@@ -209,8 +209,8 @@ assert.ok(overviewTarget.innerHTML.includes('Review activity heatmap'),'the Over
 assert.ok(overviewTarget.innerHTML.includes('value="365"'),'the Overview renderer must expose the 12-month period');
 assert.equal((overviewTarget.innerHTML.match(/class="hub-heat"/g)||[]).length,365,'the 12-month heatmap must render exactly 365 cells');
 const firstTopicVisits=topicVisits,firstLogVisits=logVisits,firstIndexReads=indexReads;
-const expectedMasteryChecks=Math.ceil(fixtureTopics.length/4);
-assert.equal(firstTopicVisits,expectedMasteryChecks,'mastery rating lookups should be skipped for topics that cannot qualify as mastered');
+const expectedMasteryChecks=0;
+assert.equal(firstTopicVisits,expectedMasteryChecks,'the shared aggregate must read per-topic history statistics directly instead of allocating featureMeta objects');
 consistencySandbox.renderHomeConsistencySummary();
 assert.equal(topicVisits,firstTopicVisits,'reopening Overview must reuse cached topic metrics when the workspace is unchanged');
 assert.equal(logVisits,firstLogVisits,'reopening Overview must reuse cached study-time metrics when the workspace is unchanged');
@@ -224,6 +224,7 @@ assert.ok(typeof consistencySandbox.window.NexusGetOverviewTopicMetrics==='funct
   'the core Overview must use the same shared topic aggregate as the Consistency panel');
 const cachedOverview=consistencySandbox.window.NexusGetOverviewTopicMetrics();
 assert.equal(cachedOverview.activeCount,fixtureTopics.length);
+assert.equal(cachedOverview.weakCount,0,'the shared metrics must supply the Study Hub weak-topic KPI');
 assert.ok(cachedOverview.queue.length<=7,'the shared Overview queue must remain bounded to seven records');
 assert.equal(cachedOverview.progressBySubject.get(undefined).total,fixtureTopics.length,
   'the same pass must provide subject progress totals for the core Overview');
@@ -236,3 +237,6 @@ assert.ok(appCore.includes('window.NexusGetFeatureStateForCommit') &&
   appCore.includes("workspaceEntries.push({key:window.NexusFeatureStorageKey,value:JSON.stringify(featureState)})") &&
   appCore.includes('noteCommittedLocalSave({state,featureState})'),
   'tracker and Study Hub state must be written with one queue commit, without a duplicate full-snapshot requeue');
+assert.ok(studyHub.includes('const shared=window.NexusGetOverviewTopicMetrics?.();') &&
+  studyHub.includes('weak:shared.weakCount'),
+  'Study Hub top KPIs must reuse the shared Overview metrics instead of scanning all topics again');
