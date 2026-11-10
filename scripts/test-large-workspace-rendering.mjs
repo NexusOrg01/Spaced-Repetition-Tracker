@@ -260,6 +260,16 @@ assert.equal(topicVisits,firstTopicVisits,'reopening Overview must reuse cached 
 assert.equal(logVisits,firstLogVisits,'reopening Overview must reuse cached study-time metrics when the workspace is unchanged');
 assert.equal(indexReads,firstIndexReads,'reopening Overview must reuse shared aggregate history metrics when the workspace is unchanged');
 
+// Changing the heatmap window should rebuild only the small display layer, not the
+// 77k-topic aggregate or the full study-log total.
+consistencySandbox.fsState.heatmapPeriod=7;
+consistencySandbox.renderHomeConsistencySummary();
+assert.equal(topicVisits,firstTopicVisits,'changing the heatmap window must reuse topic-level aggregates');
+assert.equal(logVisits,firstLogVisits,'changing the heatmap window must reuse the weekly study-time aggregate');
+assert.equal(consistencySandbox.window.NexusGetOverviewTopicMetrics().heat.length,7,'the revised heatmap window must still render the requested day count');
+consistencySandbox.fsState.heatmapPeriod=365;
+consistencySandbox.renderHomeConsistencySummary();
+
 // A journal/paper/goal save must not evict the 77k-topic/48k-history consistency cache.
 const saveFsStart=studyHub.indexOf('function saveFs(){');
 const saveFsEnd=studyHub.indexOf('\n  window.NexusFeatureStorageKey',saveFsStart);
