@@ -20,9 +20,11 @@ assert.equal(typeof createCollector,'function');
 const cooperativeSandbox={window:{},setTimeout(callback,delay){cooperativeYields++;return setTimeout(callback,delay);}};
 let cooperativeYields=0;
 vm.createContext(cooperativeSandbox);
-vm.runInContext(appCore.slice(helperStart,helperEnd),cooperativeSandbox,{filename:'cooperative-list-selection.js'});
+vm.runInContext(appCore.slice(helperStart,helperEnd)+'\nthis.buildTopicCountsCooperative=buildTopicCountsCooperative;',cooperativeSandbox,{filename:'cooperative-list-selection.js'});
 const selectTopKCooperative=cooperativeSandbox.window.NexusSelectTopKCooperative;
+const buildTopicCountsCooperative=cooperativeSandbox.buildTopicCountsCooperative;
 assert.equal(typeof selectTopKCooperative,'function','the app must expose its cooperative top-K selector for regression tests');
+assert.equal(typeof buildTopicCountsCooperative,'function','the Settings structure tree must expose a cooperative topic-count builder');
 
 const count=77144;
 const records=Array.from({length:count},(_,id)=>({id,rank:count-id,group:id%7}));
@@ -53,6 +55,23 @@ const cancelled=await selectTopKCooperative(records,25,compare,record=>{cancelVi
 });
 assert.equal(cancelled,null,'a superseded list selection must cancel without returning stale rows');
 assert.ok(cancelVisited<count,'cancellation must stop scanning before the entire collection is processed');
+
+const structureFixture=Array.from({length:77144},(_,index)=>({
+  subjectId:'subject-'+(index%7),archived:index%11===0
+}));
+const structureCounts=await buildTopicCountsCooperative(structureFixture);
+const expectedStructureCounts=new Map();
+for(const topic of structureFixture)if(!topic.archived)
+  expectedStructureCounts.set(topic.subjectId,(expectedStructureCounts.get(topic.subjectId)||0)+1);
+assert.deepEqual(Array.from(structureCounts.entries()).sort(),Array.from(expectedStructureCounts.entries()).sort(),
+  'cooperative Settings counts must match exact active-topic totals for every subject');
+assert.ok(cooperativeYields>=2*(Math.ceil(count/400)-1),
+  'the structure-count pass must also yield between bounded batches');
+let structureChecks=0;
+const cancelledStructure=await buildTopicCountsCooperative(structureFixture,()=>{
+  structureChecks++;return structureChecks<3;
+});
+assert.equal(cancelledStructure,null,'stale Settings count work must cancel after its view is superseded');
 
 const projected=selectTopK(records,37,compare,record=>record.group===0?record:null);
 const projectedExpected=records.filter(record=>record.group===0).slice().sort(compare).slice(0,37).map(record=>record.id);
