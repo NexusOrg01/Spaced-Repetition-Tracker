@@ -1123,7 +1123,7 @@
       }
     }
     let activeCount=0,mastered=0,overdue=0,dueSoon=0,dueCount=0,newCount=0,reviewedCount=0,weakCount=0;
-    const homeWeekEnd=dateShift(now,6),progressBySubject=new Map(),queue=[];
+    const homeWeekEnd=dateShift(now,6),upcomingEnd=dateShift(now,7),progressBySubject=new Map(),queue=[],upcomingQueue=[];
     const topicHistory=shared&&shared.byTopic&&typeof shared.byTopic.get==='function'?shared.byTopic:null;
     const queueCompare=(a,b)=>({overdue:0,due:1,new:2,upcoming:3}[a.status]??4)-({overdue:0,due:1,new:2,upcoming:3}[b.status]??4)||
       (a.topic.dueDate||'9999').localeCompare(b.topic.dueDate||'9999')||
@@ -1132,6 +1132,15 @@
       let low=0,high=queue.length;
       while(low<high){const mid=(low+high)>>1;if(queueCompare(queue[mid],item)<=0)low=mid+1;else high=mid;}
       if(low>=7)return;queue.splice(low,0,item);if(queue.length>7)queue.pop();
+    };
+    const addUpcoming=(topic)=>{
+      let low=0,high=upcomingQueue.length;
+      while(low<high){
+        const mid=(low+high)>>1,other=upcomingQueue[mid];
+        const order=(other.dueDate||'9999').localeCompare(topic.dueDate||'9999')||naturalCompare(other.name,topic.name);
+        if(order<=0)low=mid+1;else high=mid;
+      }
+      if(low>=7)return;upcomingQueue.splice(low,0,topic);if(upcomingQueue.length>7)upcomingQueue.pop();
     };
     for(const topic of state.topics){
       if(topic.archived)continue;
@@ -1145,6 +1154,7 @@
       progress.total++;if(topic.reviewCount>0)progress.done++;
       if(topicStatus==='overdue'||topicStatus==='due'||topicStatus==='new')addQueue({topic,status:topicStatus});
       if(safeDate(topic.dueDate)&&topic.dueDate>=now&&topic.dueDate<=homeWeekEnd)dueSoon++;
+      if(safeDate(topic.dueDate)&&topic.dueDate>now&&topic.dueDate<=upcomingEnd)addUpcoming(topic);
       // Read compact aggregates directly instead of allocating featureMeta objects
       // for every topic. The same values also feed the Study Hub KPI strip.
       const topicStats=topicHistory?.get(String(topic.id));
@@ -1163,7 +1173,7 @@
     const masteryPct=activeCount?Math.round(mastered/activeCount*100):0;
     const value={
       activeCount,mastered,overdue,dueSoon,masteryPct,weeklyMinutes,weeklyTarget,weeklyPct,
-      dueCount,newCount,reviewedCount,weakCount,progressBySubject,queue,
+      dueCount,newCount,reviewedCount,weakCount,progressBySubject,queue,upcomingQueue,
       reviewedToday:byDate.get(now)||0,
       momentum:priorCount?Math.round((recentCount-priorCount)/priorCount*100):null,
       rangeDays,heatDays,heat:reviewActivity(heatDays),streak:currentStudyStreak()
@@ -1179,7 +1189,9 @@
   window.NexusGetOverviewTopicMetrics=()=>getHomeConsistencyMetrics();
   function renderHomeConsistencySummary(){
     const target=hubEl('homeConsistencySummary');
-    if(!target||!fsState||!state||!hubEl('view-overview')?.classList.contains('active'))return;
+    // Call sites decide when this summary should refresh. Do not silently skip
+    // population because the view's active class is in transition during startup/navigation.
+    if(!target||!fsState||!state)return;
     try{
       const metrics=getHomeConsistencyMetrics();
       const heat=metrics.heat.map(x=>'<div class="hub-heat" data-count="'+Math.min(4,x.count)+'" title="'+localEsc(x.date)+' · '+x.count+' review(s)" aria-label="'+localEsc(x.date)+': '+x.count+' review(s)"></div>').join('');
