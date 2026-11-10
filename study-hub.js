@@ -13,8 +13,25 @@
   const fNum=x=>Number.isFinite(Number(x))?Number(x):0;
   // Cache daily focus-goal totals between minute boundaries; the visible clock still ticks every second.
   let focusGoalCacheKey='',focusGoalLoggedMinutes=0;
-  function saveFs(){focusGoalCacheKey='';try{if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[{key:FEATURE_KEY,value:JSON.stringify(fsState)}],{state,featureState:fsState},{returnOperationPayload:false});if(window.NexusCloudSync)window.NexusCloudSync.schedule();return true;}catch(e){console.error(e);try{notify('Study Hub data could not be saved. Export a backup now.');}catch(_){}return false;}}
-  window.NexusFeatureStorageKey=FEATURE_KEY;window.NexusNormalizeFeatureState=value=>window.NexusBackupRestoreUtils.normalizeFeatureState(value,freshFeatureState());window.NexusMergeFeatureState=(current,imported,rawImported)=>window.NexusBackupRestoreUtils.mergeFeatureState(current,imported,freshFeatureState(),rawImported);window.NexusGetFeatureState=()=>clone(fsState);window.NexusSetFeatureState=(value,options={})=>{focusGoalCacheKey='';fsState=window.NexusNormalizeFeatureState(value);if(options.applyFsrs!==false&&window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(fsState.fsrsSettings,{syncFeature:false,persist:options.persist!==false});focusStart=fsState.focusStartedAt?new Date(fsState.focusStartedAt).getTime():null;focusPausedAt=fsState.focusPausedAt?new Date(fsState.focusPausedAt).getTime():null;focusTopicId=fsState.focusTopicId||'';focusSubjectId=fsState.focusSubjectId||'';if(focusTimer){clearInterval(focusTimer);focusTimer=null;}if(focusStart)focusTimer=setInterval(refreshLiveFocusUi,1000);if(options.persist!==false)saveFs();if(options.render!==false)renderHub();if(focusStart&&options.render!==false)refreshLiveFocusUi();return true;};
+  function saveFs(){
+    focusGoalCacheKey='';
+    try{
+      if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');
+      window.NexusDeleteDiagnosticPhase?.('hub:save:serialize-feature-state');
+      const featureSnapshot=JSON.stringify(fsState);
+      window.NexusDeleteDiagnosticPhase?.('hub:save:offline-queue-commit');
+      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[{key:FEATURE_KEY,value:featureSnapshot}],{state,featureState:fsState},{returnOperationPayload:false});
+      window.NexusDeleteDiagnosticPhase?.('hub:save:cloud-sync-schedule');
+      if(window.NexusCloudSync)window.NexusCloudSync.schedule();
+      return true;
+    }catch(e){
+      window.NexusDeleteDiagnosticNoteError?.('hub:save-caught',e);
+      console.error(e);
+      try{notify('Study Hub data could not be saved. Export a backup now.');}catch(_){}
+      return false;
+    }
+  }
+  window.NexusFeatureStorageKey=FEATURE_KEY;window.NexusNormalizeFeatureState=value=>window.NexusBackupRestoreUtils.normalizeFeatureState(value,freshFeatureState());window.NexusMergeFeatureState=(current,imported,rawImported)=>window.NexusBackupRestoreUtils.mergeFeatureState(current,imported,freshFeatureState(),rawImported);window.NexusGetFeatureState=()=>{window.NexusDeleteDiagnosticPhase?.('save:feature-state-clone');return clone(fsState);};window.NexusSetFeatureState=(value,options={})=>{focusGoalCacheKey='';fsState=window.NexusNormalizeFeatureState(value);if(options.applyFsrs!==false&&window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(fsState.fsrsSettings,{syncFeature:false,persist:options.persist!==false});focusStart=fsState.focusStartedAt?new Date(fsState.focusStartedAt).getTime():null;focusPausedAt=fsState.focusPausedAt?new Date(fsState.focusPausedAt).getTime():null;focusTopicId=fsState.focusTopicId||'';focusSubjectId=fsState.focusSubjectId||'';if(focusTimer){clearInterval(focusTimer);focusTimer=null;}if(focusStart)focusTimer=setInterval(refreshLiveFocusUi,1000);if(options.persist!==false)saveFs();if(options.render!==false)renderHub();if(focusStart&&options.render!==false)refreshLiveFocusUi();return true;};
   let cascadeUndoState=null;
   function captureCascadeUndo(){
     // Cascade deletes replace these arrays and mutate only the target map. Keep the
@@ -22,10 +39,17 @@
     return {journal:fsState.journal,papers:fsState.papers,syllabusTargets:{...(fsState.syllabusTargets||{})},selectedTopicIds:fsState.selectedTopicIds};
   }
   window.NexusCascadeDeleteSubject=(subjectId,topicIds,options={})=>{
-    const topicIdSet=new Set(topicIds);cascadeUndoState=captureCascadeUndo();
+    window.NexusDeleteDiagnosticPhase?.('cascade:subject:build-topic-set');
+    const topicIdSet=new Set(topicIds);
+    window.NexusDeleteDiagnosticPhase?.('cascade:subject:capture-undo');
+    cascadeUndoState=captureCascadeUndo();
+    window.NexusDeleteDiagnosticPhase?.('cascade:subject:filter-journal');
     fsState.journal=fsState.journal.filter(item=>item.subjectId!==subjectId&&!topicIdSet.has(item.topicId));
+    window.NexusDeleteDiagnosticPhase?.('cascade:subject:filter-papers');
     fsState.papers=fsState.papers.filter(item=>item.subjectId!==subjectId);
+    window.NexusDeleteDiagnosticPhase?.('cascade:subject:remove-syllabus-target');
     delete fsState.syllabusTargets[subjectId];
+    window.NexusDeleteDiagnosticPhase?.('cascade:subject:filter-selected-topics');
     fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIdSet.has(id));
     // Core subject deletion commits tracker and Study Hub data together after all
     // related arrays have been pruned. Avoid serializing the full pre-delete
@@ -34,16 +58,24 @@
     if(options.render!==false)renderHub();return true;
   };
   window.NexusCascadeDeleteStream=(streamId,subjectIds,topicIds,options={})=>{
-    const subjectIdSet=new Set(subjectIds),topicIdSet=new Set(topicIds);cascadeUndoState=captureCascadeUndo();
+    window.NexusDeleteDiagnosticPhase?.('cascade:stream:build-id-sets');
+    const subjectIdSet=new Set(subjectIds),topicIdSet=new Set(topicIds);
+    window.NexusDeleteDiagnosticPhase?.('cascade:stream:capture-undo');
+    cascadeUndoState=captureCascadeUndo();
+    window.NexusDeleteDiagnosticPhase?.('cascade:stream:filter-journal');
     fsState.journal=fsState.journal.filter(item=>!subjectIdSet.has(item.subjectId)&&!topicIdSet.has(item.topicId));
+    window.NexusDeleteDiagnosticPhase?.('cascade:stream:filter-papers');
     fsState.papers=fsState.papers.filter(item=>!subjectIdSet.has(item.subjectId));
+    window.NexusDeleteDiagnosticPhase?.('cascade:stream:remove-syllabus-targets');
     for(const id of subjectIds)delete fsState.syllabusTargets[id];
+    window.NexusDeleteDiagnosticPhase?.('cascade:stream:filter-selected-topics');
     fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIdSet.has(id));
     if(options.persist!==false&&!saveFs()){if(cascadeUndoState){Object.assign(fsState,cascadeUndoState);cascadeUndoState=null;}if(options.render!==false)renderHub();return false;}
     if(options.render!==false)renderHub();return true;
   };
   window.NexusUndoCascadeDelete=(options={})=>{
     if(!cascadeUndoState)return false;
+    window.NexusDeleteDiagnosticPhase?.('cascade:undo:restore-state');
     Object.assign(fsState,cascadeUndoState);cascadeUndoState=null;
     if(options.persist!==false)saveFs();
     if(options.render!==false)renderHub();
@@ -1255,14 +1287,17 @@
     return `<div class="hub-grid">${hubCard('Global search and bulk actions','Find items across the app, select several topics, and apply reversible schedule or archive operations.',searchCard,true)}${hubCard('Reminder & backlog settings','Browser notification capability and backlog controls.',settings)}${hubCard('Backup, restore, import and export','Portable data protection, CSV imports, and feature export.',data)}${hubCard('Goals and milestones','Count reviews, papers, focus hours, topics, or manual progress toward targets.',`${goalForm}<div class="hub-list" style="margin-top:14px">${goals||'<div class="hub-empty">No milestones yet. Add one that is measurable and date-bounded.</div>'}</div>`,true)}</div>`;}
   function goalProgress(g){switch(g.unit){case'reviews':return state.history.filter(h=>!g.dueDate||h.reviewedAt<=g.dueDate).length;case'papers':return fsState.papers.length;case'hours':return Math.floor(totalStudyMinutes()/60);case'topics':return activeTopics().filter(t=>t.reviewCount>0).length;default:return fNum(g.progress);}}
   function renderHub(){
+    window.NexusDeleteDiagnosticPhase?.('render:study-hub:resolve-content');
     const content=hubEl('hubContent');if(!content)return;
     try{
+      window.NexusDeleteDiagnosticPhase?.('render:study-hub:'+hubTab);
       if(!document.body.classList.contains('analytics-mode'))updateKpis();
       document.querySelectorAll('[data-hub-tab]').forEach(b=>b.classList.toggle('active',b.dataset.hubTab===hubTab));
       const renderers={planner:renderPlanner,mastery:renderMastery,papers:renderPapers,journal:renderJournal,analytics:renderAnalytics,tools:renderTools};
       content.innerHTML=(renderers[hubTab]||renderPlanner)();
       if(hubTab==='tools')renderGlobalResults();
     }catch(error){
+      window.NexusDeleteDiagnosticNoteError?.('render:study-hub-caught',error);
       console.error('Nexus Study Hub render failed ('+hubTab+')',error);
       if(hubTab==='analytics')content.innerHTML='<div class="hub-empty analytics-render-error"><strong>This analytics section could not be displayed.</strong><p>Your saved data has not been changed. Retry the section; if the problem repeats, reload the app and report the failure.</p><button type="button" class="btn btn-primary" data-hub-action="analytics-retry">Retry analytics</button></div>';
       else notify('The Study Hub could not refresh. Please try again.');
@@ -1484,7 +1519,11 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
     if(!['delete-study-log','delete-paper','delete-journal','delete-goal','bulk-delete'].includes(action))return;
     event.preventDefault();
     event.stopPropagation();
+    window.NexusDeleteDiagnosticStart?.(action);
+    const diagnosticButton=document.getElementById('deleteDiagnosticBtn');
+    if(diagnosticButton)diagnosticButton.style.display='none';
     try{
+      window.NexusDeleteDiagnosticPhase?.('hub:dispatch-'+action);
       if(action==='delete-study-log')deleteStudyLog(id);
       else if(action==='delete-paper'){
         const paper=fsState.papers.find(item=>String(item.id)===String(id));
@@ -1512,9 +1551,13 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
         }
       }else if(action==='bulk-delete')bulkAction(action);
     }catch(error){
-      console.error('Nexus Study Hub delete action failed ('+action+')',error);
+      const diagnostic=window.NexusDeleteDiagnosticFail?window.NexusDeleteDiagnosticFail(error):null;
+      console.error('Nexus Study Hub delete action failed ('+action+')',diagnostic||error);
       const detail=String(error&&error.message||error||'Unknown error').replace(/\s+/g,' ').slice(0,180);
-      notify('Delete failed ('+action+'): '+detail,true);
+      if(diagnosticButton)diagnosticButton.style.display='';
+      notify('Delete failed ('+action+'): '+(diagnostic?.failedAt?'['+diagnostic.failedAt+'] ':'')+detail,true);
+    }finally{
+      window.NexusDeleteDiagnosticComplete?.();
     }
   }
   document.addEventListener('click',handleStudyHubDeleteClick,true);
