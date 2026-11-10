@@ -59,6 +59,85 @@ assert.ok(hubDeleteSource.includes("Delete failed ('+action+'): ") && hubDeleteS
 for (const action of ['delete-study-log','delete-paper','delete-journal','delete-goal','bulk-delete']) {
   assert.ok(hubDeleteSource.includes("'" + action + "'"), 'Study Hub delete capture handler must route ' + action);
 }
+
+const coreRouteCalls = [];
+const coreRouterSandbox = {
+  document: { addEventListener(type, handler, capture) {
+    assert.equal(type, 'click');
+    assert.equal(capture, true);
+    this.deleteHandler = handler;
+  } },
+  window: {},
+  deleteTopic: id => coreRouteCalls.push(['delete-topic', id]),
+  deleteHistoryEntry: id => coreRouteCalls.push(['delete-history', id]),
+  deleteSubject: id => coreRouteCalls.push(['delete-subject', id]),
+  deleteStream: id => coreRouteCalls.push(['delete-stream', id]),
+  deleteExam: id => coreRouteCalls.push(['delete-exam', id]),
+  notify() {}
+};
+vm.createContext(coreRouterSandbox);
+vm.runInContext(coreDeleteSource + "\ndocument.addEventListener('click',handleCoreDeleteClick,true);",
+  coreRouterSandbox, { filename: 'core-delete-router.js' });
+for (const action of ['delete-topic','delete-history','delete-subject','delete-stream','delete-exam']) {
+  let prevented = 0, stopped = 0;
+  const button = { dataset: { action, id: 'disposable-row' } };
+  coreRouterSandbox.document.deleteHandler({
+    target: { nodeType: 1, closest: () => button },
+    preventDefault() { prevented++; },
+    stopPropagation() { stopped++; }
+  });
+  assert.deepEqual(coreRouteCalls.at(-1), [action, 'disposable-row'],
+    'core click router must execute ' + action + ' exactly through its intended handler');
+  assert.equal(prevented, 1, action + ' must cancel native default behavior');
+  assert.equal(stopped, 1, action + ' must prevent duplicate delegated execution');
+}
+
+const hubRouteCalls = [];
+const hubRouterSandbox = {
+  document: { addEventListener(type, handler, capture) {
+    assert.equal(type, 'click');
+    assert.equal(capture, true);
+    this.deleteHandler = handler;
+  } },
+  window: {},
+  fsState: {
+    papers: [{ id: 'paper-test' }],
+    journal: [{ id: 'journal-test' }],
+    goals: [{ id: 'goal-test' }]
+  },
+  confirm: () => true,
+  notify() {},
+  saveFs: () => true,
+  renderHub() {},
+  deleteStudyLog: id => hubRouteCalls.push(['delete-study-log', id]),
+  bulkAction: action => hubRouteCalls.push([action]),
+  console
+};
+vm.createContext(hubRouterSandbox);
+vm.runInContext(hubDeleteSource + "\ndocument.addEventListener('click',handleStudyHubDeleteClick,true);",
+  hubRouterSandbox, { filename: 'study-hub-delete-router.js' });
+for (const [action, id] of [
+  ['delete-study-log', 'study-test'],
+  ['delete-paper', 'paper-test'],
+  ['delete-journal', 'journal-test'],
+  ['delete-goal', 'goal-test'],
+  ['bulk-delete', '']
+]) {
+  let prevented = 0, stopped = 0;
+  const button = { dataset: { hubAction: action, id } };
+  hubRouterSandbox.document.deleteHandler({
+    target: { nodeType: 1, closest: () => button },
+    preventDefault() { prevented++; },
+    stopPropagation() { stopped++; }
+  });
+  assert.equal(prevented, 1, action + ' must cancel native default behavior');
+  assert.equal(stopped, 1, action + ' must prevent duplicate delegated execution');
+  if (action === 'delete-paper') assert.equal(hubRouterSandbox.fsState.papers.length, 0);
+  else if (action === 'delete-journal') assert.equal(hubRouterSandbox.fsState.journal.length, 0);
+  else if (action === 'delete-goal') assert.equal(hubRouterSandbox.fsState.goals.length, 0);
+  else assert.deepEqual(hubRouteCalls.at(-1), action === 'bulk-delete' ? [action] : [action, id]);
+}
+
 assert.ok(hubDeleteSource.includes('event.preventDefault();') &&
   hubDeleteSource.includes('event.stopPropagation();') &&
   studyHub.includes("document.addEventListener('click',handleStudyHubDeleteClick,true);"),
