@@ -747,9 +747,6 @@
     const renderId=++topicRenderSequence,source=state.topics;
     const isCurrent=()=>renderId===topicRenderSequence&&source===state.topics&&
       document.querySelector('.view.active')?.id==='view-topics';
-    // Stream/subject counts come from the shared workspace aggregate. Only older
-    // runtimes without that provider need the compatibility full scan.
-    renderStructureList();
     const q=$('topicSearch').value.trim().toLocaleLowerCase(),streamId=$('topicStreamFilter').value,subjectId=$('topicSubjectFilter').value,stat=$('topicStatusFilter').value,sort=$('topicSort').value;
     const subjectById=new Map(state.subjects.map(subject=>[String(subject.id),subject]));
     const streamById=new Map(state.streams.map(stream=>[String(stream.id),stream]));
@@ -760,11 +757,13 @@
       return dueRank(a.status)-dueRank(b.status)||(a.topic.dueDate||'9999').localeCompare(b.topic.dueDate||'9999')||naturalCompare(a.topic.name,b.topic.name)||a.order-b.order;
     };
     let activeCount=0,topicOrder=0;
+    const topicCountsBySubject=new Map();
     if(!$('topicGrid').children.length)$('topicGrid').innerHTML='<div class="empty">Loading topics…</div>';
     const selection=await selectTopKCooperative(source,topicVisibleLimit,compare,topic=>{
       const order=topicOrder++;
       if(topic.archived)return null;
       activeCount++;
+      topicCountsBySubject.set(topic.subjectId,(topicCountsBySubject.get(topic.subjectId)||0)+1);
       const subject=subjectById.get(String(topic.subjectId)),stream=subject?streamById.get(String(subject.streamId)):null;
       const topicStatus=status(topic);
       if(q&&![topic.name,topic.notes,subject?.name,stream?.name].some(value=>String(value||'').toLocaleLowerCase().includes(q)))return null;
@@ -774,6 +773,9 @@
       return {topic,status:topicStatus,subject:subject?.name||'Unknown subject',stream:stream?.name||'Unknown stream',order};
     },isCurrent);
     if(!selection||!isCurrent())return;
+    // The same cooperative scan supplies the structure counts; avoid a second
+    // synchronous pass over all topics merely to build the stream/subject tree.
+    renderStructureList(topicCountsBySubject);
     const visible=selection.items,remaining=selection.count-visible.length;
     $('topicCountLabel').textContent=`Showing ${visible.length} of ${selection.count} matching topics (${activeCount} active)`;
     const cards=visible.map(({topic:t,status:s,subject,stream})=>`<article class="topic-card"><div class="topic-card-top"><div style="min-width:0"><div class="topic-name">${esc(t.name)}</div><div class="topic-sub">${esc(stream)} · ${esc(subject)}</div></div><span class="pill ${s}">${statusText(s)}</span></div>${t.notes?`<div class="topic-note">${esc(t.notes)}</div>`:''}<div class="topic-details"><span>Last: ${fmtDate(t.lastReviewed)}</span><span>Next: ${fmtDate(t.dueDate)}</span><span>Interval: ${t.intervalDays||'—'}d</span><span>Reviews: ${t.reviewCount}</span></div><div class="topic-actions"><button class="btn btn-sm btn-primary" data-action="review" data-id="${esc(t.id)}">Review</button><button class="btn btn-sm" data-action="edit-topic" data-id="${esc(t.id)}">Edit</button><span class="spacer"></span><button type="button" class="btn btn-sm btn-danger" data-action="delete-topic" data-id="${esc(t.id)}">Delete</button></div></article>`).join('');
@@ -807,20 +809,28 @@
     $('historyPagination').hidden=visible.length>=selection.count;
     if(historyInsightsDirty){renderHistoryInsights();historyInsightsDirty=false;}
   }
-    function renderStructureList(){
-    const shared=window.NexusGetOverviewTopicMetrics?.();
-    const sharedCounts=shared?.progressBySubject||null;
-    const topicCounts=new Map(),subjectsByStream=new Map();
-    // The normal path reads already-computed subject totals. Keep a compatibility
-    // fallback for isolated tests and older runtime embeddings.
-    if(!sharedCounts)for(const topic of state.topics)if(!topic.archived)topicCounts.set(topic.subjectId,(topicCounts.get(topic.subjectId)||0)+1);
+    function renderStructureList(topicCountsBySubject=null){
+    const topicCounts=topicCountsBySubject instanceof Map?topicCountsBySubject:new Map();
+    const subjectsByStream=new Map();
+    // The Topics renderer passes counts from its own cooperative scan. Retain a
+    // cache-backed fallback for callers that do not have those counts.
+    if(!(topicCountsBySubject instanceof Map)){
+      let shared=null;
+      try{shared=window.NexusGetOverviewTopicMetrics?.()||null;}catch(error){console.warn('Shared topic counts unavailable; using a local structure count.',error);}
+      const sharedCounts=shared?.progressBySubject;
+      if(sharedCounts instanceof Map){
+        for(const [id,entry] of sharedCounts)topicCounts.set(id,entry?.total||0);
+      }else{
+        for(const topic of state.topics)if(!topic.archived)topicCounts.set(topic.subjectId,(topicCounts.get(topic.subjectId)||0)+1);
+      }
+    }
     for(const subject of state.subjects){
       if(!subjectsByStream.has(subject.streamId))subjectsByStream.set(subject.streamId,[]);
       subjectsByStream.get(subject.streamId).push(subject);
     }
     const streamsMarkup=state.streams.map(st=>{
       const subjects=subjectsByStream.get(st.id)||[];
-      return `<div class="entity"><div><strong>${esc(st.name)}</strong><small>${subjects.length} subject${subjects.length===1?'':'s'}</small>${subjects.map(s=>`<div class="entity" style="padding:8px 0 0 10px"><div><strong style="font-size:12px">${esc(s.name)}</strong><small>${sharedCounts?(sharedCounts.get(s.id)?.total||0):(topicCounts.get(s.id)||0)} active topics</small></div><div class="inline-actions"><button class="btn btn-sm" data-action="edit-subject" data-id="${esc(s.id)}">Edit</button><button type="button" class="btn btn-sm btn-danger" data-action="delete-subject" data-id="${esc(s.id)}">Delete</button></div></div>`).join('')}</div><div class="inline-actions"><button class="btn btn-sm" data-action="add-subject-to-stream" data-id="${esc(st.id)}">＋ Subject</button><button class="btn btn-sm" data-action="edit-stream" data-id="${esc(st.id)}">Edit</button><button type="button" class="btn btn-sm btn-danger" data-action="delete-stream" data-id="${esc(st.id)}">Delete</button></div></div>`;
+      return `<div class="entity"><div><strong>${esc(st.name)}</strong><small>${subjects.length} subject${subjects.length===1?'':'s'}</small>${subjects.map(s=>`<div class="entity" style="padding:8px 0 0 10px"><div><strong style="font-size:12px">${esc(s.name)}</strong><small>${topicCounts.get(s.id)||0} active topics</small></div><div class="inline-actions"><button class="btn btn-sm" data-action="edit-subject" data-id="${esc(s.id)}">Edit</button><button type="button" class="btn btn-sm btn-danger" data-action="delete-subject" data-id="${esc(s.id)}">Delete</button></div></div>`).join('')}</div><div class="inline-actions"><button class="btn btn-sm" data-action="add-subject-to-stream" data-id="${esc(st.id)}">＋ Subject</button><button class="btn btn-sm" data-action="edit-stream" data-id="${esc(st.id)}">Edit</button><button type="button" class="btn btn-sm btn-danger" data-action="delete-stream" data-id="${esc(st.id)}">Delete</button></div></div>`;
     }).join('');
     $('structureList').innerHTML=streamsMarkup||'<div class="empty">No streams created.</div>';
   }
