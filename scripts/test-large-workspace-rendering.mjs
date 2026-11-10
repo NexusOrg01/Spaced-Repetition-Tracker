@@ -142,3 +142,80 @@ assert.equal(analyticsSaveCount,1,'analytics fallback should persist only the si
 assert.ok(studyHub.includes('id="hubRatingEntitySearch"')&&studyHub.includes('getRatingAnalyticsEntityOptions(ratingLevel,analyticsEntityQuery,150'),
   'the analytics selector must expose bounded, searchable entity options');
 
+const historyMetricsStart=appCore.indexOf('  function addTopicHistoryMetric(');
+const historyMetricsEnd=appCore.indexOf('  function recentHistoryCount(',historyMetricsStart);
+assert.ok(historyMetricsStart>=0&&historyMetricsEnd>historyMetricsStart,'the shared review-history index must be independently testable');
+const historyMetricsSandbox={
+  window:{},state:{history:[
+    {id:'r1',topicId:'t1',reviewedAt:'2026-11-10',rating:5},
+    {id:'r2',topicId:'t1',reviewedAt:'2026-11-09',rating:4},
+    {id:'r3',topicId:'t2',reviewedAt:'2026-11-10',rating:3},
+    {id:'r4',topicId:'t1',reviewedAt:'2026-11-08',rating:2}
+  ]},
+  validDate:value=>/^\d{4}-\d{2}-\d{2}$/.test(String(value||''))
+};
+vm.createContext(historyMetricsSandbox);
+vm.runInContext('let historyMetricsCache=null;\n'+appCore.slice(historyMetricsStart,historyMetricsEnd),historyMetricsSandbox,{filename:'shared-history-index.js'});
+const sharedIndex=historyMetricsSandbox.window.NexusGetHistoryActivityIndex();
+assert.equal(sharedIndex.byDate.get('2026-11-10'),2,'shared history index must aggregate daily review counts');
+assert.equal(sharedIndex.byDate.get('2026-11-09'),1);
+assert.equal(sharedIndex.byTopic.get('t1').count,3,'shared history index must aggregate per-topic history counts');
+assert.deepEqual(Array.from(sharedIndex.byTopic.get('t1').recent,record=>record.id),['r1','r2','r4'],'per-topic history index must retain recent records in descending date order');
+historyMetricsSandbox.state.history.unshift({id:'r0',topicId:'t1',reviewedAt:'2026-11-10',rating:2});
+const incrementedIndex=historyMetricsSandbox.window.NexusGetHistoryActivityIndex();
+assert.equal(incrementedIndex.byDate.get('2026-11-10'),3,'a newly prepended review must increment the cached daily count without a full rebuild');
+assert.equal(incrementedIndex.byTopic.get('t1').count,4,'a newly prepended review must update the shared topic index');
+assert.equal(incrementedIndex.byTopic.get('t1').recent[0].id,'r1','same-day prepends preserve stable order for existing history rows');
+
+const consistencyStart=studyHub.indexOf('  let homeConsistencyMetricsCache=null;');
+const consistencyEnd=studyHub.indexOf('  window.NexusRefreshHomeConsistencySummary=renderHomeConsistencySummary;',consistencyStart);
+assert.ok(consistencyStart>=0&&consistencyEnd>consistencyStart,'shared Overview metrics and full renderer must be independently testable');
+const consistencySource=studyHub.slice(consistencyStart,consistencyEnd);
+const fixtureToday='2026-11-10';
+const fixtureTopics=Array.from({length:77144},(_,index)=>({
+  id:'topic-'+index,archived:false,reviewCount:index%4===0?2:0,intervalDays:index%4===0?8:0,
+  dueDate:index%100===0?'2026-11-12':'',lastRating:4
+}));
+const fixtureHistory=Array.from({length:48000},(_,index)=>({id:'history-'+index,topicId:'topic-'+(index%77144),reviewedAt:index%2?'2026-11-09':'2026-11-10',rating:4}));
+const fixtureDateCounts=new Map([['2026-11-10',12],['2026-11-09',8],['2026-10-31',5],['2026-10-30',2]]);
+const fixtureIndex={byDate:fixtureDateCounts,dates:new Set(fixtureDateCounts.keys()),byTopic:new Map()};
+const fixtureLogs=Array.from({length:24000},(_,index)=>({date:index%2?'2026-11-10':'2026-11-09',minutes:5}));
+let topicVisits=0,logVisits=0,indexReads=0;
+const overviewTarget={innerHTML:''};
+const consistencySandbox={
+  window:{NexusGetHistoryActivityIndex:()=>{indexReads++;return fixtureIndex;}},
+  state:{topics:fixtureTopics,history:fixtureHistory},
+  fsState:{analyticsPeriod:'month',heatmapPeriod:365,settings:{dailyMinutes:90},studyLogs:fixtureLogs},
+  today:()=>fixtureToday,
+  dateShift:(date,days)=>{const d=new Date(date+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+days);return d.toISOString().slice(0,10);},
+  dayDiff:(from,to)=>Math.round((Date.parse(to+'T12:00:00Z')-Date.parse(from+'T12:00:00Z'))/86400000),
+  safeDate:value=>/^\d{4}-\d{2}-\d{2}$/.test(String(value||'')),
+  fNum:value=>Number.isFinite(Number(value))?Number(value):0,
+  status:topic=>topic.dueDate?'upcoming':'new',
+  featureMeta:topic=>{topicVisits++;return {avg:topic.reviewCount?4:0};},
+  studyLogMinutes:log=>{logVisits++;return Number(log.minutes)||0;},
+  reviewActivity:days=>{const result=[];for(let i=days-1;i>=0;i--){const date=consistencySandbox.dateShift(fixtureToday,-i);result.push({date,count:fixtureDateCounts.get(date)||0});}return result;},
+  currentStudyStreak:()=>2,
+  hubEl:id=>id==='homeConsistencySummary'?overviewTarget:{classList:{contains:view=>view==='active'}},
+  localEsc:value=>String(value),
+  selectOptions:options=>options.map(([value,label])=>'<option value="'+value+'">'+label+'</option>').join('')
+};
+vm.createContext(consistencySandbox);
+vm.runInContext(consistencySource,consistencySandbox,{filename:'home-consistency-runtime.js'});
+consistencySandbox.renderHomeConsistencySummary();
+assert.ok(overviewTarget.innerHTML.includes('19286 of 77144 active topics'),'renderer must use the active-topic count it calculated, not an undefined variable');
+assert.ok(overviewTarget.innerHTML.includes('Review activity heatmap'),'the Overview renderer must populate the heatmap');
+assert.ok(overviewTarget.innerHTML.includes('value="365"'),'the Overview renderer must expose the 12-month period');
+assert.equal((overviewTarget.innerHTML.match(/class="hub-heat"/g)||[]).length,365,'the 12-month heatmap must render exactly 365 cells');
+const firstTopicVisits=topicVisits,firstLogVisits=logVisits,firstIndexReads=indexReads;
+consistencySandbox.renderHomeConsistencySummary();
+assert.equal(topicVisits,firstTopicVisits,'reopening Overview must reuse cached topic metrics when the workspace is unchanged');
+assert.equal(logVisits,firstLogVisits,'reopening Overview must reuse cached study-time metrics when the workspace is unchanged');
+assert.equal(indexReads,firstIndexReads,'reopening Overview must reuse shared aggregate history metrics when the workspace is unchanged');
+consistencySandbox.window.NexusInvalidateHomeConsistencyCache();
+consistencySandbox.renderHomeConsistencySummary();
+assert.equal(topicVisits,firstTopicVisits+fixtureTopics.length,'explicit cache invalidation must rebuild topic metrics after a save');
+assert.equal(logVisits,firstLogVisits+fixtureLogs.length,'explicit cache invalidation must rebuild study-time metrics after a save');
+assert.ok(indexReads>firstIndexReads,'invalidated Overview metrics must read the latest shared history index');
+
+console.log('Overview consistency runtime tests passed: shared history index, 77,144 topics, 48,000 history rows, 24,000 study logs, 365-cell heatmap, and cache reuse/invalidation.');

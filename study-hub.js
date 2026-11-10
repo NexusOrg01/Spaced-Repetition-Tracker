@@ -15,6 +15,7 @@
   let focusGoalCacheKey='',focusGoalLoggedMinutes=0;
   function saveFs(){
     focusGoalCacheKey='';
+    window.NexusInvalidateHomeConsistencyCache?.();
     try{
       if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');
       window.NexusDeleteDiagnosticPhase?.('hub:save:serialize-feature-state');
@@ -87,17 +88,18 @@
     if(!['studyLogs','papers','journal','goals'].includes(collection)||!Array.isArray(previous))return false;
     fsState[collection]=previous;focusGoalCacheKey='';return true;
   };
-  let topicHistoryStatsCache={source:null,length:-1,byTopic:new Map()};
+  let topicHistoryStatsFallback={source:null,length:-1,byTopic:new Map()};
   function getTopicHistoryStats(){
-    const history=state.history,cache=topicHistoryStatsCache;
+    const shared=window.NexusGetHistoryActivityIndex?.();
+    if(shared&&shared.byTopic&&typeof shared.byTopic.get==='function')return shared.byTopic;
+    const history=state.history,cache=topicHistoryStatsFallback;
     if(cache.source===history&&cache.length===history.length)return cache.byTopic;
     const byTopic=new Map();
     for(const record of history){
       const id=String(record&&record.topicId||'');if(!id)continue;
       let item=byTopic.get(id);if(!item){item={recent:[],count:0,sum:0};byTopic.set(id,item);}
       item.count++;item.sum+=fNum(record.rating);
-      const date=record.reviewedAt||'',recent=item.recent;
-      let index=0;
+      const date=record.reviewedAt||'',recent=item.recent;let index=0;
       while(index<recent.length&&(recent[index].reviewedAt||'')>=date)index++;
       if(index<5){recent.splice(index,0,record);if(recent.length>5)recent.pop();}
     }
@@ -105,7 +107,7 @@
       item.avg=item.recent.length?item.recent.reduce((sum,record)=>sum+fNum(record.rating),0)/item.recent.length:0;
       item.allAvg=item.count?item.sum/item.count:0;
     }
-    topicHistoryStatsCache={source:history,length:history.length,byTopic};return byTopic;
+    topicHistoryStatsFallback={source:history,length:history.length,byTopic};return byTopic;
   }
   function featureMeta(t){
     const stats=getTopicHistoryStats().get(String(t.id)),hs=stats?.recent||[],avg=hs.length?stats.avg:(t.lastRating||0),allAvg=hs.length?stats.allAvg:(t.lastRating||0);
@@ -119,9 +121,15 @@
   function streakCount(){return currentStudyStreak();}
   function studyLogMinutes(entry){const seconds=entry&&entry.durationSeconds;if(seconds!==undefined&&seconds!==null&&Number.isFinite(Number(seconds)))return Math.max(0,Number(seconds))/60;return Math.max(0,fNum(entry&&entry.minutes));}function formatStudyDuration(seconds){const total=Math.max(0,Math.round(Number(seconds)||0)),minutes=Math.floor(total/60),remainder=total%60;return minutes?`${minutes} min${remainder?' '+remainder+' sec':''}`:`${remainder} sec`;}function totalStudyMinutes(){return fsState.studyLogs.reduce((n,x)=>n+studyLogMinutes(x),0);}
   function reviewActivity(days){
-    const end=today(),start=dateShift(end,-(days-1)),counts=new Map();
-    for(const record of state.history){const date=record&&record.reviewedAt;if(typeof date==='string'&&date.length===10&&date>=start&&date<=end)counts.set(date,(counts.get(date)||0)+1);}
-    const out=[];for(let i=days-1;i>=0;i--){const date=dateShift(end,-i);out.push({date,count:counts.get(date)||0});}
+    const end=today(),start=dateShift(end,-(days-1));
+    const shared=window.NexusGetHistoryActivityIndex?.(),counts=shared&&shared.byDate;
+    if(counts&&typeof counts.get==='function'){
+      const out=[];for(let i=days-1;i>=0;i--){const date=dateShift(end,-i);out.push({date,count:counts.get(date)||0});}
+      return out;
+    }
+    const fallback=new Map();
+    for(const record of state.history){const date=record&&record.reviewedAt;if(typeof date==='string'&&date.length===10&&date>=start&&date<=end)fallback.set(date,(fallback.get(date)||0)+1);}
+    const out=[];for(let i=days-1;i>=0;i--){const date=dateShift(end,-i);out.push({date,count:fallback.get(date)||0});}
     return out;
   }
   function nearestFutureExam(){return state.exams.filter(e=>safeDate(e.date)&&e.date>=today()).sort((a,b)=>a.date.localeCompare(b.date))[0]||null;}
@@ -1042,17 +1050,83 @@
       return '<div class="paper-trend-panel"><div class="paper-trend-head"><strong>'+localEsc(group.name)+'</strong><span>'+items.length+' scored attempt'+(items.length===1?'':'s')+' · latest '+last+'%'+changeText+sampleNote+'</span></div><div class="paper-trend-chart" tabindex="0" role="region" aria-label="Scrollable '+localEsc(group.name)+' score chart">'+svg+'</div></div>';
     }).join('');
   }
-    function renderHomeConsistencySummary(){
-    const target=hubEl('homeConsistencySummary');if(!target||!fsState||!state||!hubEl('view-overview')?.classList.contains('active'))return;
-    const selection=getRatingAnalyticsSelection(),from=selection.from,to=selection.to,valid=selection.valid!==false,recent=selection.records||[],rangeDays=valid?Math.max(1,dayDiff(from,to)+1):30;
-    let activeCount=0,mastered=0,overdue=0,dueSoon=0;const homeToday=today(),homeWeekEnd=dateShift(homeToday,6);for(const topic of state.topics){if(topic.archived)continue;activeCount++;const topicStatus=status(topic),meta=featureMeta(topic);if(topicStatus==='overdue')overdue++;if(safeDate(topic.dueDate)&&topic.dueDate>=homeToday&&topic.dueDate<=homeWeekEnd)dueSoon++;if(topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&topicStatus!=='overdue')mastered++;}const masteryPct=activeCount?Math.round(mastered/activeCount*100):0;
-    const now=today(),weekStart=dateShift(now,-6),weeklyMinutes=fsState.studyLogs.filter(l=>safeDate(l.date)&&l.date>=weekStart&&l.date<=now).reduce((sum,l)=>sum+studyLogMinutes(l),0),weeklyTarget=Math.max(1,fNum(fsState.settings.dailyMinutes)||90)*7,weeklyPct=Math.min(100,Math.round(weeklyMinutes/weeklyTarget*100));
-    const priorStart=valid?dateShift(from,-rangeDays):dateShift(now,-29),prior=state.history.filter(h=>safeDate(h.reviewedAt)&&h.reviewedAt>=priorStart&&h.reviewedAt<from),momentum=prior.length?Math.round((recent.length-prior.length)/prior.length*100):null;
-    const heatDays=({7:7,30:30,84:84,180:180,365:365})[Number(fsState.heatmapPeriod)]||84,heat=reviewActivity(heatDays).map(x=>'<div class="hub-heat" data-count="'+Math.min(4,x.count)+'" title="'+localEsc(x.date)+' · '+x.count+' review(s)" aria-label="'+localEsc(x.date)+': '+x.count+' review(s)"></div>').join(''),streak=currentStudyStreak();
-    const intelligence='<div class="insight-grid"><div class="insight-metric"><span class="insight-label">Review momentum</span><strong>'+(momentum===null?'New baseline':(momentum>0?'+':'')+momentum+'%')+'</strong><small>'+(momentum===null?'No prior-period data':'vs. previous '+rangeDays+' days')+'</small></div><div class="insight-metric"><span class="insight-label">Mastery coverage</span><strong>'+masteryPct+'%</strong><small>'+mastered+' of '+active.length+' active topics</small><div class="insight-track"><span style="width:'+masteryPct+'%"></span></div></div><div class="insight-metric"><span class="insight-label">Next 7-day load</span><strong>'+dueSoon+'</strong><small>'+overdue+' overdue now</small></div><div class="insight-metric"><span class="insight-label">Weekly study goal</span><strong>'+weeklyPct+'%</strong><small>'+weeklyMinutes+' / '+weeklyTarget+' min logged</small><div class="insight-track"><span style="width:'+weeklyPct+'%"></span></div></div><div class="insight-metric"><span class="insight-label">Current review streak</span><strong>'+streak+' days</strong><small>Consecutive days with at least one saved review</small></div></div>';
-    target.innerHTML=intelligence+'<div class="home-heatmap-head"><div><strong>Review activity heatmap</strong><small>Each square represents a day. Darker squares indicate more saved reviews.</small></div><div class="ra-field"><label for="homeHeatmapPeriod">Heatmap period</label><select class="hub-input" id="homeHeatmapPeriod">'+selectOptions([['7','7 days'],['30','30 days'],['84','12 weeks'],['180','6 months'],['365','12 months']],String(heatDays))+'</select></div></div><div class="hub-heatmap analytics-heatmap home-activity-heatmap">'+heat+'</div>';
+  let homeConsistencyMetricsCache=null;
+  window.NexusInvalidateHomeConsistencyCache=()=>{homeConsistencyMetricsCache=null;};
+  function getHomeConsistencyMetrics(){
+    const now=today(),allowed=['week','month','year','custom'];
+    const requestedPeriod=String(fsState.analyticsPeriod||'week');
+    const period=allowed.includes(requestedPeriod)?requestedPeriod:'week';
+    let from=now,to=now;
+    if(period==='week'){const offset=(new Date(now+'T12:00:00').getDay()+6)%7;from=dateShift(now,-offset);to=dateShift(from,6);}
+    else if(period==='month'){from=now.slice(0,7)+'-01';const parts=now.split('-');const last=new Date(Number(parts[0]),Number(parts[1]),0).getDate();to=now.slice(0,7)+'-'+String(last).padStart(2,'0');}
+    else if(period==='year'){from=now.slice(0,4)+'-01-01';to=now.slice(0,4)+'-12-31';}
+    else{from=safeDate(fsState.analyticsCustomStart)?fsState.analyticsCustomStart:dateShift(now,-29);to=safeDate(fsState.analyticsCustomEnd)?fsState.analyticsCustomEnd:now;}
+    const valid=safeDate(from)&&safeDate(to)&&from<=to;
+    const rangeDays=valid?Math.max(1,dayDiff(from,to)+1):30;
+    const heatDays=({7:7,30:30,84:84,180:180,365:365})[Number(fsState.heatmapPeriod]||84]||84;
+    const dailyTarget=Math.max(1,fNum(fsState.settings.dailyMinutes)||90);
+    const cache=homeConsistencyMetricsCache;
+    if(cache&&cache.topics===state.topics&&cache.history===state.history&&cache.studyLogs===fsState.studyLogs&&
+       cache.topicCount===state.topics.length&&cache.historyCount===state.history.length&&cache.studyLogCount===fsState.studyLogs.length&&
+       cache.today===now&&cache.period===period&&cache.from===from&&cache.to===to&&cache.heatDays===heatDays&&cache.dailyTarget===dailyTarget){
+      return cache.value;
+    }
+    const shared=window.NexusGetHistoryActivityIndex?.();
+    let byDate=shared&&shared.byDate;
+    if(!byDate||typeof byDate.get!=='function'){
+      byDate=new Map();
+      for(const record of state.history){const date=record&&record.reviewedAt;if(safeDate(date))byDate.set(date,(byDate.get(date)||0)+1);}
+    }
+    let recentCount=0,priorCount=0;
+    if(valid){
+      const priorStart=dateShift(from,-rangeDays);
+      for(const [date,count] of byDate){
+        if(date>=from&&date<=to)recentCount+=count;
+        else if(date>=priorStart&&date<from)priorCount+=count;
+      }
+    }
+    let activeCount=0,mastered=0,overdue=0,dueSoon=0;
+    const homeWeekEnd=dateShift(now,6);
+    for(const topic of state.topics){
+      if(topic.archived)continue;
+      activeCount++;
+      const topicStatus=status(topic),meta=featureMeta(topic);
+      if(topicStatus==='overdue')overdue++;
+      if(safeDate(topic.dueDate)&&topic.dueDate>=now&&topic.dueDate<=homeWeekEnd)dueSoon++;
+      if(topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&topicStatus!=='overdue')mastered++;
+    }
+    const weekStart=dateShift(now,-6);
+    let weeklyMinutes=0;
+    for(const log of fsState.studyLogs){
+      if(safeDate(log.date)&&log.date>=weekStart&&log.date<=now)weeklyMinutes+=studyLogMinutes(log);
+    }
+    const weeklyTarget=dailyTarget*7,weeklyPct=Math.min(100,Math.round(weeklyMinutes/weeklyTarget*100));
+    const masteryPct=activeCount?Math.round(mastered/activeCount*100):0;
+    const value={
+      activeCount,mastered,overdue,dueSoon,masteryPct,weeklyMinutes,weeklyTarget,weeklyPct,
+      momentum:priorCount?Math.round((recentCount-priorCount)/priorCount*100):null,
+      rangeDays,heatDays,heat:reviewActivity(heatDays),streak:currentStudyStreak()
+    };
+    homeConsistencyMetricsCache={
+      topics:state.topics,history:state.history,studyLogs:fsState.studyLogs,
+      topicCount:state.topics.length,historyCount:state.history.length,studyLogCount:fsState.studyLogs.length,
+      today:now,period,from,to,heatDays,dailyTarget,value
+    };
+    return value;
   }
-  window.NexusRefreshHomeConsistencySummary=renderHomeConsistencySummary;
+  function renderHomeConsistencySummary(){
+    const target=hubEl('homeConsistencySummary');
+    if(!target||!fsState||!state||!hubEl('view-overview')?.classList.contains('active'))return;
+    try{
+      const metrics=getHomeConsistencyMetrics();
+      const heat=metrics.heat.map(x=>'<div class="hub-heat" data-count="'+Math.min(4,x.count)+'" title="'+localEsc(x.date)+' · '+x.count+' review(s)" aria-label="'+localEsc(x.date)+': '+x.count+' review(s)"></div>').join('');
+      const intelligence='<div class="insight-grid"><div class="insight-metric"><span class="insight-label">Review momentum</span><strong>'+(metrics.momentum===null?'New baseline':(metrics.momentum>0?'+':'')+metrics.momentum+'%')+'</strong><small>'+(metrics.momentum===null?'No prior-period data':'vs. previous '+metrics.rangeDays+' days')+'</small></div><div class="insight-metric"><span class="insight-label">Mastery coverage</span><strong>'+metrics.masteryPct+'%</strong><small>'+metrics.mastered+' of '+metrics.activeCount+' active topics</small><div class="insight-track"><span style="width:'+metrics.masteryPct+'%"></span></div></div><div class="insight-metric"><span class="insight-label">Next 7-day load</span><strong>'+metrics.dueSoon+'</strong><small>'+metrics.overdue+' overdue now</small></div><div class="insight-metric"><span class="insight-label">Weekly study goal</span><strong>'+metrics.weeklyPct+'%</strong><small>'+metrics.weeklyMinutes+' / '+metrics.weeklyTarget+' min logged</small><div class="insight-track"><span style="width:'+metrics.weeklyPct+'%"></span></div></div><div class="insight-metric"><span class="insight-label">Current review streak</span><strong>'+metrics.streak+' days</strong><small>Consecutive days with at least one saved review</small></div></div>';
+      target.innerHTML=intelligence+'<div class="home-heatmap-head"><div><strong>Review activity heatmap</strong><small>Each square represents a day. Darker squares indicate more saved reviews.</small></div><div class="ra-field"><label for="homeHeatmapPeriod">Heatmap period</label><select class="hub-input" id="homeHeatmapPeriod">'+selectOptions([['7','7 days'],['30','30 days'],['84','12 weeks'],['180','6 months'],['365','12 months']],String(metrics.heatDays))+'</select></div></div><div class="hub-heatmap analytics-heatmap home-activity-heatmap">'+heat+'</div>';
+    }catch(error){
+      console.error('Nexus Overview consistency summary failed',error);
+      target.innerHTML='<div class="analytics-render-error"><strong>Consistency metrics could not be displayed.</strong><p>Your saved workspace has not been changed. Reopen Overview to retry. If the problem continues, report the error to Nexus support.</p></div>';
+    }
+  }  window.NexusRefreshHomeConsistencySummary=renderHomeConsistencySummary;
   function renderActivityAnalytics(selection){
     const pdfScope=selection?.pdfScope||null;
      const studyLogMinutes=record=>{const seconds=record&&record.durationSeconds;if(seconds!==undefined&&seconds!==null&&Number.isFinite(Number(seconds)))return Math.max(0,Number(seconds))/60;return Math.max(0,Number(record&&record.minutes)||0);};

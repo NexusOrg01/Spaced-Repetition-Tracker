@@ -282,6 +282,7 @@
   let storageSaveRevision=0;
   function save(){
     try{
+      window.NexusInvalidateHomeConsistencyCache?.();
       markDeleteDiagnosticPhase('save:feature-state-snapshot');
       // Curriculum repair runs at hydration, import/restore, cloud-merge, and catalogue
       // boundaries. Repeating a full catalogue scan on every ordinary review/save would
@@ -529,16 +530,27 @@
     $('progressList').innerHTML=subjectGroups.length?subjectGroups.map(g=>{const p=g.total?Math.round(g.done/g.total*100):0;return '<div class="progress-row"><div class="progress-label"><strong>'+esc(g.s.name)+'</strong><span>'+g.done+'/'+g.total+' · '+p+'%</span></div><div class="progress-track"><div class="progress-fill" style="width:'+p+'%"></div></div><div class="muted small" style="margin-top:4px">'+esc(g.stream)+'</div></div>';}).join(''):'<div class="empty">Add a subject to see progress.</div>';
     renderUpcomingQueue();renderOverviewAnalytics();
   }
+  function addTopicHistoryMetric(metrics,record){
+    const id=String(record&&record.topicId||'');if(!id)return;
+    let item=metrics.byTopic.get(id);if(!item){item={recent:[],count:0,sum:0,avg:0,allAvg:0};metrics.byTopic.set(id,item);}
+    item.count++;item.sum+=Number(record.rating)||0;
+    const date=record.reviewedAt||'',recent=item.recent;let index=0;
+    while(index<recent.length&&(recent[index].reviewedAt||'')>=date)index++;
+    if(index<5){recent.splice(index,0,record);if(recent.length>5)recent.pop();}
+    item.avg=recent.length?recent.reduce((sum,entry)=>sum+(Number(entry.rating)||0),0)/recent.length:0;
+    item.allAvg=item.count?item.sum/item.count:0;
+  }
   function addHistoryMetricRecord(metrics,record){
     if(!record)return;
     const date=record.reviewedAt;
     if(validDate(date)){metrics.byDate.set(date,(metrics.byDate.get(date)||0)+1);metrics.dates.add(date);}
+    addTopicHistoryMetric(metrics,record);
     metrics.ratingSum+=Number(record.rating)||0;
     const ratingIndex=Number(record.rating)-1;
     if(Number.isInteger(ratingIndex)&&ratingIndex>=0&&ratingIndex<5)metrics.ratingCounts[ratingIndex]++;
   }
   function buildHistoryMetrics(entries){
-    const metrics={source:entries,length:entries.length,firstRecord:entries[0],byDate:new Map(),dates:new Set(),ratingSum:0,ratingCounts:[0,0,0,0,0]};
+    const metrics={source:entries,length:entries.length,firstRecord:entries[0],byDate:new Map(),dates:new Set(),byTopic:new Map(),ratingSum:0,ratingCounts:[0,0,0,0,0]};
     for(const record of entries)addHistoryMetricRecord(metrics,record);
     return metrics;
   }
@@ -552,6 +564,9 @@
     }
     historyMetricsCache=buildHistoryMetrics(entries);return historyMetricsCache;
   }
+  // One shared read-only index supplies Overview and Study Hub analytics. Consumers
+  // must not mutate its Maps or Sets; saves and immutable history changes refresh it.
+  window.NexusGetHistoryActivityIndex=()=>getHistoryMetrics();
   function recentHistoryCount(days,metrics=getHistoryMetrics()){
     const end=today();let count=0;
     for(let i=0;i<days;i++)count+=metrics.byDate.get(plusDays(end,-i))||0;
