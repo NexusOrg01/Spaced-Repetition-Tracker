@@ -21,27 +21,33 @@
     // original arrays by reference; cloning all Study Hub logs is unnecessary.
     return {journal:fsState.journal,papers:fsState.papers,syllabusTargets:{...(fsState.syllabusTargets||{})},selectedTopicIds:fsState.selectedTopicIds};
   }
-  window.NexusCascadeDeleteSubject=(subjectId,topicIds)=>{
+  window.NexusCascadeDeleteSubject=(subjectId,topicIds,options={})=>{
     const topicIdSet=new Set(topicIds);cascadeUndoState=captureCascadeUndo();
     fsState.journal=fsState.journal.filter(item=>item.subjectId!==subjectId&&!topicIdSet.has(item.topicId));
     fsState.papers=fsState.papers.filter(item=>item.subjectId!==subjectId);
     delete fsState.syllabusTargets[subjectId];
     fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIdSet.has(id));
-    if(!saveFs()){if(cascadeUndoState){Object.assign(fsState,cascadeUndoState);cascadeUndoState=null;}renderHub();return false;}
-    renderHub();return true;
+    // Core subject deletion commits tracker and Study Hub data together after all
+    // related arrays have been pruned. Avoid serializing the full pre-delete
+    // workspace (and rendering the hub) a second time for large workspaces.
+    if(options.persist!==false&&!saveFs()){if(cascadeUndoState){Object.assign(fsState,cascadeUndoState);cascadeUndoState=null;}if(options.render!==false)renderHub();return false;}
+    if(options.render!==false)renderHub();return true;
   };
-  window.NexusCascadeDeleteStream=(streamId,subjectIds,topicIds)=>{
+  window.NexusCascadeDeleteStream=(streamId,subjectIds,topicIds,options={})=>{
     const subjectIdSet=new Set(subjectIds),topicIdSet=new Set(topicIds);cascadeUndoState=captureCascadeUndo();
     fsState.journal=fsState.journal.filter(item=>!subjectIdSet.has(item.subjectId)&&!topicIdSet.has(item.topicId));
     fsState.papers=fsState.papers.filter(item=>!subjectIdSet.has(item.subjectId));
     for(const id of subjectIds)delete fsState.syllabusTargets[id];
     fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIdSet.has(id));
-    if(!saveFs()){if(cascadeUndoState){Object.assign(fsState,cascadeUndoState);cascadeUndoState=null;}renderHub();return false;}
-    renderHub();return true;
+    if(options.persist!==false&&!saveFs()){if(cascadeUndoState){Object.assign(fsState,cascadeUndoState);cascadeUndoState=null;}if(options.render!==false)renderHub();return false;}
+    if(options.render!==false)renderHub();return true;
   };
-  window.NexusUndoCascadeDelete=()=>{
-    if(!cascadeUndoState)return;
-    Object.assign(fsState,cascadeUndoState);cascadeUndoState=null;saveFs();renderHub();
+  window.NexusUndoCascadeDelete=(options={})=>{
+    if(!cascadeUndoState)return false;
+    Object.assign(fsState,cascadeUndoState);cascadeUndoState=null;
+    if(options.persist!==false)saveFs();
+    if(options.render!==false)renderHub();
+    return true;
   };
   window.NexusClearCascadeUndo=()=>{cascadeUndoState=null;};
   window.NexusRenderHub=()=>renderHub();
