@@ -123,8 +123,10 @@ assert.ok(serviceWorker.includes('const CORE_APP_SHELL=') && serviceWorker.inclu
 const offlineQueueSource = readFileSync(resolve(root, 'offline-sync-queue.js'), 'utf8');
 assert.ok(offlineQueueSource.includes('wordCode*256+next') && offlineQueueSource.includes('returnOperationPayload===false'),
   'large snapshot compression must avoid per-byte phrase strings and callers must be able to skip unused full-payload clones');
-assert.ok(appCore.includes('function getHistoryMetrics()') && appCore.includes('const reviewedToday=getHistoryMetrics().byDate.get(todayKey)||0;'),
-  'overview history totals must reuse indexed history metrics instead of rescanning the entire history per render');
+assert.ok(appCore.includes('function getHistoryMetrics()') &&
+  appCore.includes('window.NexusGetOverviewTopicMetrics?.()') &&
+  appCore.includes('reviewedToday=getHistoryMetrics().byDate.get(todayKey)||0;'),
+  'Overview history and topic totals must use the shared revision-aware metrics cache, with an indexed-history fallback during early startup');
 assert.ok(appCore.includes('selectTopK(state.topics,topicVisibleLimit') && appCore.includes('selectTopK(state.history,historyVisibleLimit') &&
   appCore.includes("const activeView=document.querySelector('.view.active')?.id||'view-overview';"),
   'topic and history screens must retain only the visible top-ranked page while refreshing only the active view');
