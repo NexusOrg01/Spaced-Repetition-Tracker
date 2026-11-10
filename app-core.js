@@ -317,6 +317,7 @@
   }
   window.NexusStartUndoBulkDelete=startUndoBulkDelete;
   window.NexusStartUndoTopicBatch=startUndoTopicBatch;
+  window.NexusUndoLastAction=()=>undo();
   function startUndoReview(text,topic,reviewId){
     if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
     // A review mutates one topic and prepends one history row. Capture only the
