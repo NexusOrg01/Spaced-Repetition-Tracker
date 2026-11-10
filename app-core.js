@@ -194,6 +194,22 @@
     }
     return isCurrent()?collector.finish():null;
   }
+  async function buildTopicCountsCooperative(topics,isCurrent=()=>true){
+    const counts=new Map(),length=topics.length;
+    for(let start=0;start<length;start+=LARGE_LIST_SCAN_BATCH){
+      const end=Math.min(length,start+LARGE_LIST_SCAN_BATCH);
+      for(let index=start;index<end;index++){
+        const topic=topics[index];
+        if(topic&&!topic.archived)counts.set(topic.subjectId,(counts.get(topic.subjectId)||0)+1);
+      }
+      if(end<length){
+        if(!isCurrent())return null;
+        await new Promise(resolve=>setTimeout(resolve,0));
+        if(!isCurrent())return null;
+      }
+    }
+    return isCurrent()?counts:null;
+  }
   window.NexusCreateTopKCollector=createTopKCollector;
   window.NexusSelectTopK=selectTopK;
   window.NexusSelectTopKCooperative=selectTopKCooperative;
@@ -809,31 +825,47 @@
     $('historyPagination').hidden=visible.length>=selection.count;
     if(historyInsightsDirty){renderHistoryInsights();historyInsightsDirty=false;}
   }
-    function renderStructureList(topicCountsBySubject=null){
-    const topicCounts=topicCountsBySubject instanceof Map?topicCountsBySubject:new Map();
-    const subjectsByStream=new Map();
-    // The Topics renderer passes counts from its own cooperative scan. Retain a
-    // cache-backed fallback for callers that do not have those counts.
-    if(!(topicCountsBySubject instanceof Map)){
-      let shared=null;
-      try{shared=window.NexusGetOverviewTopicMetrics?.()||null;}catch(error){console.warn('Shared topic counts unavailable; using a local structure count.',error);}
-      const sharedCounts=shared?.progressBySubject;
-      if(sharedCounts instanceof Map){
-        for(const [id,entry] of sharedCounts)topicCounts.set(id,entry?.total||0);
-      }else{
-        for(const topic of state.topics)if(!topic.archived)topicCounts.set(topic.subjectId,(topicCounts.get(topic.subjectId)||0)+1);
+    let structureRenderSequence=0;
+  function renderStructureList(topicCountsBySubject=null){
+    const target=$('structureList');
+    const renderMarkup=topicCounts=>{
+      const subjectsByStream=new Map();
+      for(const subject of state.subjects){
+        if(!subjectsByStream.has(subject.streamId))subjectsByStream.set(subject.streamId,[]);
+        subjectsByStream.get(subject.streamId).push(subject);
       }
+      const streamsMarkup=state.streams.map(st=>{
+        const subjects=subjectsByStream.get(st.id)||[];
+        return `<div class="entity"><div><strong>${esc(st.name)}</strong><small>${subjects.length} subject${subjects.length===1?'':'s'}</small>${subjects.map(s=>`<div class="entity" style="padding:8px 0 0 10px"><div><strong style="font-size:12px">${esc(s.name)}</strong><small>${topicCounts.get(s.id)||0} active topics</small></div><div class="inline-actions"><button class="btn btn-sm" data-action="edit-subject" data-id="${esc(s.id)}">Edit</button><button type="button" class="btn btn-sm btn-danger" data-action="delete-subject" data-id="${esc(s.id)}">Delete</button></div></div>`).join('')}</div><div class="inline-actions"><button class="btn btn-sm" data-action="add-subject-to-stream" data-id="${esc(st.id)}">＋ Subject</button><button class="btn btn-sm" data-action="edit-stream" data-id="${esc(st.id)}">Edit</button><button type="button" class="btn btn-sm btn-danger" data-action="delete-stream" data-id="${esc(st.id)}">Delete</button></div></div>`;
+      }).join('');
+      target.innerHTML=streamsMarkup||'<div class="empty">No streams created.</div>';
+    };
+    if(topicCountsBySubject instanceof Map){
+      structureRenderSequence++;
+      renderMarkup(topicCountsBySubject);
+      return;
     }
-    for(const subject of state.subjects){
-      if(!subjectsByStream.has(subject.streamId))subjectsByStream.set(subject.streamId,[]);
-      subjectsByStream.get(subject.streamId).push(subject);
+    const cached=window.NexusGetCachedOverviewTopicMetrics?.();
+    if(cached?.progressBySubject instanceof Map){
+      const counts=new Map();
+      for(const [id,entry] of cached.progressBySubject)counts.set(id,entry?.total||0);
+      structureRenderSequence++;
+      renderMarkup(counts);
+      return;
     }
-    const streamsMarkup=state.streams.map(st=>{
-      const subjects=subjectsByStream.get(st.id)||[];
-      return `<div class="entity"><div><strong>${esc(st.name)}</strong><small>${subjects.length} subject${subjects.length===1?'':'s'}</small>${subjects.map(s=>`<div class="entity" style="padding:8px 0 0 10px"><div><strong style="font-size:12px">${esc(s.name)}</strong><small>${topicCounts.get(s.id)||0} active topics</small></div><div class="inline-actions"><button class="btn btn-sm" data-action="edit-subject" data-id="${esc(s.id)}">Edit</button><button type="button" class="btn btn-sm btn-danger" data-action="delete-subject" data-id="${esc(s.id)}">Delete</button></div></div>`).join('')}</div><div class="inline-actions"><button class="btn btn-sm" data-action="add-subject-to-stream" data-id="${esc(st.id)}">＋ Subject</button><button class="btn btn-sm" data-action="edit-stream" data-id="${esc(st.id)}">Edit</button><button type="button" class="btn btn-sm btn-danger" data-action="delete-stream" data-id="${esc(st.id)}">Delete</button></div></div>`;
-    }).join('');
-    $('structureList').innerHTML=streamsMarkup||'<div class="empty">No streams created.</div>';
+    const renderId=++structureRenderSequence,source=state.topics;
+    const isCurrent=()=>renderId===structureRenderSequence&&source===state.topics&&
+      ['view-setup','view-topics'].includes(document.querySelector('.view.active')?.id);
+    if(!target.children.length)target.innerHTML='<div class="empty">Updating topic counts…</div>';
+    buildTopicCountsCooperative(source,isCurrent).then(counts=>{
+      if(counts&&isCurrent())renderMarkup(counts);
+    }).catch(error=>{
+      if(!isCurrent())return;
+      console.error('Nexus stream/subject counts could not be prepared',error);
+      target.innerHTML='<div class="empty">Topic counts could not be loaded. Reopen this section to retry.</div>';
+    });
   }
+  
   function renderSetup(){refreshFilterOptions();$('themeSelect').value=state.settings.theme;renderStructureList();
     const exams=state.exams.slice().sort((a,b)=>a.date.localeCompare(b.date));$('examList').innerHTML=exams.length?exams.map(ex=>`<div class="entity"><div><strong>${esc(ex.name)}</strong><small>${fmtDate(ex.date)} · ${esc(ex.type)}${validDate(ex.date)&&ex.date>=today()?` · ${dayDiff(today(),ex.date)} day(s) left`:''}</small>${ex.notes?`<small>${esc(ex.notes)}</small>`:''}</div><div class="inline-actions"><button class="btn btn-sm" data-action="edit-exam" data-id="${esc(ex.id)}">Edit</button><button type="button" class="btn btn-sm btn-danger" data-action="delete-exam" data-id="${esc(ex.id)}">Delete</button></div></div>`).join(''):'<div class="empty"><strong>No exams scheduled</strong>Add an exam or deadline.</div>';
   }
