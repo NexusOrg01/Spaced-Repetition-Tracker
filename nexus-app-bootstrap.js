@@ -74,6 +74,7 @@
   async function start() {
     await whenDomReady();
     registerServiceWorker();
+    window.NexusDeferInitialRender = true;
     let durableStorage = false;
     if (window.NexusStorage && typeof window.NexusStorage.bootstrap === 'function') {
       try {
@@ -86,9 +87,48 @@
     try {
       for (const asset of RUNTIME_ASSETS) await loadScript(asset);
     } catch (error) {
+      window.NexusDeferInitialRender = false;
       console.error('Nexus application startup stopped before all required modules loaded.', error);
+      try {
+        if (typeof window.NexusRenderAll === 'function') window.NexusRenderAll();
+      } catch (renderError) {
+        console.error('Nexus could not render the partially loaded workspace.', renderError);
+      }
       showNotice('Nexus could not load a required application file. Keep this page open, check the connection, and reload before continuing.', true);
       return;
+    }
+
+    window.NexusDeferInitialRender = false;
+    if (typeof window.NexusRenderAll === 'function') {
+      try {
+        window.NexusRenderAll();
+        window.NexusDeferredRenderRequested = false;
+      } catch (error) {
+        console.error('Nexus workspace rendering failed after startup.', error);
+        showNotice('Nexus loaded, but the workspace could not finish rendering. Keep your local data intact and reload the app.', true);
+      }
+    } else {
+      console.error('Nexus startup completed without registering the workspace renderer.');
+      showNotice('Nexus could not initialize the workspace renderer. Keep your local data intact and reload the app.', true);
+    }
+
+    const consistencyTarget = document.getElementById('homeConsistencySummary');
+    if (consistencyTarget) {
+      const consistencyRenderer = window.NexusRefreshHomeConsistencySummary;
+      if (typeof consistencyRenderer !== 'function') {
+        console.error('Nexus Study Hub did not register the Overview consistency renderer.');
+        consistencyTarget.innerHTML = '<div class="analytics-render-error" role="alert"><strong>Consistency insights could not be initialized.</strong><p>The Study Hub renderer did not start. Reload Nexus and check the browser console if the issue continues.</p></div>';
+      } else if (document.getElementById('view-overview')?.classList.contains('active') &&
+        (!consistencyTarget.childElementCount || consistencyTarget.querySelector('.consistency-loading'))) {
+        try {
+          consistencyRenderer();
+        } catch (error) {
+          console.error('Nexus Overview consistency summary failed during startup.', error);
+        }
+        if (!consistencyTarget.childElementCount || consistencyTarget.querySelector('.consistency-loading')) {
+          consistencyTarget.innerHTML = '<div class="analytics-render-error" role="alert"><strong>Consistency insights could not be rendered.</strong><p>Your saved workspace has not been changed. Reload Nexus and report the issue if it continues.</p></div>';
+        }
+      }
     }
 
     if (!durableStorage) {
