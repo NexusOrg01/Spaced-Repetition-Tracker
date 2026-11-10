@@ -147,11 +147,11 @@ assert.ok(appCore.includes('function startUndoReview(text,topic,reviewId)') &&
   appCore.includes("undoState={kind:'state-reference',value:state,streams:state.streams,subjects:state.subjects,topics:state.topics,history:state.history,settings:clone(state.settings)}") && appCore.includes('state.topics=pending.topics;state.history=pending.history;'),
   'single-review and bulk-delete Undo must not deep-clone the full workspace');
 assert.ok(appCore.includes('function startUndoTopicEdit(text,topic)') && appCore.includes('function startUndoTopicAdd(text,topicId)') &&
-  appCore.includes('function startUndoHistoryChange(text)') && appCore.includes('function startUndoWorkspaceReplace(text)') &&
-  appCore.includes("startUndoBulkDelete('Topic deleted.')") &&
+  appCore.includes('function startUndoHistoryChange(text,options={})') && appCore.includes('function startUndoWorkspaceReplace(text)') &&
+  appCore.includes("startUndoBulkDelete('Topic deleted.',{silent:true})") &&
   appCore.includes("startUndoTopicEdit('Topic updated.',topic)") &&
   appCore.includes("startUndoTopicAdd('Topic added.',newTopic.id)") &&
-  appCore.includes("startUndoHistoryChange('History entry deleted.')") &&
+  appCore.includes("startUndoHistoryChange('History entry deleted.',{silent:true})") &&
   appCore.includes("startUndoHistoryChange('History cleared.')") &&
   appCore.includes("startUndoWorkspaceReplace('Backup imported.')") &&
   appCore.includes("startUndoWorkspaceReplace('Tracker reset.')"),
