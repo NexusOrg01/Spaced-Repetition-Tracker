@@ -946,7 +946,7 @@
           stateSnapshot=compatibility.state;
           featureSnapshot=compatibility.featureState;
         }
-        const result=await migrateWorkspaceEntities(owner,stateSnapshot,featureSnapshot,{expectedRevision:revision});
+        const result=await migrateWorkspaceEntities(owner,stateSnapshot,featureSnapshot,{expectedRevision:sourceRevision});
         entitySyncError=null;entitySyncLastSuccessAt=timestamp();
         return {...result,mode:'snapshot-backfill'};
       }
