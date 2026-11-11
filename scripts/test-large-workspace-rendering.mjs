@@ -309,7 +309,7 @@ const consistencySandbox={
   console:{error(){rendererErrors++;}}
 };
 vm.createContext(consistencySandbox);
-vm.runInContext(consistencySource,consistencySandbox,{filename:'home-consistency-runtime.js'});
+vm.runInContext(consistencySource+'\\nthis.getCachedHomeMetrics=()=>homeConsistencyMetricsCache;',consistencySandbox,{filename:'home-consistency-runtime.js'});
 consistencySandbox.renderHomeConsistencySummary();
 assert.ok(overviewTarget.innerHTML.includes('19286 of 77144 active topics'),'renderer must use the active-topic count it calculated, not an undefined variable');
 assert.ok(overviewTarget.innerHTML.includes('Review activity heatmap'),'the Overview renderer must populate the heatmap');
@@ -318,7 +318,7 @@ assert.equal((overviewTarget.innerHTML.match(/class="hub-heat"/g)||[]).length,36
 for(const days of [7,30,84,180,365]){
   consistencySandbox.fsState.heatmapPeriod=days;
   consistencySandbox.renderHomeConsistencySummary();
-  assert.equal(consistencySandbox.window.NexusGetOverviewTopicMetrics().heat.length,days,
+  assert.equal(consistencySandbox.getCachedHomeMetrics().value.heat.length,days,
     'the '+days+'-day heatmap option must produce the exact requested number of cells');
   assert.equal((overviewTarget.innerHTML.match(/class="hub-heat"/g)||[]).length,days,
     'the '+days+'-day heatmap renderer must populate every requested cell');
@@ -340,12 +340,12 @@ consistencySandbox.renderHomeConsistencySummary();
 assert.equal(topicVisits,firstTopicVisits,'changing the heatmap window must reuse topic-level aggregates');
 assert.equal(logVisits,firstLogVisits,'changing the heatmap window must reuse the weekly study-time aggregate');
 assert.equal(topicArrayPasses,1,'changing the heatmap window must not rescan the topic catalogue');
-assert.equal(consistencySandbox.window.NexusGetOverviewTopicMetrics().heat.length,7,'the revised heatmap window must still render the requested day count');
+assert.equal(consistencySandbox.getCachedHomeMetrics().value.heat.length,7,'the revised heatmap window must still render the requested day count');
 consistencySandbox.fsState.heatmapPeriod=365;
 consistencySandbox.renderHomeConsistencySummary();
 consistencySandbox.fsState.analyticsPeriod='year';
 consistencySandbox.renderHomeConsistencySummary();
-const yearMetrics=consistencySandbox.window.NexusGetOverviewTopicMetrics();
+const yearMetrics=consistencySandbox.getCachedHomeMetrics().value;
 assert.equal(yearMetrics.rangeDays,365,'analytics range changes must refresh the date summary');
 assert.equal(topicArrayPasses,1,'changing the analytics range must reuse topic aggregates');
 assert.equal(logVisits,firstLogVisits,'changing the analytics range must reuse weekly study-time totals');
