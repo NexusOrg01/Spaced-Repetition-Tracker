@@ -457,12 +457,24 @@
   function entityOutboxKey(ownerId,sequence){
     return entityOutboxPrefix(ownerId)+'seq:'+String(sequence).padStart(16,'0');
   }
+  function entityOperationSequenceKey(ownerId,sequence,operationId){
+    return entityOutboxPrefix(ownerId)+'opseq:'+String(sequence).padStart(16,'0')+':'+encodeURIComponent(operationId);
+  }
   function entityOutboxSequenceRange(ownerId,afterSequence){
     const factory=root&&root.IDBKeyRange;
     if(!factory||typeof factory.bound!=='function')return null;
     const prefix=entityOutboxPrefix(ownerId)+'seq:';
     try{
       return factory.bound(prefix+String(afterSequence+1).padStart(16,'0'),prefix+String.fromCharCode(65535));
+    }catch(_){return null;}
+  }
+  function entityOutboxThroughRange(ownerId,kind,throughSequence){
+    const factory=root&&root.IDBKeyRange;
+    if(!factory||typeof factory.bound!=='function')return null;
+    const prefix=entityOutboxPrefix(ownerId)+kind+':';
+    try{
+      return factory.bound(prefix+'0000000000000001',
+        prefix+String(throughSequence).padStart(16,'0')+String.fromCharCode(65535));
     }catch(_){return null;}
   }
   function entityPrefixRange(prefix){
@@ -644,15 +656,28 @@
       const request=tx.objectStore(WORKSPACES).getAll(entityPrefixRange(prefix));
       request.onsuccess=()=>set(request.result||[]);
     });
-    const activeRows=rows.filter(row=>row&&row.entityRow===true&&row.ownerId===owner&&row.generation===manifest.activeGeneration);
-    if(Number.isSafeInteger(Number(manifest.rowCount))&&activeRows.length!==Number(manifest.rowCount))return null;
-    const trackerRoot=activeRows.find(row=>row.collection==='_meta'&&row.entityId==='tracker');
-    const featureRoot=activeRows.find(row=>row.collection==='_meta'&&row.entityId==='features');
+    // Partition the active generation in one pass. Re-filtering the full row set
+    // once per collection multiplied hydration work on large workspaces.
+    const collections=TRACKER_ENTITY_COLLECTIONS.concat(FEATURE_ENTITY_COLLECTIONS);
+    const grouped=new Map(collections.map(collection=>[collection,[]]));
+    let activeRowCount=0,trackerRoot=null,featureRoot=null;
+    for(const row of rows){
+      if(!row||row.entityRow!==true||row.ownerId!==owner||row.generation!==manifest.activeGeneration)continue;
+      activeRowCount++;
+      if(row.collection==='_meta'){
+        if(row.entityId==='tracker')trackerRoot=row;
+        else if(row.entityId==='features')featureRoot=row;
+        continue;
+      }
+      const bucket=grouped.get(row.collection);
+      if(bucket)bucket.push(row);
+    }
+    if(Number.isSafeInteger(Number(manifest.rowCount))&&activeRowCount!==Number(manifest.rowCount))return null;
     if(!trackerRoot||!featureRoot||!trackerRoot.value||!featureRoot.value)return null;
     const stateSnapshot={...trackerRoot.value},featureSnapshot={...featureRoot.value};
-    for(const collection of TRACKER_ENTITY_COLLECTIONS.concat(FEATURE_ENTITY_COLLECTIONS)){
+    for(const collection of collections){
       const target=TRACKER_ENTITY_COLLECTIONS.includes(collection)?stateSnapshot:featureSnapshot;
-      target[collection]=activeRows.filter(row=>row.collection===collection)
+      target[collection]=grouped.get(collection)
         .sort((a,b)=>a.position-b.position).map(row=>row.value);
     }
     return {ownerId:owner,generation:manifest.activeGeneration,state:stateSnapshot,
@@ -726,6 +751,10 @@
         meta.put({key:sequenceKey,ownerId:owner,value:next,updatedAt:timestamp()});
         outbox.put({key:markerKey,ownerId:owner,kind:'operation-marker',operationId,
           firstSequence,lastSequence:next,count:normalized.length,createdAt:timestamp()});
+        // Index the idempotency marker by its final sequence so acknowledgement
+        // can remove only markers covered by the confirmed page.
+        outbox.put({key:entityOperationSequenceKey(owner,next,operationId),ownerId,
+          kind:'operation-marker-sequence',operationId,lastSequence:next,createdAt:timestamp()});
         set({ownerId,operationId,replayed:false,firstSequence,lastSequence:next,count:normalized.length});
       };
       const startChanges=()=>{
@@ -775,19 +804,42 @@
     return sequenceRange?matching:matching.sort((a,b)=>a.sequence-b.sequence).slice(0,size);
   }
   async function acknowledgeWorkspaceEntityOutbox(ownerId,throughSequence){
-    const owner=entityOwnerKey(ownerId),through=Math.max(0,Number(throughSequence)||0);
-    if(!enabled||!database||committedOwnerId!==owner)return 0;
-    const prefix=entityOutboxPrefix(owner);
+    const owner=entityOwnerKey(ownerId),
+      through=Math.min(Number.MAX_SAFE_INTEGER,Math.max(0,Math.floor(Number(throughSequence)||0)));
+    if(!enabled||!database||committedOwnerId!==owner||through===0)return 0;
+    const prefix=entityOutboxPrefix(owner),
+      sequenceRange=entityOutboxThroughRange(owner,'seq',through),
+      markerRange=entityOutboxThroughRange(owner,'opseq',through);
     return transaction(['outbox'],'readwrite',(tx,set)=>{
-      const store=tx.objectStore('outbox'),request=store.getAll(entityPrefixRange(prefix));
-      request.onsuccess=()=>{
-        const all=request.result||[];
-        const rows=all.filter(row=>row&&row.ownerId===owner&&row.kind==='change'&&Number(row.sequence)<=through);
-        const markers=all.filter(row=>row&&row.ownerId===owner&&row.kind==='operation-marker'&&
-          Number(row.lastSequence)<=through);
-        for(const row of rows.concat(markers))store.delete(row.key);
+      const store=tx.objectStore('outbox');
+      const removeAcknowledged=(sequenceRows,markerRows)=>{
+        const rows=sequenceRows.filter(row=>row&&row.ownerId===owner&&row.kind==='change'&&Number(row.sequence)<=through);
+        const markers=markerRows.filter(row=>row&&row.ownerId===owner&&
+          row.kind==='operation-marker-sequence'&&Number(row.lastSequence)<=through);
+        for(const row of rows)store.delete(row.key);
+        for(const marker of markers){
+          store.delete(marker.key);
+          store.delete(entityOperationKey(owner,marker.operationId));
+        }
         set(rows.length);
       };
+      if(!sequenceRange||!markerRange){
+        const request=store.getAll(entityPrefixRange(prefix));
+        request.onsuccess=()=>{
+          const all=request.result||[];
+          removeAcknowledged(all,all);
+        };
+        return;
+      }
+      const sequenceRequest=store.getAll(sequenceRange);
+      const markerRequest=store.getAll(markerRange);
+      const values={sequences:null,markers:null};
+      const finish=()=>{
+        if(!values.sequences||!values.markers)return;
+        removeAcknowledged(values.sequences,values.markers);
+      };
+      sequenceRequest.onsuccess=()=>{values.sequences=sequenceRequest.result||[];finish();};
+      markerRequest.onsuccess=()=>{values.markers=markerRequest.result||[];finish();};
     });
   }
   function restoreNativeProperty() {
