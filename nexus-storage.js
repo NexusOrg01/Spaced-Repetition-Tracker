@@ -580,7 +580,7 @@
   }
   async function readWorkspaceEntities(ownerId){
     const owner=entityOwnerKey(ownerId);
-    if(!enabled||!database)return null;
+    if(!enabled||!database||committedOwnerId!==owner)return null;
     const manifestKey=entityManifestKey(owner);
     const manifest=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
       const request=tx.objectStore('migrationMeta').get(manifestKey);
@@ -706,7 +706,7 @@
   }
   async function readWorkspaceEntityOutbox(ownerId,afterSequence=0,limit=100){
     const owner=entityOwnerKey(ownerId),after=Math.max(0,Number(afterSequence)||0),size=Math.max(1,Math.min(1000,Number(limit)||100));
-    if(!enabled||!database)return [];
+    if(!enabled||!database||committedOwnerId!==owner)return [];
     const rows=await transaction(['outbox'],'readonly',(tx,set)=>{
       const request=tx.objectStore('outbox').getAll();
       request.onsuccess=()=>set(request.result||[]);
@@ -716,7 +716,7 @@
   }
   async function acknowledgeWorkspaceEntityOutbox(ownerId,throughSequence){
     const owner=entityOwnerKey(ownerId),through=Math.max(0,Number(throughSequence)||0);
-    if(!enabled||!database)return 0;
+    if(!enabled||!database||committedOwnerId!==owner)return 0;
     return transaction(['outbox'],'readwrite',(tx,set)=>{
       const store=tx.objectStore('outbox'),request=store.getAll();
       request.onsuccess=()=>{
