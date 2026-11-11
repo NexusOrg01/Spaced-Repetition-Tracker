@@ -63,7 +63,7 @@
     'Economics':'ආර්ථික විද්‍යාව','ECON':'ආර්ථික විද්‍යාව'
   };
   const RATING_LABELS = {1:'Again',2:'Hard',3:'Good',4:'Very good',5:'Easy'};
-  let state, undoState=null, undoTimer=null, toastTimer=null, undoSilent=false, editTopicId=null, reviewTopicId=null, selectedReviewRating=null, editStreamId=null, editSubjectId=null, editExamId=null, installPrompt=window.NexusInstallPrompt||null, topicVisibleLimit=100, historyVisibleLimit=100, historyInsightsDirty=true, historyMetricsCache=null,historyMetricsRevision=0,historyMetricsBuildSequence=0;
+  let state, undoState=null, undoTimer=null, toastTimer=null, undoSilent=false, editTopicId=null, reviewTopicId=null, selectedReviewRating=null, editStreamId=null, editSubjectId=null, editExamId=null, installPrompt=window.NexusInstallPrompt||null, topicVisibleLimit=100, historyVisibleLimit=100, historyInsightsDirty=true, historyMetricsCache=null,historyMetricsRevision=0,historyMetricsBuildSequence=0,historyMetricsObservedSource=state.history,historyMetricsObservedLength=state.history.length;
   const UNDO_TIMEOUT_MS=15000;
   let activeDeleteDiagnostic=null;
   const DELETE_DIAGNOSTIC_STORAGE_KEY='nexus:last-delete-diagnostic';
@@ -316,8 +316,12 @@
   let storageSaveRevision=0;
   function save(){
     try{
-      historyMetricsRevision++;
-      historyMetricsBuildSequence++;
+      if(state.history!==historyMetricsObservedSource||state.history.length!==historyMetricsObservedLength){
+        historyMetricsRevision++;
+        historyMetricsBuildSequence++;
+        historyMetricsObservedSource=state.history;
+        historyMetricsObservedLength=state.history.length;
+      }
       window.NexusInvalidateHomeConsistencyCache?.();
       window.NexusInvalidatePlannerCache?.();
       markDeleteDiagnosticPhase('save:feature-state-snapshot');
@@ -622,7 +626,7 @@
     if(cache&&cache.source===entries&&cache.revision===historyMetricsRevision){
       if(cache.length===entries.length)return cache;
       if(entries.length===cache.length+1&&entries[1]===cache.firstRecord){
-        addHistoryMetricRecord(cache,entries[0]);cache.length=entries.length;cache.firstRecord=entries[0];return cache;
+        addHistoryMetricRecord(cache,entries[0]);cache.length=entries.length;cache.firstRecord=entries[0];cache.revision=historyMetricsRevision;return cache;
       }
     }
     historyMetricsCache=buildHistoryMetrics(entries);
