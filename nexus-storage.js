@@ -604,6 +604,11 @@
     });
     await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
       tx.objectStore('migrationMeta').put({
+        // Retain the prior generation's integrity metadata (rowCount, counts,
+        // positionBounds, sourceRevision, and formatVersion) while staging a
+        // replacement. A failed migration must not weaken validation of the active
+        // generation or make subsequent deltas restart from an empty row count.
+        ...(previous||{}),
         key:manifestKey,ownerId:owner,
         // Keep the previously published generation readable while a replacement is
         // assembled. "building" is reserved for a first migration with no active

@@ -595,8 +595,11 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   await assert.rejects(loaded.api.migrateWorkspaceEntities('entity-owner-a',duplicateIdState,resumedWorkspace.featureState,
     {expectedRevision:loaded.api.getStatus().revision}),/duplicate stable record ID/,
     'entity migration must reject duplicate IDs rather than create records that later updates cannot address');
-  assert.equal((await loaded.api.readWorkspaceEntities('entity-owner-a')).generation,resumedMigration.generation,
+  const afterDuplicateIdFailure=await loaded.api.readWorkspaceEntities('entity-owner-a');
+  assert.equal(afterDuplicateIdFailure.generation,resumedMigration.generation,
     'a duplicate-ID migration must leave the previous complete generation active');
+  assert.equal(afterDuplicateIdFailure.rowCount,412,
+    'a failed replacement must preserve the prior generation row-count integrity metadata');
   const missingIdState={
     ...resumedWorkspace.state,
     topics:resumedWorkspace.state.topics.map((topic,index)=>index===0?{...topic,id:''}:topic)
@@ -604,8 +607,11 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   await assert.rejects(loaded.api.migrateWorkspaceEntities('entity-owner-a',missingIdState,resumedWorkspace.featureState,
     {expectedRevision:loaded.api.getStatus().revision}),/stable record ID/,
     'entity migration must reject records without stable IDs');
-  assert.equal((await loaded.api.readWorkspaceEntities('entity-owner-a')).generation,resumedMigration.generation,
+  const afterMissingIdFailure=await loaded.api.readWorkspaceEntities('entity-owner-a');
+  assert.equal(afterMissingIdFailure.generation,resumedMigration.generation,
     'a missing-ID migration must leave the previous complete generation active');
+  assert.equal(afterMissingIdFailure.rowCount,412,
+    'a failed migration with a missing ID must preserve the previous generation row count');
 
   // Existing entity rows/outbox entries remain physically stored but must be
   // inaccessible while another account is the committed local owner.
@@ -645,8 +651,6 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   // The application integration commits its compatibility snapshot first, then
   // mirrors only changed rows and both metadata roots into the entity generation.
   const currentA=await loaded.api.readWorkspaceEntities('entity-owner-a');
-  const entityDb= idb.databases.get('nexus-workspace-v1');
-  const manifestBeforeIncremental=clone(entityDb.stores.get('migrationMeta').get('workspace-entities:entity-owner-a'));
   const appendedTopic={id:'topic-incremental-append',subjectId:'subject-1',name:'Incrementally appended topic',reviewCount:0};
   const prependedReview={id:'review-incremental-prepend',topicId:'topic-1',reviewedAt:'2026-11-11',rating:5};
   const appendedPaper={id:'paper-incremental-append',name:'Incrementally saved paper'};
@@ -678,23 +682,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'a ready entity generation must accept a delta rather than replacing the full generation');
   assert.equal(incremental.applied,5,'a delta must include changed records and both metadata roots');
   const incrementallyRestored=await loaded.api.readWorkspaceEntities('entity-owner-a');
-  if(!incrementallyRestored){
-    const db=idb.databases.get('nexus-workspace-v1');
-    const manifest=db.stores.get('migrationMeta').get('workspace-entities:entity-owner-a');
-    const activeRows=Array.from(db.stores.get('workspaces').values()).filter(row=>
-      row&&row.entityRow===true&&row.ownerId==='entity-owner-a'&&
-      row.generation===manifest?.activeGeneration);
-    const details={beforeManifestRowCount:manifestBeforeIncremental?.rowCount,
-      beforeGeneration:manifestBeforeIncremental?.activeGeneration,
-      beforeStatus:manifestBeforeIncremental?.status,
-      afterStatus:manifest?.status,activeGeneration:manifest?.activeGeneration,
-      manifestRowCount:manifest?.rowCount,actualActiveRows:activeRows.length,
-      incrementalResult:incremental,
-      hasTrackerRoot:activeRows.some(row=>row.collection==='_meta'&&row.entityId==='tracker'),
-      hasFeatureRoot:activeRows.some(row=>row.collection==='_meta'&&row.entityId==='features'),
-      sampleActiveRows:activeRows.slice(0,3).map(row=>({collection:row.collection,id:row.entityId,position:row.position}))};
-    throw new Error('Incremental entity read returned null: '+JSON.stringify(details));
-  }
+  assert.ok(incrementallyRestored,
+    'incremental updates must preserve the complete entity generation and its integrity metadata');
   assert.deepEqual(incrementallyRestored.state.topics.map(row=>row.id).slice(-1),[appendedTopic.id],
     'append positions must keep new tracker records at the end without rewriting existing rows');
   assert.equal(incrementallyRestored.state.history[0].id,prependedReview.id,
