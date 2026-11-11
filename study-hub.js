@@ -1870,6 +1870,7 @@
       {key:window.NexusStorageKey,value:JSON.stringify(nextState)}
     ],{state:nextState,featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}},{returnOperationPayload:false});
     state=nextState;
+    await window.NexusRebuildEntityProjection?.();
     const saveStatus=$('saveStatus');
     if(saveStatus){saveStatus.textContent='Saved on this device';saveStatus.style.color='';}
     if(window.NexusCloudSync)window.NexusCloudSync.schedule();
@@ -1937,6 +1938,7 @@
       committed=true;
       state=nextState;
       fsState=nextFeatures;
+      await window.NexusRebuildEntityProjection?.();
       if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(nextFeatures.fsrsSettings,{syncFeature:false,persist:false});
       focusGoalCacheKey='';
       focusStart=fsState.focusStartedAt?new Date(fsState.focusStartedAt).getTime():null;
@@ -2211,6 +2213,7 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
       if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function')await storage.flush();
       OLD_KEYS.forEach(k=>localStorage.removeItem(k));
       if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function')await storage.flush();
+      await window.NexusRebuildEntityProjection?.();
       if(window.NexusCloudSync)window.NexusCloudSync.schedule();
       renderAll();renderHub();
       notify('Tracker and Study Hub data reset. If signed in, check cloud sync status before using another device.');
