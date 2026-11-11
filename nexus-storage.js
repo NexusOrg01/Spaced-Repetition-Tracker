@@ -587,6 +587,7 @@
       request.onsuccess=()=>set(request.result||[]);
     });
     const activeRows=rows.filter(row=>row&&row.entityRow===true&&row.ownerId===owner&&row.generation===manifest.activeGeneration);
+    if(Number.isSafeInteger(Number(manifest.rowCount))&&activeRows.length!==Number(manifest.rowCount))return null;
     const trackerRoot=activeRows.find(row=>row.collection==='_meta'&&row.entityId==='tracker');
     const featureRoot=activeRows.find(row=>row.collection==='_meta'&&row.entityId==='features');
     if(!trackerRoot||!featureRoot||!trackerRoot.value||!featureRoot.value)return null;
@@ -604,6 +605,7 @@
     if(!enabled||!database)throw new Error('IndexedDB must be enabled before incremental entity writes can run.');
     if(committedOwnerId!==owner)throw new Error('The active account does not match the requested entity write owner.');
     if(!Array.isArray(changes)||!changes.length||changes.length>1000)throw new Error('Provide between 1 and 1,000 entity changes.');
+    const changeIdentitySet=new Set();
     const normalized=changes.map(change=>{
       if(!change||!ALL_ENTITY_COLLECTIONS.has(change.collection)||
          typeof change.id!=='string'||!change.id||change.id.length>512||
@@ -612,6 +614,9 @@
       }
       if(change.operation==='put'&&(!Object.prototype.hasOwnProperty.call(change,'value')||
          change.value===undefined))throw new Error('A put operation requires a record value.');
+      const identity=change.collection+'\\u0000'+change.id;
+      if(changeIdentitySet.has(identity))throw new Error('An entity operation cannot change the same record more than once.');
+      changeIdentitySet.add(identity);
       return {collection:change.collection,id:change.id,operation:change.operation,
         value:change.value,position:Number.isSafeInteger(change.position)&&change.position>=0?change.position:null};
     });
@@ -706,9 +711,11 @@
     return transaction(['outbox'],'readwrite',(tx,set)=>{
       const store=tx.objectStore('outbox'),request=store.getAll();
       request.onsuccess=()=>{
-        const rows=(request.result||[]).filter(row=>row&&row.ownerId===owner&&
-          row.kind==='change'&&Number(row.sequence)<=through);
-        for(const row of rows)store.delete(row.key);
+        const all=request.result||[];
+        const rows=all.filter(row=>row&&row.ownerId===owner&&row.kind==='change'&&Number(row.sequence)<=through);
+        const markers=all.filter(row=>row&&row.ownerId===owner&&row.kind==='operation-marker'&&
+          Number(row.lastSequence)<=through);
+        for(const row of rows.concat(markers))store.delete(row.key);
         set(rows.length);
       };
     });
