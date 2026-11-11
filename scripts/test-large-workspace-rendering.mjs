@@ -482,7 +482,7 @@ const asyncHistoryRows=Array.from({length:48000},(_,index)=>({
 let asyncHistoryYields=0;
 const asyncHistorySandbox={
   window:{},state:{history:asyncHistoryRows},
-  validDate:value=>/^\\d{4}-\\d{2}-\\d{2}$/.test(String(value||'')),
+  validDate:value=>/^\d{4}-\d{2}-\d{2}$/.test(String(value||'')),
   setTimeout(callback){asyncHistoryYields++;return setTimeout(callback,0);}
 };
 vm.createContext(asyncHistorySandbox);
@@ -499,7 +499,7 @@ assert.equal(asyncHistorySandbox.window.NexusGetCachedHistoryActivityIndex(),pre
 let asyncMetricYields=0,asyncMetricRenders=0,asyncTopicVisits=0,asyncLogVisits=0;
 const asyncTrackedTopics=new Proxy(fixtureTopics,{
   get(target,property,receiver){
-    if(typeof property==='string'&&/^\\d+$/.test(property))asyncTopicVisits++;
+    if(typeof property==='string'&&/^\d+$/.test(property))asyncTopicVisits++;
     return Reflect.get(target,property,receiver);
   }
 });
@@ -515,7 +515,7 @@ const asyncMetricSandbox={
   today:()=>fixtureToday,
   dateShift:(date,days)=>{const d=new Date(date+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+days);return d.toISOString().slice(0,10);},
   dayDiff:(from,to)=>Math.round((Date.parse(to+'T12:00:00Z')-Date.parse(from+'T12:00:00Z'))/86400000),
-  safeDate:value=>/^\\d{4}-\\d{2}-\\d{2}$/.test(String(value||'')),
+  safeDate:value=>/^\d{4}-\d{2}-\d{2}$/.test(String(value||'')),
   fNum:value=>Number.isFinite(Number(value))?Number(value):0,
   naturalCompare:(a,b)=>String(a??'').localeCompare(String(b??''),undefined,{numeric:true,sensitivity:'base'}),
   status:topic=>topic.dueDate?'upcoming':'new',
