@@ -703,26 +703,55 @@
     // A partially applied delta must never be exposed as a complete workspace.
     if(!manifest||manifest.status!=='ready'||!manifest.activeGeneration)return null;
     const prefix=entityRecordPrefix(owner,manifest.activeGeneration);
-    const rows=await transaction([WORKSPACES],'readonly',(tx,set)=>{
-      const request=tx.objectStore(WORKSPACES).getAll(entityPrefixRange(prefix));
-      request.onsuccess=()=>set(request.result||[]);
-    });
-    // Partition the active generation in one pass. Re-filtering the full row set
-    // once per collection multiplied hydration work on large workspaces.
+    const upper=prefix+'\\uffff';
+    const keyRangeFactory=root&&root.IDBKeyRange;
+    const supportsRanges=!!(keyRangeFactory&&typeof keyRangeFactory.bound==='function');
     const collections=TRACKER_ENTITY_COLLECTIONS.concat(FEATURE_ENTITY_COLLECTIONS);
-    const grouped=new Map(collections.map(collection=>[collection,rows.slice(0,0)]));
+    const grouped=new Map(collections.map(collection=>[collection,[]]));
     let activeRowCount=0,trackerRoot=null,featureRoot=null;
-    for(const row of rows){
-      if(!row||row.entityRow!==true||row.ownerId!==owner||row.generation!==manifest.activeGeneration)continue;
-      activeRowCount++;
-      if(row.collection==='_meta'){
-        if(row.entityId==='tracker')trackerRoot=row;
-        else if(row.entityId==='features')featureRoot=row;
-        continue;
+    let afterKey=null;
+    // A cursor page is deliberately capped before rows enter JavaScript. The old
+    // getAll(range) call materialised every IndexedDB wrapper row at once, adding a
+    // second 149k-object working set on top of the actual application records.
+    // Separate read transactions keep each temporary page bounded and let the UI
+    // process input between pages. The application still receives complete arrays.
+    while(true){
+      if(!enabled||committedOwnerId!==owner)return null;
+      const range=supportsRanges
+        ?keyRangeFactory.bound(afterKey?afterKey+'\\u0000':prefix,upper)
+        :entityPrefixRange(prefix);
+      const page=await transaction([WORKSPACES],'readonly',(tx,set)=>{
+        const request=tx.objectStore(WORKSPACES).getAll(range,supportsRanges?ENTITY_BATCH_SIZE:undefined);
+        request.onsuccess=()=>set(request.result||[]);
+      });
+      for(const row of page){
+        if(!row||row.entityRow!==true||row.ownerId!==owner||row.generation!==manifest.activeGeneration)continue;
+        activeRowCount++;
+        if(row.collection==='_meta'){
+          if(row.entityId==='tracker'){
+            if(trackerRoot)return null;
+            trackerRoot=row;
+          }else if(row.entityId==='features'){
+            if(featureRoot)return null;
+            featureRoot=row;
+          }
+          continue;
+        }
+        const bucket=grouped.get(row.collection);
+        if(bucket)bucket.push(row);
       }
-      const bucket=grouped.get(row.collection);
-      if(bucket)bucket.push(row);
+      if(!supportsRanges||page.length<ENTITY_BATCH_SIZE)break;
+      afterKey=page[page.length-1]&&page[page.length-1].key;
+      if(typeof afterKey!=='string'||!afterKey.startsWith(prefix))return null;
+      await new Promise(resolve=>root.setTimeout(resolve,0));
     }
+    if(!enabled||committedOwnerId!==owner)return null;
+    // A concurrent rebuild/replacement may publish while pages are being read.
+    // Re-check the manifest so a mixed-generation result is never returned.
+    const finalManifest=await readEntityManifest(owner);
+    if(!finalManifest||finalManifest.status!=='ready'||
+       finalManifest.activeGeneration!==manifest.activeGeneration||
+       finalManifest.rowCount!==manifest.rowCount)return null;
     if(Number.isSafeInteger(Number(manifest.rowCount))&&activeRowCount!==Number(manifest.rowCount))return null;
     if(!trackerRoot||!featureRoot||!trackerRoot.value||!featureRoot.value)return null;
     const stateSnapshot={...trackerRoot.value},featureSnapshot={...featureRoot.value};
