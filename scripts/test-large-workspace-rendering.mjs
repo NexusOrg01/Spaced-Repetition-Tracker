@@ -253,7 +253,7 @@ const historyMetricsSandbox={
   validDate:value=>/^\d{4}-\d{2}-\d{2}$/.test(String(value||''))
 };
 vm.createContext(historyMetricsSandbox);
-vm.runInContext('let historyMetricsCache=null;\n'+appCore.slice(historyMetricsStart,historyMetricsEnd),historyMetricsSandbox,{filename:'shared-history-index.js'});
+vm.runInContext('let historyMetricsCache=null,historyMetricsRevision=0,historyMetricsBuildSequence=0;\n'+appCore.slice(historyMetricsStart,historyMetricsEnd),historyMetricsSandbox,{filename:'shared-history-index.js'});
 const sharedIndex=historyMetricsSandbox.window.NexusGetHistoryActivityIndex();
 assert.equal(sharedIndex.byDate.get('2026-11-10'),2,'shared history index must aggregate daily review counts');
 assert.equal(sharedIndex.byDate.get('2026-11-09'),1);
@@ -265,7 +265,7 @@ assert.equal(incrementedIndex.byDate.get('2026-11-10'),3,'a newly prepended revi
 assert.equal(incrementedIndex.byTopic.get('t1').count,4,'a newly prepended review must update the shared topic index');
 assert.equal(incrementedIndex.byTopic.get('t1').recent[0].id,'r1','same-day prepends preserve stable order for existing history rows');
 
-const consistencyStart=studyHub.indexOf('  let homeConsistencyMetricsCache=null,homeTopicMetricsCache=null,homeStudyLogMetricsCache=null;');
+const consistencyStart=studyHub.indexOf('  let homeConsistencyMetricsCache=null,homeTopicMetricsCache=null,homeStudyLogMetricsCache=null,homeMetricsBuildGeneration=0,homeMetricsBuildPromise=null;');
 const consistencyEnd=studyHub.indexOf('  window.NexusRefreshHomeConsistencySummary=renderHomeConsistencySummary;',consistencyStart);
 assert.ok(consistencyStart>=0&&consistencyEnd>consistencyStart,'shared Overview metrics and full renderer must be independently testable');
 const consistencySource=studyHub.slice(consistencyStart,consistencyEnd);
