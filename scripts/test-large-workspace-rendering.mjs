@@ -473,6 +473,101 @@ assert.equal((overviewTarget.innerHTML.match(/data-count="0"/g)||[]).length,365,
   'empty history must render zero activity for every heatmap day');
 assert.equal(rendererErrors,1,'empty history must not introduce another renderer failure');
 
+// The production cold-start path must build history, topic, and study-log
+// aggregates cooperatively before either Overview or Study Hub reads them.
+const asyncHistoryRows=Array.from({length:48000},(_,index)=>({
+  id:'async-review-'+index,topicId:'async-topic-'+(index%77144),
+  reviewedAt:index%2?'2026-11-09':'2026-11-10',rating:(index%5)+1
+}));
+let asyncHistoryYields=0;
+const asyncHistorySandbox={
+  window:{},state:{history:asyncHistoryRows},
+  validDate:value=>/^\\d{4}-\\d{2}-\\d{2}$/.test(String(value||'')),
+  setTimeout(callback){asyncHistoryYields++;return setTimeout(callback,0);}
+};
+vm.createContext(asyncHistorySandbox);
+vm.runInContext('let historyMetricsCache=null,historyMetricsRevision=0,historyMetricsBuildSequence=0;\\n'+
+  appCore.slice(historyMetricsStart,historyMetricsEnd),asyncHistorySandbox,{filename:'cooperative-history-index.js'});
+const preparedHistoryIndex=await asyncHistorySandbox.window.NexusPrepareHistoryActivityIndex();
+assert.equal(preparedHistoryIndex.length,48000,'cooperative history preparation must index every history record');
+assert.equal(preparedHistoryIndex.byDate.get('2026-11-10'),24000,'cooperative history preparation must retain exact daily counts');
+assert.ok(preparedHistoryIndex.byTopic.size>0,'cooperative history preparation must build per-topic review statistics');
+assert.ok(asyncHistoryYields>=Math.ceil(48000/400)-1,'history preparation must yield between bounded 400-record batches');
+assert.equal(asyncHistorySandbox.window.NexusGetCachedHistoryActivityIndex(),preparedHistoryIndex,
+  'a prepared history index must be reusable without rebuilding');
+
+let asyncMetricYields=0,asyncMetricRenders=0,asyncTopicVisits=0,asyncLogVisits=0;
+const asyncMetricSandbox={
+  window:{
+    NexusGetCachedHistoryActivityIndex:()=>fixtureIndex,
+    NexusPrepareHistoryActivityIndex:async()=>fixtureIndex,
+    NexusRenderAll:()=>{asyncMetricRenders++;}
+  },
+  document:{addEventListener(){},querySelector:()=>({id:'view-overview'})},
+  state:{topics:fixtureTopics,history:fixtureHistory},
+  fsState:{studyLogs:fixtureLogs,settings:{dailyMinutes:90,finalRevision:false}},
+  today:()=>fixtureToday,
+  dateShift:(date,days)=>{const d=new Date(date+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+days);return d.toISOString().slice(0,10);},
+  dayDiff:(from,to)=>Math.round((Date.parse(to+'T12:00:00Z')-Date.parse(from+'T12:00:00Z'))/86400000),
+  safeDate:value=>/^\\d{4}-\\d{2}-\\d{2}$/.test(String(value||'')),
+  fNum:value=>Number.isFinite(Number(value))?Number(value):0,
+  naturalCompare:(a,b)=>String(a??'').localeCompare(String(b??''),undefined,{numeric:true,sensitivity:'base'}),
+  status:topic=>topic.dueDate?'upcoming':'new',
+  studyLogMinutes:log=>{asyncLogVisits++;return Number(log.minutes)||0;},
+  console,
+  setTimeout(callback){asyncMetricYields++;return setTimeout(callback,0);}
+};
+vm.createContext(asyncMetricSandbox);
+vm.runInContext(consistencySource,asyncMetricSandbox,{filename:'cooperative-home-metrics.js'});
+const preparedHomeMetrics=await asyncMetricSandbox.window.NexusPrepareHomeConsistencyMetrics();
+assert.equal(preparedHomeMetrics,true,'cold Overview metrics must prepare successfully');
+assert.equal(asyncMetricSandbox.window.NexusHomeMetricsAreReady(),true,'history/topic/study-log caches must all be marked ready');
+const preparedOverview=asyncMetricSandbox.window.NexusGetOverviewTopicMetrics();
+assert.equal(preparedOverview.activeCount,77144,'prepared Overview metrics must count all active topics');
+assert.equal(preparedOverview.queue.length<=7,true,'prepared queue must remain bounded');
+assert.equal(asyncLogVisits,24000,'the cooperative study-log builder must visit each log exactly once');
+assert.ok(asyncMetricYields>=Math.ceil(77144/400)-1+Math.ceil(24000/400)-1,
+  'topic and study-log aggregation must yield between bounded batches');
+assert.equal(asyncMetricRenders,1,'successful cold preparation must trigger one active-view refresh');
+const yieldCountAfterBuild=asyncMetricYields,topicVisitCountAfterBuild=asyncTopicVisits,logVisitCountAfterBuild=asyncLogVisits;
+assert.equal(await asyncMetricSandbox.window.NexusPrepareHomeConsistencyMetrics(),true,
+  'reopening an unchanged workspace must reuse the prepared aggregates');
+assert.equal(asyncMetricYields,yieldCountAfterBuild,'a ready workspace must not yield or recalculate on repeat access');
+assert.equal(asyncTopicVisits,topicVisitCountAfterBuild);
+assert.equal(asyncLogVisits,logVisitCountAfterBuild);
+
+// Obsolete cold preparation must cancel before publishing partial aggregates.
+let cancelMetricYields=0,cancelMetricRenders=0;
+const cancelledMetricSandbox={
+  window:{
+    NexusGetCachedHistoryActivityIndex:()=>fixtureIndex,
+    NexusPrepareHistoryActivityIndex:async()=>fixtureIndex,
+    NexusRenderAll:()=>{cancelMetricRenders++;}
+  },
+  document:{addEventListener(){},querySelector:()=>({id:'view-overview'})},
+  state:{topics:fixtureTopics,history:fixtureHistory},
+  fsState:{studyLogs:fixtureLogs,settings:{dailyMinutes:90,finalRevision:false}},
+  today:()=>fixtureToday,
+  dateShift:asyncMetricSandbox.dateShift,dayDiff:asyncMetricSandbox.dayDiff,
+  safeDate:asyncMetricSandbox.safeDate,fNum:asyncMetricSandbox.fNum,
+  naturalCompare:asyncMetricSandbox.naturalCompare,status:asyncMetricSandbox.status,
+  studyLogMinutes:()=>5,console,
+  setTimeout(callback){
+    cancelMetricYields++;
+    return setTimeout(()=>{
+      if(cancelMetricYields===1)this.state.topics=fixtureTopics.slice();
+      callback();
+    },0);
+  }
+};
+vm.createContext(cancelledMetricSandbox);
+vm.runInContext(consistencySource,cancelledMetricSandbox,{filename:'cancelled-home-metrics.js'});
+assert.equal(await cancelledMetricSandbox.window.NexusPrepareHomeConsistencyMetrics(),false,
+  'a workspace replacement during cold preparation must cancel the stale aggregate');
+assert.equal(cancelledMetricSandbox.window.NexusGetOverviewTopicMetrics(),null,
+  'cancelled preparation must not publish metrics for a superseded workspace');
+assert.equal(cancelMetricRenders,0,'cancelled preparation must not rerender a different workspace');
+
 console.log('Overview consistency runtime tests passed: shared history index, 77,144 topics, 48,000 history rows, 24,000 study logs, all five heatmap periods, empty-history output, renderer error recovery, selective cache reuse, and deferred startup rendering.');
 
 assert.ok(studyHub.includes('window.NexusGetFeatureStateForCommit=()=>fsState;'),
