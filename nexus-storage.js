@@ -487,9 +487,9 @@
       const seen=new Set();
       for(let position=0;position<records.length;position++){
         const record=records[position];
-        let id=record&&record.id!==undefined&&record.id!==null&&String(record.id)!==''
-          ?String(record.id):'@'+position;
-        if(seen.has(id))id=id+'#'+position;
+        const id=record&&record.id!==undefined&&record.id!==null?String(record.id):'';
+        if(!id)throw new Error('Entity migration requires a stable record ID for '+collection+' at position '+position+'.');
+        if(seen.has(id))throw new Error('Entity migration found a duplicate stable record ID in '+collection+': '+id+'.');
         seen.add(id);
         yield {key:entityRecordKey(ownerId,generation,collection,id),ownerId,generation,
           entityRow:true,collection,entityId:id,position,value:record};
