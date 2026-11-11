@@ -502,6 +502,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
 
   const resumedMigration=await loaded.api.migrateWorkspaceEntities('entity-owner-a',expandedState,afterChanges.featureState,
     {expectedRevision:loaded.api.getStatus().revision});
+  assert.ok(resumedMigration.prunedRows>=400,
+    'a successful replacement must prune the interrupted hidden generation in bounded batches');
   assert.notEqual(resumedMigration.generation,afterChanges.generation,
     'retrying an interrupted migration must publish a new generation only after all batches commit');
   const resumedWorkspace=await loaded.api.readWorkspaceEntities('entity-owner-a');
