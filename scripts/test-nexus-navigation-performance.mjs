@@ -45,7 +45,8 @@ assert.ok(studyHub.includes('function deleteStudyHubRecord(collection,id,options
 assert.ok(appCore.includes('NexusCascadeDeleteSubject(id,topicIds,{persist:false,render:false})') &&
   studyHub.includes('window.NexusUndoCascadeDelete=(options={})=>'),
   'large subject cascades must defer persistence and rendering to one combined workspace transaction');
-assert.ok(studyHub.includes('if(!save()){if(window.NexusUndoLastAction)window.NexusUndoLastAction();') &&
+assert.ok(studyHub.includes('const persisted=entityChangeCount<=1000?save({entityChanges:') &&
+  studyHub.includes('if(!persisted){if(window.NexusUndoLastAction)window.NexusUndoLastAction();') &&
   appCore.includes('window.NexusUndoLastAction=()=>undo();'),
   'bulk deletion must invoke the shared undo path when its atomic workspace save fails');
 
