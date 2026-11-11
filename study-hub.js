@@ -13,10 +13,9 @@
   const fNum=x=>Number.isFinite(Number(x))?Number(x):0;
   // Cache daily focus-goal totals between minute boundaries; the visible clock still ticks every second.
   let focusGoalCacheKey='',focusGoalLoggedMinutes=0;
-  function featureEntityPutChange(collection,row){
-    const list=Array.isArray(fsState[collection])?fsState[collection]:[];
-    const index=list.findIndex(item=>item&&String(item.id)===String(row&&row.id));
-    return {collection,id:String(row&&row.id||''),operation:'put',position:Math.max(0,index),value:row};
+  function featureEntityPutChange(collection,row,order='prepend'){
+    const position=order==='prepend'?'prepend':null;
+    return {collection,id:String(row&&row.id||''),operation:'put',position,value:row};
   }
   function featureEntityDeleteChange(collection,id){return {collection,id:String(id),operation:'delete'};}
   function featureEntityRoot(){
@@ -40,9 +39,11 @@
       const storage=window.NexusStorage,owner=localStorage.getItem('nexus.cloud.last-user-id')||'';
       if(owner&&storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&
          typeof storage.flush==='function'&&typeof storage.syncWorkspaceEntities==='function'){
-        storage.flush().then(()=>storage.syncWorkspaceEntities(owner,frozenEntityChanges,{
-          featureRoot,featureSnapshotJson:featureSnapshot,replace:frozenEntityChanges===null
-        })).catch(error=>{
+        const durableFlush=storage.flush();
+        storage.syncWorkspaceEntities(owner,frozenEntityChanges,{
+          featureRoot,featureSnapshotJson:featureSnapshot,replace:frozenEntityChanges===null,
+          durablePromise:durableFlush
+        }).catch(error=>{
           // Snapshot/offline-queue storage remains authoritative; stale entity projections
           // are rebuilt from the durable compatibility workspace.
           console.warn('Nexus Study Hub entity projection update failed; snapshot storage remains active.',error);
@@ -2084,11 +2085,11 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
     if(a==='refresh-plan'){window.NexusInvalidatePlannerCache?.();renderHub();return;}if(a==='toggle-final-revision'){fsState.settings.finalRevision=!fsState.settings.finalRevision;saveFs();renderHub();notify(fsState.settings.finalRevision?'Final-revision mode enabled. Non-mastered topics get higher priority.':'Final-revision mode disabled.');return;}if(a==='balance-workload'){balanceWorkload();return;}if(a==='backlog-plan'){spreadBacklog();return;}
     if(a==='save-planner-settings'){savePlannerSettings();return;}if(a==='focus-start'){startFocus();return;}if(a==='focus-stop'){logFocusStop();return;}if(a==='focus-discard'){discardFocusSession();return;}if(a==='study-history-toggle'){const target=hubEl(b.dataset.target);if(!target)return;target.hidden=!target.hidden;b.setAttribute('aria-expanded',String(!target.hidden));b.textContent=target.hidden?'Expand':'Collapse';return;}if(a==='study-history-more'){studyLogHistoryLimit+=100;renderHub();return;}if(a==='save-targets'){saveTargets();return;}
     if(a==='export-papers'){exportHubCsv('papers');return;}
-    if(a==='toggle-journal'){const j=fsState.journal.find(x=>x.id===id);if(j){j.solved=!j.solved;saveFs([featureEntityPutChange('journal',j)]);renderHub();}return;}
+    if(a==='toggle-journal'){const j=fsState.journal.find(x=>x.id===id);if(j){j.solved=!j.solved;saveFs([featureEntityPutChange('journal',j,'keep')]);renderHub();}return;}
     if(a==='save-tool-settings'){saveToolSettings();return;}if(a==='request-notifications'){requestNotify();return;}if(a==='check-reminder'){const c=activeTopics().filter(t=>['overdue','due'].includes(status(t))).length;notify(c?`${c} topic(s) due or overdue. Open Daily planner to prioritise them.`:'No topics due or overdue right now.');return;}
     if(a==='full-backup'){fullBackup();return;}if(a==='full-restore'){hubEl('hubImportFile').click();return;}if(a==='export-journal'){exportHubCsv('journal');return;}if(a==='export-study'){exportHubCsv('study');return;}if(a==='csv-template'){exportTemplate();return;}if(a==='csv-import'){hubEl('hubImportFile').accept='.csv';hubEl('hubImportFile').click();return;}
     if(a==='bulk-due-today'||a==='bulk-due-custom'||a==='bulk-archive'||a==='bulk-unarchive'||a==='bulk-export'||a==='bulk-delete'||a==='bulk-clear'){bulkAction(a);return;}
-    if(a==='goal-plus'){const g=fsState.goals.find(g=>g.id===id);if(g){g.progress=(g.progress||0)+1;saveFs([featureEntityPutChange('goals',g)]);renderHub();}return;}
+    if(a==='goal-plus'){const g=fsState.goals.find(g=>g.id===id);if(g){g.progress=(g.progress||0)+1;saveFs([featureEntityPutChange('goals',g,'keep')]);renderHub();}return;}
   });
 
   document.addEventListener('click',e=>{
