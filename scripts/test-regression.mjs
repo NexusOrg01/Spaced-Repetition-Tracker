@@ -124,9 +124,12 @@ const offlineQueueSource = readFileSync(resolve(root, 'offline-sync-queue.js'), 
 assert.ok(offlineQueueSource.includes('wordCode*256+next') && offlineQueueSource.includes('returnOperationPayload===false'),
   'large snapshot compression must avoid per-byte phrase strings and callers must be able to skip unused full-payload clones');
 assert.ok(appCore.includes('function getHistoryMetrics()') &&
+  appCore.includes('window.NexusGetHistoryActivityIndex=()=>getHistoryMetrics()') &&
+  appCore.includes('window.NexusGetCachedHistoryActivityIndex=()=>') &&
+  appCore.includes('reviewedToday=window.NexusGetCachedHistoryActivityIndex?.()?.byDate.get(todayKey)||0;') &&
   appCore.includes('window.NexusGetOverviewTopicMetrics?.()') &&
-  appCore.includes('reviewedToday=getHistoryMetrics().byDate.get(todayKey)||0;'),
-  'Overview history and topic totals must use the shared revision-aware metrics cache, with an indexed-history fallback during early startup');
+  studyHub.includes('window.NexusGetOverviewTopicMetrics=()=>'),
+  'Overview history and topic totals must share revision-aware caches while keeping cold reads cache-only until cooperative preparation completes');
 assert.ok(appCore.includes('selectTopKCooperative(source,topicVisibleLimit') && appCore.includes('selectTopKCooperative(source,historyVisibleLimit') &&
   appCore.includes('await new Promise(resolve=>setTimeout(resolve,0))') &&
   appCore.includes("const activeView=document.querySelector('.view.active')?.id||'view-overview';"),
