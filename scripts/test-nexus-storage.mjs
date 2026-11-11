@@ -459,7 +459,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
 
   await assert.rejects(loaded.api.writeWorkspaceEntityChanges('entity-owner-a',[
     {collection:'topics',id:'topic-1',operation:'delete'},
-    {collection:'topics',id:'topic-1',operation:'put',value:{id:'topic-1'}}
+    {collection:'topics',id:'topic-1',operation:'put',position:0,value:{id:'topic-1'}}
   ],{operationId:'duplicate-entity-change'}),/same record more than once/,
     'one atomic operation must not mutate the same entity twice');
   assert.equal(await loaded.api.readWorkspaceEntities('entity-owner-b'),null,
