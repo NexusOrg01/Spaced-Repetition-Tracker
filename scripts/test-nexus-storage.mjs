@@ -645,6 +645,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   // The application integration commits its compatibility snapshot first, then
   // mirrors only changed rows and both metadata roots into the entity generation.
   const currentA=await loaded.api.readWorkspaceEntities('entity-owner-a');
+  const entityDb= idb.databases.get('nexus-workspace-v1');
+  const manifestBeforeIncremental=clone(entityDb.stores.get('migrationMeta').get('workspace-entities:entity-owner-a'));
   const appendedTopic={id:'topic-incremental-append',subjectId:'subject-1',name:'Incrementally appended topic',reviewCount:0};
   const prependedReview={id:'review-incremental-prepend',topicId:'topic-1',reviewedAt:'2026-11-11',rating:5};
   const appendedPaper={id:'paper-incremental-append',name:'Incrementally saved paper'};
@@ -682,8 +684,12 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     const activeRows=Array.from(db.stores.get('workspaces').values()).filter(row=>
       row&&row.entityRow===true&&row.ownerId==='entity-owner-a'&&
       row.generation===manifest?.activeGeneration);
-    const details={status:manifest?.status,activeGeneration:manifest?.activeGeneration,
+    const details={beforeManifestRowCount:manifestBeforeIncremental?.rowCount,
+      beforeGeneration:manifestBeforeIncremental?.activeGeneration,
+      beforeStatus:manifestBeforeIncremental?.status,
+      afterStatus:manifest?.status,activeGeneration:manifest?.activeGeneration,
       manifestRowCount:manifest?.rowCount,actualActiveRows:activeRows.length,
+      incrementalResult:incremental,
       hasTrackerRoot:activeRows.some(row=>row.collection==='_meta'&&row.entityId==='tracker'),
       hasFeatureRoot:activeRows.some(row=>row.collection==='_meta'&&row.entityId==='features'),
       sampleActiveRows:activeRows.slice(0,3).map(row=>({collection:row.collection,id:row.entityId,position:row.position}))};
