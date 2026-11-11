@@ -119,11 +119,12 @@ assert.ok(cloudSync.includes("syncDiag('upload-start',diagnosticWorkspace()") &&
   !cloudSync.includes("syncDiag('upload-start',snapshot()"),
   'diagnostic-only upload events must not deep-clone the entire workspace when diagnostics are disabled');
 
-const overviewLargeWorkspace=section(appCore,'function insertSortedLimit(items,item,limit,compare){','function addHistoryMetricRecord(metrics,record)','bounded Overview rendering');
-assert.ok(overviewLargeWorkspace.includes('for(const topic of topics)') &&
-  overviewLargeWorkspace.includes('insertSortedLimit(queue,{topic,status:topicStatus},7,queueCompare)') &&
+const overviewLargeWorkspace=section(studyHub,'async function prepareHomeConsistencyMetrics()','window.NexusPrepareHomeConsistencyMetrics=prepareHomeConsistencyMetrics;','cooperative Overview metrics preparation');
+assert.ok(overviewLargeWorkspace.includes('const progressBySubject=new Map(),queue=[],upcomingQueue=[]') &&
+  overviewLargeWorkspace.includes('if(low>=7)return;queue.splice(low,0,item);if(queue.length>7)queue.pop();') &&
+  overviewLargeWorkspace.includes('for(let start=0;start<topicLength;start+=400)') &&
   !overviewLargeWorkspace.includes('topics.slice().sort('),
-  'Overview summary queues must retain/sort only the visible seven topics, not sort the full workspace');
+  'Overview summary queues must be prepared cooperatively while retaining only the visible seven topics');
 const upcomingLargeWorkspace=section(appCore,'function renderUpcomingQueue(sharedMetrics=null){','function renderHistoryInsights()','bounded upcoming queue');
 assert.ok(upcomingLargeWorkspace.includes('sharedMetrics?.upcomingQueue') &&
   upcomingLargeWorkspace.includes('insertSortedLimit(items,topic,7,compare)') &&
