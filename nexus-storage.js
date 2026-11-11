@@ -762,8 +762,9 @@
             countDeltas[change.collection]=(countDeltas[change.collection]||0)-1;
           }
           next++;
-          outbox.put({key:entityOutboxKey(owner,next),ownerId:owner,kind:'change',sequence:next,
-            operationId,collection:change.collection,entityId:change.id,operation:change.operation,
+          outbox.put({key:entityOutboxKey(owner,next),ownerId:owner,generation:manifest.activeGeneration,
+            kind:'change',sequence:next,operationId,collection:change.collection,
+            entityId:change.id,operation:change.operation,
             value:change.operation==='put'?change.value:undefined,position,createdAt:timestamp()});
         }
         const counts={...(manifest.counts||{})};
@@ -773,12 +774,14 @@
         meta.put({...manifest,rowCount:Math.max(2,(Number(manifest.rowCount)||2)+rowDelta),
           counts,positionBounds,updatedAt:timestamp()});
         meta.put({key:sequenceKey,ownerId:owner,value:next,updatedAt:timestamp()});
-        outbox.put({key:markerKey,ownerId:owner,kind:'operation-marker',operationId,
-          firstSequence,lastSequence:next,count:normalized.length,createdAt:timestamp()});
+        outbox.put({key:markerKey,ownerId:owner,generation:manifest.activeGeneration,
+          kind:'operation-marker',operationId,firstSequence,lastSequence:next,
+          count:normalized.length,createdAt:timestamp()});
         // Index the idempotency marker by its final sequence so acknowledgement
         // can remove only markers covered by the confirmed page.
         outbox.put({key:entityOperationSequenceKey(owner,next,operationId),ownerId,
-          kind:'operation-marker-sequence',operationId,lastSequence:next,createdAt:timestamp()});
+          generation:manifest.activeGeneration,kind:'operation-marker-sequence',
+          operationId,lastSequence:next,createdAt:timestamp()});
         set({ownerId,operationId,replayed:false,firstSequence,lastSequence:next,count:normalized.length});
       };
       const startChanges=()=>{
@@ -813,18 +816,21 @@
   async function readWorkspaceEntityOutbox(ownerId,afterSequence=0,limit=100){
     const owner=entityOwnerKey(ownerId),after=Math.max(0,Number(afterSequence)||0),size=Math.max(1,Math.min(1000,Number(limit)||100));
     if(!enabled||!database||committedOwnerId!==owner)return [];
+    const manifest=await readEntityManifest(owner);
+    if(!manifest||manifest.status!=='ready'||!manifest.activeGeneration)return [];
+    const activeGeneration=manifest.activeGeneration;
     const sequenceRange=entityOutboxSequenceRange(owner,after),prefix=entityOutboxPrefix(owner);
     const rows=await transaction(['outbox'],'readonly',(tx,set)=>{
       // Sequence keys are zero-padded and lexicographically ordered. Let IndexedDB
-      // discard already-acknowledged rows and cap the page before materialising it.
+      // discard acknowledged rows and cap the page before materialising it.
       const request=tx.objectStore('outbox').getAll(
         sequenceRange||entityPrefixRange(prefix),sequenceRange?size:undefined);
       request.onsuccess=()=>set(request.result||[]);
     });
-    const matching=rows.filter(row=>row&&row.ownerId===owner&&row.kind==='change'&&
-      Number(row.sequence)>after);
-    // Browsers without IDBKeyRange use the compatibility scan; modern IndexedDB
-    // returns the requested page in primary-key order without a full-owner sort.
+    const matching=rows.filter(row=>row&&row.ownerId===owner&&row.generation===activeGeneration&&
+      row.kind==='change'&&Number(row.sequence)>after);
+    // Ignore historical entries from superseded entity generations. The snapshot
+    // fallback/rebuild owns those changes; only the published generation can sync.
     return sequenceRange?matching:matching.sort((a,b)=>a.sequence-b.sequence).slice(0,size);
   }
   async function acknowledgeWorkspaceEntityOutbox(ownerId,throughSequence){
