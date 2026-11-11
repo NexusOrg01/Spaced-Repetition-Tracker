@@ -494,7 +494,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.ok(firstAcknowledgementRanges.some(query=>query.lower.endsWith(':opseq:0000000000000001')&&
     query.upper.includes(':opseq:0000000000000001')),
     'partial acknowledgement must limit indexed-marker cleanup to the confirmed cursor');
-  assert.ok([...outboxRows.values()].some(row=>row&&row.kind==='operation-marker'&&
+  const partiallyAcknowledgedRows=[...idb.databases.get('nexus-workspace-v1').stores.get('outbox').values()];
+  assert.ok(partiallyAcknowledgedRows.some(row=>row&&row.kind==='operation-marker'&&
     row.operationId==='entity-op-review-001'&&row.lastSequence===2),
     'an older unindexed idempotency marker must remain while part of its operation is still pending');
   assert.deepEqual((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',1,10)).map(row=>row.sequence),[2],
@@ -506,7 +507,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     .filter(query=>query.store==='outbox'&&query.lower);
   assert.equal(finalAcknowledgementRanges.length,2,
     'final acknowledgement must remain sequence-bounded');
-  const ownerOutboxRows=[...outboxRows.values()].filter(row=>row&&row.ownerId==='entity-owner-a');
+  const ownerOutboxRows=[...idb.databases.get('nexus-workspace-v1').stores.get('outbox').values()]
+    .filter(row=>row&&row.ownerId==='entity-owner-a');
   assert.equal(ownerOutboxRows.length,0,
     'full acknowledgement must remove the change rows and legacy direct idempotency marker');
   assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)).length,0,
