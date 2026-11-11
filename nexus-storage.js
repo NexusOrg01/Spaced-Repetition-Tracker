@@ -620,11 +620,14 @@
       }
       if(change.operation==='put'&&(!Object.prototype.hasOwnProperty.call(change,'value')||
          change.value===undefined))throw new Error('A put operation requires a record value.');
+      if(change.operation==='put'&&(!Number.isSafeInteger(change.position)||change.position<0)){
+        throw new Error('A put operation requires an explicit non-negative position to preserve collection ordering.');
+      }
       const identity=change.collection+'\\u0000'+change.id;
       if(changeIdentitySet.has(identity))throw new Error('An entity operation cannot change the same record more than once.');
       changeIdentitySet.add(identity);
       return {collection:change.collection,id:change.id,operation:change.operation,
-        value:change.value,position:Number.isSafeInteger(change.position)&&change.position>=0?change.position:null};
+        value:change.value,position:change.operation==='put'?change.position:null};
     });
     const operationId=String(options.operationId||(
       root&&root.crypto&&typeof root.crypto.randomUUID==='function'?root.crypto.randomUUID():
