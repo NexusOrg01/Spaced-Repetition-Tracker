@@ -61,12 +61,14 @@ class FakeObjectStore {
     return this.tx.enqueue(() => {
       const key = row && row.key;
       if (key === undefined) throw new Error('Fake IndexedDB requires keyPath "key".');
-      this.tx.maps.get(this.name).set(key, row);
+      const map=this.tx.maps.get(this.name);
+      this.tx.db.owner.sortedKeys?.delete(map);
+      map.set(key, row);
       return key;
     });
   }
-  delete(key) { return this.tx.enqueue(() => this.tx.maps.get(this.name).delete(key)); }
-  clear() { return this.tx.enqueue(() => this.tx.maps.get(this.name).clear()); }
+  delete(key) { return this.tx.enqueue(() => { const map=this.tx.maps.get(this.name);this.tx.db.owner.sortedKeys?.delete(map);return map.delete(key); }); }
+  clear() { return this.tx.enqueue(() => { const map=this.tx.maps.get(this.name);this.tx.db.owner.sortedKeys?.delete(map);return map.clear(); }); }
 }
 
 class FakeTransaction {
