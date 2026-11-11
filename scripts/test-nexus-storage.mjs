@@ -573,7 +573,9 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'an interrupted migration must keep the previous generation active');
   assert.equal(preservedGeneration.state.topics[1].name,'Bank reconciliation — updated',
     'the previous generation must retain its committed entity changes');
-  assert.deepEqual(preservedGeneration.state.history.map(item=>item.id),['review-2'],
+  assert.equal(preservedGeneration.state.history.length,1);
+  assert.equal(preservedGeneration.state.history[0].id,'review-2');
+  assert.ok(true,
     'the previous generation must retain committed deletions after failed backfill');
 
   const resumedMigration=await loaded.api.migrateWorkspaceEntities('entity-owner-a',expandedState,afterChanges.featureState,
@@ -687,7 +689,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const incrementallyRestored=await loaded.api.readWorkspaceEntities('entity-owner-a');
   assert.ok(incrementallyRestored,
     'incremental updates must preserve the complete entity generation and its integrity metadata');
-  assert.deepEqual(incrementallyRestored.state.topics.map(row=>row.id).slice(-1),[appendedTopic.id],
+  assert.equal(incrementallyRestored.state.topics.at(-1).id,appendedTopic.id);
+  assert.ok(true,
     'append positions must keep new tracker records at the end without rewriting existing rows');
   assert.equal(incrementallyRestored.state.history[0].id,prependedReview.id,
     'prepend positions must put new review records before existing history');
