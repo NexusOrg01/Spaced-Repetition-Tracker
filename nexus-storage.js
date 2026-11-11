@@ -817,11 +817,23 @@
         const markers=markerRows.filter(row=>row&&row.ownerId===owner&&
           row.kind==='operation-marker-sequence'&&Number(row.lastSequence)<=through);
         for(const row of rows)store.delete(row.key);
-        for(const marker of markers){
-          store.delete(marker.key);
-          store.delete(entityOperationKey(owner,marker.operationId));
+        for(const marker of markers)store.delete(marker.key);
+        // Older entity outbox entries may predate the sequence-indexed marker.
+        // Look up only operation markers referenced by this acknowledged page,
+        // and retain them until the operation's final sequence is acknowledged.
+        const operationIds=[...new Set(rows.map(row=>row.operationId).filter(Boolean))];
+        let remaining=operationIds.length;
+        const finish=()=>{if(remaining===0)set(rows.length);};
+        if(!remaining){set(rows.length);return;}
+        for(const operationId of operationIds){
+          const request=store.get(entityOperationKey(owner,operationId));
+          request.onsuccess=()=>{
+            const marker=request.result;
+            if(marker&&Number(marker.lastSequence)<=through)store.delete(marker.key);
+            remaining--;
+            finish();
+          };
         }
-        set(rows.length);
       };
       if(!sequenceRange||!markerRange){
         const request=store.getAll(entityPrefixRange(prefix));
