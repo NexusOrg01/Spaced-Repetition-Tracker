@@ -19,6 +19,24 @@ const serviceWorker = readFileSync(resolve(root, 'sw.js'), 'utf8');
 const inlineHelpers = readFileSync(resolve(root, 'nexus-app-inline.js'), 'utf8');
 const manifest = JSON.parse(readFileSync(resolve(root, 'manifest.webmanifest'), 'utf8'));
 
+assert.ok(appCore.includes('window.NexusTrackerEntityPutChange=trackerEntityPutChange') &&
+  appCore.includes('window.NexusTrackerEntityDeleteChange=trackerEntityDeleteChange'),
+  'Study Hub must use the same tracker entity-change helpers as the core app');
+assert.ok(appCore.includes("state=loadState();save({entityChanges:[]})") &&
+  appCore.includes("state.settings.theme=$('themeSelect').value;save({entityChanges:[]})"),
+  'ordinary startup and theme saves must not rebuild the full entity generation');
+assert.ok(appCore.includes("save({entityChanges:[trackerEntityDeleteChange('history',id)]})"),
+  'deleting one history entry must publish only that history entity deletion');
+assert.ok(studyHub.includes("over.map(t=>window.NexusTrackerEntityPutChange('topics',t,'keep'))") &&
+  studyHub.includes("candidates.map(t=>window.NexusTrackerEntityPutChange('topics',t,'keep'))") &&
+  studyHub.includes("chosen.map(t=>window.NexusTrackerEntityPutChange('topics',t,'keep'))"),
+  'backlog scheduling, workload balancing and bulk topic edits must publish topic deltas');
+assert.ok(studyHub.includes("window.NexusTrackerEntityDeleteChange('topics',t.id)") &&
+  studyHub.includes("window.NexusTrackerEntityDeleteChange('history',h.id)") &&
+  studyHub.includes("entityChanges.length<=1000?save({entityChanges}):save({replaceEntities:true})"),
+  'bulk deletion must publish topic/history deltas for bounded batches and use replacement for oversized batches');
+
+
 const integrationAt = bundle.indexOf('nexus-fsrs.js — glue between Nexus topics');
 const coreEnd = integrationAt > 0 ? bundle.lastIndexOf('/*!', integrationAt) : -1;
 assert.ok(coreEnd > 0, 'FSRS core and Nexus integration must remain separable for isolated scheduler tests');

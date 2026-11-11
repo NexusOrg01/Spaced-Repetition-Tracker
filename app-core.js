@@ -321,6 +321,8 @@
   function trackerEntityDeleteChange(collection,id){
     return {collection,id:String(id),operation:'delete'};
   }
+  window.NexusTrackerEntityPutChange=trackerEntityPutChange;
+  window.NexusTrackerEntityDeleteChange=trackerEntityDeleteChange;
   function trackerEntityRoot(){
     const value={...state};
     for(const collection of TRACKER_ENTITY_ARRAYS)delete value[collection];
@@ -831,7 +833,7 @@
       onCatalogLoaded:()=>{
         const result=repairCurriculumStateResult(state);
         state=result.state;
-        if(result.changed)save();
+        if(result.changed)save({replaceEntities:true});
         renderAll();
       },
       onCatalogError:error=>console.warn('Nexus curriculum catalogue could not be refreshed; using the built-in Commerce fallback.',error)
@@ -1309,7 +1311,7 @@
     state.history=state.history.filter(item=>String(item.id)!==String(id));
     historyInsightsDirty=true;
     markDeleteDiagnosticPhase('history:save');
-    if(!save()){markDeleteDiagnosticPhase('history:rollback');undo();notify('Review-history deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}
+    if(!save({entityChanges:[trackerEntityDeleteChange('history',id)]})){markDeleteDiagnosticPhase('history:rollback');undo();notify('Review-history deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}
     markDeleteDiagnosticPhase('history:render');
     renderHistory();window.NexusRefreshUndoTimeout?.();
   }
@@ -1377,7 +1379,7 @@
   $('reviewCustomDue').addEventListener('change',renderReviewPreview);
   document.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click',()=>$(b.dataset.close).close()));
   $('reviewNote').addEventListener('input',()=>{});
-  $('themeBtn').addEventListener('click',cycleTheme);$('themeSelect').addEventListener('change',()=>{state.settings.theme=$('themeSelect').value;save();applyTheme();notify('Theme preference saved.');});$('helpBtn').addEventListener('click',openHelp);$('installBtn').addEventListener('click',install);$('supportNexusBtn').addEventListener('click',()=>$('supportNexusDialog').showModal());$('pwaInstallOption').addEventListener('click',installPwa);
+  $('themeBtn').addEventListener('click',cycleTheme);$('themeSelect').addEventListener('change',()=>{state.settings.theme=$('themeSelect').value;save({entityChanges:[]});applyTheme();notify('Theme preference saved.');});$('helpBtn').addEventListener('click',openHelp);$('installBtn').addEventListener('click',install);$('supportNexusBtn').addEventListener('click',()=>$('supportNexusDialog').showModal());$('pwaInstallOption').addEventListener('click',installPwa);
   $('backupBtn').addEventListener('click',exportBackup);$('menuBackup').addEventListener('click',()=>{$('moreMenu').open=false;exportBackup();});$('restoreBtn').addEventListener('click',()=>$('importFile').click());$('menuRestore').addEventListener('click',()=>{$('moreMenu').open=false;$('importFile').click();});$('importFile').addEventListener('change',e=>importBackup(e.target.files?.[0]));
   $('historyCsvBtn').addEventListener('click',exportHistory);$('setupHistoryCsvBtn').addEventListener('click',exportHistory);$('menuHistoryCsv').addEventListener('click',()=>{exportHistory();$('moreMenu').open=false;});$('setupTopicsCsvBtn').addEventListener('click',exportTopics);$('menuTopicsCsv').addEventListener('click',()=>{exportTopics();$('moreMenu').open=false;});$('clearHistoryBtn').addEventListener('click',clearHistory);
   function refreshDeletionChoiceUi(){
@@ -1481,7 +1483,7 @@
       if(!confirm('Clear ALL history?\\n\\nThis will delete '+state.history.length+' records. Schedules stay but past reviews are retained.\\n\\nExport a backup first!'))return;
       if(!confirm('Are you absolutely sure?'))return;
       startUndoHistoryChange('All history cleared.');
-      state.history=[];save();renderAll();
+      state.history=[];save({replaceEntities:true});renderAll();
     };
     window.resetAll=function(){
       if(!confirm('Reset ALL data?\\n\\nThis deletes topics, subjects, streams, exams, history and settings. Export a backup first.'))return;
@@ -1489,7 +1491,7 @@
       if(typed!=='RESET'){alert('Cancelled');return;}
       startUndoWorkspaceReplace('All data reset.');
       localStorage.removeItem(STORAGE_KEY);OLD_KEYS.forEach(key=>localStorage.removeItem(key));
-      state=baseState();save();renderAll();
+      state=baseState();save({replaceEntities:true});renderAll();
     };
     document.getElementById('toggleTopicFilters')?.addEventListener('click',()=>{
       const bar=document.getElementById('topicFiltersBar');if(!bar)return;
@@ -1503,5 +1505,5 @@
     });
   })();
 
-  state=loadState();save();renderAll();
+  state=loadState();save({entityChanges:[]});renderAll();
   loadCurriculumCatalog();
