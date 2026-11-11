@@ -63,7 +63,7 @@
     'Economics':'ආර්ථික විද්‍යාව','ECON':'ආර්ථික විද්‍යාව'
   };
   const RATING_LABELS = {1:'Again',2:'Hard',3:'Good',4:'Very good',5:'Easy'};
-  let state, undoState=null, undoTimer=null, toastTimer=null, undoSilent=false, editTopicId=null, reviewTopicId=null, selectedReviewRating=null, editStreamId=null, editSubjectId=null, editExamId=null, installPrompt=window.NexusInstallPrompt||null, topicVisibleLimit=100, historyVisibleLimit=100, historyInsightsDirty=true, historyMetricsCache=null,historyMetricsRevision=0,historyMetricsBuildSequence=0,historyMetricsObservedSource=state.history,historyMetricsObservedLength=state.history.length;
+  let state, undoState=null, undoTimer=null, toastTimer=null, undoSilent=false, editTopicId=null, reviewTopicId=null, selectedReviewRating=null, editStreamId=null, editSubjectId=null, editExamId=null, installPrompt=window.NexusInstallPrompt||null, topicVisibleLimit=100, historyVisibleLimit=100, historyInsightsDirty=true, historyMetricsCache=null,historyMetricsRevision=0,historyMetricsBuildSequence=0,historyMetricsObservedSource=null,historyMetricsObservedLength=-1;
   const UNDO_TIMEOUT_MS=15000;
   let activeDeleteDiagnostic=null;
   const DELETE_DIAGNOSTIC_STORAGE_KEY='nexus:last-delete-diagnostic';
