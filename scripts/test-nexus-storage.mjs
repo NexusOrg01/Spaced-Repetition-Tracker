@@ -759,7 +759,17 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(migration.rowCount,149148,'large manifest must publish exact metadata-plus-record row count');
   assert.ok(cooperativeBatches>=Math.ceil(migration.rowCount/400)-1,
     'large migration must yield after each bounded 400-row batch');
+  const hydrationQueryStart=idb.rangeQueries.length;
   const restored=await large.api.readWorkspaceEntities('large-workspace-owner');
+  const hydrationQueries=idb.rangeQueries.slice(hydrationQueryStart)
+    .filter(query=>query.store==='workspaces'&&query.lower);
+  assert.ok(hydrationQueries.length>=Math.ceil(migration.rowCount/400),
+    'large entity hydration must read multiple bounded pages instead of one unbounded getAll');
+  assert.ok(hydrationQueries.every(query=>query.count===400),
+    'every large entity hydration request must cap materialized IndexedDB rows at 400');
+  assert.ok(hydrationQueries.every(query=>query.lower.startsWith(
+    'workspace-entity:large-workspace-owner:'+migration.generation+':')),
+    'every hydration page must stay within the active owner/generation key range');
   assert.equal(restored.state.topics.length,totalTopics);
   assert.equal(restored.state.history.length,totalHistory);
   assert.equal(restored.featureState.studyLogs.length,totalStudyLogs);
