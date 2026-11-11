@@ -544,7 +544,11 @@
         const store=tx.objectStore('migrationMeta'),request=store.get(manifestKey);
         request.onsuccess=()=>{
           const current=request.result;
-          if(!current||current.pendingGeneration!==generation){
+          // Revalidate inside the publication transaction: a local save or account
+          // handoff between the preflight check and this callback must not publish
+          // a stale entity generation as the active account workspace.
+          if(!enabled||committedOwnerId!==owner||revision!==sourceRevision||
+             !current||current.pendingGeneration!==generation){
             try{tx.abort();}catch(_){}
             return;
           }
