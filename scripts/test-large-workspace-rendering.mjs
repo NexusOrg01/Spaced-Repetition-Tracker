@@ -496,7 +496,7 @@ assert.ok(asyncHistoryYields>=Math.ceil(48000/400)-1,'history preparation must y
 assert.equal(asyncHistorySandbox.window.NexusGetCachedHistoryActivityIndex(),preparedHistoryIndex,
   'a prepared history index must be reusable without rebuilding');
 
-let asyncMetricYields=0,asyncMetricRenders=0,asyncTopicVisits=0,asyncLogVisits=0;
+let asyncMetricYields=0,asyncMetricRenders=0,asyncTopicVisits=0,asyncLogVisits=0,asyncExtraLogStack='';
 const asyncTrackedTopics=new Proxy(fixtureTopics,{
   get(target,property,receiver){
     if(typeof property==='string'&&/^\d+$/.test(property))asyncTopicVisits++;
@@ -519,7 +519,7 @@ const asyncMetricSandbox={
   fNum:value=>Number.isFinite(Number(value))?Number(value):0,
   naturalCompare:(a,b)=>String(a??'').localeCompare(String(b??''),undefined,{numeric:true,sensitivity:'base'}),
   status:topic=>topic.dueDate?'upcoming':'new',
-  studyLogMinutes:log=>{asyncLogVisits++;return Number(log.minutes)||0;},
+  studyLogMinutes:log=>{asyncLogVisits++;if(asyncLogVisits>24000&&!asyncExtraLogStack)asyncExtraLogStack=(new Error('extra study-log visit')).stack;return Number(log.minutes)||0;},
   console,
   setTimeout(callback){asyncMetricYields++;return setTimeout(callback,0);}
 };
@@ -532,7 +532,7 @@ const preparedOverview=asyncMetricSandbox.window.NexusGetOverviewTopicMetrics();
 assert.equal(preparedOverview.activeCount,77144,'prepared Overview metrics must count all active topics');
 assert.equal(preparedOverview.queue.length<=7,true,'prepared queue must remain bounded');
 assert.equal(asyncTopicVisits,77144,'the cooperative topic builder must visit each topic exactly once');
-assert.equal(asyncLogVisits,24000,'the cooperative study-log builder must visit each log exactly once');
+assert.equal(asyncLogVisits,24000,'the cooperative study-log builder must visit each log exactly once; unexpected call: '+asyncExtraLogStack);
 assert.ok(asyncMetricYields>=Math.ceil(77144/400)-1+Math.ceil(24000/400)-1,
   'topic and study-log aggregation must yield between bounded batches');
 assert.equal(asyncMetricRenders,1,'successful cold preparation must trigger one active-view refresh');
