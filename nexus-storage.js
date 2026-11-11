@@ -432,6 +432,266 @@
     });
   }
 
+  // Staged per-entity persistence foundation. The JSON compatibility snapshots remain
+  // authoritative until the app's mutation paths have migrated and passed recovery tests.
+  const TRACKER_ENTITY_COLLECTIONS=['streams','subjects','topics','history','exams'];
+  const FEATURE_ENTITY_COLLECTIONS=['journal','papers','goals','studyLogs'];
+  const ALL_ENTITY_COLLECTIONS=new Set([...TRACKER_ENTITY_COLLECTIONS,...FEATURE_ENTITY_COLLECTIONS]);
+  const ENTITY_BATCH_SIZE=400;
+  let entityGenerationSequence=0;
+
+  function entityOwnerKey(ownerId){
+    const owner=String(ownerId||'').trim();
+    if(!owner||owner.length>512)throw new Error('A valid account owner is required for entity storage.');
+    return owner;
+  }
+  function entityManifestKey(ownerId){return 'workspace-entities:'+encodeURIComponent(entityOwnerKey(ownerId));}
+  function entitySequenceKey(ownerId){return 'workspace-entity-sequence:'+encodeURIComponent(entityOwnerKey(ownerId));}
+  function entityOperationKey(ownerId,operationId){return 'workspace-entity-operation:'+encodeURIComponent(entityOwnerKey(ownerId))+':'+encodeURIComponent(operationId);}
+  function entityRecordKey(ownerId,generation,collection,id){
+    return 'workspace-entity:'+encodeURIComponent(ownerId)+':'+encodeURIComponent(generation)+':'+
+      encodeURIComponent(collection)+':'+encodeURIComponent(id);
+  }
+  function entityOutboxKey(ownerId,sequence){
+    return 'workspace-entity-change:'+encodeURIComponent(ownerId)+':'+String(sequence).padStart(16,'0');
+  }
+  function entityGeneration(){
+    entityGenerationSequence++;
+    const random=root&&root.crypto&&typeof root.crypto.randomUUID==='function'
+      ?root.crypto.randomUUID().replace(/-/g,'')
+      :Math.random().toString(36).slice(2);
+    return Date.now().toString(36)+'-'+entityGenerationSequence.toString(36)+'-'+random;
+  }
+  function entityRootValue(snapshot,collections){
+    const rootValue={};
+    for(const key of Object.keys(snapshot||{}))if(!collections.includes(key))rootValue[key]=snapshot[key];
+    return rootValue;
+  }
+  function* generateWorkspaceEntityRows(ownerId,generation,state,featureState){
+    const trackerRoot=entityRootValue(state,TRACKER_ENTITY_COLLECTIONS);
+    const featureRoot=entityRootValue(featureState,FEATURE_ENTITY_COLLECTIONS);
+    yield {key:entityRecordKey(ownerId,generation,'_meta','tracker'),ownerId,generation,entityRow:true,
+      collection:'_meta',entityId:'tracker',position:0,value:trackerRoot};
+    yield {key:entityRecordKey(ownerId,generation,'_meta','features'),ownerId,generation,entityRow:true,
+      collection:'_meta',entityId:'features',position:1,value:featureRoot};
+    for(const collection of TRACKER_ENTITY_COLLECTIONS.concat(FEATURE_ENTITY_COLLECTIONS)){
+      const source=TRACKER_ENTITY_COLLECTIONS.includes(collection)?state:featureState;
+      const records=Array.isArray(source&&source[collection])?source[collection]:[];
+      const seen=new Set();
+      for(let position=0;position<records.length;position++){
+        const record=records[position];
+        let id=record&&record.id!==undefined&&record.id!==null&&String(record.id)!==''
+          ?String(record.id):'@'+position;
+        if(seen.has(id))id=id+'#'+position;
+        seen.add(id);
+        yield {key:entityRecordKey(ownerId,generation,collection,id),ownerId,generation,
+          entityRow:true,collection,entityId:id,position,value:record};
+      }
+    }
+  }
+  async function writeWorkspaceEntityBatch(rows){
+    if(!rows.length)return 0;
+    return transaction([WORKSPACES],'readwrite',(tx,set)=>{
+      const store=tx.objectStore(WORKSPACES);
+      for(const row of rows)store.put(row);
+      set(rows.length);
+    });
+  }
+  async function migrateWorkspaceEntities(ownerId,stateSnapshot,featureSnapshot,options={}){
+    const owner=entityOwnerKey(ownerId);
+    if(!enabled||!database)throw new Error('IndexedDB must be enabled before the per-entity migration can run.');
+    if(committedOwnerId!==owner)throw new Error('The active account does not match the requested entity migration owner.');
+    if(!stateSnapshot||typeof stateSnapshot!=='object'||Array.isArray(stateSnapshot)||
+       !featureSnapshot||typeof featureSnapshot!=='object'||Array.isArray(featureSnapshot)){
+      throw new Error('Complete tracker and Study Hub snapshots are required for entity migration.');
+    }
+    if(options.expectedRevision!==undefined&&Number(options.expectedRevision)!==revision){
+      throw new Error('The local workspace revision changed before entity migration started. Retry from a fresh snapshot.');
+    }
+    const manifestKey=entityManifestKey(owner),generation=entityGeneration();
+    const previous=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
+      const request=tx.objectStore('migrationMeta').get(manifestKey);
+      request.onsuccess=()=>set(request.result||null);
+    });
+    await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
+      tx.objectStore('migrationMeta').put({
+        key:manifestKey,ownerId:owner,status:'building',
+        activeGeneration:previous&&previous.status==='ready'?previous.activeGeneration:null,
+        pendingGeneration:generation,updatedAt:timestamp()
+      });
+      set(true);
+    });
+    const counts={},batch=[];
+    let rowCount=0;
+    try{
+      for(const row of generateWorkspaceEntityRows(owner,generation,stateSnapshot,featureSnapshot)){
+        batch.push(row);rowCount++;
+        if(row.collection!=='_meta')counts[row.collection]=(counts[row.collection]||0)+1;
+        if(batch.length>=ENTITY_BATCH_SIZE){
+          await writeWorkspaceEntityBatch(batch.splice(0,batch.length));
+          await new Promise(resolve=>setTimeout(resolve,0));
+        }
+      }
+      if(batch.length)await writeWorkspaceEntityBatch(batch.splice(0,batch.length));
+      if(!enabled||committedOwnerId!==owner||
+         (options.expectedRevision!==undefined&&Number(options.expectedRevision)!==revision)){
+        throw new Error('The active workspace changed during entity migration. The previous entity generation remains active.');
+      }
+      await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
+        const store=tx.objectStore('migrationMeta'),request=store.get(manifestKey);
+        request.onsuccess=()=>{
+          const current=request.result;
+          if(!current||current.pendingGeneration!==generation){
+            try{tx.abort();}catch(_){}
+            return;
+          }
+          store.put({
+            key:manifestKey,ownerId:owner,status:'ready',formatVersion:1,
+            activeGeneration:generation,pendingGeneration:null,rowCount,counts,
+            sourceRevision:revision,updatedAt:timestamp()
+          });
+          set(true);
+        };
+      });
+      return {ownerId:owner,generation,rowCount,counts,sourceRevision:revision};
+    }catch(error){
+      try{
+        await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
+          const store=tx.objectStore('migrationMeta'),request=store.get(manifestKey);
+          request.onsuccess=()=>{
+            const current=request.result;
+            if(current&&current.pendingGeneration===generation){
+              store.put({...current,status:'interrupted',updatedAt:timestamp()});
+            }
+            set(true);
+          };
+        });
+      }catch(_){}
+      throw error;
+    }
+  }
+  async function readWorkspaceEntities(ownerId){
+    const owner=entityOwnerKey(ownerId);
+    if(!enabled||!database)return null;
+    const manifestKey=entityManifestKey(owner);
+    const manifest=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
+      const request=tx.objectStore('migrationMeta').get(manifestKey);
+      request.onsuccess=()=>set(request.result||null);
+    });
+    if(!manifest||manifest.status!=='ready'||!manifest.activeGeneration)return null;
+    const rows=await transaction([WORKSPACES],'readonly',(tx,set)=>{
+      const request=tx.objectStore(WORKSPACES).getAll();
+      request.onsuccess=()=>set(request.result||[]);
+    });
+    const activeRows=rows.filter(row=>row&&row.entityRow===true&&row.ownerId===owner&&row.generation===manifest.activeGeneration);
+    if(activeRows.length!==manifest.rowCount)return null;
+    const trackerRoot=activeRows.find(row=>row.collection==='_meta'&&row.entityId==='tracker');
+    const featureRoot=activeRows.find(row=>row.collection==='_meta'&&row.entityId==='features');
+    if(!trackerRoot||!featureRoot||!trackerRoot.value||!featureRoot.value)return null;
+    const stateSnapshot={...trackerRoot.value},featureSnapshot={...featureRoot.value};
+    for(const collection of TRACKER_ENTITY_COLLECTIONS.concat(FEATURE_ENTITY_COLLECTIONS)){
+      const target=TRACKER_ENTITY_COLLECTIONS.includes(collection)?stateSnapshot:featureSnapshot;
+      target[collection]=activeRows.filter(row=>row.collection===collection)
+        .sort((a,b)=>a.position-b.position).map(row=>row.value);
+    }
+    return {ownerId:owner,generation:manifest.activeGeneration,state:stateSnapshot,
+      featureState:featureSnapshot,revision:manifest.sourceRevision,counts:manifest.counts||{}};
+  }
+  async function writeWorkspaceEntityChanges(ownerId,changes,options={}){
+    const owner=entityOwnerKey(ownerId);
+    if(!enabled||!database)throw new Error('IndexedDB must be enabled before incremental entity writes can run.');
+    if(committedOwnerId!==owner)throw new Error('The active account does not match the requested entity write owner.');
+    if(!Array.isArray(changes)||!changes.length||changes.length>1000)throw new Error('Provide between 1 and 1,000 entity changes.');
+    const normalized=changes.map(change=>{
+      if(!change||!ALL_ENTITY_COLLECTIONS.has(change.collection)||
+         typeof change.id!=='string'||!change.id||change.id.length>512||
+         !['put','delete'].includes(change.operation)){
+        throw new Error('An entity change contains an unsupported collection, ID, or operation.');
+      }
+      if(change.operation==='put'&&(!Object.prototype.hasOwnProperty.call(change,'value')||
+         (change.value===undefined)))throw new Error('A put operation requires a record value.');
+      return {collection:change.collection,id:change.id,operation:change.operation,
+        value:change.value,position:Number.isSafeInteger(change.position)&&change.position>=0?change.position:null};
+    });
+    const operationId=String(options.operationId||(
+      root&&root.crypto&&typeof root.crypto.randomUUID==='function'?root.crypto.randomUUID():
+      Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)
+    ));
+    if(!operationId||operationId.length>160)throw new Error('A valid idempotency operation ID is required.');
+    const manifestKey=entityManifestKey(owner),sequenceKey=entitySequenceKey(owner);
+    const markerKey=entityOperationKey(owner,operationId);
+    return transaction([WORKSPACES,'migrationMeta','outbox'],'readwrite',(tx,set)=>{
+      const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta'),outbox=tx.objectStore('outbox');
+      const manifestRequest=meta.get(manifestKey),sequenceRequest=meta.get(sequenceKey),markerRequest=outbox.get(markerKey);
+      const values={manifest:null,sequence:null,marker:null};let remaining=3;
+      const done=()=>{
+        remaining--;if(remaining!==0)return;
+        if(values.marker){
+          set({ownerId,operationId,replayed:true,firstSequence:values.marker.firstSequence,
+            lastSequence:values.marker.lastSequence,count:values.marker.count});
+          return;
+        }
+        const manifest=values.manifest,sequence=Math.max(0,Number(values.sequence&&values.sequence.value)||0);
+        if(!manifest||manifest.status!=='ready'||!manifest.activeGeneration){
+          try{tx.abort();}catch(_){}
+          return;
+        }
+        let next=sequence;
+        const firstSequence=sequence+1;
+        for(const change of normalized){
+          next++;
+          const key=entityRecordKey(owner,manifest.activeGeneration,change.collection,change.id);
+          if(change.operation==='put'){
+            entities.put({key,ownerId:owner,generation:manifest.activeGeneration,entityRow:true,
+              collection:change.collection,entityId:change.id,
+              position:change.position===null?Number.MAX_SAFE_INTEGER:change.position,value:change.value});
+          }else entities.delete(key);
+          outbox.put({key:entityOutboxKey(owner,next),ownerId:owner,kind:'change',sequence:next,
+            operationId,collection:change.collection,entityId:change.id,operation:change.operation,
+            value:change.operation==='put'?change.value:undefined,position:change.position,createdAt:timestamp()});
+        }
+        const counts={...(manifest.counts||{})};
+        for(const change of normalized){
+          const current=Math.max(0,Number(counts[change.collection])||0);
+          counts[change.collection]=change.operation==='put'?current+1:Math.max(0,current-1);
+        }
+        meta.put({...manifest,rowCount:Math.max(2,Number(manifest.rowCount)||2)+
+          normalized.filter(x=>x.operation==='put').length-normalized.filter(x=>x.operation==='delete').length,
+          counts,updatedAt:timestamp()});
+        meta.put({key:sequenceKey,ownerId:owner,value:next,updatedAt:timestamp()});
+        const marker={key:markerKey,ownerId:owner,kind:'operation-marker',operationId,
+          firstSequence,lastSequence:next,count:normalized.length,createdAt:timestamp()};
+        outbox.put(marker);
+        set({ownerId,operationId,replayed:false,firstSequence,lastSequence:next,count:normalized.length});
+      };
+      manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;done();};
+      sequenceRequest.onsuccess=()=>{values.sequence=sequenceRequest.result||null;done();};
+      markerRequest.onsuccess=()=>{values.marker=markerRequest.result||null;done();};
+    });
+  }
+  async function readWorkspaceEntityOutbox(ownerId,afterSequence=0,limit=100){
+    const owner=entityOwnerKey(ownerId),after=Math.max(0,Number(afterSequence)||0),size=Math.max(1,Math.min(1000,Number(limit)||100));
+    if(!enabled||!database)return [];
+    const rows=await transaction(['outbox'],'readonly',(tx,set)=>{
+      const request=tx.objectStore('outbox').getAll();
+      request.onsuccess=()=>set(request.result||[]);
+    });
+    return rows.filter(row=>row&&row.ownerId===owner&&row.kind==='change'&&
+      Number(row.sequence)>after).sort((a,b)=>a.sequence-b.sequence).slice(0,size);
+  }
+  async function acknowledgeWorkspaceEntityOutbox(ownerId,throughSequence){
+    const owner=entityOwnerKey(ownerId),through=Math.max(0,Number(throughSequence)||0);
+    if(!enabled||!database)return 0;
+    return transaction(['outbox'],'readwrite',(tx,set)=>{
+      const store=tx.objectStore('outbox'),request=store.getAll();
+      request.onsuccess=()=>{
+        const rows=(request.result||[]).filter(row=>row&&row.ownerId===owner&&
+          row.kind==='change'&&Number(row.sequence)<=through);
+        for(const row of rows)store.delete(row.key);
+        set(rows.length);
+      };
+    });
+  }
   function restoreNativeProperty() {
     if (!root || !facadeInstalled) return;
     try {
@@ -839,6 +1099,11 @@
     isFacade: storage => storage === facade,
     commitLocalStorageEntries,
     getWorkspace: readWorkspace,
+    migrateWorkspaceEntities,
+    readWorkspaceEntities,
+    writeWorkspaceEntityChanges,
+    readWorkspaceEntityOutbox,
+    acknowledgeWorkspaceEntityOutbox,
     getStatus: () => ({
       enabled,
       database: DB_NAME,
