@@ -632,5 +632,6 @@ assert.ok(studyHub.includes('window.NexusInvalidatePlannerCache=()=>{') &&
   studyHub.includes('for(let start=0;start<ts.length;start+=batchSize)') &&
   studyHub.includes('const remainingMins=planner.remainingMins') &&
   studyHub.includes('scheduledByDate=planner.scheduledByDate') &&
-  studyHub.includes('const planner=window.NexusGetCachedPlannerMetrics?.();'),
-  'Study Hub Planner must use a revision-aware cooperative cold build, cache reuse and non-blocking rendering');
+  studyHub.includes('const planner=window.NexusGetCachedPlannerMetrics?.();') &&
+  studyHub.includes("if(a==='refresh-plan'){window.NexusInvalidatePlannerCache?.();renderHub();return;}"),
+  'Study Hub Planner must use a revision-aware cooperative cold build, cache reuse, non-blocking rendering and explicit manual refresh invalidation');
