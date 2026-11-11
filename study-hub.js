@@ -1087,8 +1087,8 @@
       return '<div class="paper-trend-panel"><div class="paper-trend-head"><strong>'+localEsc(group.name)+'</strong><span>'+items.length+' scored attempt'+(items.length===1?'':'s')+' · latest '+last+'%'+changeText+sampleNote+'</span></div><div class="paper-trend-chart" tabindex="0" role="region" aria-label="Scrollable '+localEsc(group.name)+' score chart">'+svg+'</div></div>';
     }).join('');
   }
-  let homeConsistencyMetricsCache=null,homeTopicMetricsCache=null,homeStudyLogMetricsCache=null;
-  window.NexusInvalidateHomeConsistencyCache=()=>{homeConsistencyMetricsCache=null;homeTopicMetricsCache=null;homeStudyLogMetricsCache=null;};
+  let homeConsistencyMetricsCache=null,homeTopicMetricsCache=null,homeStudyLogMetricsCache=null,homeMetricsBuildGeneration=0,homeMetricsBuildPromise=null;
+  window.NexusInvalidateHomeConsistencyCache=()=>{homeConsistencyMetricsCache=null;homeTopicMetricsCache=null;homeStudyLogMetricsCache=null;homeMetricsBuildGeneration++;homeMetricsBuildPromise=null;};
   function getHomeConsistencyMetrics(){
     const now=today(),allowed=['week','month','year','custom'];
     const requestedPeriod=String(fsState.analyticsPeriod||'week');
@@ -1206,8 +1206,128 @@
     };
     return value;
   }
+  function homeTopicCacheMatches(cache,topics,history,now){
+    return !!cache&&cache.topics===topics&&cache.topicCount===topics.length&&
+      cache.history===history&&cache.historyCount===history.length&&cache.today===now;
+  }
+  function homeStudyLogCacheMatches(cache,logs,now){
+    const weekStart=dateShift(now,-6);
+    return !!cache&&cache.logs===logs&&cache.length===logs.length&&
+      cache.today===now&&cache.weekStart===weekStart;
+  }
+  function homeMetricsAreReady(){
+    const now=today();
+    return homeTopicCacheMatches(homeTopicMetricsCache,state.topics,state.history,now)&&
+      homeStudyLogCacheMatches(homeStudyLogMetricsCache,fsState.studyLogs,now)&&
+      !!window.NexusGetCachedHistoryActivityIndex?.();
+  }
+  window.NexusHomeMetricsAreReady=homeMetricsAreReady;
+  async function prepareHomeConsistencyMetrics(){
+    const now=today(),topics=state.topics,history=state.history,logs=fsState.studyLogs;
+    const topicLength=topics.length,historyLength=history.length,logLength=logs.length;
+    if(homeMetricsAreReady())return true;
+    if(homeMetricsBuildPromise)return homeMetricsBuildPromise;
+    const generation=homeMetricsBuildGeneration;
+    const isCurrent=()=>generation===homeMetricsBuildGeneration&&
+      state.topics===topics&&topics.length===topicLength&&
+      state.history===history&&history.length===historyLength&&
+      fsState.studyLogs===logs&&logs.length===logLength&&today()===now;
+    const task=(async()=>{
+      const historyIndex=window.NexusGetCachedHistoryActivityIndex?.()||
+        await window.NexusPrepareHistoryActivityIndex?.();
+      if(!historyIndex||!isCurrent())return false;
+      let topicMetrics=homeTopicMetricsCache;
+      if(!homeTopicCacheMatches(topicMetrics,topics,history,now)){
+        let activeCount=0,mastered=0,overdue=0,dueSoon=0,dueCount=0,newCount=0,reviewedCount=0,weakCount=0;
+        const homeWeekEnd=dateShift(now,6),upcomingEnd=dateShift(now,7);
+        const progressBySubject=new Map(),queue=[],upcomingQueue=[];
+        const topicHistory=historyIndex.byTopic;
+        const queueCompare=(a,b)=>({overdue:0,due:1,new:2,upcoming:3}[a.status]??4)-({overdue:0,due:1,new:2,upcoming:3}[b.status]??4)||
+          (a.topic.dueDate||'9999').localeCompare(b.topic.dueDate||'9999')||
+          naturalCompare(a.topic.name,b.topic.name);
+        const addQueue=item=>{
+          let low=0,high=queue.length;
+          while(low<high){const mid=(low+high)>>1;if(queueCompare(queue[mid],item)<=0)low=mid+1;else high=mid;}
+          if(low>=7)return;queue.splice(low,0,item);if(queue.length>7)queue.pop();
+        };
+        const addUpcoming=topic=>{
+          let low=0,high=upcomingQueue.length;
+          while(low<high){
+            const mid=(low+high)>>1,other=upcomingQueue[mid];
+            const order=(other.dueDate||'9999').localeCompare(topic.dueDate||'9999')||naturalCompare(other.name,topic.name);
+            if(order<=0)low=mid+1;else high=mid;
+          }
+          if(low>=7)return;upcomingQueue.splice(low,0,topic);if(upcomingQueue.length>7)upcomingQueue.pop();
+        };
+        for(let start=0;start<topicLength;start+=400){
+          const end=Math.min(topicLength,start+400);
+          for(let index=start;index<end;index++){
+            const topic=topics[index];
+            if(topic.archived)continue;
+            activeCount++;
+            const topicStatus=status(topic);
+            if(topicStatus==='overdue'||topicStatus==='due'){dueCount++;if(topicStatus==='overdue')overdue++;}
+            if(topicStatus==='new')newCount++;
+            if(topic.reviewCount>0)reviewedCount++;
+            let progress=progressBySubject.get(topic.subjectId);
+            if(!progress){progress={total:0,done:0};progressBySubject.set(topic.subjectId,progress);}
+            progress.total++;if(topic.reviewCount>0)progress.done++;
+            if(topicStatus==='overdue'||topicStatus==='due'||topicStatus==='new')addQueue({topic,status:topicStatus});
+            if(safeDate(topic.dueDate)&&topic.dueDate>=now&&topic.dueDate<=homeWeekEnd)dueSoon++;
+            if(safeDate(topic.dueDate)&&topic.dueDate>now&&topic.dueDate<=upcomingEnd)addUpcoming(topic);
+            const topicStats=topicHistory?.get(String(topic.id));
+            const recent=topicStats?.recent||[];
+            const avg=recent.length?topicStats.avg:(topic.lastRating||0);
+            const longOverdue=topicStatus==='overdue'&&dayDiff(topic.dueDate,now)>5;
+            if(topic.lapses||avg&&avg<3||longOverdue)weakCount++;
+            if(topic.reviewCount>=2&&topic.intervalDays>=4&&topicStatus!=='overdue'&&avg>=3.5)mastered++;
+          }
+          if(end<topicLength){
+            if(!isCurrent())return false;
+            await new Promise(resolve=>setTimeout(resolve,0));
+            if(!isCurrent())return false;
+          }
+        }
+        topicMetrics={topics,topicCount:topicLength,history,historyCount:historyLength,today:now,
+          activeCount,mastered,overdue,dueSoon,dueCount,newCount,reviewedCount,weakCount,
+          progressBySubject,queue,upcomingQueue};
+      }
+      if(!isCurrent())return false;
+      let studyLogMetrics=homeStudyLogMetricsCache;
+      if(!homeStudyLogCacheMatches(studyLogMetrics,logs,now)){
+        let weeklyMinutes=0;const weekStart=dateShift(now,-6);
+        for(let start=0;start<logLength;start+=400){
+          const end=Math.min(logLength,start+400);
+          for(let index=start;index<end;index++){
+            const log=logs[index];
+            if(safeDate(log.date)&&log.date>=weekStart&&log.date<=now)weeklyMinutes+=studyLogMinutes(log);
+          }
+          if(end<logLength){
+            if(!isCurrent())return false;
+            await new Promise(resolve=>setTimeout(resolve,0));
+            if(!isCurrent())return false;
+          }
+        }
+        studyLogMetrics={logs,length:logLength,today:now,weekStart,weeklyMinutes};
+      }
+      if(!isCurrent())return false;
+      homeTopicMetricsCache=topicMetrics;
+      homeStudyLogMetricsCache=studyLogMetrics;
+      homeConsistencyMetricsCache=null;
+      const activeView=document.querySelector('.view.active')?.id;
+      if(activeView==='view-overview'||activeView==='view-studyhub')window.NexusRenderAll?.();
+      return true;
+    })();
+    const wrapped=task.finally(()=>{if(homeMetricsBuildPromise===wrapped)homeMetricsBuildPromise=null;});
+    homeMetricsBuildPromise=wrapped;
+    return wrapped;
+  }
+  window.NexusPrepareHomeConsistencyMetrics=prepareHomeConsistencyMetrics;
   // Core Overview consumes the same cached topic aggregates as this panel.
-  window.NexusGetOverviewTopicMetrics=()=>getHomeConsistencyMetrics();
+  window.NexusGetOverviewTopicMetrics=()=>{
+    const cache=homeTopicMetricsCache;
+    return homeTopicCacheMatches(cache,state.topics,state.history,today())?cache:null;
+  };
   // Settings may need subject totals before the analytics cache has been built.
   // Expose only a validated cache hit so navigation never forces a full scan.
   window.NexusGetCachedOverviewTopicMetrics=()=>{
@@ -1221,6 +1341,14 @@
     // Call sites decide when this summary should refresh. Do not silently skip
     // population because the view's active class is in transition during startup/navigation.
     if(!target||!fsState||!state)return;
+    if(typeof window.NexusPrepareHomeConsistencyMetrics==='function'&&!homeMetricsAreReady()){
+      target.innerHTML='<div class="consistency-loading muted small">Preparing consistency metrics for this workspace…</div>';
+      window.NexusPrepareHomeConsistencyMetrics().catch(error=>{
+        console.error('Nexus Overview consistency preparation failed',error);
+        if(target.isConnected)target.innerHTML='<div class="analytics-render-error"><strong>Consistency metrics could not be prepared.</strong><p>Your saved workspace has not been changed. Retry the calculation.</p><button type="button" class="btn btn-sm btn-primary" data-action="retry-home-consistency">Retry consistency metrics</button></div>';
+      });
+      return;
+    }
     try{
       const metrics=getHomeConsistencyMetrics();
       const heat=metrics.heat.map(x=>'<div class="hub-heat" data-count="'+Math.min(4,x.count)+'" title="'+localEsc(x.date)+' · '+x.count+' review(s)" aria-label="'+localEsc(x.date)+': '+x.count+' review(s)"></div>').join('');
