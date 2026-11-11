@@ -426,6 +426,18 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
       value:{id:'topic-2',subjectId:'subject-1',name:'Bank reconciliation — updated',reviewCount:2}},
     {collection:'history',id:'review-1',operation:'delete'}
   ];
+  idb.failNextWrite=true;
+  await assert.rejects(loaded.api.writeWorkspaceEntityChanges('entity-owner-a',changes,
+    {operationId:'entity-op-failed'}),/Synthetic IndexedDB quota\/transaction failure/,
+    'an interrupted entity transaction must reject instead of reporting a partial commit');
+  const beforeRetry=await loaded.api.readWorkspaceEntities('entity-owner-a');
+  assert.equal(beforeRetry.state.topics[1].name,'Bank reconciliation',
+    'an aborted entity transaction must preserve the original topic record');
+  assert.equal(beforeRetry.state.history.length,2,
+    'an aborted entity transaction must preserve all original history records');
+  assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)).length,0,
+    'an aborted entity transaction must not leave partial outbox events');
+
   const committed=await loaded.api.writeWorkspaceEntityChanges('entity-owner-a',changes,op);
   assert.equal(committed.replayed,false);
   assert.equal(committed.firstSequence,1);
@@ -452,6 +464,10 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'one atomic operation must not mutate the same entity twice');
   assert.equal(await loaded.api.readWorkspaceEntities('entity-owner-b'),null,
     'an entity workspace must never be visible under another account owner');
+  await assert.rejects(loaded.api.writeWorkspaceEntityChanges('entity-owner-b',[
+    {collection:'topics',id:'topic-1',operation:'delete'}
+  ],{operationId:'wrong-entity-owner'}),/active account does not match/,
+    'incremental entity writes must be rejected for any account other than the committed owner');
   await assert.rejects(loaded.api.migrateWorkspaceEntities('entity-owner-b',trackerState,featureState),
     /active account does not match/,
     'migration must reject a workspace owner different from the committed session');
