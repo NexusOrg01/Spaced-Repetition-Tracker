@@ -447,13 +447,20 @@
   }
   function entityManifestKey(ownerId){return 'workspace-entities:'+encodeURIComponent(entityOwnerKey(ownerId));}
   function entitySequenceKey(ownerId){return 'workspace-entity-sequence:'+encodeURIComponent(entityOwnerKey(ownerId));}
-  function entityOperationKey(ownerId,operationId){return 'workspace-entity-operation:'+encodeURIComponent(entityOwnerKey(ownerId))+':'+encodeURIComponent(operationId);}
+  function entityOwnerRecordPrefix(ownerId){return 'workspace-entity:'+encodeURIComponent(entityOwnerKey(ownerId))+':';}
+  function entityRecordPrefix(ownerId,generation){return entityOwnerRecordPrefix(ownerId)+encodeURIComponent(generation)+':';}
+  function entityOutboxPrefix(ownerId){return 'workspace-entity-change:'+encodeURIComponent(entityOwnerKey(ownerId))+':';}
+  function entityOperationKey(ownerId,operationId){return entityOutboxPrefix(ownerId)+'op:'+encodeURIComponent(operationId);}
   function entityRecordKey(ownerId,generation,collection,id){
-    return 'workspace-entity:'+encodeURIComponent(ownerId)+':'+encodeURIComponent(generation)+':'+
-      encodeURIComponent(collection)+':'+encodeURIComponent(id);
+    return entityRecordPrefix(ownerId,generation)+encodeURIComponent(collection)+':'+encodeURIComponent(id);
   }
   function entityOutboxKey(ownerId,sequence){
-    return 'workspace-entity-change:'+encodeURIComponent(ownerId)+':'+String(sequence).padStart(16,'0');
+    return entityOutboxPrefix(ownerId)+'seq:'+String(sequence).padStart(16,'0');
+  }
+  function entityPrefixRange(prefix){
+    const factory=root&&root.IDBKeyRange;
+    if(!factory||typeof factory.bound!=='function')return undefined;
+    try{return factory.bound(prefix,prefix+'\\uffff');}catch(_){return undefined;}
   }
   function entityGeneration(){
     entityGenerationSequence++;
@@ -500,8 +507,9 @@
   async function pruneInactiveWorkspaceEntityGenerations(ownerId,activeGeneration){
     const owner=entityOwnerKey(ownerId);
     if(committedOwnerId!==owner||!enabled||!database)return 0;
+    const prefix=entityOwnerRecordPrefix(owner);
     const rows=await transaction([WORKSPACES],'readonly',(tx,set)=>{
-      const request=tx.objectStore(WORKSPACES).getAll();
+      const request=tx.objectStore(WORKSPACES).getAll(entityPrefixRange(prefix));
       request.onsuccess=()=>set(request.result||[]);
     });
     const staleKeys=rows.filter(row=>row&&row.entityRow===true&&row.ownerId===owner&&
@@ -623,8 +631,9 @@
       request.onsuccess=()=>set(request.result||null);
     });
     if(!manifest||!manifest.activeGeneration)return null;
+    const prefix=entityRecordPrefix(owner,manifest.activeGeneration);
     const rows=await transaction([WORKSPACES],'readonly',(tx,set)=>{
-      const request=tx.objectStore(WORKSPACES).getAll();
+      const request=tx.objectStore(WORKSPACES).getAll(entityPrefixRange(prefix));
       request.onsuccess=()=>set(request.result||[]);
     });
     const activeRows=rows.filter(row=>row&&row.entityRow===true&&row.ownerId===owner&&row.generation===manifest.activeGeneration);
@@ -743,8 +752,9 @@
   async function readWorkspaceEntityOutbox(ownerId,afterSequence=0,limit=100){
     const owner=entityOwnerKey(ownerId),after=Math.max(0,Number(afterSequence)||0),size=Math.max(1,Math.min(1000,Number(limit)||100));
     if(!enabled||!database||committedOwnerId!==owner)return [];
+    const prefix=entityOutboxPrefix(owner);
     const rows=await transaction(['outbox'],'readonly',(tx,set)=>{
-      const request=tx.objectStore('outbox').getAll();
+      const request=tx.objectStore('outbox').getAll(entityPrefixRange(prefix));
       request.onsuccess=()=>set(request.result||[]);
     });
     return rows.filter(row=>row&&row.ownerId===owner&&row.kind==='change'&&
@@ -753,8 +763,9 @@
   async function acknowledgeWorkspaceEntityOutbox(ownerId,throughSequence){
     const owner=entityOwnerKey(ownerId),through=Math.max(0,Number(throughSequence)||0);
     if(!enabled||!database||committedOwnerId!==owner)return 0;
+    const prefix=entityOutboxPrefix(owner);
     return transaction(['outbox'],'readwrite',(tx,set)=>{
-      const store=tx.objectStore('outbox'),request=store.getAll();
+      const store=tx.objectStore('outbox'),request=store.getAll(entityPrefixRange(prefix));
       request.onsuccess=()=>{
         const all=request.result||[];
         const rows=all.filter(row=>row&&row.ownerId===owner&&row.kind==='change'&&Number(row.sequence)<=through);
