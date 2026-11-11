@@ -533,7 +533,7 @@
           if(!enabled||committedOwnerId!==owner||revision!==sourceRevision){
             throw new Error('The active workspace changed during entity migration. The previous entity generation remains active.');
           }
-          await new Promise(resolve=>setTimeout(resolve,0));
+          await new Promise(resolve=>root.setTimeout(resolve,0));
         }
       }
       if(batch.length)await writeWorkspaceEntityBatch(batch.splice(0,batch.length));
