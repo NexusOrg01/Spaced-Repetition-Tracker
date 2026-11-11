@@ -309,7 +309,7 @@ const consistencySandbox={
   console:{error(){rendererErrors++;}}
 };
 vm.createContext(consistencySandbox);
-vm.runInContext(consistencySource+'\\nthis.getCachedHomeMetrics=()=>homeConsistencyMetricsCache;',consistencySandbox,{filename:'home-consistency-runtime.js'});
+vm.runInContext(consistencySource+'\nthis.getCachedHomeMetrics=()=>homeConsistencyMetricsCache;',consistencySandbox,{filename:'home-consistency-runtime.js'});
 consistencySandbox.renderHomeConsistencySummary();
 assert.ok(overviewTarget.innerHTML.includes('19286 of 77144 active topics'),'renderer must use the active-topic count it calculated, not an undefined variable');
 assert.ok(overviewTarget.innerHTML.includes('Review activity heatmap'),'the Overview renderer must populate the heatmap');
