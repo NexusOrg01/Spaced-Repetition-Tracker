@@ -371,4 +371,91 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(accountB.featureState.owner, 'account-b-hub');
 }
 
+// The entity store is a staged migration foundation. It must remain owner-scoped,
+// resumable without changing the existing snapshot source, and atomically journal deltas.
+{
+  const trackerState={
+    schema:3,
+    streams:[{id:'stream-1',name:'Commerce'}],
+    subjects:[{id:'subject-1',name:'Accounting',streamId:'stream-1'}],
+    topics:[
+      {id:'topic-1',subjectId:'subject-1',name:'Cash book',reviewCount:2},
+      {id:'topic-2',subjectId:'subject-1',name:'Bank reconciliation',reviewCount:1}
+    ],
+    history:[
+      {id:'review-1',topicId:'topic-1',reviewedAt:'2026-11-10',rating:4},
+      {id:'review-2',topicId:'topic-2',reviewedAt:'2026-11-10',rating:3}
+    ],
+    exams:[{id:'exam-1',name:'Term test',date:'2026-12-01'}],
+    settings:{theme:'dark',dailyGoal:90}
+  };
+  const featureState={
+    version:1,
+    journal:[{id:'journal-1',text:'Revise ledgers'}],
+    papers:[{id:'paper-1',name:'Past paper'}],
+    goals:[{id:'goal-1',name:'Finish unit 1'}],
+    studyLogs:[{id:'log-1',date:'2026-11-10',minutes:45}],
+    selectedTopicIds:['topic-1']
+  };
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(trackerState)],
+    ['recall.study.features.v1',JSON.stringify(featureState)],
+    ['nexus.cloud.last-user-id','entity-owner-a']
+  ]);
+  const idb=new FakeIndexedDB();
+  const loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true);
+  const migration=await loaded.api.migrateWorkspaceEntities('entity-owner-a',trackerState,featureState,
+    {expectedRevision:loaded.api.getStatus().revision});
+  assert.equal(migration.ownerId,'entity-owner-a');
+  assert.equal(migration.counts.topics,2);
+  assert.equal(migration.counts.history,2);
+  assert.equal(migration.rowCount,10,'the migration must count both metadata roots and every record');
+  const restored=await loaded.api.readWorkspaceEntities('entity-owner-a');
+  assert.deepEqual(restored.state.topics.map(topic=>topic.id),['topic-1','topic-2']);
+  assert.deepEqual(restored.state.settings,{theme:'dark',dailyGoal:90});
+  assert.deepEqual(restored.featureState.selectedTopicIds,['topic-1']);
+  assert.equal(restored.generation,migration.generation);
+
+  const op={
+    operationId:'entity-op-review-001'
+  };
+  const changes=[
+    {collection:'topics',id:'topic-2',operation:'put',position:1,
+      value:{id:'topic-2',subjectId:'subject-1',name:'Bank reconciliation — updated',reviewCount:2}},
+    {collection:'history',id:'review-1',operation:'delete'}
+  ];
+  const committed=await loaded.api.writeWorkspaceEntityChanges('entity-owner-a',changes,op);
+  assert.equal(committed.replayed,false);
+  assert.equal(committed.firstSequence,1);
+  assert.equal(committed.lastSequence,2);
+  const afterChanges=await loaded.api.readWorkspaceEntities('entity-owner-a');
+  assert.equal(afterChanges.state.topics[1].name,'Bank reconciliation — updated');
+  assert.deepEqual(afterChanges.state.history.map(item=>item.id),['review-2']);
+  assert.equal(afterChanges.counts.topics,2,'updating an existing entity must not increase collection counts');
+  assert.equal(afterChanges.counts.history,1,'deleting an entity must decrement its collection count');
+  assert.equal(afterChanges.rowCount,migration.rowCount-1,'entity row counts must remain exact after incremental changes');
+
+  const replay=await loaded.api.writeWorkspaceEntityChanges('entity-owner-a',changes,op);
+  assert.equal(replay.replayed,true,'a repeated operation ID must be idempotent');
+  assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)).length,2,
+    'idempotent retries must not duplicate outbox change events');
+  assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',2),2);
+  assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)).length,0,
+    'acknowledging a verified sequence must remove its change events');
+
+  assert.throws(()=>loaded.api.writeWorkspaceEntityChanges('entity-owner-a',[
+    {collection:'topics',id:'topic-1',operation:'delete'},
+    {collection:'topics',id:'topic-1',operation:'put',value:{id:'topic-1'}}
+  ],{operationId:'duplicate-entity-change'}),/same record more than once/,
+    'one atomic operation must not mutate the same entity twice');
+  assert.equal(await loaded.api.readWorkspaceEntities('entity-owner-b'),null,
+    'an entity workspace must never be visible under another account owner');
+  await assert.rejects(loaded.api.migrateWorkspaceEntities('entity-owner-b',trackerState,featureState),
+    /active account does not match/,
+    'migration must reject a workspace owner different from the committed session');
+  assert.equal(loaded.api.getStatus().enabled,true,
+    'entity operations must not replace or disable the existing snapshot-backed storage path');
+}
+
 console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, clear scoping, failed-write recovery, and account-handoff isolation.');
