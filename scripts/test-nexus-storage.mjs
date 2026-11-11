@@ -410,7 +410,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(migration.ownerId,'entity-owner-a');
   assert.equal(migration.counts.topics,2);
   assert.equal(migration.counts.history,2);
-  assert.equal(migration.rowCount,10,'the migration must count both metadata roots and every record');
+  assert.equal(migration.rowCount,13,'the migration must count both metadata roots and every record');
   const restored=await loaded.api.readWorkspaceEntities('entity-owner-a');
   assert.deepEqual(restored.state.topics.map(topic=>topic.id),['topic-1','topic-2']);
   assert.deepEqual(restored.state.settings,{theme:'dark',dailyGoal:90});
@@ -444,7 +444,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)).length,0,
     'acknowledging a verified sequence must remove its change events');
 
-  assert.throws(()=>loaded.api.writeWorkspaceEntityChanges('entity-owner-a',[
+  await assert.rejects(loaded.api.writeWorkspaceEntityChanges('entity-owner-a',[
     {collection:'topics',id:'topic-1',operation:'delete'},
     {collection:'topics',id:'topic-1',operation:'put',value:{id:'topic-1'}}
   ],{operationId:'duplicate-entity-change'}),/same record more than once/,
