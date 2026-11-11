@@ -199,7 +199,7 @@ assert.ok(studyHub.includes('id="hubRatingEntitySearch"')&&studyHub.includes('ge
   'the analytics selector must expose bounded, searchable entity options');
 
 
-const plannerStart=studyHub.indexOf('  let plannerMetricsCache=null;');
+const plannerStart=studyHub.indexOf('  let plannerMetricsCache=null,plannerBuildGeneration=0,plannerBuildPromise=null,plannerBuildContext=null,plannerUiBuildPromise=null;');
 const plannerEnd=studyHub.indexOf('  function hubCard(',plannerStart);
 assert.ok(plannerStart>=0&&plannerEnd>plannerStart,'cached planner metrics must be independently testable');
 const plannerSource=studyHub.slice(plannerStart,plannerEnd);
