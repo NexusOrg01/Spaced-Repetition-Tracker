@@ -518,7 +518,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   ]);
   assert.equal(await loaded.api.readWorkspaceEntities('entity-owner-a'),null,
     'account B must not read account A entity records while B is active');
-  assert.deepEqual(await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10),[],
+  assert.deepEqual(Array.from(await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)),[],
     'account B must not read account A outbox changes while B is active');
   assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',100),0,
     'account B must not acknowledge or delete account A outbox changes');
@@ -537,7 +537,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   ]);
   assert.equal(await loaded.api.readWorkspaceEntities('entity-owner-b'),null,
     'account A must not read account B entity records after switching back');
-  assert.deepEqual(await loaded.api.readWorkspaceEntityOutbox('entity-owner-b',0,10),[],
+  assert.deepEqual(Array.from(await loaded.api.readWorkspaceEntityOutbox('entity-owner-b',0,10)),[],
     'account A must not read account B outbox changes after switching back');
   assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-b',100),0,
     'account A must not acknowledge or delete account B outbox changes');
