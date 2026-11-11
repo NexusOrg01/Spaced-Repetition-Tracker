@@ -497,6 +497,39 @@
       set(rows.length);
     });
   }
+  async function pruneInactiveWorkspaceEntityGenerations(ownerId,activeGeneration){
+    const owner=entityOwnerKey(ownerId);
+    if(committedOwnerId!==owner||!enabled||!database)return 0;
+    const rows=await transaction([WORKSPACES],'readonly',(tx,set)=>{
+      const request=tx.objectStore(WORKSPACES).getAll();
+      request.onsuccess=()=>set(request.result||[]);
+    });
+    const staleKeys=rows.filter(row=>row&&row.entityRow===true&&row.ownerId===owner&&
+      row.generation!==activeGeneration).map(row=>row.key);
+    let removed=0;
+    for(let start=0;start<staleKeys.length;start+=ENTITY_BATCH_SIZE){
+      if(committedOwnerId!==owner||!enabled)return removed;
+      const batch=staleKeys.slice(start,start+ENTITY_BATCH_SIZE);
+      const count=await transaction([WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
+        const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta');
+        const request=meta.get(entityManifestKey(owner));
+        request.onsuccess=()=>{
+          const manifest=request.result;
+          // Never prune the pending generation or race a concurrent replacement.
+          if(committedOwnerId!==owner||!manifest||manifest.activeGeneration!==activeGeneration||
+             manifest.pendingGeneration){
+            set(0);return;
+          }
+          for(const key of batch)entities.delete(key);
+          set(batch.length);
+        };
+      });
+      removed+=count;
+      if(count===0)break;
+      if(start+ENTITY_BATCH_SIZE<staleKeys.length)await new Promise(resolve=>root.setTimeout(resolve,0));
+    }
+    return removed;
+  }
   async function migrateWorkspaceEntities(ownerId,stateSnapshot,featureSnapshot,options={}){
     const owner=entityOwnerKey(ownerId);
     if(!enabled||!database)throw new Error('IndexedDB must be enabled before the per-entity migration can run.');
@@ -561,7 +594,10 @@
           set(true);
         };
       });
-      return {ownerId:owner,generation,rowCount,counts,sourceRevision:revision};
+      let prunedRows=0;
+      try{prunedRows=await pruneInactiveWorkspaceEntityGenerations(owner,generation);}
+      catch(error){console.warn('Inactive Nexus entity generations could not be fully pruned; the active generation remains safe.',error);}
+      return {ownerId:owner,generation,rowCount,counts,sourceRevision:revision,prunedRows};
     }catch(error){
       try{
         await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
