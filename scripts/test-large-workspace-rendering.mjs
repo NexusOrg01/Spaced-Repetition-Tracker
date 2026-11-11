@@ -497,6 +497,12 @@ assert.equal(asyncHistorySandbox.window.NexusGetCachedHistoryActivityIndex(),pre
   'a prepared history index must be reusable without rebuilding');
 
 let asyncMetricYields=0,asyncMetricRenders=0,asyncTopicVisits=0,asyncLogVisits=0;
+const asyncTrackedTopics=new Proxy(fixtureTopics,{
+  get(target,property,receiver){
+    if(typeof property==='string'&&/^\\d+$/.test(property))asyncTopicVisits++;
+    return Reflect.get(target,property,receiver);
+  }
+});
 const asyncMetricSandbox={
   window:{
     NexusGetCachedHistoryActivityIndex:()=>fixtureIndex,
@@ -504,7 +510,7 @@ const asyncMetricSandbox={
     NexusRenderAll:()=>{asyncMetricRenders++;}
   },
   document:{addEventListener(){},querySelector:()=>({id:'view-overview'})},
-  state:{topics:fixtureTopics,history:fixtureHistory},
+  state:{topics:asyncTrackedTopics,history:fixtureHistory},
   fsState:{studyLogs:fixtureLogs,settings:{dailyMinutes:90,finalRevision:false}},
   today:()=>fixtureToday,
   dateShift:(date,days)=>{const d=new Date(date+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+days);return d.toISOString().slice(0,10);},
@@ -525,6 +531,7 @@ assert.equal(asyncMetricSandbox.window.NexusHomeMetricsAreReady(),true,'history/
 const preparedOverview=asyncMetricSandbox.window.NexusGetOverviewTopicMetrics();
 assert.equal(preparedOverview.activeCount,77144,'prepared Overview metrics must count all active topics');
 assert.equal(preparedOverview.queue.length<=7,true,'prepared queue must remain bounded');
+assert.equal(asyncTopicVisits,77144,'the cooperative topic builder must visit each topic exactly once');
 assert.equal(asyncLogVisits,24000,'the cooperative study-log builder must visit each log exactly once');
 assert.ok(asyncMetricYields>=Math.ceil(77144/400)-1+Math.ceil(24000/400)-1,
   'topic and study-log aggregation must yield between bounded batches');
@@ -555,7 +562,7 @@ const cancelledMetricSandbox={
   setTimeout(callback){
     cancelMetricYields++;
     return setTimeout(()=>{
-      if(cancelMetricYields===1)this.state.topics=fixtureTopics.slice();
+      if(cancelMetricYields===1)cancelledMetricSandbox.state.topics=fixtureTopics.slice();
       callback();
     },0);
   }
