@@ -528,6 +528,28 @@
       set(rows.length);
     });
   }
+  async function pruneWorkspaceEntityOutbox(ownerId){
+    const owner=entityOwnerKey(ownerId);
+    if(!enabled||!database||committedOwnerId!==owner)return 0;
+    const prefix=entityOutboxPrefix(owner);
+    let removed=0;
+    // Read and delete a bounded prefix page each transaction. This runs only after
+    // a complete replacement generation is published, so older deltas are superseded.
+    while(true){
+      const count=await transaction(['outbox'],'readwrite',(tx,set)=>{
+        const store=tx.objectStore('outbox'),request=store.getAll(entityPrefixRange(prefix),ENTITY_BATCH_SIZE);
+        request.onsuccess=()=>{
+          const rows=request.result||[];
+          for(const row of rows)if(row&&row.ownerId===owner)store.delete(row.key);
+          set(rows.length);
+        };
+      });
+      removed+=count;
+      if(count<ENTITY_BATCH_SIZE)break;
+      await new Promise(resolve=>root.setTimeout(resolve,0));
+    }
+    return removed;
+  }
   async function pruneInactiveWorkspaceEntityGenerations(ownerId,activeGeneration){
     const owner=entityOwnerKey(ownerId);
     if(committedOwnerId!==owner||!enabled||!database)return 0;
@@ -631,10 +653,12 @@
           set(true);
         };
       });
-      let prunedRows=0;
+      let prunedRows=0,prunedOutboxRows=0;
       try{prunedRows=await pruneInactiveWorkspaceEntityGenerations(owner,generation);}
       catch(error){console.warn('Inactive Nexus entity generations could not be fully pruned; the active generation remains safe.',error);}
-      return {ownerId:owner,generation,rowCount,counts,sourceRevision:revision,prunedRows};
+      try{prunedOutboxRows=await pruneWorkspaceEntityOutbox(owner);}
+      catch(error){console.warn('Superseded Nexus entity outbox records could not be fully pruned; the active generation remains safe.',error);}
+      return {ownerId:owner,generation,rowCount,counts,sourceRevision:revision,prunedRows,prunedOutboxRows};
     }catch(error){
       try{
         await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
