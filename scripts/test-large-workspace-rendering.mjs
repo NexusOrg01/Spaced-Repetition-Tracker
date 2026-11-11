@@ -391,7 +391,7 @@ assert.equal(saveFsSandbox.testSaveFs(),true,'new study-log records must persist
 const beforeStudyLogRebuild=logVisits;
 consistencySandbox.renderHomeConsistencySummary();
 assert.ok(logVisits>beforeStudyLogRebuild,'a study-log count change must rebuild the weekly study-time aggregate');
-const updatedConsistencyMetrics=consistencySandbox.window.NexusGetOverviewTopicMetrics();
+const updatedConsistencyMetrics=consistencySandbox.getCachedHomeMetrics().value;
 const expectedWeeklyMinutes=saveFsSandbox.fsState.studyLogs.reduce((sum,log)=>sum+(Number(log.minutes)||0),0);
 assert.equal(updatedConsistencyMetrics.weeklyMinutes,expectedWeeklyMinutes,'the rebuilt weekly study-time aggregate must include the newly saved log');
 assert.ok(indexReads>indexReadsAfterDisplayRangeChanges,'a relevant source change must rebuild the shared consistency aggregate');
