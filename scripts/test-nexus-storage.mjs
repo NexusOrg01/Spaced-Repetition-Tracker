@@ -562,4 +562,66 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'entity operations must not replace or disable the existing snapshot-backed storage path');
 }
 
+// Full programme-scale backfill: mirror the established stress baseline while
+// verifying bounded yielding and owner/generation key-range reads.
+{
+  const totalTopics=77144,totalHistory=48000,totalStudyLogs=24000;
+  const largeState={
+    schema:3,
+    streams:[{id:'large-stream',name:'Commerce'}],
+    subjects:[{id:'large-subject',name:'Accounting',streamId:'large-stream'}],
+    topics:Array.from({length:totalTopics},(_,index)=>({
+      id:'large-topic-'+index,subjectId:'large-subject',name:'Topic '+index,
+      reviewCount:index%5,intervalDays:index%30,lastRating:index%5+1,dueDate:'2026-11-12'
+    })),
+    history:Array.from({length:totalHistory},(_,index)=>({
+      id:'large-review-'+index,topicId:'large-topic-'+(index%totalTopics),
+      reviewedAt:index%2?'2026-11-09':'2026-11-10',rating:index%5+1
+    })),
+    exams:[],
+    settings:{dailyMinutes:90}
+  };
+  const largeFeatures={
+    version:1,journal:[],papers:[],goals:[],
+    studyLogs:Array.from({length:totalStudyLogs},(_,index)=>({
+      id:'large-log-'+index,date:'2026-11-10',minutes:index%120
+    })),
+    selectedTopicIds:[]
+  };
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(largeState)],
+    ['recall.study.features.v1',JSON.stringify(largeFeatures)],
+    ['nexus.cloud.last-user-id','large-workspace-owner']
+  ]);
+  const idb=new FakeIndexedDB(),large=loadApi(makeWindow(native,idb));
+  assert.equal(await large.api.bootstrap(),true,'large workspace backfill must start from durable IndexedDB');
+  let cooperativeBatches=0;
+  const originalScheduler=large.context.window.setTimeout;
+  large.context.window.setTimeout=(callback,delay)=>originalScheduler(()=>{
+    cooperativeBatches++;callback();
+  },delay);
+  const migration=await large.api.migrateWorkspaceEntities('large-workspace-owner',largeState,largeFeatures,
+    {expectedRevision:large.api.getStatus().revision});
+  large.context.window.setTimeout=originalScheduler;
+  assert.equal(migration.counts.topics,totalTopics,'large migration must preserve every topic');
+  assert.equal(migration.counts.history,totalHistory,'large migration must preserve every review-history row');
+  assert.equal(migration.counts.studyLogs,totalStudyLogs,'large migration must preserve every study log');
+  assert.equal(migration.rowCount,149148,'large manifest must publish exact metadata-plus-record row count');
+  assert.ok(cooperativeBatches>=Math.ceil(migration.rowCount/400)-1,
+    'large migration must yield after each bounded 400-row batch');
+  const restored=await large.api.readWorkspaceEntities('large-workspace-owner');
+  assert.equal(restored.state.topics.length,totalTopics);
+  assert.equal(restored.state.history.length,totalHistory);
+  assert.equal(restored.featureState.studyLogs.length,totalStudyLogs);
+  assert.equal(restored.state.topics[totalTopics-1].id,'large-topic-77143',
+    'large hydration must preserve the final topic record');
+  assert.equal(restored.state.history[totalHistory-1].id,'large-review-47999',
+    'large hydration must preserve the final review-history record');
+  assert.equal(restored.featureState.studyLogs[totalStudyLogs-1].id,'large-log-23999',
+    'large hydration must preserve the final study-log record');
+  assert.ok(idb.rangeQueries.some(query=>query.store==='workspaces'&&
+    query.lower==='workspace-entity:large-workspace-owner:'+migration.generation+':'),
+    'large entity hydration must query only the active owner/generation key range');
+}
+
 console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, clear scoping, failed-write recovery, and account-handoff isolation.');
