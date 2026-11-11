@@ -149,8 +149,16 @@
       if(shared){
         metrics=hubKpiCache={topics,history,historyLength:history.length,today:todayKey,
           activeCount:shared.activeCount,due:shared.dueCount,weak:shared.weakCount,mastered:shared.mastered};
+      }else if(typeof window.NexusPrepareHomeConsistencyMetrics==='function'){
+        target.innerHTML='<div class="hub-kpi"><strong>…</strong><span>Preparing workspace metrics</span></div>';
+        window.NexusPrepareHomeConsistencyMetrics().catch(error=>{
+          console.error('Study Hub KPI preparation failed',error);
+          target.innerHTML='<div class="hub-kpi"><strong>Unavailable</strong><span>Reopen Study Hub to retry metrics</span></div>';
+        });
+        return;
       }else{
-        // Startup fallback for builds where the core Overview metrics provider is absent.
+        // Compatibility fallback for old embeddings that do not include the shared
+        // preparation module. The normal app always uses cooperative preparation.
         let activeCount=0,due=0,weak=0,mastered=0;
         for(const topic of topics){
           if(topic.archived)continue;activeCount++;
