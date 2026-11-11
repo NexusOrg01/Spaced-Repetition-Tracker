@@ -455,6 +455,43 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   await assert.rejects(loaded.api.migrateWorkspaceEntities('entity-owner-b',trackerState,featureState),
     /active account does not match/,
     'migration must reject a workspace owner different from the committed session');
+
+  // A failed replacement generation must never displace the currently readable
+  // generation. The first 400 rows commit, then the next batch is interrupted.
+  const expandedState={
+    ...afterChanges.state,
+    topics:afterChanges.state.topics.concat(Array.from({length:400},(_,index)=>({
+      id:'expanded-topic-'+index,subjectId:'subject-1',name:'Expanded topic '+index,reviewCount:0
+    })))
+  };
+  const originalScheduler=loaded.context.window.setTimeout;
+  let migrationYieldCount=0;
+  loaded.context.window.setTimeout=(callback,delay)=>originalScheduler(()=>{
+    migrationYieldCount++;
+    if(migrationYieldCount===1)idb.failNextWrite=true;
+    callback();
+  },delay);
+  await assert.rejects(loaded.api.migrateWorkspaceEntities('entity-owner-a',expandedState,afterChanges.featureState,
+    {expectedRevision:loaded.api.getStatus().revision}),/Synthetic IndexedDB quota\/transaction failure/,
+    'a failed later batch must leave the previous entity generation active');
+  loaded.context.window.setTimeout=originalScheduler;
+  assert.ok(migrationYieldCount>=1,'the interrupted migration must yield after its first committed batch');
+  const preservedGeneration=await loaded.api.readWorkspaceEntities('entity-owner-a');
+  assert.equal(preservedGeneration.generation,afterChanges.generation,
+    'an interrupted migration must keep the previous generation active');
+  assert.equal(preservedGeneration.state.topics[1].name,'Bank reconciliation — updated',
+    'the previous generation must retain its committed entity changes');
+  assert.deepEqual(preservedGeneration.state.history.map(item=>item.id),['review-2'],
+    'the previous generation must retain committed deletions after failed backfill');
+
+  const resumedMigration=await loaded.api.migrateWorkspaceEntities('entity-owner-a',expandedState,afterChanges.featureState,
+    {expectedRevision:loaded.api.getStatus().revision});
+  assert.notEqual(resumedMigration.generation,afterChanges.generation,
+    'retrying an interrupted migration must publish a new generation only after all batches commit');
+  const resumedWorkspace=await loaded.api.readWorkspaceEntities('entity-owner-a');
+  assert.equal(resumedWorkspace.state.topics.length,402,'the resumed generation must contain the complete topic collection');
+  assert.equal(resumedWorkspace.counts.topics,402,'the resumed manifest must contain exact collection counts');
+  assert.equal(resumedWorkspace.rowCount,412,'the resumed manifest must publish an exact total entity row count');
   assert.equal(loaded.api.getStatus().enabled,true,
     'entity operations must not replace or disable the existing snapshot-backed storage path');
 }
