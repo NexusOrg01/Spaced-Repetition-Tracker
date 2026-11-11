@@ -436,9 +436,13 @@
   // authoritative until the app's mutation paths have migrated and passed recovery tests.
   const TRACKER_ENTITY_COLLECTIONS=['streams','subjects','topics','history','exams'];
   const FEATURE_ENTITY_COLLECTIONS=['journal','papers','goals','studyLogs'];
-  const ALL_ENTITY_COLLECTIONS=new Set([...TRACKER_ENTITY_COLLECTIONS,...FEATURE_ENTITY_COLLECTIONS]);
+  const ENTITY_META_COLLECTIONS=['trackerMeta','featureMeta'];
+  const ALL_ENTITY_COLLECTIONS=new Set([...TRACKER_ENTITY_COLLECTIONS,...FEATURE_ENTITY_COLLECTIONS,...ENTITY_META_COLLECTIONS]);
   const ENTITY_BATCH_SIZE=400;
   let entityGenerationSequence=0;
+  let entitySyncSerial=Promise.resolve();
+  let entitySyncError=null;
+  let entitySyncLastSuccessAt=null;
 
   function entityOwnerKey(ownerId){
     const owner=String(ownerId||'').trim();
@@ -650,7 +654,8 @@
       const request=tx.objectStore('migrationMeta').get(manifestKey);
       request.onsuccess=()=>set(request.result||null);
     });
-    if(!manifest||!manifest.activeGeneration)return null;
+    // A partially applied delta must never be exposed as a complete workspace.
+    if(!manifest||manifest.status!=='ready'||!manifest.activeGeneration)return null;
     const prefix=entityRecordPrefix(owner,manifest.activeGeneration);
     const rows=await transaction([WORKSPACES],'readonly',(tx,set)=>{
       const request=tx.objectStore(WORKSPACES).getAll(entityPrefixRange(prefix));
@@ -696,16 +701,20 @@
          !['put','delete'].includes(change.operation)){
         throw new Error('An entity change contains an unsupported collection, ID, or operation.');
       }
+      const isMeta=ENTITY_META_COLLECTIONS.includes(change.collection);
+      if(isMeta&&change.operation!=='put')throw new Error('Workspace metadata roots cannot be deleted by an entity delta.');
       if(change.operation==='put'&&(!Object.prototype.hasOwnProperty.call(change,'value')||
          change.value===undefined))throw new Error('A put operation requires a record value.');
-      if(change.operation==='put'&&(!Number.isSafeInteger(change.position)||change.position<0)){
-        throw new Error('A put operation requires an explicit non-negative position to preserve collection ordering.');
+      if(change.operation==='put'&&!isMeta&&(!Number.isSafeInteger(change.position)||change.position<0)){
+        throw new Error('A record put requires an explicit non-negative position to preserve collection ordering.');
       }
       const identity=change.collection+'\\u0000'+change.id;
       if(changeIdentitySet.has(identity))throw new Error('An entity operation cannot change the same record more than once.');
       changeIdentitySet.add(identity);
-      return {collection:change.collection,id:change.id,operation:change.operation,
-        value:change.value,position:change.operation==='put'?change.position:null};
+      const storageCollection=change.collection==='trackerMeta'||change.collection==='featureMeta'?'_meta':change.collection;
+      const storageId=change.collection==='trackerMeta'?'tracker':change.collection==='featureMeta'?'features':change.id;
+      return {collection:change.collection,id:change.id,storageCollection,storageId,operation:change.operation,
+        value:change.value,position:isMeta?0:(change.operation==='put'?change.position:null)};
     });
     const operationId=String(options.operationId||(
       root&&root.crypto&&typeof root.crypto.randomUUID==='function'?root.crypto.randomUUID():
@@ -725,14 +734,19 @@
         const firstSequence=sequence+1;
         for(let index=0;index<normalized.length;index++){
           const change=normalized[index],existing=existingRows[index];
-          const key=entityRecordKey(owner,manifest.activeGeneration,change.collection,change.id);
+          const key=entityRecordKey(owner,manifest.activeGeneration,change.storageCollection,change.storageId);
           let position=change.position;
           if(change.operation==='put'){
             if(position===null)position=existing&&Number.isSafeInteger(existing.position)
               ?existing.position:Number.MAX_SAFE_INTEGER;
-            if(!existing){rowDelta++;countDeltas[change.collection]=(countDeltas[change.collection]||0)+1;}
+            if(!existing){
+              rowDelta++;
+              if(!ENTITY_META_COLLECTIONS.includes(change.collection)){
+                countDeltas[change.collection]=(countDeltas[change.collection]||0)+1;
+              }
+            }
             entities.put({key,ownerId:owner,generation:manifest.activeGeneration,entityRow:true,
-              collection:change.collection,entityId:change.id,position,value:change.value});
+              collection:change.storageCollection,entityId:change.storageId,position,value:change.value});
           }else if(existing){
             entities.delete(key);rowDelta--;
             countDeltas[change.collection]=(countDeltas[change.collection]||0)-1;
@@ -766,13 +780,13 @@
           return;
         }
         const manifest=values.manifest;
-        if(!manifest||manifest.status!=='ready'||!manifest.activeGeneration){
+        if(!manifest||!['ready','updating'].includes(manifest.status)||!manifest.activeGeneration){
           try{tx.abort();}catch(_){}
           return;
         }
         const existingRows=new Array(normalized.length);let remaining=normalized.length;
         normalized.forEach((change,index)=>{
-          const key=entityRecordKey(owner,manifest.activeGeneration,change.collection,change.id);
+          const key=entityRecordKey(owner,manifest.activeGeneration,change.storageCollection,change.storageId);
           const request=entities.get(key);
           request.onsuccess=()=>{
             existingRows[index]=request.result||null;
@@ -854,6 +868,121 @@
       markerRequest.onsuccess=()=>{values.markers=markerRequest.result||[];finish();};
     });
   }
+  async function readEntityManifest(ownerId){
+    const owner=entityOwnerKey(ownerId),key=entityManifestKey(owner);
+    return transaction(['migrationMeta'],'readonly',(tx,set)=>{
+      const request=tx.objectStore('migrationMeta').get(key);
+      request.onsuccess=()=>set(request.result||null);
+    });
+  }
+  async function updateEntityManifest(ownerId,expectedGeneration,update){
+    const owner=entityOwnerKey(ownerId),key=entityManifestKey(owner);
+    return transaction(['migrationMeta'],'readwrite',(tx,set)=>{
+      const store=tx.objectStore('migrationMeta'),request=store.get(key);
+      request.onsuccess=()=>{
+        const current=request.result;
+        if(!enabled||committedOwnerId!==owner||!current||
+           current.activeGeneration!==expectedGeneration){
+          try{tx.abort();}catch(_){}
+          return;
+        }
+        store.put(update(current));
+        set(true);
+      };
+    });
+  }
+  function entityOperationId(){
+    return root&&root.crypto&&typeof root.crypto.randomUUID==='function'
+      ?'nexus-entity-'+root.crypto.randomUUID()
+      :'nexus-entity-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
+  }
+  function cloneEntityChanges(changes){
+    if(!Array.isArray(changes))return null;
+    return changes.map(change=>{
+      if(!change||typeof change!=='object')throw new Error('An entity change must be an object.');
+      const copy={collection:change.collection,id:change.id,operation:change.operation};
+      if(change.position!==undefined)copy.position=change.position;
+      if(change.operation==='put')copy.value=JSON.parse(JSON.stringify(change.value));
+      return copy;
+    });
+  }
+  async function syncWorkspaceEntities(ownerId,changes,options={}){
+    const owner=String(ownerId||'').trim();
+    if(!owner)return {skipped:true,reason:'unassigned-workspace'};
+    if(!enabled||!database)return {skipped:true,reason:'indexeddb-unavailable'};
+    if(committedOwnerId!==owner)throw new Error('The active account does not match the requested entity synchronization owner.');
+    const capturedChanges=cloneEntityChanges(changes);
+    const trackerRoot=options.trackerRoot?JSON.parse(JSON.stringify(options.trackerRoot)):null;
+    const featureRoot=options.featureRoot?JSON.parse(JSON.stringify(options.featureRoot)):null;
+    const trackerSnapshotJson=typeof options.trackerSnapshotJson==='string'?options.trackerSnapshotJson:null;
+    const featureSnapshotJson=typeof options.featureSnapshotJson==='string'?options.featureSnapshotJson:null;
+    const replace=options.replace===true||capturedChanges===null;
+    const task=entitySyncSerial.catch(()=>undefined).then(async()=>{
+      if(!enabled||committedOwnerId!==owner)throw new Error('The active account changed before entity synchronization could begin.');
+      const sourceRevision=revision;
+      let manifest=await readEntityManifest(owner);
+      const needsReplacement=replace||!manifest||manifest.status!=='ready'||!manifest.activeGeneration;
+      if(needsReplacement){
+        let stateSnapshot=null,featureSnapshot=null;
+        if(trackerSnapshotJson!==null&&featureSnapshotJson!==null){
+          stateSnapshot=JSON.parse(trackerSnapshotJson);
+          featureSnapshot=JSON.parse(featureSnapshotJson);
+        }else{
+          const compatibility=await readWorkspace(owner);
+          if(!compatibility||!compatibility.state||!compatibility.featureState){
+            throw new Error('A complete compatibility workspace is required to initialize the entity projection.');
+          }
+          stateSnapshot=compatibility.state;
+          featureSnapshot=compatibility.featureState;
+        }
+        const result=await migrateWorkspaceEntities(owner,stateSnapshot,featureSnapshot,{expectedRevision:revision});
+        entitySyncError=null;entitySyncLastSuccessAt=timestamp();
+        return {...result,mode:'snapshot-backfill'};
+      }
+
+      const delta=capturedChanges.slice();
+      if(trackerRoot)delta.push({collection:'trackerMeta',id:'tracker',operation:'put',position:0,value:trackerRoot});
+      if(featureRoot)delta.push({collection:'featureMeta',id:'features',operation:'put',position:0,value:featureRoot});
+      if(!delta.length){
+        entitySyncError=null;entitySyncLastSuccessAt=timestamp();
+        return {ownerId:owner,mode:'unchanged',applied:0,batches:0,sourceRevision:manifest.sourceRevision};
+      }
+
+      const activeGeneration=manifest.activeGeneration;
+      await updateEntityManifest(owner,activeGeneration,current=>({...current,status:'updating',updatedAt:timestamp()}));
+      const operationId=entityOperationId();
+      let applied=0,batches=0;
+      try{
+        for(let offset=0;offset<delta.length;offset+=1000){
+          if(!enabled||committedOwnerId!==owner)throw new Error('The active account changed during entity synchronization.');
+          const batch=delta.slice(offset,offset+1000);
+          const result=await writeWorkspaceEntityChanges(owner,batch,{
+            operationId:operationId+'-'+String(batches+1)
+          });
+          if(!result||result.ownerId!==owner)throw new Error('An entity-change batch could not be committed.');
+          applied+=batch.length;batches++;
+        }
+        if(revision!==sourceRevision)throw new Error('The local workspace changed while its entity projection was being updated.');
+        await updateEntityManifest(owner,activeGeneration,current=>({
+          ...current,status:'ready',sourceRevision:sourceRevision,lastEntitySyncAt:timestamp(),updatedAt:timestamp()
+        }));
+        entitySyncError=null;entitySyncLastSuccessAt=timestamp();
+        return {ownerId:owner,mode:'incremental',applied,batches,sourceRevision};
+      }catch(error){
+        try{
+          await updateEntityManifest(owner,activeGeneration,current=>({
+            ...current,status:'stale',syncError:String(error&&error.message||error).slice(0,240),updatedAt:timestamp()
+          }));
+        }catch(_){}
+        entitySyncError=String(error&&error.message||error).slice(0,240);
+        throw error;
+      }
+    });
+    entitySyncSerial=task;
+    task.catch(()=>undefined);
+    return task;
+  }
+
   function restoreNativeProperty() {
     if (!root || !facadeInstalled) return;
     try {
@@ -1264,6 +1393,7 @@
     migrateWorkspaceEntities,
     readWorkspaceEntities,
     writeWorkspaceEntityChanges,
+    syncWorkspaceEntities,
     readWorkspaceEntityOutbox,
     acknowledgeWorkspaceEntityOutbox,
     getStatus: () => ({
@@ -1273,7 +1403,9 @@
       pendingEntries: pending.size,
       startupError,
       lastError,
-      compatibilityMirrorWarning: mirrorError
+      compatibilityMirrorWarning: mirrorError,
+      entitySyncError,
+      entitySyncLastSuccessAt
     })
   };
 });
