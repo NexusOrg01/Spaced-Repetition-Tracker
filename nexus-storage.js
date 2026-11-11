@@ -659,7 +659,7 @@
     // Partition the active generation in one pass. Re-filtering the full row set
     // once per collection multiplied hydration work on large workspaces.
     const collections=TRACKER_ENTITY_COLLECTIONS.concat(FEATURE_ENTITY_COLLECTIONS);
-    const grouped=new Map(collections.map(collection=>[collection,[]]));
+    const grouped=new Map(collections.map(collection=>[collection,rows.slice(0,0)]));
     let activeRowCount=0,trackerRoot=null,featureRoot=null;
     for(const row of rows){
       if(!row||row.entityRow!==true||row.ownerId!==owner||row.generation!==manifest.activeGeneration)continue;
