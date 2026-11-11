@@ -575,8 +575,6 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'the previous generation must retain its committed entity changes');
   assert.equal(preservedGeneration.state.history.length,1);
   assert.equal(preservedGeneration.state.history[0].id,'review-2');
-  assert.ok(true,
-    'the previous generation must retain committed deletions after failed backfill');
 
   const resumedMigration=await loaded.api.migrateWorkspaceEntities('entity-owner-a',expandedState,afterChanges.featureState,
     {expectedRevision:loaded.api.getStatus().revision});
@@ -690,8 +688,6 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.ok(incrementallyRestored,
     'incremental updates must preserve the complete entity generation and its integrity metadata');
   assert.equal(incrementallyRestored.state.topics.at(-1).id,appendedTopic.id);
-  assert.ok(true,
-    'append positions must keep new tracker records at the end without rewriting existing rows');
   assert.equal(incrementallyRestored.state.history[0].id,prependedReview.id,
     'prepend positions must put new review records before existing history');
   assert.equal(incrementallyRestored.featureState.papers.at(-1).id,appendedPaper.id,
