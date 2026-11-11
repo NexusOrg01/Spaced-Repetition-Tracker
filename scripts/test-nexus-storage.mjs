@@ -517,6 +517,25 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(resumedWorkspace.counts.topics,402,'the resumed manifest must contain exact collection counts');
   assert.equal(resumedWorkspace.rowCount,412,'the resumed manifest must publish an exact total entity row count');
 
+  const duplicateIdState={
+    ...resumedWorkspace.state,
+    topics:resumedWorkspace.state.topics.concat([{...resumedWorkspace.state.topics[0]}])
+  };
+  await assert.rejects(loaded.api.migrateWorkspaceEntities('entity-owner-a',duplicateIdState,resumedWorkspace.featureState,
+    {expectedRevision:loaded.api.getStatus().revision}),/duplicate stable record ID/,
+    'entity migration must reject duplicate IDs rather than create records that later updates cannot address');
+  assert.equal((await loaded.api.readWorkspaceEntities('entity-owner-a')).generation,resumedMigration.generation,
+    'a duplicate-ID migration must leave the previous complete generation active');
+  const missingIdState={
+    ...resumedWorkspace.state,
+    topics:resumedWorkspace.state.topics.map((topic,index)=>index===0?{...topic,id:''}:topic)
+  };
+  await assert.rejects(loaded.api.migrateWorkspaceEntities('entity-owner-a',missingIdState,resumedWorkspace.featureState,
+    {expectedRevision:loaded.api.getStatus().revision}),/stable record ID/,
+    'entity migration must reject records without stable IDs');
+  assert.equal((await loaded.api.readWorkspaceEntities('entity-owner-a')).generation,resumedMigration.generation,
+    'a missing-ID migration must leave the previous complete generation active');
+
   // Existing entity rows/outbox entries remain physically stored but must be
   // inaccessible while another account is the committed local owner.
   await loaded.api.commitLocalStorageEntries([
