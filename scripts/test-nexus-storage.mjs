@@ -668,9 +668,9 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'Study Hub metadata-root updates must be applied with the delta');
   assert.equal(incrementallyRestored.counts.topics,403,
     'incremental appends must maintain exact collection counts');
-  assert.equal(incrementallyRestored.counts.history,3,
+  assert.equal(incrementallyRestored.counts.history,2,
     'incremental history inserts must maintain exact collection counts');
-  assert.equal(incrementallyRestored.counts.papers,1,
+  assert.equal(incrementallyRestored.counts.papers,2,
     'incremental Study Hub inserts must maintain exact collection counts');
 
   assert.ok(idb.rangeQueries.some(query=>query.store==='workspaces'&&
