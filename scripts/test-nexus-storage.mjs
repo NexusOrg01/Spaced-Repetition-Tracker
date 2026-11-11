@@ -26,7 +26,12 @@ class FakeRequest {
 class FakeObjectStore {
   constructor(tx, name) { this.tx = tx; this.name = name; }
   get(key) { return this.tx.enqueue(() => clone(this.tx.maps.get(this.name).get(key))); }
-  getAll() { return this.tx.enqueue(() => [...this.tx.maps.get(this.name).values()].map(clone)); }
+  getAll(range) {
+    if(range&&this.tx.db.owner.rangeQueries)this.tx.db.owner.rangeQueries.push({store:this.name,lower:range.lower,upper:range.upper});
+    return this.tx.enqueue(() => [...this.tx.maps.get(this.name).values()]
+      .filter(row=>!range||(typeof row.key==='string'&&row.key>=range.lower&&row.key<=range.upper))
+      .map(clone));
+  }
   put(value) {
     const row = clone(value);
     return this.tx.enqueue(() => {
@@ -126,7 +131,7 @@ class FakeDatabase {
 }
 
 class FakeIndexedDB {
-  constructor() { this.databases = new Map(); this.failNextWrite = false; }
+  constructor() { this.databases = new Map(); this.failNextWrite = false; this.rangeQueries=[]; }
   open(name, version) {
     const request = { result: null, error: null, onupgradeneeded: null, onsuccess: null, onerror: null, onblocked: null };
     queueMicrotask(() => {
@@ -159,7 +164,8 @@ function makeWindow(nativeStorage, indexedDB) {
     indexedDB,
     document: { getElementById: () => null },
     console,
-    setTimeout
+    setTimeout,
+    IDBKeyRange:{bound(lower,upper){return {lower,upper};}}
   };
 }
 
@@ -545,6 +551,12 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'account A must not acknowledge or delete account B outbox changes');
   assert.equal((await loaded.api.readWorkspaceEntities('entity-owner-a')).generation,resumedMigration.generation,
     'switching back must preserve the original account A entity generation');
+  assert.ok(idb.rangeQueries.some(query=>query.store==='workspaces'&&
+    query.lower.startsWith('workspace-entity:entity-owner-a:')),
+    'entity hydration and generation cleanup must use owner/generation key ranges');
+  assert.ok(idb.rangeQueries.some(query=>query.store==='outbox'&&
+    query.lower.startsWith('workspace-entity-change:entity-owner-a:')),
+    'outbox reads and acknowledgements must use a bounded per-owner key range');
 
   assert.equal(loaded.api.getStatus().enabled,true,
     'entity operations must not replace or disable the existing snapshot-backed storage path');
