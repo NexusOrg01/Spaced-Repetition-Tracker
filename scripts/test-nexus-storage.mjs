@@ -508,6 +508,42 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(resumedWorkspace.state.topics.length,402,'the resumed generation must contain the complete topic collection');
   assert.equal(resumedWorkspace.counts.topics,402,'the resumed manifest must contain exact collection counts');
   assert.equal(resumedWorkspace.rowCount,412,'the resumed manifest must publish an exact total entity row count');
+
+  // Existing entity rows/outbox entries remain physically stored but must be
+  // inaccessible while another account is the committed local owner.
+  await loaded.api.commitLocalStorageEntries([
+    {key:'nexus.cloud.last-user-id',value:'entity-owner-b'},
+    {key:'recall.study.tracker.v1',value:JSON.stringify(trackerState)},
+    {key:'recall.study.features.v1',value:JSON.stringify(featureState)}
+  ]);
+  assert.equal(await loaded.api.readWorkspaceEntities('entity-owner-a'),null,
+    'account B must not read account A entity records while B is active');
+  assert.deepEqual(await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10),[],
+    'account B must not read account A outbox changes while B is active');
+  assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',100),0,
+    'account B must not acknowledge or delete account A outbox changes');
+  const migrationB=await loaded.api.migrateWorkspaceEntities('entity-owner-b',trackerState,featureState,
+    {expectedRevision:loaded.api.getStatus().revision});
+  await loaded.api.writeWorkspaceEntityChanges('entity-owner-b',[
+    {collection:'topics',id:'topic-1',operation:'delete'}
+  ],{operationId:'entity-owner-b-op-001'});
+  assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-b',0,10)).length,1,
+    'account B must be able to read only its own queued entity change');
+
+  await loaded.api.commitLocalStorageEntries([
+    {key:'nexus.cloud.last-user-id',value:'entity-owner-a'},
+    {key:'recall.study.tracker.v1',value:JSON.stringify(expandedState)},
+    {key:'recall.study.features.v1',value:JSON.stringify(afterChanges.featureState)}
+  ]);
+  assert.equal(await loaded.api.readWorkspaceEntities('entity-owner-b'),null,
+    'account A must not read account B entity records after switching back');
+  assert.deepEqual(await loaded.api.readWorkspaceEntityOutbox('entity-owner-b',0,10),[],
+    'account A must not read account B outbox changes after switching back');
+  assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-b',100),0,
+    'account A must not acknowledge or delete account B outbox changes');
+  assert.equal((await loaded.api.readWorkspaceEntities('entity-owner-a')).generation,resumedMigration.generation,
+    'switching back must preserve the original account A entity generation');
+
   assert.equal(loaded.api.getStatus().enabled,true,
     'entity operations must not replace or disable the existing snapshot-backed storage path');
 }
