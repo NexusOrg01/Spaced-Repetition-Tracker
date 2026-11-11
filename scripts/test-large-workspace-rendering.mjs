@@ -624,7 +624,7 @@ console.log('Overview consistency runtime tests passed: shared history index, 77
 assert.ok(studyHub.includes('window.NexusGetFeatureStateForCommit=()=>fsState;'),
   'ordinary tracker saves must be able to reuse the live Study Hub state during the synchronous queue commit');
 assert.ok(appCore.includes('window.NexusGetFeatureStateForCommit') &&
-  appCore.includes("workspaceEntries.push({key:window.NexusFeatureStorageKey,value:JSON.stringify(featureState)})") &&
+  appCore.includes("workspaceEntries.push({key:window.NexusFeatureStorageKey,value:featureSnapshot})") &&
   appCore.includes('noteCommittedLocalSave({state,featureState})'),
   'tracker and Study Hub state must be written with one queue commit, without a duplicate full-snapshot requeue');
 assert.ok(studyHub.includes('const shared=window.NexusGetOverviewTopicMetrics?.();') &&
