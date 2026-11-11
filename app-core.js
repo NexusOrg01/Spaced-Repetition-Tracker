@@ -314,10 +314,9 @@
   }
   function loadState(){const current=safeRead(STORAGE_KEY);if(current){try{return loadAndRepair(current);}catch(e){console.warn('Saved data was invalid; existing saved bytes were not overwritten.',e);}}const old=safeRead('alSrsTrackerV2');if(old){try{return loadAndRepair(migrateOld(old.state||old));}catch(e){console.warn(e);}}const legacyT=safeRead('alTrackerData'),legacyH=safeRead('alHistoryLog');if(Array.isArray(legacyT)||Array.isArray(legacyH))return loadAndRepair(migrateOld({topics:legacyT||[],history:legacyH||[]}));return baseState();}
   const TRACKER_ENTITY_ARRAYS=['streams','subjects','topics','history','exams'];
-  function trackerEntityPutChange(collection,row){
-    const list=state&&Array.isArray(state[collection])?state[collection]:[];
-    const index=list.findIndex(item=>item&&String(item.id)===String(row&&row.id));
-    return {collection,id:String(row&&row.id||''),operation:'put',position:Math.max(0,index),value:row};
+  function trackerEntityPutChange(collection,row,order='append'){
+    const position=order==='prepend'?'prepend':null;
+    return {collection,id:String(row&&row.id||''),operation:'put',position,value:row};
   }
   function trackerEntityDeleteChange(collection,id){
     return {collection,id:String(id),operation:'delete'};
@@ -397,10 +396,10 @@
         });
         const owner=localStorage.getItem('nexus.cloud.last-user-id')||'';
         if(owner&&typeof storage.syncWorkspaceEntities==='function'){
-          durableFlush.then(()=>storage.syncWorkspaceEntities(owner,frozenEntityChanges,{
+          storage.syncWorkspaceEntities(owner,frozenEntityChanges,{
             trackerRoot,featureRoot,trackerSnapshotJson:trackerSnapshot,
-            featureSnapshotJson:featureSnapshot,replace:entityReplace
-          })).catch(error=>{
+            featureSnapshotJson:featureSnapshot,replace:entityReplace,durablePromise:durableFlush
+          }).catch(error=>{
             // The current snapshot and offline queue remain authoritative. A failed
             // entity projection is marked stale and rebuilt from that safe snapshot.
             console.warn('Nexus entity projection update failed; snapshot storage remains active.',error);
@@ -1006,8 +1005,8 @@
     t.lastReviewed=reviewed;t.lastRating=rating;t.intervalDays=days;t.dueDate=due;t.reviewCount=(t.reviewCount||0)+1;
     state.history.unshift(reviewEntry);
     const persisted=save({entityChanges:[
-      trackerEntityPutChange('topics',t),
-      trackerEntityPutChange('history',reviewEntry)
+      trackerEntityPutChange('topics',t,'keep'),
+      trackerEntityPutChange('history',reviewEntry,'prepend')
     ]});
     $('reviewDialog').close();
     selectedReviewRating=null;$('reviewCustomDue').value='';
@@ -1037,7 +1036,7 @@
       startUndoTopicAdd('Topic added.',newTopic.id);
       state.topics.push(newTopic);
     }
-    save({entityChanges:[trackerEntityPutChange('topics',editTopicId?getTopic(editTopicId):state.topics[state.topics.length-1])]});
+    save({entityChanges:[trackerEntityPutChange('topics',editTopicId?getTopic(editTopicId):state.topics[state.topics.length-1],editTopicId?'keep':'append')]});
     $('topicDialog').close();renderAll();switchView('topics');notify('Topic saved.'+(customDue?' Custom date set.':''),true);
   }
   function deleteTopic(id){
@@ -1063,7 +1062,7 @@
     if(editStreamId){const stream=state.streams.find(item=>item.id===editStreamId);if(!stream)return;startUndoEntityEdit('Stream saved.','streams',stream,['name']);stream.name=name;}
     else{const stream={id:makeId('stream'),name};startUndoEntityAdd('Stream saved.','streams',stream.id);state.streams.push(stream);}
     const savedStream=state.streams.find(item=>item.id===editStreamId)||state.streams[state.streams.length-1];
-    save({entityChanges:[trackerEntityPutChange('streams',savedStream)]});
+    save({entityChanges:[trackerEntityPutChange('streams',savedStream,editStreamId?'keep':'append')]});
     $('streamDialog').close();renderAll();notify('Stream saved.',true);
   }
   function openSubject(id=null,preselectedStream=null){editSubjectId=id;const sub=id?state.subjects.find(s=>s.id===id):null;$('subjectDialogTitle').textContent=sub?'Edit subject':'Add subject';refreshFilterOptions();$('subjectStreamInput').value=sub?.streamId||preselectedStream||state.streams[0]?.id||'';$('subjectNameInput').value=sub?.name||'';$('subjectDialog').showModal();}
@@ -1075,7 +1074,7 @@
     if(editSubjectId){const subject=state.subjects.find(item=>item.id===editSubjectId);if(!subject)return;startUndoEntityEdit('Subject saved.','subjects',subject,['name','streamId']);subject.name=name;subject.streamId=streamId;}
     else{const subject={id:makeId('subject'),name,streamId,order:state.subjects.length};startUndoEntityAdd('Subject saved.','subjects',subject.id);state.subjects.push(subject);}
     const savedSubject=state.subjects.find(item=>item.id===editSubjectId)||state.subjects[state.subjects.length-1];
-    save({entityChanges:[trackerEntityPutChange('subjects',savedSubject)]});
+    save({entityChanges:[trackerEntityPutChange('subjects',savedSubject,editSubjectId?'keep':'append')]});
     $('subjectDialog').close();renderAll();notify('Subject saved.',true);
   }
   function deleteSubject(id){
@@ -1210,7 +1209,7 @@
     if(editExamId){const index=state.exams.findIndex(exam=>exam.id===editExamId);if(index<0)return;startUndoArrayItemReplacement('Exam saved.','exams',index);state.exams[index]=item;}
     else{startUndoEntityAdd('Exam saved.','exams',item.id);state.exams.push(item);}
     const savedExam=state.exams.find(exam=>exam.id===item.id);
-    save({entityChanges:[trackerEntityPutChange('exams',savedExam)]});
+    save({entityChanges:[trackerEntityPutChange('exams',savedExam,editExamId?'keep':'append')]});
     $('examDialog').close();renderAll();notify('Exam saved.',true);
   }
   function deleteExam(id){
