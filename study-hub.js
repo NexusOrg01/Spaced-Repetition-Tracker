@@ -1349,7 +1349,7 @@
     // Call sites decide when this summary should refresh. Do not silently skip
     // population because the view's active class is in transition during startup/navigation.
     if(!target||!fsState||!state)return;
-    if(typeof window.NexusPrepareHomeConsistencyMetrics==='function'&&!homeMetricsAreReady()){
+    if(typeof window.NexusPrepareHomeConsistencyMetrics==='function'&&typeof window.NexusPrepareHistoryActivityIndex==='function'&&!homeMetricsAreReady()){
       target.innerHTML='<div class="consistency-loading muted small">Preparing consistency metrics for this workspace…</div>';
       window.NexusPrepareHomeConsistencyMetrics().catch(error=>{
         console.error('Nexus Overview consistency preparation failed',error);
