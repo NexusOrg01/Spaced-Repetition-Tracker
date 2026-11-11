@@ -131,12 +131,14 @@ assert.ok(upcomingLargeWorkspace.includes('sharedMetrics?.upcomingQueue') &&
   !upcomingLargeWorkspace.includes('.sort(') &&
   appCore.includes('renderUpcomingQueue(sharedOverview)'),
   'the seven-row upcoming list must reuse the shared bounded selection and retain its safe fallback');
-const plannerSource=section(studyHub,'let plannerMetricsCache=null;','function hubCard(','Study Hub large planner');
-assert.ok(plannerSource.includes('const buckets=new Map()') &&
+const plannerSource=section(studyHub,'let plannerMetricsCache=null,plannerBuildGeneration=0,plannerBuildPromise=null,plannerBuildContext=null,plannerUiBuildPromise=null;','function hubCard(','Study Hub cooperative planner');
+assert.ok(plannerSource.includes('function buildPlan(limitBudget=true)') &&
+  plannerSource.includes('function preparePlannerMetrics(limitBudget=true)') &&
   plannerSource.includes('priorityKeys=Array.from(buckets.keys()).sort') &&
-  plannerSource.includes('const scheduledByDate=new Map()') &&
+  plannerSource.includes('for(let start=0;start<ts.length;start+=batchSize)') &&
+  plannerSource.includes('window.NexusPreparePlannerMetrics=preparePlannerMetrics;') &&
   plannerSource.includes('plannerMetricsCache='),
-  'planner ordering, workload estimates and calendar counts must be retained in one revision-aware metrics cache');
+  'planner ordering, workload estimates and calendar counts must be cached, built cooperatively and invalidated by workspace changes');
 const plannerRender=section(studyHub,'function renderPlanner(){','function renderMastery()','Study Hub planner rendering');
 assert.ok(plannerRender.includes('scheduledByDate=planner.scheduledByDate') &&
   plannerRender.includes('const remainingMins=planner.remainingMins') &&
