@@ -457,6 +457,14 @@
   function entityOutboxKey(ownerId,sequence){
     return entityOutboxPrefix(ownerId)+'seq:'+String(sequence).padStart(16,'0');
   }
+  function entityOutboxSequenceRange(ownerId,afterSequence){
+    const factory=root&&root.IDBKeyRange;
+    if(!factory||typeof factory.bound!=='function')return null;
+    const prefix=entityOutboxPrefix(ownerId)+'seq:';
+    try{
+      return factory.bound(prefix+String(afterSequence+1).padStart(16,'0'),prefix+'\\uffff');
+    }catch(_){return null;}
+  }
   function entityPrefixRange(prefix){
     const factory=root&&root.IDBKeyRange;
     if(!factory||typeof factory.bound!=='function')return undefined;
@@ -752,13 +760,19 @@
   async function readWorkspaceEntityOutbox(ownerId,afterSequence=0,limit=100){
     const owner=entityOwnerKey(ownerId),after=Math.max(0,Number(afterSequence)||0),size=Math.max(1,Math.min(1000,Number(limit)||100));
     if(!enabled||!database||committedOwnerId!==owner)return [];
-    const prefix=entityOutboxPrefix(owner);
+    const sequenceRange=entityOutboxSequenceRange(owner,after),prefix=entityOutboxPrefix(owner);
     const rows=await transaction(['outbox'],'readonly',(tx,set)=>{
-      const request=tx.objectStore('outbox').getAll(entityPrefixRange(prefix));
+      // Sequence keys are zero-padded and lexicographically ordered. Let IndexedDB
+      // discard already-acknowledged rows and cap the page before materialising it.
+      const request=tx.objectStore('outbox').getAll(
+        sequenceRange||entityPrefixRange(prefix),sequenceRange?size:undefined);
       request.onsuccess=()=>set(request.result||[]);
     });
-    return rows.filter(row=>row&&row.ownerId===owner&&row.kind==='change'&&
-      Number(row.sequence)>after).sort((a,b)=>a.sequence-b.sequence).slice(0,size);
+    const matching=rows.filter(row=>row&&row.ownerId===owner&&row.kind==='change'&&
+      Number(row.sequence)>after);
+    // Browsers without IDBKeyRange use the compatibility scan; modern IndexedDB
+    // returns the requested page in primary-key order without a full-owner sort.
+    return sequenceRange?matching:matching.sort((a,b)=>a.sequence-b.sequence).slice(0,size);
   }
   async function acknowledgeWorkspaceEntityOutbox(ownerId,throughSequence){
     const owner=entityOwnerKey(ownerId),through=Math.max(0,Number(throughSequence)||0);
