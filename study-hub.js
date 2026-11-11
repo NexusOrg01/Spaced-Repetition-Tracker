@@ -182,18 +182,18 @@
   function plannerContext(limitBudget=true){
     const topics=state.topics,daily=Math.max(10,Math.min(720,fNum(fsState.settings.dailyMinutes)||90));
     const backlog=fsState.settings.backlogDays||7,now=today(),calendarWindow=Math.max(1,Math.min(90,Number(fsState.calendarWindow)||14));
-    return {topics,history:state.history,historyLength:state.history.length,today:now,
+    return {topics,topicCount:topics.length,history:state.history,historyLength:state.history.length,today:now,
       limitBudget,daily,backlog,finalRevision:Boolean(fsState.settings.finalRevision),calendarWindow,
       cap:limitBudget?daily:Math.max(720,topics.length*30)};
   }
   function plannerCacheMatches(cache,context){
-    return !!cache&&cache.topics===context.topics&&cache.history===context.history&&
+    return !!cache&&cache.topics===context.topics&&cache.topicCount===context.topicCount&&cache.history===context.history&&
       cache.historyLength===context.historyLength&&cache.today===context.today&&
       cache.limitBudget===context.limitBudget&&cache.daily===context.daily&&cache.backlog===context.backlog&&
       cache.finalRevision===context.finalRevision&&cache.calendarWindow===context.calendarWindow;
   }
   function samePlannerContext(a,b){
-    return !!a&&!!b&&a.topics===b.topics&&a.history===b.history&&
+    return !!a&&!!b&&a.topics===b.topics&&a.topicCount===b.topicCount&&a.history===b.history&&
       a.historyLength===b.historyLength&&a.today===b.today&&a.limitBudget===b.limitBudget&&
       a.daily===b.daily&&a.backlog===b.backlog&&a.finalRevision===b.finalRevision&&
       a.calendarWindow===b.calendarWindow;
