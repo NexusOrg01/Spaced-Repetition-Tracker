@@ -25,7 +25,9 @@ assert.ok(appCore.includes('window.NexusTrackerEntityPutChange=trackerEntityPutC
 assert.ok(appCore.includes("state=loadState();save({entityChanges:[]})") &&
   appCore.includes("state.settings.theme=$('themeSelect').value;save({entityChanges:[]})"),
   'ordinary startup and theme saves must not rebuild the full entity generation');
-assert.ok(appCore.includes("save({entityChanges:[trackerEntityDeleteChange('history',id)]})"),
+assert.ok(appCore.includes("save({entityChanges:[trackerEntityDeleteChange('history',id)]})") &&
+  appCore.includes("const entityChangeCount=1+topicIds.length+historyIds.length+journalIds.length+paperIds.length") &&
+  appCore.includes("const entityChangeCount=1+subjectIds.length+topicIds.length+historyIds.length+journalIds.length+paperIds.length"),
   'deleting one history entry must publish only that history entity deletion');
 assert.ok(appCore.includes("const persisted=save({replaceEntities:true})") &&
   appCore.includes("state=restored;save({replaceEntities:true})") &&
@@ -33,13 +35,13 @@ assert.ok(appCore.includes("const persisted=save({replaceEntities:true})") &&
   appCore.includes("state=baseState();save({replaceEntities:true})"),
   'undo, full backup import, full history clear and workspace reset must explicitly rebuild the entity projection');
 
-assert.ok(studyHub.includes("over.map(t=>window.NexusTrackerEntityPutChange('topics',t,'keep'))") &&
-  studyHub.includes("candidates.map(t=>window.NexusTrackerEntityPutChange('topics',t,'keep'))") &&
-  studyHub.includes("chosen.map(t=>window.NexusTrackerEntityPutChange('topics',t,'keep'))"),
-  'backlog scheduling, workload balancing and bulk topic edits must publish topic deltas');
+assert.ok(studyHub.includes('function saveTopicEntityChanges(topics)') &&
+  studyHub.includes('if(rows.length>1000)return save({replaceEntities:true})') &&
+  studyHub.includes("rows.map(topic=>window.NexusTrackerEntityPutChange('topics',topic,'keep'))"),
+  'backlog scheduling, workload balancing and bulk topic edits must publish bounded topic deltas and avoid allocating oversized change sets');
 assert.ok(studyHub.includes("window.NexusTrackerEntityDeleteChange('topics',t.id)") &&
   studyHub.includes("window.NexusTrackerEntityDeleteChange('history',h.id)") &&
-  studyHub.includes("entityChanges.length<=1000?save({entityChanges}):save({replaceEntities:true})"),
+  studyHub.includes("entityChangeCount<=1000?save({entityChanges:[...chosen.map(t=>window.NexusTrackerEntityDeleteChange('topics',t.id)),...deletedHistory.map(h=>window.NexusTrackerEntityDeleteChange('history',h.id))]}):save({replaceEntities:true})"),
   'bulk deletion must publish topic/history deltas for bounded batches and use replacement for oversized batches');
 
 

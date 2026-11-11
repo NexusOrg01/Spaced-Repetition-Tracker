@@ -1150,14 +1150,15 @@
     markDeleteDiagnosticPhase('subject:filter-subjects');
     state.subjects=state.subjects.filter(item=>item.id!==id);
     markDeleteDiagnosticPhase('subject:save');
-    const entityChanges=[
+    const entityChangeCount=1+topicIds.length+historyIds.length+journalIds.length+paperIds.length;
+    const persisted=entityChangeCount<=1000?save({entityChanges:[
       trackerEntityDeleteChange('subjects',id),
       ...topicIds.map(topicId=>trackerEntityDeleteChange('topics',topicId)),
       ...historyIds.map(historyId=>trackerEntityDeleteChange('history',historyId)),
       ...journalIds.map(journalId=>({collection:'journal',id:journalId,operation:'delete'})),
       ...paperIds.map(paperId=>({collection:'papers',id:paperId,operation:'delete'}))
-    ];
-    if(!save({entityChanges})){
+    ]}):save({replaceEntities:true});
+    if(!persisted){
       markDeleteDiagnosticPhase('subject:rollback-save');
       undo();notify('Subject deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;
     }
@@ -1213,15 +1214,16 @@
     markDeleteDiagnosticPhase('stream:filter-streams');
     state.streams=state.streams.filter(item=>item.id!==id);
     markDeleteDiagnosticPhase('stream:save');
-    const entityChanges=[
+    const entityChangeCount=1+subjectIds.length+topicIds.length+historyIds.length+journalIds.length+paperIds.length;
+    const persisted=entityChangeCount<=1000?save({entityChanges:[
       trackerEntityDeleteChange('streams',id),
       ...subjectIds.map(subjectId=>trackerEntityDeleteChange('subjects',subjectId)),
       ...topicIds.map(topicId=>trackerEntityDeleteChange('topics',topicId)),
       ...historyIds.map(historyId=>trackerEntityDeleteChange('history',historyId)),
       ...journalIds.map(journalId=>({collection:'journal',id:journalId,operation:'delete'})),
       ...paperIds.map(paperId=>({collection:'papers',id:paperId,operation:'delete'}))
-    ];
-    if(!save({entityChanges})){
+    ]}):save({replaceEntities:true});
+    if(!persisted){
       markDeleteDiagnosticPhase('stream:rollback-save');
       undo();notify('Stream deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;
     }
