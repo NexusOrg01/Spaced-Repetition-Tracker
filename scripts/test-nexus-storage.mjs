@@ -475,7 +475,22 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.ok(boundedOutboxQueries[0].lower.endsWith(':seq:0000000000000001')&&
     boundedOutboxQueries[1].lower.endsWith(':seq:0000000000000002'),
     'paged outbox reads must use sequence-key ranges instead of scanning older owner records');
+  const acknowledgementQueryStart=idb.rangeQueries.length;
   assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',2),2);
+  const acknowledgementRanges=idb.rangeQueries.slice(acknowledgementQueryStart)
+    .filter(query=>query.store==='outbox'&&query.lower);
+  assert.equal(acknowledgementRanges.length,2,
+    'acknowledgement must query the bounded change and operation-marker sequence ranges separately');
+  assert.ok(acknowledgementRanges.some(query=>query.lower.endsWith(':seq:0000000000000001')&&
+    query.upper.includes(':seq:0000000000000002')),
+    'acknowledgement must limit change-row cleanup to sequences through the confirmed cursor');
+  assert.ok(acknowledgementRanges.some(query=>query.lower.endsWith(':opseq:0000000000000001')&&
+    query.upper.includes(':opseq:0000000000000002')),
+    'acknowledgement must limit idempotency-marker cleanup to operations covered by the confirmed cursor');
+  const ownerOutboxRows=[...idb.databases.get('nexus-workspace-v1').stores.get('outbox').values()]
+    .filter(row=>row&&row.ownerId==='entity-owner-a');
+  assert.equal(ownerOutboxRows.length,0,
+    'acknowledging an operation must atomically remove its sequence rows and indexed idempotency marker');
   assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)).length,0,
     'acknowledging a verified sequence must remove its change events');
 
