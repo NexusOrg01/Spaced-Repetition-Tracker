@@ -238,7 +238,46 @@ plannerSandbox.window.NexusGetPlannerMetrics();
 assert.equal(plannerTopicVisits,plannerTopics.length*2,'a tracker save must invalidate the planner cache before the next calculation');
 assert.equal(plannerStatusVisits,plannerTopics.length*2);
 
-console.log('Planner scalability tests passed: one 77,144-topic pass, bounded daily plan, cached workload/calendar totals, and invalidation.');
+// The Planner screen must prepare the same large aggregate cooperatively on a
+// cold cache, then reuse it without revisiting topic records.
+let plannerCooperativeYields=0;
+plannerSandbox.setTimeout=callback=>{
+  plannerCooperativeYields++;
+  return setTimeout(callback,0);
+};
+plannerSandbox.window.NexusInvalidatePlannerCache();
+const cooperativePlanner=await plannerSandbox.window.NexusPreparePlannerMetrics(true);
+assert.ok(cooperativePlanner,'cooperative planner preparation must complete');
+assert.equal(cooperativePlanner.remainingMins,578580,'cooperative planner workload must match the synchronous calculation');
+assert.equal(cooperativePlanner.plan.length,9,'cooperative planner must retain the same bounded daily plan');
+assert.equal(Array.from(cooperativePlanner.scheduledByDate.values()).reduce((sum,count)=>sum+count,0),plannerTopics.length,
+  'cooperative planner must build exact calendar counts during its one topic pass');
+assert.equal(plannerTopicVisits,plannerTopics.length*3,'cooperative preparation must inspect every topic exactly once');
+assert.equal(plannerStatusVisits,plannerTopics.length*3,'cooperative preparation must calculate status exactly once per topic');
+assert.ok(plannerCooperativeYields>=Math.ceil(plannerTopics.length/400)-1,
+  'cooperative planner preparation must yield between 400-topic batches');
+const visitsAfterCooperativeBuild=plannerTopicVisits,yieldsAfterCooperativeBuild=plannerCooperativeYields;
+assert.equal(await plannerSandbox.window.NexusPreparePlannerMetrics(true),cooperativePlanner,
+  'reopening an unchanged planner must reuse the prepared result');
+assert.equal(plannerTopicVisits,visitsAfterCooperativeBuild);
+assert.equal(plannerCooperativeYields,yieldsAfterCooperativeBuild);
+
+// Changing the workspace reference during a cold planner scan must cancel the
+// obsolete calculation without publishing a cache for the previous account/data.
+plannerSandbox.window.NexusInvalidatePlannerCache();
+let plannerCancellationYields=0;
+plannerSandbox.setTimeout=callback=>setTimeout(()=>{
+  plannerCancellationYields++;
+  if(plannerCancellationYields===1)plannerSandbox.state.topics=plannerTopics.slice();
+  callback();
+},0);
+assert.equal(await plannerSandbox.window.NexusPreparePlannerMetrics(true),null,
+  'a workspace replacement during planner preparation must cancel the stale result');
+assert.equal(plannerSandbox.window.NexusGetCachedPlannerMetrics(),null,
+  'cancelled planner metrics must not be published as a valid cache');
+assert.equal(plannerCancellationYields,1,'planner cancellation must occur at the first cooperative yield');
+
+console.log('Planner scalability tests passed: one cached synchronous and one cooperative 77,144-topic pass, bounded daily plan, cancellation and cache reuse.');
 
 const historyMetricsStart=appCore.indexOf('  function addTopicHistoryMetric(');
 const historyMetricsEnd=appCore.indexOf('  function recentHistoryCount(',historyMetricsStart);
