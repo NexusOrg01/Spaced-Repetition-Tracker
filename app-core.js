@@ -313,8 +313,27 @@
     return repaired;
   }
   function loadState(){const current=safeRead(STORAGE_KEY);if(current){try{return loadAndRepair(current);}catch(e){console.warn('Saved data was invalid; existing saved bytes were not overwritten.',e);}}const old=safeRead('alSrsTrackerV2');if(old){try{return loadAndRepair(migrateOld(old.state||old));}catch(e){console.warn(e);}}const legacyT=safeRead('alTrackerData'),legacyH=safeRead('alHistoryLog');if(Array.isArray(legacyT)||Array.isArray(legacyH))return loadAndRepair(migrateOld({topics:legacyT||[],history:legacyH||[]}));return baseState();}
+  const TRACKER_ENTITY_ARRAYS=['streams','subjects','topics','history','exams'];
+  function trackerEntityPutChange(collection,row){
+    const list=state&&Array.isArray(state[collection])?state[collection]:[];
+    const index=list.findIndex(item=>item&&String(item.id)===String(row&&row.id));
+    return {collection,id:String(row&&row.id||''),operation:'put',position:Math.max(0,index),value:row};
+  }
+  function trackerEntityDeleteChange(collection,id){
+    return {collection,id:String(id),operation:'delete'};
+  }
+  function trackerEntityRoot(){
+    const value={...state};
+    for(const collection of TRACKER_ENTITY_ARRAYS)delete value[collection];
+    return value;
+  }
+  function featureEntityRoot(value){
+    const rootValue={...(value||{})};
+    for(const collection of ['journal','papers','goals','studyLogs'])delete rootValue[collection];
+    return rootValue;
+  }
   let storageSaveRevision=0;
-  function save(){
+  function save(options={}){
     try{
       if(state.history!==historyMetricsObservedSource||state.history.length!==historyMetricsObservedLength){
         historyMetricsRevision++;
@@ -339,10 +358,20 @@
       if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');
       markDeleteDiagnosticPhase('save:serialize-tracker');
       const trackerSnapshot=JSON.stringify(state);
+      const featureSnapshot=JSON.stringify(featureState);
+      const requestedEntityChanges=Array.isArray(options)?options:
+        (Array.isArray(options.entityChanges)?options.entityChanges:null);
+      const entityReplace=requestedEntityChanges===null||options.replaceEntities===true;
+      // Freeze the small change set and metadata roots synchronously. The durable
+      // write and entity transaction run after the current IndexedDB flush, by which
+      // time the live application objects may already contain a newer edit.
+      const frozenEntityChanges=requestedEntityChanges===null?null:JSON.parse(JSON.stringify(requestedEntityChanges));
+      const trackerRoot=JSON.parse(JSON.stringify(trackerEntityRoot()));
+      const featureRoot=JSON.parse(JSON.stringify(featureEntityRoot(featureState)));
       const workspaceEntries=[{key:STORAGE_KEY,value:trackerSnapshot}];
       if(window.NexusFeatureStorageKey){
         markDeleteDiagnosticPhase('save:serialize-feature-state-storage');
-        workspaceEntries.push({key:window.NexusFeatureStorageKey,value:JSON.stringify(featureState)});
+        workspaceEntries.push({key:window.NexusFeatureStorageKey,value:featureSnapshot});
       }
       markDeleteDiagnosticPhase('save:offline-queue-commit');
       // Persist tracker, Study Hub state and the pending cloud snapshot in one atomic
@@ -354,7 +383,8 @@
         const saveRevision=++storageSaveRevision;
         $('saveStatus').textContent='Saving to this device…';
         $('saveStatus').style.color='';
-        storage.flush().then(()=>{
+        const durableFlush=storage.flush();
+        durableFlush.then(()=>{
           if(saveRevision!==storageSaveRevision)return;
           $('saveStatus').textContent='Saved on this device';
           $('saveStatus').style.color='';
@@ -365,6 +395,17 @@
           notify('Could not finish saving to durable device storage. Keep Nexus open and export a backup before continuing.');
           console.error('Nexus durable save failed',error);
         });
+        const owner=localStorage.getItem('nexus.cloud.last-user-id')||'';
+        if(owner&&typeof storage.syncWorkspaceEntities==='function'){
+          durableFlush.then(()=>storage.syncWorkspaceEntities(owner,frozenEntityChanges,{
+            trackerRoot,featureRoot,trackerSnapshotJson:trackerSnapshot,
+            featureSnapshotJson:featureSnapshot,replace:entityReplace
+          })).catch(error=>{
+            // The current snapshot and offline queue remain authoritative. A failed
+            // entity projection is marked stale and rebuilt from that safe snapshot.
+            console.warn('Nexus entity projection update failed; snapshot storage remains active.',error);
+          });
+        }
       }else{
         $('saveStatus').textContent='Saved on this device';
         $('saveStatus').style.color='';
@@ -964,7 +1005,10 @@
     t.streak=rating>=3?(t.streak||0)+1:0;
     t.lastReviewed=reviewed;t.lastRating=rating;t.intervalDays=days;t.dueDate=due;t.reviewCount=(t.reviewCount||0)+1;
     state.history.unshift(reviewEntry);
-    const persisted=save();
+    const persisted=save({entityChanges:[
+      trackerEntityPutChange('topics',t),
+      trackerEntityPutChange('history',reviewEntry)
+    ]});
     $('reviewDialog').close();
     selectedReviewRating=null;$('reviewCustomDue').value='';
     renderAll();
@@ -993,7 +1037,8 @@
       startUndoTopicAdd('Topic added.',newTopic.id);
       state.topics.push(newTopic);
     }
-    save();$('topicDialog').close();renderAll();switchView('topics');notify('Topic saved.'+(customDue?' Custom date set.':''),true);
+    save({entityChanges:[trackerEntityPutChange('topics',editTopicId?getTopic(editTopicId):state.topics[state.topics.length-1])]});
+    $('topicDialog').close();renderAll();switchView('topics');notify('Topic saved.'+(customDue?' Custom date set.':''),true);
   }
   function deleteTopic(id){
     markDeleteDiagnosticPhase('topic:lookup');
@@ -1006,7 +1051,7 @@
     markDeleteDiagnosticPhase('topic:filter-tracker');
     state.topics=state.topics.filter(item=>item.id!==id);
     markDeleteDiagnosticPhase('topic:save');
-    if(!save()){markDeleteDiagnosticPhase('topic:rollback');undo();notify('Topic deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}
+    if(!save({entityChanges:[trackerEntityDeleteChange('topics',id)]})){markDeleteDiagnosticPhase('topic:rollback');undo();notify('Topic deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}
     markDeleteDiagnosticPhase('topic:render-all');
     renderAll();window.NexusRefreshUndoTimeout?.();
   }
@@ -1017,7 +1062,9 @@
     if(duplicate){notify('A stream with that name already exists.');return;}
     if(editStreamId){const stream=state.streams.find(item=>item.id===editStreamId);if(!stream)return;startUndoEntityEdit('Stream saved.','streams',stream,['name']);stream.name=name;}
     else{const stream={id:makeId('stream'),name};startUndoEntityAdd('Stream saved.','streams',stream.id);state.streams.push(stream);}
-    save();$('streamDialog').close();renderAll();notify('Stream saved.',true);
+    const savedStream=state.streams.find(item=>item.id===editStreamId)||state.streams[state.streams.length-1];
+    save({entityChanges:[trackerEntityPutChange('streams',savedStream)]});
+    $('streamDialog').close();renderAll();notify('Stream saved.',true);
   }
   function openSubject(id=null,preselectedStream=null){editSubjectId=id;const sub=id?state.subjects.find(s=>s.id===id):null;$('subjectDialogTitle').textContent=sub?'Edit subject':'Add subject';refreshFilterOptions();$('subjectStreamInput').value=sub?.streamId||preselectedStream||state.streams[0]?.id||'';$('subjectNameInput').value=sub?.name||'';$('subjectDialog').showModal();}
   function saveSubject(e){
@@ -1027,7 +1074,9 @@
     if(duplicate){notify('That subject already exists in this stream.');return;}
     if(editSubjectId){const subject=state.subjects.find(item=>item.id===editSubjectId);if(!subject)return;startUndoEntityEdit('Subject saved.','subjects',subject,['name','streamId']);subject.name=name;subject.streamId=streamId;}
     else{const subject={id:makeId('subject'),name,streamId,order:state.subjects.length};startUndoEntityAdd('Subject saved.','subjects',subject.id);state.subjects.push(subject);}
-    save();$('subjectDialog').close();renderAll();notify('Subject saved.',true);
+    const savedSubject=state.subjects.find(item=>item.id===editSubjectId)||state.subjects[state.subjects.length-1];
+    save({entityChanges:[trackerEntityPutChange('subjects',savedSubject)]});
+    $('subjectDialog').close();renderAll();notify('Subject saved.',true);
   }
   function deleteSubject(id){
     markDeleteDiagnosticPhase('subject:lookup');
@@ -1037,6 +1086,7 @@
     // additional full-size temporary array on large workspaces.
     const topicIds=[];
     const topicIdSet=new Set();
+    const historyIds=[];
     for(const topic of state.topics){
       if(topic.subjectId!==id)continue;
       topicIds.push(topic.id);
@@ -1045,7 +1095,7 @@
     // Count without allocating a temporary array of every matching history row.
     let historyCount=0;
     for(const entry of state.history){
-      if(entry.subjectId===id||topicIdSet.has(entry.topicId))historyCount++;
+      if(entry.subjectId===id||topicIdSet.has(entry.topicId)){historyCount++;historyIds.push(entry.id);}
     }
     if(!confirm(`Delete subject “${subject.name}” and all its data?\n\nThis permanently removes ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. Undo is available for 15 seconds after deletion. Export a full JSON backup first if unsure.`))return;
     markDeleteDiagnosticPhase('subject:undo-snapshot');
@@ -1064,7 +1114,12 @@
     markDeleteDiagnosticPhase('subject:filter-subjects');
     state.subjects=state.subjects.filter(item=>item.id!==id);
     markDeleteDiagnosticPhase('subject:save');
-    if(!save()){
+    const entityChanges=[
+      trackerEntityDeleteChange('subjects',id),
+      ...topicIds.map(topicId=>trackerEntityDeleteChange('topics',topicId)),
+      ...historyIds.map(historyId=>trackerEntityDeleteChange('history',historyId))
+    ];
+    if(!save({entityChanges})){
       markDeleteDiagnosticPhase('subject:rollback-save');
       undo();notify('Subject deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;
     }
@@ -1090,8 +1145,11 @@
       topicIdSet.add(topic.id);
     }
     let historyCount=0;
+    const historyIds=[];
     for(const entry of state.history){
-      if(subjectIdSet.has(entry.subjectId)||topicIdSet.has(entry.topicId)||entry.streamId===id)historyCount++;
+      if(subjectIdSet.has(entry.subjectId)||topicIdSet.has(entry.topicId)||entry.streamId===id){
+        historyCount++;historyIds.push(entry.id);
+      }
     }
     if(!confirm(`Delete stream “${stream.name}” and all nested data?\n\nThis permanently removes ${subjectIds.length} subject(s), ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. Undo is available for 15 seconds after deletion. Export a full JSON backup first if unsure.`))return;
     markDeleteDiagnosticPhase('stream:undo-snapshot');
@@ -1112,7 +1170,13 @@
     markDeleteDiagnosticPhase('stream:filter-streams');
     state.streams=state.streams.filter(item=>item.id!==id);
     markDeleteDiagnosticPhase('stream:save');
-    if(!save()){
+    const entityChanges=[
+      trackerEntityDeleteChange('streams',id),
+      ...subjectIds.map(subjectId=>trackerEntityDeleteChange('subjects',subjectId)),
+      ...topicIds.map(topicId=>trackerEntityDeleteChange('topics',topicId)),
+      ...historyIds.map(historyId=>trackerEntityDeleteChange('history',historyId))
+    ];
+    if(!save({entityChanges})){
       markDeleteDiagnosticPhase('stream:rollback-save');
       undo();notify('Stream deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;
     }
@@ -1129,7 +1193,9 @@
     const item={id:editExamId||makeId('exam'),name,date,type:$('examTypeInput').value,notes:$('examNotesInput').value.trim()};
     if(editExamId){const index=state.exams.findIndex(exam=>exam.id===editExamId);if(index<0)return;startUndoArrayItemReplacement('Exam saved.','exams',index);state.exams[index]=item;}
     else{startUndoEntityAdd('Exam saved.','exams',item.id);state.exams.push(item);}
-    save();$('examDialog').close();renderAll();notify('Exam saved.',true);
+    const savedExam=state.exams.find(exam=>exam.id===item.id);
+    save({entityChanges:[trackerEntityPutChange('exams',savedExam)]});
+    $('examDialog').close();renderAll();notify('Exam saved.',true);
   }
   function deleteExam(id){
     markDeleteDiagnosticPhase('exam:lookup');
@@ -1139,7 +1205,7 @@
     markDeleteDiagnosticPhase('exam:filter');
     state.exams=state.exams.filter(item=>item.id!==id);
     markDeleteDiagnosticPhase('exam:save');
-    if(!save()){markDeleteDiagnosticPhase('exam:rollback');undo();notify('Exam deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}
+    if(!save({entityChanges:[trackerEntityDeleteChange('exams',id)]})){markDeleteDiagnosticPhase('exam:rollback');undo();notify('Exam deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}
     markDeleteDiagnosticPhase('exam:render-all');
     renderAll();window.NexusRefreshUndoTimeout?.();
   }
@@ -1152,7 +1218,7 @@
   function clearHistory(){if(!state.history.length){notify('History is already empty.');return;}if(!confirm('DANGER ZONE — Clear every saved review-history entry?\n\nAll rating analytics, review-history exports and historical counts based on these records will be lost. Topic schedules may remain unchanged. Use Undo immediately or restore a backup if this was accidental. Continue?'))return;startUndoHistoryChange('History cleared.');state.history=[];save();renderAll();notify('History cleared; schedules remain unchanged.',true);}
   function resetAll(){if(!confirm('Reset all local data, including topics, custom streams, subjects, exams, settings and history? Download a backup first if you may need it.'))return;startUndoWorkspaceReplace('Tracker reset.');state=baseState();save();renderAll();switchView('overview');notify('Tracker reset.',true);}
   function applyTheme(){document.documentElement.dataset.theme=state.settings.theme;const themeColor=document.querySelector('meta[name="theme-color"]');if(themeColor){const appBackground=getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();if(appBackground)themeColor.setAttribute('content',appBackground);}$('themeSelect').value=state.settings.theme;$('themeBtn').textContent=state.settings.theme==='light'?'☀':state.settings.theme==='dark'?'☾':'◐';$('themeBtn').title=`Theme: ${state.settings.theme}. Click to cycle.`;}
-  function cycleTheme(){const seq=['system','light','dark'];state.settings.theme=seq[(seq.indexOf(state.settings.theme)+1)%seq.length];save();applyTheme();notify(`Theme: ${state.settings.theme}.`);}
+  function cycleTheme(){const seq=['system','light','dark'];state.settings.theme=seq[(seq.indexOf(state.settings.theme)+1)%seq.length];save({entityChanges:[]});applyTheme();notify(`Theme: ${state.settings.theme}.`);}
   function openHelp(){$('helpDialog').showModal();}
   function install(){$('pwaInstallOption').hidden=false;$('installNote').textContent=installPrompt?'Use the button below to install Nexus through your browser.':'If the button cannot open an install prompt, use your browser menu: in Chrome, tap ⋮ and choose “Install app”. If it is not listed, refresh Nexus and check again. On other browsers, use “Add to Home screen” if available.';$('installDialog').showModal();}
   async function installPwa(){
