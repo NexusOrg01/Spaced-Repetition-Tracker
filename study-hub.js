@@ -403,7 +403,24 @@
     });
   }
   function renderPlanner(){
-    const planner=buildPlan(true),plan=planner.plan,done=new Set(fsState.taskChecks[today()]||[]);
+    const planner=window.NexusGetCachedPlannerMetrics?.();
+    if(!planner){
+      const preparing=window.NexusPreparePlannerMetrics?.(true);
+      if(preparing&&plannerUiBuildPromise!==preparing){
+        plannerUiBuildPromise=preparing;
+        preparing.then(value=>{
+          if(plannerUiBuildPromise===preparing)plannerUiBuildPromise=null;
+          const view=hubEl('view-studyhub');
+          if(value&&hubTab==='planner'&&view?.classList.contains('active'))renderHub();
+        }).catch(error=>{
+          if(plannerUiBuildPromise===preparing)plannerUiBuildPromise=null;
+          console.error('Nexus planner metrics could not be prepared',error);
+          notify('The study plan could not be prepared. Reopen Planner to retry.');
+        });
+      }
+      return '<div class="hub-empty"><strong>Preparing your study plan…</strong><p>Nexus is calculating topic priorities and calendar totals in small batches. Your saved data is unchanged.</p></div>';
+    }
+    const plan=planner.plan,done=new Set(fsState.taskChecks[today()]||[]);
     const allPlan=plan.length?plan.reduce((n,x)=>n+x.minutes,0):0,doneMins=loggedMinutesToday()+liveFocusMinutesToday();
     const daily=fNum(fsState.settings.dailyMinutes)||90,session=fNum(fsState.settings.sessionMinutes)||25;
     const week=weeklyReviewCount(),goal=fNum(fsState.settings.weeklyReviewGoal)||100;
