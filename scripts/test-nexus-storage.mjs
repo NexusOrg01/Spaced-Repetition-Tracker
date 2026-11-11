@@ -26,11 +26,17 @@ class FakeRequest {
 class FakeObjectStore {
   constructor(tx, name) { this.tx = tx; this.name = name; }
   get(key) { return this.tx.enqueue(() => clone(this.tx.maps.get(this.name).get(key))); }
-  getAll(range) {
-    if(range&&this.tx.db.owner.rangeQueries)this.tx.db.owner.rangeQueries.push({store:this.name,lower:range.lower,upper:range.upper});
-    return this.tx.enqueue(() => [...this.tx.maps.get(this.name).values()]
-      .filter(row=>!range||(typeof row.key==='string'&&row.key>=range.lower&&row.key<=range.upper))
-      .map(clone));
+  getAll(range,count) {
+    if((range||count!==undefined)&&this.tx.db.owner.rangeQueries)this.tx.db.owner.rangeQueries.push({
+      store:this.name,lower:range&&range.lower||null,upper:range&&range.upper||null,
+      count:Number.isInteger(count)?count:null
+    });
+    return this.tx.enqueue(() => {
+      const matching=[...this.tx.maps.get(this.name).values()]
+        .filter(row=>!range||(typeof row.key==='string'&&row.key>=range.lower&&row.key<=range.upper))
+        .sort((a,b)=>String(a.key).localeCompare(String(b.key)));
+      return (Number.isInteger(count)&&count>=0?matching.slice(0,count):matching).map(clone);
+    });
   }
   put(value) {
     const row = clone(value);
@@ -457,8 +463,18 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
 
   const replay=await loaded.api.writeWorkspaceEntityChanges('entity-owner-a',changes,op);
   assert.equal(replay.replayed,true,'a repeated operation ID must be idempotent');
-  assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)).length,2,
-    'idempotent retries must not duplicate outbox change events');
+  const firstOutboxPage=await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,1);
+  const secondOutboxPage=await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',1,1);
+  assert.deepEqual(firstOutboxPage.map(item=>item.sequence),[1],
+    'the first outbox page must return the oldest unacknowledged sequence');
+  assert.deepEqual(secondOutboxPage.map(item=>item.sequence),[2],
+    'the next outbox page must resume strictly after the supplied sequence cursor');
+  const boundedOutboxQueries=idb.rangeQueries.filter(query=>query.store==='outbox'&&query.count===1);
+  assert.equal(boundedOutboxQueries.length,2,
+    'both paged outbox reads must apply the row limit inside the IndexedDB request');
+  assert.ok(boundedOutboxQueries[0].lower.endsWith(':seq:0000000000000001')&&
+    boundedOutboxQueries[1].lower.endsWith(':seq:0000000000000002'),
+    'paged outbox reads must use sequence-key ranges instead of scanning older owner records');
   assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',2),2);
   assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)).length,0,
     'acknowledging a verified sequence must remove its change events');
