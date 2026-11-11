@@ -27,6 +27,12 @@ assert.ok(appCore.includes("state=loadState();save({entityChanges:[]})") &&
   'ordinary startup and theme saves must not rebuild the full entity generation');
 assert.ok(appCore.includes("save({entityChanges:[trackerEntityDeleteChange('history',id)]})"),
   'deleting one history entry must publish only that history entity deletion');
+assert.ok(appCore.includes("const persisted=save({replaceEntities:true})") &&
+  appCore.includes("state=restored;save({replaceEntities:true})") &&
+  appCore.includes("state.history=[];save({replaceEntities:true})") &&
+  appCore.includes("state=baseState();save({replaceEntities:true})"),
+  'undo, full backup import, full history clear and workspace reset must explicitly rebuild the entity projection');
+
 assert.ok(studyHub.includes("over.map(t=>window.NexusTrackerEntityPutChange('topics',t,'keep'))") &&
   studyHub.includes("candidates.map(t=>window.NexusTrackerEntityPutChange('topics',t,'keep'))") &&
   studyHub.includes("chosen.map(t=>window.NexusTrackerEntityPutChange('topics',t,'keep'))"),
