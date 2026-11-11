@@ -475,22 +475,40 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.ok(boundedOutboxQueries[0].lower.endsWith(':seq:0000000000000001')&&
     boundedOutboxQueries[1].lower.endsWith(':seq:0000000000000002'),
     'paged outbox reads must use sequence-key ranges instead of scanning older owner records');
-  const acknowledgementQueryStart=idb.rangeQueries.length;
-  assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',2),2);
-  const acknowledgementRanges=idb.rangeQueries.slice(acknowledgementQueryStart)
+  const outboxRows=idb.databases.get('nexus-workspace-v1').stores.get('outbox');
+  // Simulate an existing client that wrote only the original idempotency marker,
+  // before the sequence-indexed marker was introduced.
+  for(const [key,row] of outboxRows.entries()){
+    if(row&&row.ownerId==='entity-owner-a'&&row.kind==='operation-marker-sequence')outboxRows.delete(key);
+  }
+  const firstAcknowledgementQueryStart=idb.rangeQueries.length;
+  assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',1),1,
+    'a partial acknowledgement must remove only the first change in a multi-change operation');
+  const firstAcknowledgementRanges=idb.rangeQueries.slice(firstAcknowledgementQueryStart)
     .filter(query=>query.store==='outbox'&&query.lower);
-  assert.equal(acknowledgementRanges.length,2,
-    'acknowledgement must query the bounded change and operation-marker sequence ranges separately');
-  assert.ok(acknowledgementRanges.some(query=>query.lower.endsWith(':seq:0000000000000001')&&
-    query.upper.includes(':seq:0000000000000002')),
-    'acknowledgement must limit change-row cleanup to sequences through the confirmed cursor');
-  assert.ok(acknowledgementRanges.some(query=>query.lower.endsWith(':opseq:0000000000000001')&&
-    query.upper.includes(':opseq:0000000000000002')),
-    'acknowledgement must limit idempotency-marker cleanup to operations covered by the confirmed cursor');
-  const ownerOutboxRows=[...idb.databases.get('nexus-workspace-v1').stores.get('outbox').values()]
-    .filter(row=>row&&row.ownerId==='entity-owner-a');
+  assert.equal(firstAcknowledgementRanges.length,2,
+    'partial acknowledgement must query the bounded change and operation-marker sequence ranges separately');
+  assert.ok(firstAcknowledgementRanges.some(query=>query.lower.endsWith(':seq:0000000000000001')&&
+    query.upper.includes(':seq:0000000000000001')),
+    'partial acknowledgement must limit change-row cleanup to the confirmed cursor');
+  assert.ok(firstAcknowledgementRanges.some(query=>query.lower.endsWith(':opseq:0000000000000001')&&
+    query.upper.includes(':opseq:0000000000000001')),
+    'partial acknowledgement must limit indexed-marker cleanup to the confirmed cursor');
+  assert.ok([...outboxRows.values()].some(row=>row&&row.kind==='operation-marker'&&
+    row.operationId==='entity-op-review-001'&&row.lastSequence===2),
+    'an older unindexed idempotency marker must remain while part of its operation is still pending');
+  assert.deepEqual((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',1,10)).map(row=>row.sequence),[2],
+    'the unacknowledged remainder of a multi-change operation must remain available for retry');
+  const finalAcknowledgementQueryStart=idb.rangeQueries.length;
+  assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',2),1,
+    'the final acknowledgement must remove the remaining change row');
+  const finalAcknowledgementRanges=idb.rangeQueries.slice(finalAcknowledgementQueryStart)
+    .filter(query=>query.store==='outbox'&&query.lower);
+  assert.equal(finalAcknowledgementRanges.length,2,
+    'final acknowledgement must remain sequence-bounded');
+  const ownerOutboxRows=[...outboxRows.values()].filter(row=>row&&row.ownerId==='entity-owner-a');
   assert.equal(ownerOutboxRows.length,0,
-    'acknowledging an operation must atomically remove its sequence rows and indexed idempotency marker');
+    'full acknowledgement must remove the change rows and legacy direct idempotency marker');
   assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)).length,0,
     'acknowledging a verified sequence must remove its change events');
 
