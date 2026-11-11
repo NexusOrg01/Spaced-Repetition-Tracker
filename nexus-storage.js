@@ -588,12 +588,17 @@
       });
       set(true);
     });
-    const counts={},batch=[];
+    const counts={},positionBounds={},batch=[];
     let rowCount=0;
     try{
       for(const row of generateWorkspaceEntityRows(owner,generation,stateSnapshot,featureSnapshot)){
         batch.push(row);rowCount++;
-        if(row.collection!=='_meta')counts[row.collection]=(counts[row.collection]||0)+1;
+        if(row.collection!=='_meta'){
+          counts[row.collection]=(counts[row.collection]||0)+1;
+          const bounds=positionBounds[row.collection]||(positionBounds[row.collection]={min:row.position,max:row.position});
+          bounds.min=Math.min(bounds.min,row.position);
+          bounds.max=Math.max(bounds.max,row.position);
+        }
         if(batch.length>=ENTITY_BATCH_SIZE){
           await writeWorkspaceEntityBatch(batch.splice(0,batch.length));
           if(!enabled||committedOwnerId!==owner||revision!==sourceRevision){
@@ -620,7 +625,7 @@
           }
           store.put({
             key:manifestKey,ownerId:owner,status:'ready',formatVersion:1,
-            activeGeneration:generation,pendingGeneration:null,rowCount,counts,
+            activeGeneration:generation,pendingGeneration:null,rowCount,counts,positionBounds,
             sourceRevision:revision,updatedAt:timestamp()
           });
           set(true);
@@ -705,8 +710,9 @@
       if(isMeta&&change.operation!=='put')throw new Error('Workspace metadata roots cannot be deleted by an entity delta.');
       if(change.operation==='put'&&(!Object.prototype.hasOwnProperty.call(change,'value')||
          change.value===undefined))throw new Error('A put operation requires a record value.');
-      if(change.operation==='put'&&!isMeta&&(!Number.isSafeInteger(change.position)||change.position<0)){
-        throw new Error('A record put requires an explicit non-negative position to preserve collection ordering.');
+      if(change.operation==='put'&&!isMeta&&change.position!==null&&change.position!==undefined&&
+         change.position!=='prepend'&&(!Number.isSafeInteger(change.position)||change.position<0)){
+        throw new Error('A record put requires a valid append, prepend, or stable position.');
       }
       const identity=change.collection+'\\u0000'+change.id;
       if(changeIdentitySet.has(identity))throw new Error('An entity operation cannot change the same record more than once.');
@@ -714,7 +720,7 @@
       const storageCollection=change.collection==='trackerMeta'||change.collection==='featureMeta'?'_meta':change.collection;
       const storageId=change.collection==='trackerMeta'?'tracker':change.collection==='featureMeta'?'features':change.id;
       return {collection:change.collection,id:change.id,storageCollection,storageId,operation:change.operation,
-        value:change.value,position:isMeta?0:(change.operation==='put'?change.position:null)};
+        value:change.value,position:isMeta?0:(change.operation==='put'?(change.position==='prepend'?'prepend':(change.position??null)):null)};
     });
     const operationId=String(options.operationId||(
       root&&root.crypto&&typeof root.crypto.randomUUID==='function'?root.crypto.randomUUID():
@@ -730,7 +736,7 @@
       const applyChanges=existingRows=>{
         const manifest=values.manifest,sequence=Math.max(0,Number(values.sequence&&values.sequence.value)||0);
         let next=sequence,rowDelta=0;
-        const countDeltas={};
+        const countDeltas={},positionBounds={...(manifest.positionBounds||{})};
         const firstSequence=sequence+1;
         for(let index=0;index<normalized.length;index++){
           const change=normalized[index],existing=existingRows[index];
@@ -738,11 +744,15 @@
           let position=change.position;
           if(change.operation==='put'){
             if(position===null)position=existing&&Number.isSafeInteger(existing.position)
-              ?existing.position:Number.MAX_SAFE_INTEGER;
+              ?existing.position:(Number(positionBounds[change.collection]?.max??-1)+1);
+            else if(position==='prepend')position=Number(positionBounds[change.collection]?.min??0)-1;
             if(!existing){
               rowDelta++;
               if(!ENTITY_META_COLLECTIONS.includes(change.collection)){
                 countDeltas[change.collection]=(countDeltas[change.collection]||0)+1;
+                const bounds=positionBounds[change.collection]||(positionBounds[change.collection]={min:position,max:position});
+                bounds.min=Math.min(bounds.min,position);
+                bounds.max=Math.max(bounds.max,position);
               }
             }
             entities.put({key,ownerId:owner,generation:manifest.activeGeneration,entityRow:true,
@@ -761,7 +771,7 @@
           counts[collection]=Math.max(0,(Number(counts[collection])||0)+delta);
         }
         meta.put({...manifest,rowCount:Math.max(2,(Number(manifest.rowCount)||2)+rowDelta),
-          counts,updatedAt:timestamp()});
+          counts,positionBounds,updatedAt:timestamp()});
         meta.put({key:sequenceKey,ownerId:owner,value:next,updatedAt:timestamp()});
         outbox.put({key:markerKey,ownerId:owner,kind:'operation-marker',operationId,
           firstSequence,lastSequence:next,count:normalized.length,createdAt:timestamp()});
@@ -918,6 +928,7 @@
     const featureSnapshotJson=typeof options.featureSnapshotJson==='string'?options.featureSnapshotJson:null;
     const replace=options.replace===true||capturedChanges===null;
     const task=entitySyncSerial.catch(()=>undefined).then(async()=>{
+      if(options.durablePromise&&typeof options.durablePromise.then==='function')await options.durablePromise;
       if(!enabled||committedOwnerId!==owner)throw new Error('The active account changed before entity synchronization could begin.');
       const sourceRevision=revision;
       let manifest=await readEntityManifest(owner);
