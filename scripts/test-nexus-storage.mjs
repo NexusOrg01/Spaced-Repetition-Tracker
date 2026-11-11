@@ -79,9 +79,10 @@ class FakeTransaction {
     for (const name of stores) {
       const original = db.stores.get(name);
       if (!original) throw new Error('Unknown object store: ' + name);
-      this.maps.set(name, mode === 'readwrite'
-        ? new Map([...original.entries()].map(([key, value]) => [key, clone(value)]))
-        : original);
+      // Stored rows are immutable: get/getAll return detached clones and put
+      // clones incoming values. A shallow map copy preserves rollback semantics
+      // without cloning every historical entity on each 400-row write batch.
+      this.maps.set(name, mode === 'readwrite' ? new Map(original) : original);
     }
     this.pending = 0;
     this.aborted = false;
