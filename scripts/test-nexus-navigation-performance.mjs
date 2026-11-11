@@ -38,7 +38,7 @@ assert.ok(studyHub.includes('function paperRows(){') &&
   studyHub.includes('type="button" class="btn btn-sm btn-danger" data-hub-action="delete-paper"'),
   'Papers history must render its delete control using the restored paperRows renderer');
 assert.ok(studyHub.includes('function deleteStudyHubRecord(collection,id,options={})') &&
-  studyHub.includes('if(!saveFs()){') &&
+  studyHub.includes('if(!saveFs([featureEntityDeleteChange(collection,id)])){') &&
   studyHub.includes('fsState[collection]=previous;window.NexusCancelUndoAction?.();renderHub();') &&
   studyHub.includes('if(options.persist!==false&&!saveFs()){if(cascadeUndoState){Object.assign(fsState,cascadeUndoState);'),
   'Study Hub record deletions and curriculum cascades must restore in-memory data when persistence fails');
