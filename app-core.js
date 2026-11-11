@@ -1092,6 +1092,13 @@
       topicIds.push(topic.id);
       topicIdSet.add(topic.id);
     }
+    // Capture feature-row IDs before the cascade mutates its arrays so the
+    // entity projection receives the same dependent deletions as the snapshot.
+    const featureStateBefore=window.NexusGetFeatureStateForCommit?window.NexusGetFeatureStateForCommit():{};
+    const journalIds=(featureStateBefore.journal||[])
+      .filter(item=>item&& (item.subjectId===id||topicIdSet.has(item.topicId))).map(item=>String(item.id));
+    const paperIds=(featureStateBefore.papers||[])
+      .filter(item=>item&&item.subjectId===id).map(item=>String(item.id));
     // Count without allocating a temporary array of every matching history row.
     let historyCount=0;
     for(const entry of state.history){
@@ -1117,7 +1124,9 @@
     const entityChanges=[
       trackerEntityDeleteChange('subjects',id),
       ...topicIds.map(topicId=>trackerEntityDeleteChange('topics',topicId)),
-      ...historyIds.map(historyId=>trackerEntityDeleteChange('history',historyId))
+      ...historyIds.map(historyId=>trackerEntityDeleteChange('history',historyId)),
+      ...journalIds.map(journalId=>({collection:'journal',id:journalId,operation:'delete'})),
+      ...paperIds.map(paperId=>({collection:'papers',id:paperId,operation:'delete'}))
     ];
     if(!save({entityChanges})){
       markDeleteDiagnosticPhase('subject:rollback-save');
@@ -1144,6 +1153,11 @@
       topicIds.push(topic.id);
       topicIdSet.add(topic.id);
     }
+    const featureStateBefore=window.NexusGetFeatureStateForCommit?window.NexusGetFeatureStateForCommit():{};
+    const journalIds=(featureStateBefore.journal||[])
+      .filter(item=>item&&(subjectIdSet.has(item.subjectId)||topicIdSet.has(item.topicId))).map(item=>String(item.id));
+    const paperIds=(featureStateBefore.papers||[])
+      .filter(item=>item&&subjectIdSet.has(item.subjectId)).map(item=>String(item.id));
     let historyCount=0;
     const historyIds=[];
     for(const entry of state.history){
@@ -1174,7 +1188,9 @@
       trackerEntityDeleteChange('streams',id),
       ...subjectIds.map(subjectId=>trackerEntityDeleteChange('subjects',subjectId)),
       ...topicIds.map(topicId=>trackerEntityDeleteChange('topics',topicId)),
-      ...historyIds.map(historyId=>trackerEntityDeleteChange('history',historyId))
+      ...historyIds.map(historyId=>trackerEntityDeleteChange('history',historyId)),
+      ...journalIds.map(journalId=>({collection:'journal',id:journalId,operation:'delete'})),
+      ...paperIds.map(paperId=>({collection:'papers',id:paperId,operation:'delete'}))
     ];
     if(!save({entityChanges})){
       markDeleteDiagnosticPhase('stream:rollback-save');
