@@ -32,10 +32,28 @@ class FakeObjectStore {
       count:Number.isInteger(count)?count:null
     });
     return this.tx.enqueue(() => {
-      const matching=[...this.tx.maps.get(this.name).values()]
-        .filter(row=>!range||(typeof row.key==='string'&&row.key>=range.lower&&row.key<=range.upper))
-        .sort((a,b)=>String(a.key).localeCompare(String(b.key)));
-      return (Number.isInteger(count)&&count>=0?matching.slice(0,count):matching).map(clone);
+      const map=this.tx.maps.get(this.name),cache=this.tx.db.owner.sortedKeys;
+      let keys=cache&&cache.get(map);
+      if(!keys){
+        keys=[...map.keys()].sort((a,b)=>String(a)<String(b)?-1:String(a)>String(b)?1:0);
+        if(cache)cache.set(map,keys);
+      }
+      const lowerBound=value=>{
+        let low=0,high=keys.length;
+        while(low<high){const mid=(low+high)>>1;if(String(keys[mid])<value)low=mid+1;else high=mid;}
+        return low;
+      };
+      const upperBound=value=>{
+        let low=0,high=keys.length;
+        while(low<high){const mid=(low+high)>>1;if(String(keys[mid])<=value)low=mid+1;else high=mid;}
+        return low;
+      };
+      const start=range?lowerBound(range.lower):0;
+      const end=range?upperBound(range.upper):keys.length;
+      const limit=Number.isInteger(count)&&count>=0?Math.min(end,start+count):end;
+      const rows=[];
+      for(let index=start;index<limit;index++)rows.push(clone(map.get(keys[index])));
+      return rows;
     });
   }
   put(value) {
@@ -137,7 +155,7 @@ class FakeDatabase {
 }
 
 class FakeIndexedDB {
-  constructor() { this.databases = new Map(); this.failNextWrite = false; this.rangeQueries=[]; }
+  constructor() { this.databases = new Map(); this.failNextWrite = false; this.rangeQueries=[]; this.sortedKeys=new WeakMap(); }
   open(name, version) {
     const request = { result: null, error: null, onupgradeneeded: null, onsuccess: null, onerror: null, onblocked: null };
     queueMicrotask(() => {
