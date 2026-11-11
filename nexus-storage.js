@@ -703,7 +703,7 @@
     // A partially applied delta must never be exposed as a complete workspace.
     if(!manifest||manifest.status!=='ready'||!manifest.activeGeneration)return null;
     const prefix=entityRecordPrefix(owner,manifest.activeGeneration);
-    const upper=prefix+'\\uffff';
+    const upper=prefix+'\uffff';
     const keyRangeFactory=root&&root.IDBKeyRange;
     const supportsRanges=!!(keyRangeFactory&&typeof keyRangeFactory.bound==='function');
     const collections=TRACKER_ENTITY_COLLECTIONS.concat(FEATURE_ENTITY_COLLECTIONS);
@@ -718,7 +718,7 @@
     while(true){
       if(!enabled||committedOwnerId!==owner)return null;
       const range=supportsRanges
-        ?keyRangeFactory.bound(afterKey?afterKey+'\\u0000':prefix,upper)
+        ?keyRangeFactory.bound(afterKey?afterKey+'\u0000':prefix,upper)
         :entityPrefixRange(prefix);
       const page=await transaction([WORKSPACES],'readonly',(tx,set)=>{
         const request=tx.objectStore(WORKSPACES).getAll(range,supportsRanges?ENTITY_BATCH_SIZE:undefined);
@@ -784,7 +784,7 @@
          change.position!=='prepend'&&(!Number.isSafeInteger(change.position)||change.position<0)){
         throw new Error('A record put requires a valid append, prepend, or stable position.');
       }
-      const identity=change.collection+'\\u0000'+change.id;
+      const identity=change.collection+'\u0000'+change.id;
       if(changeIdentitySet.has(identity))throw new Error('An entity operation cannot change the same record more than once.');
       changeIdentitySet.add(identity);
       const storageCollection=change.collection==='trackerMeta'||change.collection==='featureMeta'?'_meta':change.collection;
