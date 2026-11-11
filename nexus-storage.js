@@ -598,7 +598,8 @@
         .sort((a,b)=>a.position-b.position).map(row=>row.value);
     }
     return {ownerId:owner,generation:manifest.activeGeneration,state:stateSnapshot,
-      featureState:featureSnapshot,revision:manifest.sourceRevision,counts:manifest.counts||{}};
+      featureState:featureSnapshot,revision:manifest.sourceRevision,rowCount:manifest.rowCount,
+      counts:manifest.counts||{}};
   }
   async function writeWorkspaceEntityChanges(ownerId,changes,options={}){
     const owner=entityOwnerKey(ownerId);
