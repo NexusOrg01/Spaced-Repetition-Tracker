@@ -406,6 +406,7 @@ const saveFsSandbox={
     NexusDeleteDiagnosticNoteError(){}
   },
   FEATURE_KEY:'recall.study.features.v1',
+  focusGoalCacheKey:'',
   localStorage:{getItem(){return null;}},
   state:consistencySandbox.state,
   fsState:consistencySandbox.fsState,
