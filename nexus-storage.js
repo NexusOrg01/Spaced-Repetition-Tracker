@@ -462,7 +462,7 @@
     if(!factory||typeof factory.bound!=='function')return null;
     const prefix=entityOutboxPrefix(ownerId)+'seq:';
     try{
-      return factory.bound(prefix+String(afterSequence+1).padStart(16,'0'),prefix+'\\uffff');
+      return factory.bound(prefix+String(afterSequence+1).padStart(16,'0'),prefix+String.fromCharCode(65535));
     }catch(_){return null;}
   }
   function entityPrefixRange(prefix){
