@@ -394,8 +394,10 @@ const indexReadsAfterDisplayRangeChanges=indexReads;
 
 // A journal/paper/goal save must not evict the 77k-topic/48k-history consistency cache.
 const saveFsStart=studyHub.indexOf('function saveFs(entityChanges=[]){');
+const featureEntityRootStart=studyHub.lastIndexOf('function featureEntityRoot(){',saveFsStart);
 const saveFsEnd=studyHub.indexOf('\n  window.NexusFeatureStorageKey',saveFsStart);
-assert.ok(saveFsStart>=0&&saveFsEnd>saveFsStart,'Study Hub save routine must remain discoverable for cache regression coverage');
+assert.ok(saveFsStart>=0&&featureEntityRootStart>=0&&saveFsEnd>saveFsStart,
+  'Study Hub entity-root and save routines must remain discoverable for cache regression coverage');
 let featureSaveCommits=0,invalidationCalls=0;
 const saveFsErrors=[];
 const saveFsSandbox={
@@ -415,7 +417,7 @@ const saveFsSandbox={
   notify(){}
 };
 vm.createContext(saveFsSandbox);
-vm.runInContext(studyHub.slice(saveFsStart,saveFsEnd)+'\nthis.testSaveFs=saveFs;',saveFsSandbox,{filename:'study-hub-save-cache.js'});
+vm.runInContext(studyHub.slice(featureEntityRootStart,saveFsEnd)+'\nthis.testSaveFs=saveFs;',saveFsSandbox,{filename:'study-hub-save-cache.js'});
 saveFsSandbox.fsState.journal=[{id:'journal-unrelated',note:'A non-analytics edit'}];
 const firstFeatureSaveResult=saveFsSandbox.testSaveFs();
 assert.equal(firstFeatureSaveResult,true,'unrelated Study Hub edits must still persist: '+saveFsErrors.join(' | '));
