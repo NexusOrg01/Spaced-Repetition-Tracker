@@ -621,6 +621,58 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'account A must not acknowledge or delete account B outbox changes');
   assert.equal((await loaded.api.readWorkspaceEntities('entity-owner-a')).generation,resumedMigration.generation,
     'switching back must preserve the original account A entity generation');
+
+  // The application integration commits its compatibility snapshot first, then
+  // mirrors only changed rows and both metadata roots into the entity generation.
+  const currentA=await loaded.api.readWorkspaceEntities('entity-owner-a');
+  const appendedTopic={id:'topic-incremental-append',subjectId:'subject-1',name:'Incrementally appended topic',reviewCount:0};
+  const prependedReview={id:'review-incremental-prepend',topicId:'topic-1',reviewedAt:'2026-11-11',rating:5};
+  const appendedPaper={id:'paper-incremental-append',name:'Incrementally saved paper'};
+  const nextTracker={
+    ...currentA.state,
+    topics:currentA.state.topics.concat([appendedTopic]),
+    history:[prependedReview,...currentA.state.history],
+    settings:{...currentA.state.settings,theme:'light'}
+  };
+  const nextFeatures={
+    ...currentA.featureState,
+    papers:currentA.featureState.papers.concat([appendedPaper]),
+    settings:{...(currentA.featureState.settings||{}),dailyMinutes:120}
+  };
+  await loaded.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(nextTracker)},
+    {key:'recall.study.features.v1',value:JSON.stringify(nextFeatures)}
+  ]);
+  const incremental=await loaded.api.syncWorkspaceEntities('entity-owner-a',[
+    {collection:'topics',id:appendedTopic.id,operation:'put',position:null,value:appendedTopic},
+    {collection:'history',id:prependedReview.id,operation:'put',position:'prepend',value:prependedReview},
+    {collection:'papers',id:appendedPaper.id,operation:'put',position:null,value:appendedPaper}
+  ],{
+    trackerRoot:{schema:3,settings:nextTracker.settings},
+    featureRoot:{version:1,settings:nextFeatures.settings,selectedTopicIds:nextFeatures.selectedTopicIds},
+    trackerSnapshotJson:JSON.stringify(nextTracker),featureSnapshotJson:JSON.stringify(nextFeatures)
+  });
+  assert.equal(incremental.mode,'incremental',
+    'a ready entity generation must accept a delta rather than replacing the full generation');
+  assert.equal(incremental.applied,5,'a delta must include changed records and both metadata roots');
+  const incrementallyRestored=await loaded.api.readWorkspaceEntities('entity-owner-a');
+  assert.deepEqual(incrementallyRestored.state.topics.map(row=>row.id).slice(-1),[appendedTopic.id],
+    'append positions must keep new tracker records at the end without rewriting existing rows');
+  assert.equal(incrementallyRestored.state.history[0].id,prependedReview.id,
+    'prepend positions must put new review records before existing history');
+  assert.equal(incrementallyRestored.featureState.papers.at(-1).id,appendedPaper.id,
+    'Study Hub appends must preserve the original paper order');
+  assert.equal(incrementallyRestored.state.settings.theme,'light',
+    'tracker metadata-root updates must be applied with the delta');
+  assert.equal(incrementallyRestored.featureState.settings.dailyMinutes,120,
+    'Study Hub metadata-root updates must be applied with the delta');
+  assert.equal(incrementallyRestored.counts.topics,403,
+    'incremental appends must maintain exact collection counts');
+  assert.equal(incrementallyRestored.counts.history,3,
+    'incremental history inserts must maintain exact collection counts');
+  assert.equal(incrementallyRestored.counts.papers,1,
+    'incremental Study Hub inserts must maintain exact collection counts');
+
   assert.ok(idb.rangeQueries.some(query=>query.store==='workspaces'&&
     query.lower.startsWith('workspace-entity:entity-owner-a:')),
     'entity hydration and generation cleanup must use owner/generation key ranges');
