@@ -506,8 +506,9 @@
       throw new Error('Complete tracker and Study Hub snapshots are required for entity migration.');
     }
     const sourceRevision=revision;
-    if(options.expectedRevision!==undefined&&Number(options.expectedRevision)!==sourceRevision){
-      throw new Error('The local workspace revision changed before entity migration started. Retry from a fresh snapshot.');
+    if(!Number.isSafeInteger(Number(options.expectedRevision))||
+       Number(options.expectedRevision)!==sourceRevision){
+      throw new Error('A matching expectedRevision is required. Read the active local revision and retry from a fresh workspace snapshot.');
     }
     const manifestKey=entityManifestKey(owner),generation=entityGeneration();
     const previous=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
