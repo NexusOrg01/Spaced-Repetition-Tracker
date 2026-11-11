@@ -505,7 +505,8 @@
        !featureSnapshot||typeof featureSnapshot!=='object'||Array.isArray(featureSnapshot)){
       throw new Error('Complete tracker and Study Hub snapshots are required for entity migration.');
     }
-    if(options.expectedRevision!==undefined&&Number(options.expectedRevision)!==revision){
+    const sourceRevision=revision;
+    if(options.expectedRevision!==undefined&&Number(options.expectedRevision)!==sourceRevision){
       throw new Error('The local workspace revision changed before entity migration started. Retry from a fresh snapshot.');
     }
     const manifestKey=entityManifestKey(owner),generation=entityGeneration();
@@ -516,7 +517,7 @@
     await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
       tx.objectStore('migrationMeta').put({
         key:manifestKey,ownerId:owner,status:'building',
-        activeGeneration:previous&&previous.status==='ready'?previous.activeGeneration:null,
+        activeGeneration:previous&&previous.activeGeneration?previous.activeGeneration:null,
         pendingGeneration:generation,updatedAt:timestamp()
       });
       set(true);
@@ -533,8 +534,7 @@
         }
       }
       if(batch.length)await writeWorkspaceEntityBatch(batch.splice(0,batch.length));
-      if(!enabled||committedOwnerId!==owner||
-         (options.expectedRevision!==undefined&&Number(options.expectedRevision)!==revision)){
+      if(!enabled||committedOwnerId!==owner||revision!==sourceRevision){
         throw new Error('The active workspace changed during entity migration. The previous entity generation remains active.');
       }
       await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
@@ -578,13 +578,12 @@
       const request=tx.objectStore('migrationMeta').get(manifestKey);
       request.onsuccess=()=>set(request.result||null);
     });
-    if(!manifest||manifest.status!=='ready'||!manifest.activeGeneration)return null;
+    if(!manifest||!manifest.activeGeneration)return null;
     const rows=await transaction([WORKSPACES],'readonly',(tx,set)=>{
       const request=tx.objectStore(WORKSPACES).getAll();
       request.onsuccess=()=>set(request.result||[]);
     });
     const activeRows=rows.filter(row=>row&&row.entityRow===true&&row.ownerId===owner&&row.generation===manifest.activeGeneration);
-    if(activeRows.length!==manifest.rowCount)return null;
     const trackerRoot=activeRows.find(row=>row.collection==='_meta'&&row.entityId==='tracker');
     const featureRoot=activeRows.find(row=>row.collection==='_meta'&&row.entityId==='features');
     if(!trackerRoot||!featureRoot||!trackerRoot.value||!featureRoot.value)return null;
@@ -623,7 +622,7 @@
     return transaction([WORKSPACES,'migrationMeta','outbox'],'readwrite',(tx,set)=>{
       const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta'),outbox=tx.objectStore('outbox');
       const manifestRequest=meta.get(manifestKey),sequenceRequest=meta.get(sequenceKey),markerRequest=outbox.get(markerKey);
-      const values={manifest:null,sequence:null,marker:null};let remaining=3;
+      const values={manifest:null,sequence:null,marker:null,existing:[]};let remaining=3+normalized.length;
       const done=()=>{
         remaining--;if(remaining!==0)return;
         if(values.marker){
@@ -636,27 +635,33 @@
           try{tx.abort();}catch(_){}
           return;
         }
-        let next=sequence;
+        let next=sequence,rowDelta=0;
+        const countDeltas={};
         const firstSequence=sequence+1;
-        for(const change of normalized){
-          next++;
+        for(let index=0;index<normalized.length;index++){
+          const change=normalized[index],existing=values.existing[index];
           const key=entityRecordKey(owner,manifest.activeGeneration,change.collection,change.id);
+          let position=change.position;
           if(change.operation==='put'){
+            if(position===null)position=existing&&Number.isSafeInteger(existing.position)
+              ?existing.position:Number.MAX_SAFE_INTEGER;
+            if(!existing)rowDelta++;
+            if(!existing)countDeltas[change.collection]=(countDeltas[change.collection]||0)+1;
             entities.put({key,ownerId:owner,generation:manifest.activeGeneration,entityRow:true,
-              collection:change.collection,entityId:change.id,
-              position:change.position===null?Number.MAX_SAFE_INTEGER:change.position,value:change.value});
-          }else entities.delete(key);
+              collection:change.collection,entityId:change.id,position,value:change.value});
+          }else{
+            if(existing){entities.delete(key);rowDelta--;countDeltas[change.collection]=(countDeltas[change.collection]||0)-1;}
+          }
+          next++;
           outbox.put({key:entityOutboxKey(owner,next),ownerId:owner,kind:'change',sequence:next,
             operationId,collection:change.collection,entityId:change.id,operation:change.operation,
-            value:change.operation==='put'?change.value:undefined,position:change.position,createdAt:timestamp()});
+            value:change.operation==='put'?change.value:undefined,position,createdAt:timestamp()});
         }
         const counts={...(manifest.counts||{})};
-        for(const change of normalized){
-          const current=Math.max(0,Number(counts[change.collection])||0);
-          counts[change.collection]=change.operation==='put'?current+1:Math.max(0,current-1);
+        for(const [collection,delta] of Object.entries(countDeltas)){
+          counts[collection]=Math.max(0,(Number(counts[collection])||0)+delta);
         }
-        meta.put({...manifest,rowCount:Math.max(2,Number(manifest.rowCount)||2)+
-          normalized.filter(x=>x.operation==='put').length-normalized.filter(x=>x.operation==='delete').length,
+        meta.put({...manifest,rowCount:Math.max(2,(Number(manifest.rowCount)||2)+rowDelta),
           counts,updatedAt:timestamp()});
         meta.put({key:sequenceKey,ownerId:owner,value:next,updatedAt:timestamp()});
         const marker={key:markerKey,ownerId:owner,kind:'operation-marker',operationId,
@@ -667,6 +672,12 @@
       manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;done();};
       sequenceRequest.onsuccess=()=>{values.sequence=sequenceRequest.result||null;done();};
       markerRequest.onsuccess=()=>{values.marker=markerRequest.result||null;done();};
+      normalized.forEach((change,index)=>{
+        const key=entityRecordKey(owner,values.manifest&&values.manifest.activeGeneration||'pending',
+          change.collection,change.id);
+        const request=entities.get(key);
+        request.onsuccess=()=>{values.existing[index]=request.result||null;done();};
+      });
     });
   }
   async function readWorkspaceEntityOutbox(ownerId,afterSequence=0,limit=100){
