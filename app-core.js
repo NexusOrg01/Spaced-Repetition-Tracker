@@ -63,7 +63,7 @@
     'Economics':'ආර්ථික විද්‍යාව','ECON':'ආර්ථික විද්‍යාව'
   };
   const RATING_LABELS = {1:'Again',2:'Hard',3:'Good',4:'Very good',5:'Easy'};
-  let state, undoState=null, undoTimer=null, toastTimer=null, undoSilent=false, editTopicId=null, reviewTopicId=null, selectedReviewRating=null, editStreamId=null, editSubjectId=null, editExamId=null, installPrompt=window.NexusInstallPrompt||null, topicVisibleLimit=100, historyVisibleLimit=100, historyInsightsDirty=true, historyMetricsCache=null;
+  let state, undoState=null, undoTimer=null, toastTimer=null, undoSilent=false, editTopicId=null, reviewTopicId=null, selectedReviewRating=null, editStreamId=null, editSubjectId=null, editExamId=null, installPrompt=window.NexusInstallPrompt||null, topicVisibleLimit=100, historyVisibleLimit=100, historyInsightsDirty=true, historyMetricsCache=null,historyMetricsRevision=0,historyMetricsBuildSequence=0;
   const UNDO_TIMEOUT_MS=15000;
   let activeDeleteDiagnostic=null;
   const DELETE_DIAGNOSTIC_STORAGE_KEY='nexus:last-delete-diagnostic';
@@ -316,6 +316,8 @@
   let storageSaveRevision=0;
   function save(){
     try{
+      historyMetricsRevision++;
+      historyMetricsBuildSequence++;
       window.NexusInvalidateHomeConsistencyCache?.();
       window.NexusInvalidatePlannerCache?.();
       markDeleteDiagnosticPhase('save:feature-state-snapshot');
@@ -617,17 +619,47 @@
   }
   function getHistoryMetrics(){
     const entries=state.history,cache=historyMetricsCache;
-    if(cache&&cache.source===entries){
+    if(cache&&cache.source===entries&&cache.revision===historyMetricsRevision){
       if(cache.length===entries.length)return cache;
       if(entries.length===cache.length+1&&entries[1]===cache.firstRecord){
         addHistoryMetricRecord(cache,entries[0]);cache.length=entries.length;cache.firstRecord=entries[0];return cache;
       }
     }
-    historyMetricsCache=buildHistoryMetrics(entries);return historyMetricsCache;
+    historyMetricsCache=buildHistoryMetrics(entries);
+    historyMetricsCache.revision=historyMetricsRevision;
+    return historyMetricsCache;
+  }
+  async function prepareHistoryActivityIndex(){
+    const entries=state.history,expectedLength=entries.length,revision=historyMetricsRevision;
+    const cache=historyMetricsCache;
+    if(cache&&cache.source===entries&&cache.length===expectedLength&&cache.revision===revision)return cache;
+    const buildId=++historyMetricsBuildSequence;
+    const isCurrent=()=>buildId===historyMetricsBuildSequence&&state.history===entries&&
+      entries.length===expectedLength&&historyMetricsRevision===revision;
+    const metrics={source:entries,length:expectedLength,firstRecord:entries[0],revision,
+      byDate:new Map(),dates:new Set(),byTopic:new Map(),ratingSum:0,ratingCounts:[0,0,0,0,0]};
+    const batchSize=400;
+    for(let start=0;start<expectedLength;start+=batchSize){
+      const end=Math.min(expectedLength,start+batchSize);
+      for(let index=start;index<end;index++)addHistoryMetricRecord(metrics,entries[index]);
+      if(end<expectedLength){
+        if(!isCurrent())return null;
+        await new Promise(resolve=>setTimeout(resolve,0));
+        if(!isCurrent())return null;
+      }
+    }
+    if(!isCurrent())return null;
+    historyMetricsCache=metrics;
+    return metrics;
   }
   // One shared read-only index supplies Overview and Study Hub analytics. Consumers
   // must not mutate its Maps or Sets; saves and immutable history changes refresh it.
   window.NexusGetHistoryActivityIndex=()=>getHistoryMetrics();
+  window.NexusGetCachedHistoryActivityIndex=()=>{
+    const cache=historyMetricsCache,entries=state.history;
+    return cache&&cache.source===entries&&cache.length===entries.length&&cache.revision===historyMetricsRevision?cache:null;
+  };
+  window.NexusPrepareHistoryActivityIndex=prepareHistoryActivityIndex;
   function recentHistoryCount(days,metrics=getHistoryMetrics()){
     const end=today();let count=0;
     for(let i=0;i<days;i++)count+=metrics.byDate.get(plusDays(end,-i))||0;
