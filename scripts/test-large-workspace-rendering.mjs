@@ -625,8 +625,12 @@ assert.ok(appCore.includes('window.NexusGetFeatureStateForCommit') &&
 assert.ok(studyHub.includes('const shared=window.NexusGetOverviewTopicMetrics?.();') &&
   studyHub.includes('weak:shared.weakCount'),
   'Study Hub top KPIs must reuse the shared Overview metrics instead of scanning all topics again');
-assert.ok(studyHub.includes('window.NexusInvalidatePlannerCache=()=>{plannerMetricsCache=null;}') &&
+assert.ok(studyHub.includes('window.NexusInvalidatePlannerCache=()=>{') &&
   studyHub.includes('window.NexusGetPlannerMetrics=()=>buildPlan(true);') &&
+  studyHub.includes('window.NexusPreparePlannerMetrics=preparePlannerMetrics;') &&
+  studyHub.includes('window.NexusGetCachedPlannerMetrics=()=>') &&
+  studyHub.includes('for(let start=0;start<ts.length;start+=batchSize)') &&
   studyHub.includes('const remainingMins=planner.remainingMins') &&
-  studyHub.includes('scheduledByDate=planner.scheduledByDate'),
-  'Study Hub Planner must cache one-pass topic workload and calendar calculations rather than scan the catalogue three times');
+  studyHub.includes('scheduledByDate=planner.scheduledByDate') &&
+  studyHub.includes('const planner=window.NexusGetCachedPlannerMetrics?.();'),
+  'Study Hub Planner must use a revision-aware cooperative cold build, cache reuse and non-blocking rendering');
