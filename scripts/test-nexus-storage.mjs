@@ -514,6 +514,13 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)).length,0,
     'acknowledging a verified sequence must remove its change events');
 
+  await loaded.api.writeWorkspaceEntityChanges('entity-owner-a',[
+    {collection:'topics',id:'topic-1',operation:'put',position:null,
+      value:{...trackerState.topics[0],notes:'superseded by next full generation'}}
+  ],{operationId:'entity-op-superseded-by-rebuild'});
+  assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)).length,1,
+    'the prior generation should expose its own unacknowledged change before replacement');
+
   await assert.rejects(loaded.api.writeWorkspaceEntityChanges('entity-owner-a',[
     {collection:'topics',id:'topic-1',operation:'delete'},
     {collection:'topics',id:'topic-1',operation:'put',position:0,value:{id:'topic-1'}}
@@ -561,6 +568,10 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     {expectedRevision:loaded.api.getStatus().revision});
   assert.ok(resumedMigration.prunedRows>=400,
     'a successful replacement must prune the interrupted hidden generation in bounded batches');
+  assert.ok(resumedMigration.prunedOutboxRows>=3,
+    'a successful replacement must prune superseded changes and their idempotency markers');
+  assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)).length,0,
+    'a new active entity generation must never expose old-generation outbox changes');
   assert.notEqual(resumedMigration.generation,afterChanges.generation,
     'retrying an interrupted migration must publish a new generation only after all batches commit');
   const resumedWorkspace=await loaded.api.readWorkspaceEntities('entity-owner-a');
