@@ -460,7 +460,7 @@
   function entityPrefixRange(prefix){
     const factory=root&&root.IDBKeyRange;
     if(!factory||typeof factory.bound!=='function')return undefined;
-    try{return factory.bound(prefix,prefix+'\\uffff');}catch(_){return undefined;}
+    try{return factory.bound(prefix,prefix+'\uffff');}catch(_){return undefined;}
   }
   function entityGeneration(){
     entityGenerationSequence++;
