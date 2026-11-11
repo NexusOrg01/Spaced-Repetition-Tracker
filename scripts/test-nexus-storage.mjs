@@ -158,7 +158,8 @@ function makeWindow(nativeStorage, indexedDB) {
     localStorage: nativeStorage,
     indexedDB,
     document: { getElementById: () => null },
-    console
+    console,
+    setTimeout
   };
 }
 
