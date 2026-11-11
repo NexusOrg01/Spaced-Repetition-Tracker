@@ -676,6 +676,19 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'a ready entity generation must accept a delta rather than replacing the full generation');
   assert.equal(incremental.applied,5,'a delta must include changed records and both metadata roots');
   const incrementallyRestored=await loaded.api.readWorkspaceEntities('entity-owner-a');
+  if(!incrementallyRestored){
+    const db=idb.databases.get('nexus-workspace-v1');
+    const manifest=db.stores.get('migrationMeta').get('workspace-entities:entity-owner-a');
+    const activeRows=Array.from(db.stores.get('workspaces').values()).filter(row=>
+      row&&row.entityRow===true&&row.ownerId==='entity-owner-a'&&
+      row.generation===manifest?.activeGeneration);
+    const details={status:manifest?.status,activeGeneration:manifest?.activeGeneration,
+      manifestRowCount:manifest?.rowCount,actualActiveRows:activeRows.length,
+      hasTrackerRoot:activeRows.some(row=>row.collection==='_meta'&&row.entityId==='tracker'),
+      hasFeatureRoot:activeRows.some(row=>row.collection==='_meta'&&row.entityId==='features'),
+      sampleActiveRows:activeRows.slice(0,3).map(row=>({collection:row.collection,id:row.entityId,position:row.position}))};
+    throw new Error('Incremental entity read returned null: '+JSON.stringify(details));
+  }
   assert.deepEqual(incrementallyRestored.state.topics.map(row=>row.id).slice(-1),[appendedTopic.id],
     'append positions must keep new tracker records at the end without rewriting existing rows');
   assert.equal(incrementallyRestored.state.history[0].id,prependedReview.id,
