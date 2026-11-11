@@ -393,7 +393,7 @@ consistencySandbox.renderHomeConsistencySummary();
 const indexReadsAfterDisplayRangeChanges=indexReads;
 
 // A journal/paper/goal save must not evict the 77k-topic/48k-history consistency cache.
-const saveFsStart=studyHub.indexOf('function saveFs(){');
+const saveFsStart=studyHub.indexOf('function saveFs(entityChanges=[]){');
 const saveFsEnd=studyHub.indexOf('\n  window.NexusFeatureStorageKey',saveFsStart);
 assert.ok(saveFsStart>=0&&saveFsEnd>saveFsStart,'Study Hub save routine must remain discoverable for cache regression coverage');
 let featureSaveCommits=0,invalidationCalls=0;
