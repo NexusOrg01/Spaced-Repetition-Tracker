@@ -30,7 +30,8 @@ for (const action of ['delete-topic','delete-history','delete-subject','delete-s
 }
 assert.ok(coreDeleteSource.includes("Delete failed ('+action+'):") &&
   coreDeleteSource.includes('error.message') &&
-  appCore.includes("if(!save()){markDeleteDiagnosticPhase('topic:rollback');undo();notify('Topic deletion was not saved."),
+  appCore.includes("if(!save({entityChanges:[trackerEntityDeleteChange('topics',id)]}))") &&
+  appCore.includes("markDeleteDiagnosticPhase('topic:rollback');undo();notify('Topic deletion was not saved."),
   'core deletion must expose actionable errors and roll back when local persistence fails');
 assert.ok(studyHub.includes('function paperRows(){') &&
   studyHub.includes('data-hub-action="delete-paper"') &&
