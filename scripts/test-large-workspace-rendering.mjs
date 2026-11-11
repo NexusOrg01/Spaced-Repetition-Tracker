@@ -397,6 +397,7 @@ const saveFsStart=studyHub.indexOf('function saveFs(entityChanges=[]){');
 const saveFsEnd=studyHub.indexOf('\n  window.NexusFeatureStorageKey',saveFsStart);
 assert.ok(saveFsStart>=0&&saveFsEnd>saveFsStart,'Study Hub save routine must remain discoverable for cache regression coverage');
 let featureSaveCommits=0,invalidationCalls=0;
+const saveFsErrors=[];
 const saveFsSandbox={
   window:{
     NexusOfflineSyncQueue:{commitWorkspace(){featureSaveCommits++;}},
@@ -410,13 +411,14 @@ const saveFsSandbox={
   localStorage:{getItem(){return null;}},
   state:consistencySandbox.state,
   fsState:consistencySandbox.fsState,
-  console:{error(){}},
+  console:{error(...args){saveFsErrors.push(String(args[0]&&args[0].stack||args[0]));}},
   notify(){}
 };
 vm.createContext(saveFsSandbox);
 vm.runInContext(studyHub.slice(saveFsStart,saveFsEnd)+'\nthis.testSaveFs=saveFs;',saveFsSandbox,{filename:'study-hub-save-cache.js'});
 saveFsSandbox.fsState.journal=[{id:'journal-unrelated',note:'A non-analytics edit'}];
-assert.equal(saveFsSandbox.testSaveFs(),true,'unrelated Study Hub edits must still persist');
+const firstFeatureSaveResult=saveFsSandbox.testSaveFs();
+assert.equal(firstFeatureSaveResult,true,'unrelated Study Hub edits must still persist: '+saveFsErrors.join(' | '));
 assert.equal(featureSaveCommits,1,'unrelated Study Hub edits must still use the offline-safe commit');
 assert.equal(invalidationCalls,0,'unrelated Study Hub saves must not discard the full consistency aggregate');
 consistencySandbox.renderHomeConsistencySummary();
