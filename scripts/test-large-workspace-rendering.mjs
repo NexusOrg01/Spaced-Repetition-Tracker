@@ -486,7 +486,7 @@ const asyncHistorySandbox={
   setTimeout(callback){asyncHistoryYields++;return setTimeout(callback,0);}
 };
 vm.createContext(asyncHistorySandbox);
-vm.runInContext('let historyMetricsCache=null,historyMetricsRevision=0,historyMetricsBuildSequence=0;\\n'+
+vm.runInContext('let historyMetricsCache=null,historyMetricsRevision=0,historyMetricsBuildSequence=0;\n'+
   appCore.slice(historyMetricsStart,historyMetricsEnd),asyncHistorySandbox,{filename:'cooperative-history-index.js'});
 const preparedHistoryIndex=await asyncHistorySandbox.window.NexusPrepareHistoryActivityIndex();
 assert.equal(preparedHistoryIndex.length,48000,'cooperative history preparation must index every history record');
