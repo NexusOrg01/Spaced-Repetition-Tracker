@@ -604,9 +604,13 @@
     });
     await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
       tx.objectStore('migrationMeta').put({
-        key:manifestKey,ownerId:owner,status:'building',
+        key:manifestKey,ownerId:owner,
+        // Keep the previously published generation readable while a replacement is
+        // assembled. "building" is reserved for a first migration with no active
+        // generation; migrationStatus records background replacement progress.
+        status:previous&&previous.activeGeneration?'ready':'building',
         activeGeneration:previous&&previous.activeGeneration?previous.activeGeneration:null,
-        pendingGeneration:generation,updatedAt:timestamp()
+        pendingGeneration:generation,migrationStatus:'building',updatedAt:timestamp()
       });
       set(true);
     });
@@ -646,7 +650,7 @@
             return;
           }
           store.put({
-            key:manifestKey,ownerId:owner,status:'ready',formatVersion:1,
+            key:manifestKey,ownerId:owner,status:'ready',formatVersion:1,migrationStatus:null,
             activeGeneration:generation,pendingGeneration:null,rowCount,counts,positionBounds,
             sourceRevision:revision,updatedAt:timestamp()
           });
@@ -666,7 +670,15 @@
           request.onsuccess=()=>{
             const current=request.result;
             if(current&&current.pendingGeneration===generation){
-              store.put({...current,status:'interrupted',updatedAt:timestamp()});
+              // A failed replacement must not make the prior published generation
+              // unreadable. It remains authoritative until a complete new generation
+              // is committed. Only a first-time migration has no readable fallback.
+              store.put({...current,
+                status:current.activeGeneration?'ready':'interrupted',
+                pendingGeneration:null,
+                migrationStatus:'interrupted',
+                updatedAt:timestamp()
+              });
             }
             set(true);
           };

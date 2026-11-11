@@ -546,9 +546,14 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   };
   const originalScheduler=loaded.context.window.setTimeout;
   let migrationYieldCount=0;
-  loaded.context.window.setTimeout=(callback,delay)=>originalScheduler(()=>{
+  let readableGenerationDuringBuild=null;
+  loaded.context.window.setTimeout=(callback,delay)=>originalScheduler(async()=>{
     migrationYieldCount++;
-    if(migrationYieldCount===1)idb.failNextWrite=true;
+    if(migrationYieldCount===1){
+      // The old generation must remain readable while replacement rows are staged.
+      readableGenerationDuringBuild=await loaded.api.readWorkspaceEntities('entity-owner-a');
+      idb.failNextWrite=true;
+    }
     callback();
   },delay);
   await assert.rejects(loaded.api.migrateWorkspaceEntities('entity-owner-a',expandedState,afterChanges.featureState,
@@ -556,6 +561,10 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'a failed later batch must leave the previous entity generation active');
   loaded.context.window.setTimeout=originalScheduler;
   assert.ok(migrationYieldCount>=1,'the interrupted migration must yield after its first committed batch');
+  assert.equal(readableGenerationDuringBuild.generation,afterChanges.generation,
+    'the previous generation must remain readable while a replacement is being built');
+  assert.equal(readableGenerationDuringBuild.state.topics[1].name,'Bank reconciliation — updated',
+    'the previous generation must not expose partially staged replacement rows');
   const preservedGeneration=await loaded.api.readWorkspaceEntities('entity-owner-a');
   assert.equal(preservedGeneration.generation,afterChanges.generation,
     'an interrupted migration must keep the previous generation active');
