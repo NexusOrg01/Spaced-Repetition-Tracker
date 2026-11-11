@@ -178,22 +178,37 @@
     const revisionBoost=fsState.settings.finalRevision&&!mastered?45:0;
     return revisionBoost+(topicStatus==='overdue'?100+Math.min(30,Math.max(0,dayDiff(t.dueDate,today()))):topicStatus==='due'?80:topicStatus==='new'?60:topicStatus==='upcoming'?10:0)+(meta.weak?30:0)+(meta.avg&&meta.avg<2.5?20:0)+(t.lapses||0)*3-(meta.score/20);
   }
-  let plannerMetricsCache=null;
-  window.NexusInvalidatePlannerCache=()=>{plannerMetricsCache=null;};
+  let plannerMetricsCache=null,plannerBuildGeneration=0,plannerBuildPromise=null,plannerBuildContext=null,plannerUiBuildPromise=null;
+  function plannerContext(limitBudget=true){
+    const topics=state.topics,daily=Math.max(10,Math.min(720,fNum(fsState.settings.dailyMinutes)||90));
+    const backlog=fsState.settings.backlogDays||7,now=today(),calendarWindow=Math.max(1,Math.min(90,Number(fsState.calendarWindow)||14));
+    return {topics,history:state.history,historyLength:state.history.length,today:now,
+      limitBudget,daily,backlog,finalRevision:Boolean(fsState.settings.finalRevision),calendarWindow,
+      cap:limitBudget?daily:Math.max(720,topics.length*30)};
+  }
+  function plannerCacheMatches(cache,context){
+    return !!cache&&cache.topics===context.topics&&cache.history===context.history&&
+      cache.historyLength===context.historyLength&&cache.today===context.today&&
+      cache.limitBudget===context.limitBudget&&cache.daily===context.daily&&cache.backlog===context.backlog&&
+      cache.finalRevision===context.finalRevision&&cache.calendarWindow===context.calendarWindow;
+  }
+  function samePlannerContext(a,b){
+    return !!a&&!!b&&a.topics===b.topics&&a.history===b.history&&
+      a.historyLength===b.historyLength&&a.today===b.today&&a.limitBudget===b.limitBudget&&
+      a.daily===b.daily&&a.backlog===b.backlog&&a.finalRevision===b.finalRevision&&
+      a.calendarWindow===b.calendarWindow;
+  }
+  window.NexusInvalidatePlannerCache=()=>{
+    plannerMetricsCache=null;plannerBuildGeneration++;plannerBuildPromise=null;plannerBuildContext=null;
+  };
   function buildPlan(limitBudget=true){
-    const ts=state.topics,daily=Math.max(10,Math.min(720,fNum(fsState.settings.dailyMinutes)||90));
-    const backlog=fsState.settings.backlogDays||7,cap=limitBudget?daily:Math.max(720,ts.length*30);
-    const now=today(),calendarWindow=Math.max(1,Math.min(90,Number(fsState.calendarWindow)||14));
+    const context=plannerContext(limitBudget),ts=context.topics,backlog=context.backlog,cap=context.cap,now=context.today,calendarWindow=context.calendarWindow;
     const cache=plannerMetricsCache;
-    if(cache&&cache.topics===ts&&cache.history===state.history&&cache.historyLength===state.history.length&&
-       cache.today===now&&cache.limitBudget===limitBudget&&cache.daily===daily&&cache.backlog===backlog&&
-       cache.finalRevision===Boolean(fsState.settings.finalRevision)&&cache.calendarWindow===calendarWindow){
-      return cache.value;
-    }
+    if(plannerCacheMatches(cache,context))return cache.value;
     const buckets=new Map(),selected=[];let sum=0,remainingMins=0;
     const scheduledByDate=new Map(),calendarEnd=dateShift(now,calendarWindow-1);
-    // One topic pass builds priority buckets, non-mastered workload, and calendar
-    // counts. Planner rendering no longer repeats two additional full catalogue scans.
+    // Compatibility/synchronous helper for non-UI callers. The planner screen uses
+    // preparePlannerMetrics so cold 77k-topic work never blocks its render.
     for(const topic of ts){
       if(topic.archived)continue;
       const topicStatus=status(topic),meta=featureMeta(topic,topicStatus);
@@ -218,10 +233,77 @@
       if(sum>=cap)break;
     }
     const value={plan:selected,remainingMins,scheduledByDate,calendarWindow};
-    plannerMetricsCache={topics:ts,history:state.history,historyLength:state.history.length,today:now,
-      limitBudget,daily,backlog,finalRevision:Boolean(fsState.settings.finalRevision),calendarWindow,value};
+    plannerMetricsCache={...context,value};
     return value;
   }
+  function preparePlannerMetrics(limitBudget=true){
+    const context=plannerContext(limitBudget);
+    if(plannerCacheMatches(plannerMetricsCache,context))return Promise.resolve(plannerMetricsCache.value);
+    if(plannerBuildPromise&&samePlannerContext(plannerBuildContext,context))return plannerBuildPromise;
+    const generation=++plannerBuildGeneration;
+    plannerBuildContext=context;
+    const isCurrent=()=>generation===plannerBuildGeneration&&samePlannerContext(plannerContext(limitBudget),context);
+    const task=(async()=>{
+      const ts=context.topics,backlog=context.backlog,cap=context.cap,now=context.today,calendarWindow=context.calendarWindow;
+      const buckets=new Map(),scheduledByDate=new Map();
+      let remainingMins=0;
+      const calendarEnd=dateShift(now,calendarWindow-1),batchSize=400;
+      for(let start=0;start<ts.length;start+=batchSize){
+        const end=Math.min(ts.length,start+batchSize);
+        for(let index=start;index<end;index++){
+          const topic=ts[index];
+          if(topic.archived)continue;
+          const topicStatus=status(topic),meta=featureMeta(topic,topicStatus);
+          const mastered=topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&topicStatus!=='overdue';
+          if(!mastered)remainingMins+=estimateMinutes(topic,meta,topicStatus);
+          const date=topic.dueDate||topic.createdAt||'';
+          if(date&&date>=now&&date<=calendarEnd)scheduledByDate.set(date,(scheduledByDate.get(date)||0)+1);
+          if(!['overdue','due','new'].includes(topicStatus)||(topicStatus==='overdue'&&backlog===0))continue;
+          const key=topicPriority(topic,meta,topicStatus);
+          let bucket=buckets.get(key);if(!bucket){bucket=[];buckets.set(key,bucket);}
+          bucket.push({topic,meta,status:topicStatus});
+        }
+        if(end<ts.length){
+          if(!isCurrent())return null;
+          await new Promise(resolve=>setTimeout(resolve,0));
+          if(!isCurrent())return null;
+        }
+      }
+      if(!isCurrent())return null;
+      // Priority keys are numeric and typically far fewer than source records.
+      // Keep the sort isolated after the yielding catalogue pass.
+      const priorityKeys=Array.from(buckets.keys()).sort((a,b)=>b-a);
+      const selected=[];let sum=0,processed=0;
+      for(const key of priorityKeys){
+        for(const item of buckets.get(key)){
+          processed++;
+          const minutes=estimateMinutes(item.topic,item.meta,item.status);
+          if(!(sum+minutes>cap&&selected.length>0)&&
+             !(sum+minutes>cap&&selected.length===0&&limitBudget)){
+            selected.push({topic:item.topic,minutes,priority:key,status:item.status});
+            sum+=minutes;
+          }
+          if(sum>=cap)break;
+          if(processed%batchSize===0){
+            if(!isCurrent())return null;
+            await new Promise(resolve=>setTimeout(resolve,0));
+            if(!isCurrent())return null;
+          }
+        }
+        if(sum>=cap)break;
+      }
+      if(!isCurrent())return null;
+      const value={plan:selected,remainingMins,scheduledByDate,calendarWindow};
+      plannerMetricsCache={...context,value};
+      return value;
+    })();
+    const wrapped=task.finally(()=>{if(plannerBuildPromise===wrapped){plannerBuildPromise=null;plannerBuildContext=null;}});
+    plannerBuildPromise=wrapped;
+    return wrapped;
+  }
+  window.NexusPreparePlannerMetrics=preparePlannerMetrics;
+  window.NexusGetCachedPlannerMetrics=()=>plannerCacheMatches(plannerMetricsCache,plannerContext(true))
+    ?plannerMetricsCache.value:null;
   window.NexusGetPlannerMetrics=()=>buildPlan(true);
   function hubCard(title,desc,body,wide=false){
     const inAnalytics=hubTab==='analytics',collapsible=inAnalytics&&!/(summary|trend|graph|chart|heatmap|consistency|daily review|daily study|review difficulty)/i.test(String(title||''));
