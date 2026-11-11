@@ -564,32 +564,21 @@
     let sharedOverview=null;
     try{sharedOverview=window.NexusGetOverviewTopicMetrics?.()||null;}
     catch(error){console.error('Shared Overview metrics failed; using the safe local calculation.',error);}
-    let progressBySubject=sharedOverview?.progressBySubject||new Map();
-    let queue=sharedOverview?.queue||[];
-    let activeCount=sharedOverview?.activeCount||0,dueCount=sharedOverview?.dueCount||0;
-    let overdueCount=sharedOverview?.overdue||0,newCount=sharedOverview?.newCount||0;
-    let reviewedCount=sharedOverview?.reviewedCount||0;
-    let reviewedToday=sharedOverview?.reviewedToday;
     if(!sharedOverview){
-      progressBySubject=new Map();queue=[];
-      activeCount=0;dueCount=0;overdueCount=0;newCount=0;reviewedCount=0;
-      const queueCompare=(a,b)=>dueRank(a.status)-dueRank(b.status)||
-        (a.topic.dueDate||'9999').localeCompare(b.topic.dueDate||'9999')||
-        naturalCompare(a.topic.name,b.topic.name);
-      // Fallback for startup before the Study Hub module has registered its cache.
-      for(const topic of topics){
-        if(topic.archived)continue;activeCount++;
-        const topicStatus=status(topic);
-        if(topicStatus==='overdue'||topicStatus==='due'){dueCount++;if(topicStatus==='overdue')overdueCount++;}
-        if(topicStatus==='new')newCount++;
-        if(topic.reviewCount>0)reviewedCount++;
-        let entry=progressBySubject.get(topic.subjectId);
-        if(!entry){entry={total:0,done:0};progressBySubject.set(topic.subjectId,entry);}
-        entry.total++;if(topic.reviewCount>0)entry.done++;
-        if(topicStatus==='overdue'||topicStatus==='due'||topicStatus==='new')insertSortedLimit(queue,{topic,status:topicStatus},7,queueCompare);
-      }
-      reviewedToday=getHistoryMetrics().byDate.get(todayKey)||0;
+      $('statsGrid').innerHTML='<div class="panel muted small">Preparing workspace overview…</div>';
+      $('dueQueue').innerHTML='<div class="empty">Calculating review priorities…</div>';
+      window.NexusPrepareHomeConsistencyMetrics?.().catch(error=>{
+        console.error('Nexus Overview metrics preparation failed',error);
+        $('statsGrid').innerHTML='<div class="panel analytics-render-error">Overview metrics could not be prepared. Reopen Overview to retry.</div>';
+      });
+      return;
     }
+    const progressBySubject=sharedOverview.progressBySubject||new Map();
+    const queue=sharedOverview.queue||[];
+    const activeCount=sharedOverview.activeCount||0,dueCount=sharedOverview.dueCount||0;
+    const overdueCount=sharedOverview.overdue||0,newCount=sharedOverview.newCount||0;
+    const reviewedCount=sharedOverview.reviewedCount||0;
+    const reviewedToday=window.NexusGetCachedHistoryActivityIndex?.()?.byDate.get(todayKey)||0;
     $('statsGrid').innerHTML=statCard('Due now',dueCount,overdueCount+' overdue')+statCard('Not reviewed',newCount,'Active topics with no review')+statCard('Reviewed topics',reviewedCount,'of '+activeCount+' active topics')+statCard('Reviews today',reviewedToday,'Review records dated today');
     const ex=nearestExam();if(ex){const remaining=dayDiff(todayKey,ex.date);$('examBanner').innerHTML='<div><h3>'+esc(ex.name)+'</h3><p>'+esc(ex.type)+' · '+fmtDate(ex.date)+(ex.notes?' · '+esc(ex.notes):'')+'</p></div><div class="countdown"><strong>'+(remaining>=0?remaining:Math.abs(remaining))+'</strong><span>'+(remaining>0?'days remaining':remaining===0?'today':'days since')+'</span></div>';}else{$('examBanner').innerHTML='<div><h3>No exam dates added</h3><p>Add an exam or deadline to display a countdown here.</p></div><button class="btn btn-sm" id="bannerAddExam">＋ Add exam</button>';$('bannerAddExam').addEventListener('click',()=>openExam());}
     $('dueQueue').innerHTML=queue.length?queue.map(({topic,status:st})=>{const d=subjectDisplay(topic);return '<div class="due-item"><div style="min-width:0"><div class="due-title">'+esc(topic.name)+'</div><div class="due-meta"><span>'+esc(d.subject)+'</span><span>·</span><span>'+esc(d.stream)+'</span><span class="pill '+st+'">'+statusText(st)+'</span></div></div><button type="button" class="btn btn-sm btn-primary" data-action="review" data-id="'+esc(topic.id)+'">Review</button></div>';}).join(''):'<div class="empty"><strong>You\'re all caught up</strong>No overdue or due topics at the moment. New topics are available under Topics.</div>';
