@@ -473,6 +473,8 @@
   const ENTITY_BATCH_SIZE=400;
   let entityGenerationSequence=0;
   let entitySyncSerial=Promise.resolve();
+  // Prevent new entity writes from recreating rows while an account is being deleted.
+  const entityRemovalOwners=new Set();
   let entitySyncError=null;
   let entitySyncLastSuccessAt=null;
 
@@ -618,6 +620,7 @@
   }
   async function migrateWorkspaceEntities(ownerId,stateSnapshot,featureSnapshot,options={}){
     const owner=entityOwnerKey(ownerId);
+    if(entityRemovalOwners.has(owner))throw new Error('This account workspace is being permanently deleted.');
     if(!enabled||!database)throw new Error('IndexedDB must be enabled before the per-entity migration can run.');
     if(committedOwnerId!==owner)throw new Error('The active account does not match the requested entity migration owner.');
     if(!stateSnapshot||typeof stateSnapshot!=='object'||Array.isArray(stateSnapshot)||
@@ -733,7 +736,7 @@
   }
   async function readWorkspaceEntities(ownerId){
     const owner=entityOwnerKey(ownerId);
-    if(!enabled||!database||committedOwnerId!==owner)return null;
+    if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner)return null;
     const manifestKey=entityManifestKey(owner);
     const manifest=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
       const request=tx.objectStore('migrationMeta').get(manifestKey);
@@ -814,6 +817,7 @@
   }
   async function writeWorkspaceEntityChanges(ownerId,changes,options={}){
     const owner=entityOwnerKey(ownerId);
+    if(entityRemovalOwners.has(owner))throw new Error('This account workspace is being permanently deleted.');
     if(!enabled||!database)throw new Error('IndexedDB must be enabled before incremental entity writes can run.');
     if(committedOwnerId!==owner)throw new Error('The active account does not match the requested entity write owner.');
     if(!Array.isArray(changes)||!changes.length||changes.length>1000)throw new Error('Provide between 1 and 1,000 entity changes.');
@@ -933,7 +937,7 @@
   }
   async function readWorkspaceEntityOutbox(ownerId,afterSequence=0,limit=100){
     const owner=entityOwnerKey(ownerId),after=Math.max(0,Number(afterSequence)||0),size=Math.max(1,Math.min(1000,Number(limit)||100));
-    if(!enabled||!database||committedOwnerId!==owner)return [];
+    if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner)return [];
     const manifest=await readEntityManifest(owner);
     if(!manifest||manifest.status!=='ready'||!manifest.activeGeneration)return [];
     const activeGeneration=manifest.activeGeneration;
@@ -954,7 +958,7 @@
   async function acknowledgeWorkspaceEntityOutbox(ownerId,throughSequence){
     const owner=entityOwnerKey(ownerId),
       through=Math.min(Number.MAX_SAFE_INTEGER,Math.max(0,Math.floor(Number(throughSequence)||0)));
-    if(!enabled||!database||committedOwnerId!==owner||through===0)return 0;
+    if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner||through===0)return 0;
     const prefix=entityOutboxPrefix(owner),
       sequenceRange=entityOutboxThroughRange(owner,'seq',through),
       markerRange=entityOutboxThroughRange(owner,'opseq',through);
@@ -1043,6 +1047,7 @@
   async function syncWorkspaceEntities(ownerId,changes,options={}){
     const owner=String(ownerId||'').trim();
     if(!owner)return {skipped:true,reason:'unassigned-workspace'};
+    if(entityRemovalOwners.has(owner))throw new Error('This account workspace is being permanently deleted.');
     if(!enabled||!database)return {skipped:true,reason:'indexeddb-unavailable'};
     if(committedOwnerId!==owner)throw new Error('The active account does not match the requested entity synchronization owner.');
     const capturedChanges=cloneEntityChanges(changes);
@@ -1052,6 +1057,7 @@
     const featureSnapshotJson=typeof options.featureSnapshotJson==='string'?options.featureSnapshotJson:null;
     const replace=options.replace===true||capturedChanges===null;
     const task=entitySyncSerial.catch(()=>undefined).then(async()=>{
+      if(entityRemovalOwners.has(owner))throw new Error('This account workspace is being permanently deleted.');
       if(options.durablePromise&&typeof options.durablePromise.then==='function')await options.durablePromise;
       if(!enabled||committedOwnerId!==owner)throw new Error('The active account changed before entity synchronization could begin.');
       // A later compatibility save can be committed before an earlier entity task
@@ -1144,6 +1150,78 @@
     entitySyncSerial=task;
     task.catch(()=>undefined);
     return task;
+  }
+
+  async function deleteWorkspaceEntities(ownerId){
+    const owner=entityOwnerKey(ownerId);
+    if(!enabled||!database)throw new Error('IndexedDB must be enabled before account entity cleanup can run.');
+    if(committedOwnerId!==owner)throw new Error('The active account does not match the requested entity cleanup owner.');
+    // Block new migrations/deltas before waiting for already-queued entity work.
+    entityRemovalOwners.add(owner);
+    await entitySyncSerial.catch(()=>undefined);
+    if(!enabled||!database||committedOwnerId!==owner){
+      throw new Error('The active account changed before entity cleanup could begin.');
+    }
+
+    const manifestKey=entityManifestKey(owner),sequenceKey=entitySequenceKey(owner);
+    await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
+      const store=tx.objectStore('migrationMeta');
+      const manifestRequest=store.get(manifestKey),sequenceRequest=store.get(sequenceKey);
+      const values={manifest:null,sequence:null};let remaining=2;
+      const finish=()=>{
+        remaining--;
+        if(remaining!==0)return;
+        if((values.manifest&&values.manifest.ownerId!==owner)||
+           (values.sequence&&values.sequence.ownerId!==owner)){
+          try{tx.abort();}catch(_){}
+          return;
+        }
+        // Remove publication metadata first so readers cannot treat residual rows
+        // as an active projection while the bounded physical cleanup proceeds.
+        store.delete(manifestKey);
+        store.delete(sequenceKey);
+        set({manifestRemoved:!!values.manifest,sequenceRemoved:!!values.sequence});
+      };
+      manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;finish();};
+      sequenceRequest.onsuccess=()=>{values.sequence=sequenceRequest.result||null;finish();};
+    });
+
+    const removeOwnerPrefix=async(storeName,prefix)=>{
+      const range=entityPrefixRange(prefix);
+      if(!range)throw new Error('IndexedDB key-range support is required for safe owner-scoped entity cleanup.');
+      let removed=0;
+      while(true){
+        if(!enabled||committedOwnerId!==owner){
+          throw new Error('The active account changed during owner-scoped entity cleanup.');
+        }
+        const page=await transaction([storeName],'readwrite',(tx,set)=>{
+          const store=tx.objectStore(storeName),request=store.getAll(range,ENTITY_BATCH_SIZE);
+          request.onsuccess=()=>{
+            const rows=request.result||[];
+            let count=0;
+            for(const row of rows){
+              // The key range narrows the request to the selected owner. Verify
+              // every row again before deletion so malformed data fails closed.
+              if(!row||row.ownerId!==owner||typeof row.key!=='string'||!row.key.startsWith(prefix)){
+                try{tx.abort();}catch(_){}
+                return;
+              }
+              store.delete(row.key);
+              count++;
+            }
+            set({read:rows.length,removed:count});
+          };
+        });
+        removed+=page.removed;
+        if(page.read<ENTITY_BATCH_SIZE)break;
+        await new Promise(resolve=>root.setTimeout(resolve,0));
+      }
+      return removed;
+    };
+
+    const entityRowsRemoved=await removeOwnerPrefix('workspaces',entityOwnerRecordPrefix(owner));
+    const outboxRowsRemoved=await removeOwnerPrefix('outbox',entityOutboxPrefix(owner));
+    return {ownerId:owner,entityRowsRemoved,outboxRowsRemoved,manifestRemoved:true,sequenceRemoved:true};
   }
 
   function restoreNativeProperty() {
@@ -1579,6 +1657,7 @@
     getWorkspaceEntityRevisionKey,
     migrateWorkspaceEntities,
     readWorkspaceEntities,
+    deleteWorkspaceEntities,
     writeWorkspaceEntityChanges,
     syncWorkspaceEntities,
     readWorkspaceEntityOutbox,
