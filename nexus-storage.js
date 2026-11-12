@@ -1164,7 +1164,7 @@
     }
 
     const manifestKey=entityManifestKey(owner),sequenceKey=entitySequenceKey(owner);
-    await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
+    const removedMetadata=await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
       const store=tx.objectStore('migrationMeta');
       const manifestRequest=store.get(manifestKey),sequenceRequest=store.get(sequenceKey);
       const values={manifest:null,sequence:null};let remaining=2;
@@ -1221,7 +1221,8 @@
 
     const entityRowsRemoved=await removeOwnerPrefix('workspaces',entityOwnerRecordPrefix(owner));
     const outboxRowsRemoved=await removeOwnerPrefix('outbox',entityOutboxPrefix(owner));
-    return {ownerId:owner,entityRowsRemoved,outboxRowsRemoved,manifestRemoved:true,sequenceRemoved:true};
+    return {ownerId:owner,entityRowsRemoved,outboxRowsRemoved,
+      manifestRemoved:removedMetadata.manifestRemoved,sequenceRemoved:removedMetadata.sequenceRemoved};
   }
 
   function restoreNativeProperty() {
