@@ -14,6 +14,7 @@
   const TRACKER_KEY = 'recall.study.tracker.v1';
   const FEATURE_KEY = 'recall.study.features.v1';
   const OWNER_KEY = 'nexus.cloud.last-user-id';
+  const ENTITY_REVISION_PREFIX = 'nexus.workspace.entity-revision:';
   const FALLBACK_JOURNAL_KEY = 'nexus.storage.internal.fallback-journal.v1';
   const APP_KEY = /^(?:recall\.|nexus\.|alSrsTrackerV2$|alTrackerData$|alHistoryLog$)/;
   const INTERNAL_KEY = /^nexus\.storage\.internal\./;
@@ -341,6 +342,12 @@
 
   function workspaceKey(ownerId) {
     return ownerId ? 'user:' + String(ownerId) : 'guest';
+  }
+
+  function getWorkspaceEntityRevisionKey(ownerId) {
+    const owner=String(ownerId||'').trim();
+    if(!owner||owner.length>512)return '';
+    return ENTITY_REVISION_PREFIX+encodeURIComponent(owner);
   }
 
   function rowValue(row) {
@@ -1062,9 +1069,10 @@
         throw new Error('The active compatibility workspace is not durably available for entity synchronization.');
       }
       let manifest=await readEntityManifest(owner);
-      const needsReplacement=replace||!manifest||manifest.status!=='ready'||!manifest.activeGeneration||
-        !Number.isSafeInteger(Number(manifest.sourceWorkspaceRevision))||
+      const entityRevisionChanged=!Number.isSafeInteger(Number(manifest&&manifest.sourceWorkspaceRevision))||
         Number(manifest.sourceWorkspaceRevision)!==sourceWorkspaceRevision;
+      const needsReplacement=replace||!manifest||manifest.status!=='ready'||!manifest.activeGeneration||
+        (entityRevisionChanged&&capturedChanges.length===0);
       if(needsReplacement){
         let stateSnapshot=null,featureSnapshot=null;
         if(trackerSnapshotJson!==null&&featureSnapshotJson!==null){
@@ -1219,7 +1227,8 @@
       request.onsuccess = () => {
         const nextRevision = Math.max(0, Number(request.result && request.result.value) || 0) + 1;
         const touchesWorkspace = batch.some(item =>
-          item.key === TRACKER_KEY || item.key === FEATURE_KEY || item.key === OWNER_KEY);
+          item.key === TRACKER_KEY || item.key === FEATURE_KEY || item.key === OWNER_KEY ||
+          (typeof item.key==='string'&&item.key.startsWith(ENTITY_REVISION_PREFIX)));
         const previousOwnerRequest = touchesWorkspace ? records.get(OWNER_KEY) : null;
         const writeRecords = previousOwner => {
           for (const item of batch) {
@@ -1287,11 +1296,13 @@
                   : (Number.isSafeInteger(Number(previousWorkspace.revision))
                     ? Number(previousWorkspace.revision) : 0))
                 : 0;
-              const contentChanged = !previousWorkspace ||
-                previousWorkspace.ownerId !== (owner || null) ||
-                previousWorkspace.tracker !== tracker ||
-                previousWorkspace.featureState !== featureState;
-              const nextWorkspaceRevision = contentChanged
+              // Only record-level mutations advance this revision. Settings and
+              // other metadata-only saves still update the snapshot roots, but must
+              // not trigger a full entity rebuild. The mutation marker is committed
+              // atomically with the compatibility snapshots by app-core / Study Hub.
+              const hasEntityMutationMarker = batch.some(item =>
+                item.key === getWorkspaceEntityRevisionKey(owner));
+              const nextWorkspaceRevision = hasEntityMutationMarker
                 ? previousWorkspaceRevision + 1
                 : previousWorkspaceRevision;
               workspaces.put(makeWorkspaceRow(
@@ -1556,6 +1567,7 @@
     isFacade: storage => storage === facade,
     commitLocalStorageEntries,
     getWorkspace: readWorkspace,
+    getWorkspaceEntityRevisionKey,
     migrateWorkspaceEntities,
     readWorkspaceEntities,
     writeWorkspaceEntityChanges,
