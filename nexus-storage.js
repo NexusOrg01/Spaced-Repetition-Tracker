@@ -1006,6 +1006,24 @@
     const task=entitySyncSerial.catch(()=>undefined).then(async()=>{
       if(options.durablePromise&&typeof options.durablePromise.then==='function')await options.durablePromise;
       if(!enabled||committedOwnerId!==owner)throw new Error('The active account changed before entity synchronization could begin.');
+      // A later compatibility save can be committed before an earlier entity task
+      // starts (both use the same serialized IndexedDB queue). Never publish an
+      // older delta/root against that newer snapshot. Mark the projection stale so
+      // the next queued sync rebuilds it from the newest compatibility workspace.
+      const snapshotWasSuperseded=
+        (trackerSnapshotJson!==null&&cache.get(TRACKER_KEY)!==trackerSnapshotJson)||
+        (featureSnapshotJson!==null&&cache.get(FEATURE_KEY)!==featureSnapshotJson);
+      if(snapshotWasSuperseded){
+        const currentManifest=await readEntityManifest(owner);
+        if(currentManifest&&currentManifest.activeGeneration){
+          await updateEntityManifest(owner,currentManifest.activeGeneration,current=>({
+            ...current,status:'stale',
+            syncError:'A newer compatibility snapshot superseded this entity update.',
+            updatedAt:timestamp()
+          }));
+        }
+        return {ownerId:owner,mode:'superseded',skipped:true,reason:'newer-compatibility-snapshot'};
+      }
       const sourceRevision=revision;
       let manifest=await readEntityManifest(owner);
       const needsReplacement=replace||!manifest||manifest.status!=='ready'||!manifest.activeGeneration;
