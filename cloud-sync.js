@@ -272,6 +272,12 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
   state=safeState;
   if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(nextFeatures.fsrsSettings,{syncFeature:false,persist:false});
   window.NexusSetFeatureState(nextFeatures,{persist:false,render:false,applyFsrs:false});
+  // Cloud restore, merge and account handoff replace the compatibility workspace.
+  // Rebuild its owner-bound entity projection before later local deltas can target it.
+  // Projection failure is non-fatal: the committed snapshots remain authoritative.
+  if(typeof window.NexusRebuildEntityProjection==='function'){
+    await window.NexusRebuildEntityProjection();
+  }
   renderAll();
   const activeView=typeof document!=='undefined'&&typeof document.querySelector==='function'?document.querySelector('.view.active'):null;if(activeView&&activeView.id==='view-studyhub'&&window.NexusRenderHub)window.NexusRenderHub();
   return true;
