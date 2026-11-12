@@ -123,6 +123,7 @@ const document = {
   createElement() { return { set src(v) { this._src = v; }, addEventListener() {} }; },
   head: { appendChild() {} }
 };
+const entityProjectionRebuilds = [];
 const window = {
   NexusBackupRestoreUtils: backup,
   NexusOfflineSyncQueue: queue,
@@ -139,6 +140,14 @@ const window = {
   NexusFSRS: { currentSettings: { ...DEFAULT_FSRS }, settings() { return { ...this.currentSettings }; }, setSettings(value) { this.currentSettings = { ...value }; } },
   NexusStorageKey: STATE_KEY,
   NexusFeatureStorageKey: FEATURE_KEY,
+  NexusRebuildEntityProjection: async () => {
+    entityProjectionRebuilds.push({
+      ownerId: storage.getItem(OWNER),
+      state: JSON.parse(storage.getItem(STATE_KEY) || 'null'),
+      featureState: JSON.parse(storage.getItem(FEATURE_KEY) || 'null')
+    });
+    return { mode: 'snapshot-backfill' };
+  },
   NexusGetFeatureState: () => JSON.parse(storage.getItem(FEATURE_KEY) || '{}'),
   NexusNormalizeFeatureState: v => v && typeof v === 'object' && !Array.isArray(v) ? JSON.parse(JSON.stringify(v)) : {},
   NexusSetFeatureState: (v, options = {}) => { storage.setItem(FEATURE_KEY, JSON.stringify(v || {})); if (options.persist === false) return true; return true; },
@@ -1274,7 +1283,16 @@ for (const scenario of [
   };
   activeSession = { user: accountB };
   networkAvailable = false;
+  const rebuildsBeforeAccountBCacheRestore = entityProjectionRebuilds.length;
   await window.NexusCloudSync.reconnect();
+  assert.equal(entityProjectionRebuilds.length, rebuildsBeforeAccountBCacheRestore + 1,
+    'restoring a different account cache must rebuild the entity projection after its snapshot commit');
+  assert.equal(entityProjectionRebuilds.at(-1).ownerId, accountB.id,
+    'the account-handoff entity projection must be bound to the newly committed owner');
+  assert.equal(entityProjectionRebuilds.at(-1).state.topics[0].id, 'cached-B-offline',
+    'the entity projection rebuild must observe the restored target-account snapshot, not the previous account');
+  assert.equal(entityProjectionRebuilds.at(-1).featureState.journal[0].text, 'cached-B-offline',
+    'the entity projection rebuild must include the restored target-account Study Hub data');
   assert.equal(storage.getItem(OWNER), accountB.id,
     'offline account handoff should activate only the target account when its local snapshot is found');
   assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id, 'cached-B-offline',
