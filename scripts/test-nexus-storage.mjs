@@ -794,6 +794,49 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     afterRapidSaves.featureState.journal.some(row=>row.id===latestJournal.id),
     'the rebuilt projection must include both Study Hub changes after overlapping saves');
 
+  // Unrelated durable writes must not advance the workspace-specific version or
+  // force a large entity replacement on the next ordinary startup save.
+  const workspaceBeforeUnrelated=await loaded.api.getWorkspace('entity-owner-a');
+  assert.ok(Number.isSafeInteger(workspaceBeforeUnrelated.workspaceRevision),
+    'durable compatibility snapshots must expose a workspace-only revision');
+  await loaded.api.commitLocalStorageEntries([
+    {key:'nexus.test.unrelated-preference',value:'changed'}
+  ]);
+  await loaded.api.flush();
+  const workspaceAfterUnrelated=await loaded.api.getWorkspace('entity-owner-a');
+  assert.equal(workspaceAfterUnrelated.workspaceRevision,workspaceBeforeUnrelated.workspaceRevision,
+    'queue or preference writes must not advance the tracker/Study Hub workspace revision');
+  const unchangedAfterUnrelated=await loaded.api.syncWorkspaceEntities('entity-owner-a',[],{
+    trackerRoot:trackerRootFor(latestTracker),featureRoot:featureRootFor(latestFeatures),
+    trackerSnapshotJson:JSON.stringify(latestTracker),featureSnapshotJson:JSON.stringify(latestFeatures)
+  });
+  assert.equal(unchangedAfterUnrelated.mode,'unchanged',
+    'unrelated IndexedDB writes must not make a current entity projection look stale');
+
+  // Simulate closing the page after its durable compatibility snapshots commit,
+  // but before syncWorkspaceEntities is called. On the next launch, an empty
+  // startup delta must detect the version gap and rebuild from the snapshots.
+  const missedSyncTopic={id:'topic-missed-entity-sync',subjectId:'subject-1',name:'Committed before page close'};
+  const missedSyncTracker={...latestTracker,topics:[...latestTracker.topics,missedSyncTopic]};
+  const missedSyncFeatures={...latestFeatures};
+  await loaded.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(missedSyncTracker)},
+    {key:'recall.study.features.v1',value:JSON.stringify(missedSyncFeatures)}
+  ]);
+  await loaded.api.flush();
+  const durableAfterMissedSync=await loaded.api.getWorkspace('entity-owner-a');
+  assert.ok(durableAfterMissedSync.workspaceRevision>workspaceAfterUnrelated.workspaceRevision,
+    'a changed tracker/Study Hub snapshot must advance the workspace-only revision');
+  const recoveredMissedSync=await loaded.api.syncWorkspaceEntities('entity-owner-a',[],{
+    trackerRoot:trackerRootFor(missedSyncTracker),featureRoot:featureRootFor(missedSyncFeatures),
+    trackerSnapshotJson:JSON.stringify(missedSyncTracker),featureSnapshotJson:JSON.stringify(missedSyncFeatures)
+  });
+  assert.equal(recoveredMissedSync.mode,'snapshot-backfill',
+    'startup must replace a stale projection when the prior page closed before its entity delta');
+  const recoveredAfterClose=await loaded.api.readWorkspaceEntities('entity-owner-a');
+  assert.ok(recoveredAfterClose.state.topics.some(row=>row.id===missedSyncTopic.id),
+    'the entity projection must recover records committed before a page close even when startup delta is empty');
+
   assert.ok(idb.rangeQueries.some(query=>query.store==='workspaces'&&
     query.lower.startsWith('workspace-entity:entity-owner-a:')),
     'entity hydration and generation cleanup must use owner/generation key ranges');
