@@ -11,6 +11,7 @@ const deno = read('supabase/functions/delete-account/deno.json');
 const cloud = read('cloud-sync.js');
 const app = read('app-core.js');
 const queue = read('offline-sync-queue.js');
+const storage = read('nexus-storage.js');
 const index = read('index.html');
 const privacy = read('privacy.html');
 const deletionPage = read('delete-account.html');
@@ -32,6 +33,14 @@ assert.ok(cloud.includes("client.functions.invoke('delete-account',{method:'POST
 assert.ok(cloud.includes("client.auth.getUser()") && cloud.includes("authData.user.id!==userId"), 'the browser must confirm the current user before requesting deletion');
 assert.ok(cloud.includes("localStorage.getItem(OWNER_KEY)!==session.user.id"), 'the deletion request must match the local workspace owner to the authenticated account');
 assert.ok(cloud.includes('queue.forgetAccount(localStorage,userId,entries)'), 'local deletion must remove only the selected account’s pending and recovery metadata');
+assert.ok(storage.includes('async function deleteWorkspaceEntities(ownerId)') &&
+  storage.includes('entityRemovalOwners.add(owner)') &&
+  storage.includes('store.getAll(range,ENTITY_BATCH_SIZE)'),
+  'IndexedDB entity cleanup must be owner-guarded and bounded');
+const entityPurgeAt=cloud.indexOf('await storage.deleteWorkspaceEntities(userId)');
+const ownerUnlockAt=cloud.indexOf('localStorage.removeItem(OWNER_KEY)',entityPurgeAt);
+assert.ok(entityPurgeAt>=0 && ownerUnlockAt>entityPurgeAt,
+  'the active owner lock must remain in place until entity rows and outbox have been purged');
 assert.ok(cloud.includes("client.auth.signOut({scope:'local'})"), 'successful account deletion must remove the current browser auth session');
 assert.ok(cloud.includes('if(deletingAccount||!localQueueHealthy') && cloud.includes('if(deletingAccount||!localQueueHealthy'), 'workspace uploads must stop while deletion is running');
 assert.ok(cloud.includes('deletionServiceAvailable'), 'the client must track the authenticated deletion service readiness state');
