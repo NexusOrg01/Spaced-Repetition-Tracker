@@ -690,9 +690,12 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     papers:currentA.featureState.papers.concat([appendedPaper]),
     settings:{...(currentA.featureState.settings||{}),dailyMinutes:120}
   };
+  const ownerEntityRevisionKey=loaded.api.getWorkspaceEntityRevisionKey('entity-owner-a');
+  assert.ok(ownerEntityRevisionKey,'the storage facade must provide an owner-scoped entity mutation marker key');
   await loaded.api.commitLocalStorageEntries([
     {key:'recall.study.tracker.v1',value:JSON.stringify(nextTracker)},
-    {key:'recall.study.features.v1',value:JSON.stringify(nextFeatures)}
+    {key:'recall.study.features.v1',value:JSON.stringify(nextFeatures)},
+    {key:ownerEntityRevisionKey,value:'incremental-fixture'}
   ]);
   const incremental=await loaded.api.syncWorkspaceEntities('entity-owner-a',[
     {collection:'topics',id:appendedTopic.id,operation:'put',position:null,value:appendedTopic},
@@ -753,7 +756,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   };
   await loaded.api.commitLocalStorageEntries([
     {key:'recall.study.tracker.v1',value:JSON.stringify(supersededTracker)},
-    {key:'recall.study.features.v1',value:JSON.stringify(supersededFeatures)}
+    {key:'recall.study.features.v1',value:JSON.stringify(supersededFeatures)},
+    {key:ownerEntityRevisionKey,value:'superseded-fixture'}
   ]);
   let releaseEarlierDurability;
   const earlierDurability=new Promise(resolve=>{releaseEarlierDurability=resolve;});
@@ -769,7 +773,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   await new Promise(resolve=>setImmediate(resolve));
   await loaded.api.commitLocalStorageEntries([
     {key:'recall.study.tracker.v1',value:JSON.stringify(latestTracker)},
-    {key:'recall.study.features.v1',value:JSON.stringify(latestFeatures)}
+    {key:'recall.study.features.v1',value:JSON.stringify(latestFeatures)},
+    {key:ownerEntityRevisionKey,value:'latest-fixture'}
   ]);
   const latestDurability=loaded.api.flush();
   const latestSync=loaded.api.syncWorkspaceEntities('entity-owner-a',[
@@ -821,7 +826,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const missedSyncFeatures={...latestFeatures};
   await loaded.api.commitLocalStorageEntries([
     {key:'recall.study.tracker.v1',value:JSON.stringify(missedSyncTracker)},
-    {key:'recall.study.features.v1',value:JSON.stringify(missedSyncFeatures)}
+    {key:'recall.study.features.v1',value:JSON.stringify(missedSyncFeatures)},
+    {key:ownerEntityRevisionKey,value:'missed-sync-fixture'}
   ]);
   await loaded.api.flush();
   const durableAfterMissedSync=await loaded.api.getWorkspace('entity-owner-a');
