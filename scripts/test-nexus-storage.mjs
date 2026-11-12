@@ -877,6 +877,126 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'entity operations must not replace or disable the existing snapshot-backed storage path');
 }
 
+// Permanent account deletion must remove only the selected owner's entity rows,
+// outbox operations and publication metadata. It must not touch another account.
+{
+  const ownerA='entity-delete-owner-a',ownerB='entity-delete-owner-b';
+  const workspaceFor=(suffix)=>({
+    state:{
+      schema:3,
+      streams:[{id:'stream-'+suffix,name:'Stream '+suffix}],
+      subjects:[{id:'subject-'+suffix,streamId:'stream-'+suffix,name:'Subject '+suffix}],
+      topics:[{id:'topic-'+suffix,subjectId:'subject-'+suffix,name:'Topic '+suffix}],
+      history:[],exams:[],settings:{}
+    },
+    features:{version:1,journal:[{id:'journal-'+suffix,subjectId:'subject-'+suffix,text:suffix}],
+      papers:[],goals:[],studyLogs:[],selectedTopicIds:[]}
+  });
+  const dataA=workspaceFor('A'),dataB=workspaceFor('B');
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(dataA.state)],
+    ['recall.study.features.v1',JSON.stringify(dataA.features)],
+    ['nexus.cloud.last-user-id',ownerA]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true,'entity deletion fixture must initialize IndexedDB');
+  const db=idb.databases.get('nexus-workspace-v1');
+  const maps=()=>({
+    workspaces:db.stores.get('workspaces'),
+    outbox:db.stores.get('outbox'),
+    migrationMeta:db.stores.get('migrationMeta')
+  });
+  const keysFor=(map,prefix)=>[...map.keys()].filter(key=>String(key).startsWith(prefix));
+  const entityPrefix=owner=>'workspace-entity:'+encodeURIComponent(owner)+':';
+  const outboxPrefix=owner=>'workspace-entity-change:'+encodeURIComponent(owner)+':';
+  const manifestKey=owner=>'workspace-entities:'+encodeURIComponent(owner);
+  const sequenceKey=owner=>'workspace-entity-sequence:'+encodeURIComponent(owner);
+  const buildOwner=async(owner,data,extraId)=>{
+    await loaded.api.migrateWorkspaceEntities(owner,data.state,data.features,
+      {expectedRevision:loaded.api.getStatus().revision});
+    await loaded.api.writeWorkspaceEntityChanges(owner,[{
+      collection:'topics',id:extraId,operation:'put',position:null,
+      value:{id:extraId,subjectId:data.state.subjects[0].id,name:'Outbox topic '+owner}
+    }],{operationId:'delete-fixture-'+owner});
+  };
+
+  await buildOwner(ownerA,dataA,'outbox-topic-A');
+  const ownerAInitial={
+    entities:keysFor(maps().workspaces,entityPrefix(ownerA)).length,
+    outbox:keysFor(maps().outbox,outboxPrefix(ownerA)).length
+  };
+  assert.ok(ownerAInitial.entities>0,'account A must have entity rows before deletion');
+  assert.ok(ownerAInitial.outbox>=3,'account A must have queued delta and idempotency metadata before deletion');
+
+  await loaded.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(dataB.state)},
+    {key:'recall.study.features.v1',value:JSON.stringify(dataB.features)},
+    {key:'nexus.cloud.last-user-id',value:ownerB}
+  ]);
+  await loaded.api.flush();
+  await buildOwner(ownerB,dataB,'outbox-topic-B');
+  const ownerBInitial={
+    entities:keysFor(maps().workspaces,entityPrefix(ownerB)).length,
+    outbox:keysFor(maps().outbox,outboxPrefix(ownerB)).length
+  };
+  assert.ok(ownerBInitial.entities>0&&ownerBInitial.outbox>=3,
+    'account B must have independent entity rows and outbox operations');
+
+  await assert.rejects(
+    loaded.api.deleteWorkspaceEntities(ownerA),
+    /active account does not match/,
+    'a signed-in account B must not be able to purge account A entity storage'
+  );
+  assert.equal(keysFor(maps().workspaces,entityPrefix(ownerA)).length,ownerAInitial.entities,
+    'wrong-owner cleanup must leave account A entity rows untouched');
+  assert.equal(keysFor(maps().outbox,outboxPrefix(ownerA)).length,ownerAInitial.outbox,
+    'wrong-owner cleanup must leave account A outbox operations untouched');
+  assert.equal((await loaded.api.readWorkspaceEntities(ownerB)).state.topics[0].id,'topic-B',
+    'wrong-owner cleanup must leave account B hydration intact');
+
+  await loaded.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(dataA.state)},
+    {key:'recall.study.features.v1',value:JSON.stringify(dataA.features)},
+    {key:'nexus.cloud.last-user-id',value:ownerA}
+  ]);
+  await loaded.api.flush();
+  const purged=await loaded.api.deleteWorkspaceEntities(ownerA);
+  assert.equal(purged.ownerId,ownerA);
+  assert.equal(purged.entityRowsRemoved,ownerAInitial.entities,
+    'the selected account entity rows must be removed in full');
+  assert.equal(purged.outboxRowsRemoved,ownerAInitial.outbox,
+    'the selected account change and idempotency rows must be removed in full');
+  assert.equal(keysFor(maps().workspaces,entityPrefix(ownerA)).length,0);
+  assert.equal(keysFor(maps().outbox,outboxPrefix(ownerA)).length,0);
+  assert.equal(maps().migrationMeta.has(manifestKey(ownerA)),false,
+    'the deleted owner manifest must be removed');
+  assert.equal(maps().migrationMeta.has(sequenceKey(ownerA)),false,
+    'the deleted owner sequence must be removed');
+  assert.equal(maps().workspaces.has('user:'+ownerA),true,
+    'entity purge must not broaden into compatibility snapshot deletion; the queue cleanup owns that step');
+  await assert.rejects(
+    loaded.api.writeWorkspaceEntityChanges(ownerA,[{
+      collection:'topics',id:'late-write',operation:'put',position:null,value:{id:'late-write'}
+    }]),
+    /permanently deleted/,
+    'the deleted owner must not be able to recreate entity rows in the same app session'
+  );
+
+  await loaded.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(dataB.state)},
+    {key:'recall.study.features.v1',value:JSON.stringify(dataB.features)},
+    {key:'nexus.cloud.last-user-id',value:ownerB}
+  ]);
+  await loaded.api.flush();
+  const survivingB=await loaded.api.readWorkspaceEntities(ownerB);
+  assert.equal(survivingB.state.topics[0].id,'topic-B',
+    'deleting account A must preserve account B entity records');
+  assert.equal(keysFor(maps().workspaces,entityPrefix(ownerB)).length,ownerBInitial.entities,
+    'account B entity row count must remain unchanged after account A deletion');
+  assert.equal(keysFor(maps().outbox,outboxPrefix(ownerB)).length,ownerBInitial.outbox,
+    'account B outbox row count must remain unchanged after account A deletion');
+}
+
 // Full programme-scale backfill: mirror the established stress baseline while
 // verifying bounded yielding and owner/generation key-range reads.
 {
