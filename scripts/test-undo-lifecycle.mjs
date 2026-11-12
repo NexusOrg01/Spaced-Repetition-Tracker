@@ -123,8 +123,10 @@ const helperEnd=studyHub.indexOf('\n  function deleteStudyLog(id){',helperStart)
 assert.ok(helperStart>=0&&helperEnd>helperStart);
 for(const collection of ['studyLogs','papers','journal','goals']){
  const original=[{id:'keep'},{id:'remove'},{id:'keep-two'}],fsState={[collection]:original};
- let saved=0,rendered=0,refreshed=0,cancelled=0;const messages=[];
- const sandbox={fsState,confirm:()=>true,saveFs:()=>{saved++;return true;},
+ let saved=0,rendered=0,refreshed=0,cancelled=0,savedChanges=null;const messages=[];
+ const sandbox={fsState,confirm:()=>true,
+  featureEntityDeleteChange:(name,id)=>({collection:name,id:String(id),operation:'delete'}),
+  saveFs:changes=>{saved++;savedChanges=changes;return true;},
   renderHub:()=>{rendered++;},notify:msg=>messages.push(String(msg)),
   window:{
    NexusStartUndoFeatureArrayDelete:(name,array)=>name===collection&&array===original,
@@ -134,7 +136,26 @@ for(const collection of ['studyLogs','papers','journal','goals']){
  vm.runInContext(studyHub.slice(helperStart,helperEnd)+'\nthis.runDelete=deleteStudyHubRecord;',sandbox);
  assert.equal(sandbox.runDelete(collection,'remove',{confirmMessage:'Delete?'}),true);
  assert.deepEqual(Array.from(sandbox.fsState[collection],item=>item.id),['keep','keep-two']);
+ assert.equal(JSON.stringify(savedChanges),JSON.stringify([{collection,id:'remove',operation:'delete'}]),
+  'each Study Hub deletion must persist the matching stable-ID entity delta');
  assert.equal(saved,1);assert.equal(rendered,1);assert.equal(refreshed,1);assert.equal(cancelled,0);
  assert.equal(messages.length,0);
+
+ const failedRows=[{id:'keep'},{id:'remove'},{id:'keep-two'}],failedState={[collection]:failedRows};
+ let failedRender=0,failedCancel=0,failedRefresh=0;const failureMessages=[];
+ const failureSandbox={fsState:failedState,confirm:()=>true,
+  featureEntityDeleteChange:(name,id)=>({collection:name,id:String(id),operation:'delete'}),
+  saveFs:()=>false,renderHub:()=>{failedRender++;},notify:msg=>failureMessages.push(String(msg)),
+  window:{
+   NexusStartUndoFeatureArrayDelete:(name,array)=>name===collection&&array===failedRows,
+   NexusRefreshUndoTimeout:()=>{failedRefresh++;},NexusCancelUndoAction:()=>{failedCancel++;}
+  }};
+ vm.createContext(failureSandbox);
+ vm.runInContext(studyHub.slice(helperStart,helperEnd)+'\nthis.runDelete=deleteStudyHubRecord;',failureSandbox);
+ assert.equal(failureSandbox.runDelete(collection,'remove',{confirmMessage:'Delete?',failureMessage:'save failed'}),false);
+ assert.strictEqual(failureSandbox.fsState[collection],failedRows,
+  'a failed Study Hub delete must restore the original array reference');
+ assert.equal(failedRender,1);assert.equal(failedCancel,1);assert.equal(failedRefresh,0);
+ assert.deepEqual(failureMessages,['save failed']);
 }
 console.log('Undo lifecycle tests passed: 15-second expiry, Undo-only notification, feature restoration and all four Study Hub delete types.');
