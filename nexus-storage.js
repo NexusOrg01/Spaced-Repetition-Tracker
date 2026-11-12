@@ -739,8 +739,13 @@
       const request=tx.objectStore('migrationMeta').get(manifestKey);
       request.onsuccess=()=>set(request.result||null);
     });
-    // A partially applied delta must never be exposed as a complete workspace.
+    // A partially applied delta or an older projection must never be exposed as the
+    // current workspace. The compatibility snapshot remains authoritative during
+    // the interval before its matching entity projection is published.
     if(!manifest||manifest.status!=='ready'||!manifest.activeGeneration)return null;
+    const workspaceRevision=await readWorkspaceRevision(owner);
+    if(!Number.isSafeInteger(workspaceRevision)||
+       Number(manifest.sourceWorkspaceRevision)!==workspaceRevision)return null;
     const prefix=entityRecordPrefix(owner,manifest.activeGeneration);
     const upper=prefix+'\uffff';
     const keyRangeFactory=root&&root.IDBKeyRange;
@@ -788,7 +793,11 @@
     // A concurrent rebuild/replacement may publish while pages are being read.
     // Re-check the manifest so a mixed-generation result is never returned.
     const finalManifest=await readEntityManifest(owner);
-    if(!finalManifest||finalManifest.status!=='ready'||
+    const finalWorkspaceRevision=await readWorkspaceRevision(owner);
+    if(!finalManifest||!Number.isSafeInteger(finalWorkspaceRevision)||
+       finalWorkspaceRevision!==workspaceRevision||
+       Number(finalManifest.sourceWorkspaceRevision)!==workspaceRevision||
+       finalManifest.status!=='ready'||
        finalManifest.activeGeneration!==manifest.activeGeneration||
        finalManifest.rowCount!==manifest.rowCount)return null;
     if(Number.isSafeInteger(Number(manifest.rowCount))&&activeRowCount!==Number(manifest.rowCount))return null;
