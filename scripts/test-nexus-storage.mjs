@@ -893,6 +893,10 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
       papers:[],goals:[],studyLogs:[],selectedTopicIds:[]}
   });
   const dataA=workspaceFor('A'),dataB=workspaceFor('B');
+  // Force cleanup across multiple 400-row pages rather than exercising only a small fixture.
+  dataA.state.topics=Array.from({length:1002},(_,index)=>({
+    id:'topic-A-'+index,subjectId:'subject-A',name:'Topic A '+index
+  }));
   const native=new MemoryStorage([
     ['recall.study.tracker.v1',JSON.stringify(dataA.state)],
     ['recall.study.features.v1',JSON.stringify(dataA.features)],
@@ -960,7 +964,14 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     {key:'nexus.cloud.last-user-id',value:ownerA}
   ]);
   await loaded.api.flush();
+  const cleanupQueryStart=idb.rangeQueries.length;
   const purged=await loaded.api.deleteWorkspaceEntities(ownerA);
+  const cleanupQueries=idb.rangeQueries.slice(cleanupQueryStart).filter(query=>
+    query.lower&&(query.lower.startsWith(entityPrefix(ownerA))||query.lower.startsWith(outboxPrefix(ownerA))));
+  assert.ok(cleanupQueries.filter(query=>query.store==='workspaces').length>=3,
+    'large owner cleanup must traverse the workspace entity prefix through multiple bounded pages');
+  assert.ok(cleanupQueries.every(query=>query.count===400),
+    'every account-deletion cleanup page must cap materialized IndexedDB rows at 400');
   assert.equal(purged.ownerId,ownerA);
   assert.equal(purged.entityRowsRemoved,ownerAInitial.entities,
     'the selected account entity rows must be removed in full');
