@@ -119,7 +119,10 @@ assert.ok(appSource.includes('function studyLogMinutes(entry)') && appSource.inc
 assert.ok(appSource.includes("rows=[['Date','Whole Minutes','Total Seconds','Type','Note']") && appSource.includes("'Duration: '+formatStudyDuration(studyLogMinutes(l)*60)"), 'study logs and analytics history must expose precise durations');
 assert.ok(appSource.includes('function renderStudyLogHistory()') && appSource.includes('max-height:300px;overflow-y:auto') && appSource.includes('data-hub-action="study-history-toggle"'), 'study-time history must live in its own bounded scrolling box with a collapse/expand control');
 assert.ok(appSource.includes('body :not(dialog):not(.standalone-screen):not(.menu-pop){overscroll-behavior-y:auto;-webkit-overflow-scrolling:touch}') && appSource.includes('overscroll-behavior-y:auto;touch-action:pan-y;-webkit-overflow-scrolling:touch;border:1px solid var(--border)'), 'all inner vertical lists must hand scroll back to the parent at their top and bottom edges, while the history box opts into native vertical panning');
-const studyHubDelete=section(studyHub,'function deleteStudyHubRecord(collection,id,options={}){','function renderPlanner(){','Study Hub record deletion');
+const studyHubDeleteSectionStart=studyHub.indexOf('function deleteStudyHubRecord(collection,id,options={}){');
+const studyHubDeleteSectionEnd=studyHub.indexOf('function renderPlanner(){',studyHubDeleteSectionStart);
+const studyHubDelete=studyHubDeleteSectionStart>=0&&studyHubDeleteSectionEnd>studyHubDeleteSectionStart
+  ?studyHub.slice(studyHubDeleteSectionStart,studyHubDeleteSectionEnd):'';
 assert.ok(appSource.includes('function deleteStudyLog(id)') &&
   appSource.includes('data-hub-action="delete-study-log"') &&
   appSource.includes("deleteStudyHubRecord('studyLogs',id") &&
