@@ -726,6 +726,74 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(incrementallyRestored.counts.papers,2,
     'incremental Study Hub inserts must maintain exact collection counts');
 
+  // A later compatibility snapshot can commit while an earlier entity task is
+  // waiting on durability. Reject the older delta and rebuild from the latest
+  // snapshot so closing the page cannot leave a ready-but-incomplete projection.
+  const supersededTopic={id:'topic-superseded-save',subjectId:'subject-1',name:'Earlier rapid save'};
+  const latestTopic={id:'topic-latest-save',subjectId:'subject-1',name:'Later rapid save'};
+  const supersededJournal={id:'journal-superseded-save',text:'Earlier rapid Study Hub save'};
+  const latestJournal={id:'journal-latest-save',text:'Later rapid Study Hub save'};
+  const supersededTracker={...incrementallyRestored.state,
+    topics:[...incrementallyRestored.state.topics,supersededTopic]};
+  const latestTracker={...supersededTracker,
+    topics:[...supersededTracker.topics,latestTopic]};
+  const supersededFeatures={...incrementallyRestored.featureState,
+    journal:[...incrementallyRestored.featureState.journal,supersededJournal]};
+  const latestFeatures={...supersededFeatures,
+    journal:[...supersededFeatures.journal,latestJournal]};
+  const trackerRootFor=workspace=>{
+    const root={...workspace};
+    for(const collection of ['streams','subjects','topics','history','exams'])delete root[collection];
+    return root;
+  };
+  const featureRootFor=workspace=>{
+    const root={...workspace};
+    for(const collection of ['journal','papers','goals','studyLogs'])delete root[collection];
+    return root;
+  };
+  await loaded.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(supersededTracker)},
+    {key:'recall.study.features.v1',value:JSON.stringify(supersededFeatures)}
+  ]);
+  let releaseEarlierDurability;
+  const earlierDurability=new Promise(resolve=>{releaseEarlierDurability=resolve;});
+  const supersededSync=loaded.api.syncWorkspaceEntities('entity-owner-a',[
+    {collection:'topics',id:supersededTopic.id,operation:'put',position:null,value:supersededTopic},
+    {collection:'journal',id:supersededJournal.id,operation:'put',position:null,value:supersededJournal}
+  ],{
+    trackerRoot:trackerRootFor(supersededTracker),featureRoot:featureRootFor(supersededFeatures),
+    trackerSnapshotJson:JSON.stringify(supersededTracker),featureSnapshotJson:JSON.stringify(supersededFeatures),
+    durablePromise:earlierDurability
+  });
+  // Let the serialized entity task begin and pause at its explicit durability gate.
+  await new Promise(resolve=>setImmediate(resolve));
+  await loaded.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(latestTracker)},
+    {key:'recall.study.features.v1',value:JSON.stringify(latestFeatures)}
+  ]);
+  const latestDurability=loaded.api.flush();
+  const latestSync=loaded.api.syncWorkspaceEntities('entity-owner-a',[
+    {collection:'topics',id:latestTopic.id,operation:'put',position:null,value:latestTopic},
+    {collection:'journal',id:latestJournal.id,operation:'put',position:null,value:latestJournal}
+  ],{
+    trackerRoot:trackerRootFor(latestTracker),featureRoot:featureRootFor(latestFeatures),
+    trackerSnapshotJson:JSON.stringify(latestTracker),featureSnapshotJson:JSON.stringify(latestFeatures),
+    durablePromise:latestDurability
+  });
+  releaseEarlierDurability();
+  const [supersededResult,latestResult]=await Promise.all([supersededSync,latestSync]);
+  assert.equal(supersededResult.mode,'superseded',
+    'an older entity delta must be rejected when either compatibility snapshot has advanced');
+  assert.equal(latestResult.mode,'snapshot-backfill',
+    'the next queued task must rebuild a stale projection from the latest complete snapshot');
+  const afterRapidSaves=await loaded.api.readWorkspaceEntities('entity-owner-a');
+  assert.ok(afterRapidSaves.state.topics.some(row=>row.id===supersededTopic.id)&&
+    afterRapidSaves.state.topics.some(row=>row.id===latestTopic.id),
+    'the rebuilt projection must include both records from the latest compatibility snapshot');
+  assert.ok(afterRapidSaves.featureState.journal.some(row=>row.id===supersededJournal.id)&&
+    afterRapidSaves.featureState.journal.some(row=>row.id===latestJournal.id),
+    'the rebuilt projection must include both Study Hub changes after overlapping saves');
+
   assert.ok(idb.rangeQueries.some(query=>query.store==='workspaces'&&
     query.lower.startsWith('workspace-entity:entity-owner-a:')),
     'entity hydration and generation cleanup must use owner/generation key ranges');
