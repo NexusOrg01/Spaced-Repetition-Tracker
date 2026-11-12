@@ -812,11 +812,32 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(workspaceAfterUnrelated.workspaceRevision,workspaceBeforeUnrelated.workspaceRevision,
     'queue or preference writes must not advance the tracker/Study Hub workspace revision');
   const unchangedAfterUnrelated=await loaded.api.syncWorkspaceEntities('entity-owner-a',[],{
-    trackerRoot:trackerRootFor(latestTracker),featureRoot:featureRootFor(latestFeatures),
     trackerSnapshotJson:JSON.stringify(latestTracker),featureSnapshotJson:JSON.stringify(latestFeatures)
   });
   assert.equal(unchangedAfterUnrelated.mode,'unchanged',
     'unrelated IndexedDB writes must not make a current entity projection look stale');
+
+  // A metadata-only save must update the two entity roots incrementally without
+  // advancing the record-mutation marker or rebuilding every entity row.
+  const metadataOnlyTracker={...latestTracker,
+    settings:{...latestTracker.settings,theme:'dark'}};
+  await loaded.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(metadataOnlyTracker)},
+    {key:'recall.study.features.v1',value:JSON.stringify(latestFeatures)}
+  ]);
+  await loaded.api.flush();
+  const workspaceAfterMetadata=await loaded.api.getWorkspace('entity-owner-a');
+  assert.equal(workspaceAfterMetadata.workspaceRevision,workspaceAfterUnrelated.workspaceRevision,
+    'metadata-only saves must not advance the record-mutation revision');
+  const metadataOnlySync=await loaded.api.syncWorkspaceEntities('entity-owner-a',[],{
+    trackerRoot:trackerRootFor(metadataOnlyTracker),featureRoot:featureRootFor(latestFeatures),
+    trackerSnapshotJson:JSON.stringify(metadataOnlyTracker),featureSnapshotJson:JSON.stringify(latestFeatures)
+  });
+  assert.equal(metadataOnlySync.mode,'incremental',
+    'metadata-only startup saves must update roots without triggering a full generation replacement');
+  const metadataOnlyRead=await loaded.api.readWorkspaceEntities('entity-owner-a');
+  assert.equal(metadataOnlyRead.state.settings.theme,'dark',
+    'metadata-only tracker settings must be reflected in the entity metadata root');
 
   // Simulate closing the page after its durable compatibility snapshots commit,
   // but before syncWorkspaceEntities is called. On the next launch, an empty
