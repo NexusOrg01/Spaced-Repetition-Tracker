@@ -830,7 +830,14 @@ async function clearDeletedAccountLocalData(userId){
  const cleanup=queue.forgetAccount(localStorage,userId,entries);
  const storage=window.NexusStorage;
  if(storage&&typeof storage.flush==='function')await storage.flush();
- // Remove the owner marker only after the same-owner IndexedDB workspace projection was deleted.
+ // Queue cleanup removes the compatibility snapshots. The independent entity rows,
+ // entity outbox and owner manifest must also be purged before dropping the owner lock.
+ if(!storage||typeof storage.isEnabled!=='function'||!storage.isEnabled()||
+    typeof storage.deleteWorkspaceEntities!=='function'){
+  throw new Error('IndexedDB entity cleanup could not be verified. Clear Nexus site data on this device before using it again.');
+ }
+ await storage.deleteWorkspaceEntities(userId);
+ // Remove the owner marker only after both snapshot and entity-store cleanup have committed.
  localStorage.removeItem(OWNER_KEY);
  if(storage&&typeof storage.flush==='function')await storage.flush();
  return cleanup;
