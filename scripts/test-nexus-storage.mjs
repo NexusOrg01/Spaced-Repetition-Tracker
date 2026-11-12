@@ -854,6 +854,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const durableAfterMissedSync=await loaded.api.getWorkspace('entity-owner-a');
   assert.ok(durableAfterMissedSync.workspaceRevision>workspaceAfterUnrelated.workspaceRevision,
     'a changed tracker/Study Hub snapshot must advance the workspace-only revision');
+  assert.equal(await loaded.api.readWorkspaceEntities('entity-owner-a'),null,
+    'entity hydration must reject the prior generation while a newer compatibility snapshot is waiting for projection backfill');
   const recoveredMissedSync=await loaded.api.syncWorkspaceEntities('entity-owner-a',[],{
     trackerRoot:trackerRootFor(missedSyncTracker),featureRoot:featureRootFor(missedSyncFeatures),
     trackerSnapshotJson:JSON.stringify(missedSyncTracker),featureSnapshotJson:JSON.stringify(missedSyncFeatures)
