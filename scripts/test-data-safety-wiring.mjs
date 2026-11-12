@@ -75,7 +75,14 @@ assert.ok(storageSource.includes("const DB_NAME = 'nexus-workspace-v1'") && stor
 assert.ok(storageSource.includes("const WORKSPACES = 'workspaces'") && storageSource.includes('function seedWorkspaceProjection') && storageSource.includes('getWorkspace: readWorkspace'), 'IndexedDB must retain verifiable owner-scoped workspace projections');
 assert.ok(storageSource.includes('FALLBACK_JOURNAL_KEY') && storageSource.includes('function fallbackAtomicWrite(entries)') && storageSource.includes('valueHash(currentNativeValue)'), 'browser-storage fallback edits must be checksummed and reconciled before an older IndexedDB snapshot can overwrite them');
 assert.ok(cloudSync.includes('async function recoverCachedWorkspaceForOfflineAccount(userId)') && cloudSync.includes('queue.getPending(localStorage,userId)') && cloudSync.includes('durable.getWorkspace(userId)') && cloudSync.includes('queue.getBase(localStorage,userId)'), 'offline sign-in must restore only the exact account’s pending/cache/base workspace');
-assert.ok(appSource.includes('Saving to this device') && appSource.includes('storage.flush().then('), 'the tracker must not show a successful save before the durable storage promise resolves');
+const durableTrackerSave=section(appCore,'function save(options={}){','window.NexusRebuildEntityProjection=()=>{','durable tracker save');
+assert.ok(durableTrackerSave.includes("textContent='Saving to this device…';") &&
+  durableTrackerSave.includes('const durableFlush=storage.flush();') &&
+  durableTrackerSave.includes('durableFlush.then(()=>{') &&
+  durableTrackerSave.indexOf('durableFlush.then(()=>{') < durableTrackerSave.indexOf("textContent='Saved on this device';") &&
+  durableTrackerSave.includes('}).catch(error=>{') &&
+  durableTrackerSave.includes("textContent='Save failed — export backup';"),
+  'the tracker must show a pending state and report success only after the durable storage promise resolves');
 assert.ok(bootstrap.includes('registerServiceWorker();') && bootstrap.includes("navigator.serviceWorker.register('./sw.js', { scope: './' })"), 'the storage-gated bootstrap must register the service worker directly without waiting for the window load event');
 assert.ok(cloudSync.includes('await durableStorage.flush()'), 'cloud uploads must wait for the IndexedDB write queue to commit before selecting a snapshot');
 assert.ok(cloudSync.includes("{key:'nexus.fsrs.settings.v1',value:JSON.stringify(nextFeatures.fsrsSettings)}") && cloudSync.includes('NexusFSRS.setSettings(nextFeatures.fsrsSettings'), 'account hydration must persist and activate the account-scoped FSRS scheduler preferences');
