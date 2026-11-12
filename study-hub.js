@@ -41,9 +41,17 @@
       const featureSnapshot=JSON.stringify(fsState);
       const frozenEntityChanges=Array.isArray(entityChanges)?JSON.parse(JSON.stringify(entityChanges)):null;
       const featureRoot=JSON.parse(JSON.stringify(featureEntityRoot()));
+      const owner=localStorage.getItem('nexus.cloud.last-user-id')||'';
+      const workspaceEntries=[{key:FEATURE_KEY,value:featureSnapshot}];
+      if(owner&&(frozenEntityChanges===null||frozenEntityChanges.length)){
+        const entityRevisionKey=window.NexusStorage?.getWorkspaceEntityRevisionKey?.(owner);
+        if(entityRevisionKey)workspaceEntries.push({
+          key:entityRevisionKey,value:Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)
+        });
+      }
       window.NexusDeleteDiagnosticPhase?.('hub:save:offline-queue-commit');
-      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[{key:FEATURE_KEY,value:featureSnapshot}],{state,featureState:fsState},{returnOperationPayload:false});
-      const storage=window.NexusStorage,owner=localStorage.getItem('nexus.cloud.last-user-id')||'';
+      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,workspaceEntries,{state,featureState:fsState},{returnOperationPayload:false});
+      const storage=window.NexusStorage;
       if(owner&&storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&
          typeof storage.flush==='function'&&typeof storage.syncWorkspaceEntities==='function'){
         const durableFlush=storage.flush();
