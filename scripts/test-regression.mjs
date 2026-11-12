@@ -173,8 +173,19 @@ assert.ok(studyHub.includes('studyTopicOptionsMarkup(fsState.studyTopicQuery,foc
 assert.ok(studyHub.includes('for(const record of history){') && studyHub.includes('for(const record of studyLogs){') &&
   !studyHub.includes('const reviews=history.map(') && !studyHub.includes('const sessions=studyLogs.map('),
   'activity analytics must aggregate source records directly instead of allocating full-size wrapper arrays');
-assert.ok(!appCore.slice(appCore.indexOf('  function save(){'),appCore.indexOf('  function save(){')+450).includes('repairCurriculumState(') &&
-  appCore.includes('const result=repairCurriculumStateResult(state);') && appCore.includes('if(result.changed)save();'),
+const ordinarySaveStart=appCore.indexOf('function save(options={}){');
+const ordinarySaveEnd=appCore.indexOf('window.NexusRebuildEntityProjection=()=>{',ordinarySaveStart);
+const ordinarySaveBody=ordinarySaveStart>=0&&ordinarySaveEnd>ordinarySaveStart
+  ?appCore.slice(ordinarySaveStart,ordinarySaveEnd):'';
+const catalogueRepairStart=appCore.indexOf('onCatalogLoaded:()=>{');
+const catalogueRepairEnd=appCore.indexOf('onCatalogError:',catalogueRepairStart);
+const catalogueRepairBody=catalogueRepairStart>=0&&catalogueRepairEnd>catalogueRepairStart
+  ?appCore.slice(catalogueRepairStart,catalogueRepairEnd):'';
+assert.ok(ordinarySaveBody.length>0 &&
+  !ordinarySaveBody.includes('repairCurriculumState(') &&
+  !ordinarySaveBody.includes('repairCurriculumStateResult(') &&
+  catalogueRepairBody.includes('const result=repairCurriculumStateResult(state);') &&
+  catalogueRepairBody.includes('if(result.changed)save({replaceEntities:true});'),
   'curriculum repair must run at data lifecycle boundaries rather than on every routine review save');
 assert.ok(appCore.includes('topicIdSet.has(h.topicId)') && appCore.includes('subjectIdSet.has(h.subjectId)'),
   'subject and stream deletion must use constant-time Set membership when removing large topic and history groups');
