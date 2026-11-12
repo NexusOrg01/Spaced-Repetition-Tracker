@@ -357,7 +357,7 @@
     return 'fnv1a32:' + (hash >>> 0).toString(16).padStart(8, '0');
   }
 
-  function makeWorkspaceRow(ownerId, tracker, featureState, savedRevision) {
+  function makeWorkspaceRow(ownerId, tracker, featureState, savedRevision, workspaceRevision=savedRevision) {
     return {
       key: workspaceKey(ownerId),
       ownerId: ownerId || null,
@@ -366,6 +366,7 @@
       featureState,
       checksum: workspaceChecksum(tracker, featureState),
       revision: savedRevision,
+      workspaceRevision,
       updatedAt: timestamp()
     };
   }
@@ -423,11 +424,35 @@
             state,
             featureState,
             revision: Number.isSafeInteger(Number(row.revision)) ? Number(row.revision) : 0,
+            workspaceRevision: Number.isSafeInteger(Number(row.workspaceRevision))
+              ? Number(row.workspaceRevision)
+              : (Number.isSafeInteger(Number(row.revision)) ? Number(row.revision) : 0),
             updatedAt: typeof row.updatedAt === 'string' ? row.updatedAt : null
           });
         } catch (_) {
           set(null);
         }
+      };
+    });
+  }
+
+  // Read the workspace-only version without parsing the potentially very large
+  // compatibility snapshots. Unrelated queue/preferences writes must not make a
+  // valid entity projection look stale.
+  function readWorkspaceRevision(ownerId) {
+    if (!enabled || !database) return Promise.resolve(null);
+    return transaction([WORKSPACES], 'readonly', (tx, set) => {
+      const request = tx.objectStore(WORKSPACES).get(workspaceKey(ownerId));
+      request.onsuccess = () => {
+        const row = request.result;
+        if (!row || row.schemaVersion !== 1 || row.ownerId !== (ownerId || null)) {
+          set(null);
+          return;
+        }
+        const value = Number.isSafeInteger(Number(row.workspaceRevision))
+          ? Number(row.workspaceRevision)
+          : (Number.isSafeInteger(Number(row.revision)) ? Number(row.revision) : null);
+        set(value);
       };
     });
   }
@@ -593,6 +618,12 @@
       throw new Error('Complete tracker and Study Hub snapshots are required for entity migration.');
     }
     const sourceRevision=revision;
+    const sourceWorkspaceRevision=Number.isSafeInteger(Number(options.sourceWorkspaceRevision))
+      ?Number(options.sourceWorkspaceRevision)
+      :await readWorkspaceRevision(owner);
+    if(!Number.isSafeInteger(sourceWorkspaceRevision)){
+      throw new Error('A valid durable workspace revision is required before entity migration.');
+    }
     if(!Number.isSafeInteger(Number(options.expectedRevision))||
        Number(options.expectedRevision)!==sourceRevision){
       throw new Error('A matching expectedRevision is required. Read the active local revision and retry from a fresh workspace snapshot.');
@@ -657,7 +688,7 @@
           store.put({
             key:manifestKey,ownerId:owner,status:'ready',formatVersion:1,migrationStatus:null,
             activeGeneration:generation,pendingGeneration:null,rowCount,counts,positionBounds,
-            sourceRevision:revision,updatedAt:timestamp()
+            sourceRevision:revision,sourceWorkspaceRevision,updatedAt:timestamp()
           });
           set(true);
         };
@@ -667,7 +698,8 @@
       catch(error){console.warn('Inactive Nexus entity generations could not be fully pruned; the active generation remains safe.',error);}
       try{prunedOutboxRows=await pruneWorkspaceEntityOutbox(owner);}
       catch(error){console.warn('Superseded Nexus entity outbox records could not be fully pruned; the active generation remains safe.',error);}
-      return {ownerId:owner,generation,rowCount,counts,sourceRevision:revision,prunedRows,prunedOutboxRows};
+      return {ownerId:owner,generation,rowCount,counts,sourceRevision:revision,
+        sourceWorkspaceRevision,prunedRows,prunedOutboxRows};
     }catch(error){
       try{
         await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
@@ -1025,8 +1057,14 @@
         return {ownerId:owner,mode:'superseded',skipped:true,reason:'newer-compatibility-snapshot'};
       }
       const sourceRevision=revision;
+      const sourceWorkspaceRevision=await readWorkspaceRevision(owner);
+      if(!Number.isSafeInteger(sourceWorkspaceRevision)){
+        throw new Error('The active compatibility workspace is not durably available for entity synchronization.');
+      }
       let manifest=await readEntityManifest(owner);
-      const needsReplacement=replace||!manifest||manifest.status!=='ready'||!manifest.activeGeneration;
+      const needsReplacement=replace||!manifest||manifest.status!=='ready'||!manifest.activeGeneration||
+        !Number.isSafeInteger(Number(manifest.sourceWorkspaceRevision))||
+        Number(manifest.sourceWorkspaceRevision)!==sourceWorkspaceRevision;
       if(needsReplacement){
         let stateSnapshot=null,featureSnapshot=null;
         if(trackerSnapshotJson!==null&&featureSnapshotJson!==null){
@@ -1040,7 +1078,9 @@
           stateSnapshot=compatibility.state;
           featureSnapshot=compatibility.featureState;
         }
-        const result=await migrateWorkspaceEntities(owner,stateSnapshot,featureSnapshot,{expectedRevision:sourceRevision});
+        const result=await migrateWorkspaceEntities(owner,stateSnapshot,featureSnapshot,{
+          expectedRevision:sourceRevision,sourceWorkspaceRevision
+        });
         entitySyncError=null;entitySyncLastSuccessAt=timestamp();
         return {...result,mode:'snapshot-backfill'};
       }
@@ -1069,7 +1109,8 @@
         }
         if(revision!==sourceRevision)throw new Error('The local workspace changed while its entity projection was being updated.');
         await updateEntityManifest(owner,activeGeneration,current=>({
-          ...current,status:'ready',sourceRevision:sourceRevision,lastEntitySyncAt:timestamp(),updatedAt:timestamp()
+          ...current,status:'ready',sourceRevision:sourceRevision,sourceWorkspaceRevision,
+          lastEntitySyncAt:timestamp(),updatedAt:timestamp()
         }));
         entitySyncError=null;entitySyncLastSuccessAt=timestamp();
         return {ownerId:owner,mode:'incremental',applied,batches,sourceRevision};
@@ -1234,10 +1275,30 @@
             const key = workspaceKey(owner);
             if (tracker === null || featureState === null) {
               workspaces.delete(key);
-            } else {
-              workspaces.put(makeWorkspaceRow(owner, tracker, featureState, nextRevision));
+              set(nextRevision);
+              return;
             }
-            set(nextRevision);
+            const previousWorkspaceRequest = workspaces.get(key);
+            previousWorkspaceRequest.onsuccess = () => {
+              const previousWorkspace = previousWorkspaceRequest.result || null;
+              const previousWorkspaceRevision = previousWorkspace
+                ? (Number.isSafeInteger(Number(previousWorkspace.workspaceRevision))
+                  ? Number(previousWorkspace.workspaceRevision)
+                  : (Number.isSafeInteger(Number(previousWorkspace.revision))
+                    ? Number(previousWorkspace.revision) : 0))
+                : 0;
+              const contentChanged = !previousWorkspace ||
+                previousWorkspace.ownerId !== (owner || null) ||
+                previousWorkspace.tracker !== tracker ||
+                previousWorkspace.featureState !== featureState;
+              const nextWorkspaceRevision = contentChanged
+                ? previousWorkspaceRevision + 1
+                : previousWorkspaceRevision;
+              workspaces.put(makeWorkspaceRow(
+                owner, tracker, featureState, nextRevision, nextWorkspaceRevision
+              ));
+              set(nextRevision);
+            };
           };
           ownerRequest.onsuccess = () => { values.owner = ownerRequest.result || null; done(); };
           trackerRequest.onsuccess = () => { values.tracker = trackerRequest.result || null; done(); };
