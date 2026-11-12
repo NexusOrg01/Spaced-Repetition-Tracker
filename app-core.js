@@ -374,6 +374,13 @@
         markDeleteDiagnosticPhase('save:serialize-feature-state-storage');
         workspaceEntries.push({key:window.NexusFeatureStorageKey,value:featureSnapshot});
       }
+      const workspaceOwner=localStorage.getItem('nexus.cloud.last-user-id')||'';
+      if(workspaceOwner&&(entityReplace||frozenEntityChanges?.length)){
+        const entityRevisionKey=window.NexusStorage?.getWorkspaceEntityRevisionKey?.(workspaceOwner);
+        if(entityRevisionKey)workspaceEntries.push({
+          key:entityRevisionKey,value:Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)
+        });
+      }
       markDeleteDiagnosticPhase('save:offline-queue-commit');
       // Persist tracker, Study Hub state and the pending cloud snapshot in one atomic
       // queue commit. The cloud hook below only records that this commit has happened;
