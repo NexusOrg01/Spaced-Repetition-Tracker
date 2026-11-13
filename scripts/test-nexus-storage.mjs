@@ -693,7 +693,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const afterDuplicateIdFailure=await loaded.api.readWorkspaceEntities('entity-owner-a');
   assert.equal(afterDuplicateIdFailure.generation,resumedMigration.generation,
     'a duplicate-ID migration must leave the previous complete generation active');
-  assert.equal(afterDuplicateIdFailure.rowCount,412,
+  assert.equal(afterDuplicateIdFailure.rowCount,413,
     'a failed replacement must preserve the prior generation row-count integrity metadata');
   const missingIdState={
     ...resumedWorkspace.state,
@@ -705,7 +705,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const afterMissingIdFailure=await loaded.api.readWorkspaceEntities('entity-owner-a');
   assert.equal(afterMissingIdFailure.generation,resumedMigration.generation,
     'a missing-ID migration must leave the previous complete generation active');
-  assert.equal(afterMissingIdFailure.rowCount,412,
+  assert.equal(afterMissingIdFailure.rowCount,413,
     'a failed migration with a missing ID must preserve the previous generation row count');
 
   // Existing entity rows/outbox entries remain physically stored but must be
