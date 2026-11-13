@@ -184,10 +184,10 @@ const streamPapers=[{id:'paper-remove',subjectId:'subject-1'},{id:'paper-keep',s
 const streamState={journal:streamJournal,papers:streamPapers,syllabusTargets:{'subject-1':5,'subject-2':10},selectedTopicIds:['topic-1','topic-keep']};
 const streamCascade=runStreamCascade(streamState,true);
 assert.equal(streamCascade.result,true);
-assert.deepEqual(streamCascade.savedChanges,[
+assert.equal(JSON.stringify(streamCascade.savedChanges),JSON.stringify([
  {collection:'journal',id:'journal-remove',operation:'delete'},
  {collection:'papers',id:'paper-remove',operation:'delete'}
-],'stream cascades must send every removed Study Hub record through the entity outbox');
+]),'stream cascades must send every removed Study Hub record through the entity outbox');
 assert.deepEqual(streamState.journal,[{id:'journal-keep',subjectId:'subject-2'}]);
 assert.deepEqual(streamState.papers,[{id:'paper-keep',subjectId:'subject-2'}]);
 assert.deepEqual(streamState.syllabusTargets,{'subject-2':10});
