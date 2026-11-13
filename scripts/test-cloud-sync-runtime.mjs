@@ -102,6 +102,7 @@ const storage = new MemoryStorage({
 });
 const localState = stateFor('offline-A');
 let activeSession = { user: accountA };
+let authStateCallback = null;
 let networkAvailable = false;
 let deferNextRemoteRead = false;
 let releaseDeferredRemoteRead = null;
@@ -213,7 +214,7 @@ function makeQuery(table) {
 }
 const client = {
   auth: {
-    onAuthStateChange() {},
+    onAuthStateChange(callback) { authStateCallback = callback; return { data: { subscription: { unsubscribe() {} } } }; },
     async getSession() { return { data: { session: activeSession }, error: null }; },
     async getUser() { return { data: { user: activeSession && activeSession.user }, error: null }; }
   },
@@ -223,7 +224,7 @@ window.supabase = { createClient() { return client; } };
 context = {
   window, document, navigator: { get onLine() { return networkAvailable; } },
   location: { hostname: 'preview.example', origin: 'https://preview.example', pathname: '/' },
-  localStorage: storage, URL, URLSearchParams, console, Promise, Date, Map, Array, Object, JSON, String, Math, Number, Error,
+  localStorage: storage, URL, URLSearchParams, console, Promise, Date, Map, Array, Object, JSON, String, Math, Number, Error, AbortController,
   setTimeout, clearTimeout, setInterval, clearInterval,
   state: localState,
   clone: v => JSON.parse(JSON.stringify(v)),
@@ -1451,4 +1452,78 @@ for (const scenario of [
     'the next sync baseline must advance to the verified post-deletion snapshot');
 }
  
-console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, target-account pending-snapshot isolation, and 77,144-record second-device deletion reconciliation.');
+// First login must not silently merge an unassigned imported workspace into an existing cloud account.
+const accountC={id:'account-C',email:'c@example.test'};
+const guestC=payloadFor('guest-imported-C');
+const cloudC=payloadFor('cloud-existing-C');
+storage.removeItem(OWNER);
+storage.setItem(STATE_KEY,JSON.stringify(guestC.state));
+storage.setItem(FEATURE_KEY,JSON.stringify(guestC.featureState));
+context.state=guestC.state;
+rows.set(accountC.id,{user_id:accountC.id,payload:cloudC,updated_at:'2026-11-13T18:00:00.000Z'});
+activeSession={user:accountC};networkAvailable=true;
+await window.NexusCloudSync.reconnect();
+assert.equal(getElement('cloudStatus').textContent,'Data choice required',
+  'a first login with distinct unassigned offline data and an existing cloud snapshot must stop for an explicit choice');
+assert.equal(storage.getItem(OWNER),null,'the unassigned workspace must not be claimed by the account before the user chooses');
+assert.deepEqual(JSON.parse(storage.getItem(STATE_KEY)).topics.map(topic=>topic.id),['guest-imported-C'],
+  'the imported offline workspace must remain unchanged while the choice is pending');
+assert.deepEqual(rows.get(accountC.id).payload.state.topics.map(topic=>topic.id),['cloud-existing-C'],
+  'the existing cloud workspace must not be overwritten before the user chooses');
+assert.equal(queue.hasPending(storage,accountC.id),false,
+  'no pending upload may be created before the first-login conflict choice');
+
+// A separate account-bound pending snapshot must not be hidden by an unassigned guest workspace.
+const accountD={id:'account-D',email:'d@example.test'};
+const guestD=payloadFor('cloud-same-D');
+const pendingD=payloadFor('pending-only-D');
+storage.setItem(OWNER,accountD.id);
+queue.commitWorkspace(storage,[
+  {key:STATE_KEY,value:JSON.stringify(pendingD.state)},
+  {key:FEATURE_KEY,value:JSON.stringify(pendingD.featureState)}
+],pendingD);
+storage.removeItem(OWNER);
+storage.setItem(STATE_KEY,JSON.stringify(guestD.state));
+storage.setItem(FEATURE_KEY,JSON.stringify(guestD.featureState));
+context.state=guestD.state;
+rows.set(accountD.id,{user_id:accountD.id,payload:guestD,updated_at:'2026-11-13T18:05:00.000Z'});
+activeSession={user:accountD};
+await window.NexusCloudSync.reconnect();
+assert.equal(getElement('cloudStatus').textContent,'Data choice required',
+  'a guest workspace plus a different account-bound pending snapshot must be blocked for explicit recovery');
+assert.equal(storage.getItem(OWNER),null,'the guest workspace must remain unassigned while both local snapshots exist');
+assert.deepEqual(JSON.parse(storage.getItem(STATE_KEY)).topics.map(topic=>topic.id),['cloud-same-D'],
+  'the visible guest workspace must remain unchanged');
+assert.deepEqual(queue.getPending(storage,accountD.id).payload.state.topics.map(topic=>topic.id),['pending-only-D'],
+  'the separate account-bound pending snapshot must remain intact');
+assert.deepEqual(rows.get(accountD.id).payload.state.topics.map(topic=>topic.id),['cloud-same-D'],
+  'the matching cloud snapshot must not be overwritten by the hidden pending snapshot');
+
+// A SIGNED_OUT event followed by SIGNED_IN for the same user during initialization
+// must not let the queued null session overwrite the newer authenticated session.
+const accountE={id:'account-E',email:'e@example.test'};
+const payloadE=payloadFor('auth-race-E');
+storage.setItem(OWNER,accountE.id);
+storage.setItem(STATE_KEY,JSON.stringify(payloadE.state));
+storage.setItem(FEATURE_KEY,JSON.stringify(payloadE.featureState));
+context.state=payloadE.state;
+rows.set(accountE.id,{user_id:accountE.id,payload:payloadE,updated_at:'2026-11-13T18:10:00.000Z'});
+activeSession={user:accountE};networkAvailable=true;deferNextRemoteRead=true;
+const authRaceInitialization=window.NexusCloudSync.reconnect();
+for(let i=0;i<100&&!releaseDeferredRemoteRead;i++)await new Promise(resolve=>setTimeout(resolve,5));
+assert.equal(typeof authStateCallback,'function','the Supabase auth subscription must be installed before the race test');
+assert.equal(typeof releaseDeferredRemoteRead,'function','the initial cloud read must be held while auth events are injected');
+authStateCallback('SIGNED_OUT',null);
+authStateCallback('SIGNED_IN',{user:accountE});
+authStateCallback('INITIAL_SESSION',{user:accountE});
+releaseDeferredRemoteRead();
+await authRaceInitialization;
+await new Promise(resolve=>setTimeout(resolve,100));
+assert.equal(window.NexusCloudSync.getAccountState().signedIn,true,
+  'the latest same-user SIGNED_IN event must replace a queued SIGNED_OUT null session');
+assert.equal(window.NexusCloudSync.getAccountState().ready,true,
+  'the account must finish initialization after the duplicate auth-event burst');
+assert.equal(getElement('cloudStatus').textContent,'Synced',
+  'duplicate auth events must not leave the sync status in a signed-out or loading state');
+
+console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, target-account pending-snapshot isolation, first-login conflict gating, auth-session queue recovery, and 77,144-record second-device deletion reconciliation.');

@@ -108,7 +108,10 @@ function sameManifest(a,b){
 function assertManifest(manifest){
  if(!isManifest(manifest))throw fail('The cloud workspace manifest is invalid. No remote data was applied.');
 }
-async function readSnapshot(client,userId,manifest){
+function attachAbortSignal(query,signal){
+ return signal&&query&&typeof query.abortSignal==='function'?query.abortSignal(signal):query;
+}
+async function readSnapshot(client,userId,manifest,signal){
  if(!client||typeof userId!=='string'||!userId)throw fail('A verified account is required to read cloud workspace chunks.');
  assertManifest(manifest);
  // Keep only one database page in memory. Retaining every row and then joining
@@ -116,12 +119,14 @@ async function readSnapshot(client,userId,manifest){
  let serialized='',totalBytes=0,expectedIndex=0;
  for(let offset=0;offset<manifest.chunkCount;offset+=READ_BATCH_SIZE){
   const pageCount=Math.min(READ_BATCH_SIZE,manifest.chunkCount-offset);
-  const result=await client.from(TABLE)
+  let query=client.from(TABLE)
    .select('chunk_index,chunk_count,chunk_bytes,chunk_data')
    .eq('user_id',userId)
    .eq('revision_id',manifest.revisionId)
    .order('chunk_index',{ascending:true})
    .range(offset,offset+pageCount-1);
+  query=attachAbortSignal(query,signal);
+  const result=await query;
   if(result&&result.error)throw result.error;
   if(!result||!Array.isArray(result.data)||result.data.length!==pageCount){
    throw fail('The published cloud workspace is incomplete. This device’s local workspace and pending changes have been preserved.');
@@ -149,16 +154,18 @@ async function readSnapshot(client,userId,manifest){
  }
  return payload;
 }
-async function verifySnapshotChunks(client,userId,manifest,serialized,ranges){
+async function verifySnapshotChunks(client,userId,manifest,serialized,ranges,signal){
  let expectedIndex=0;
  for(let offset=0;offset<manifest.chunkCount;offset+=READ_BATCH_SIZE){
   const pageCount=Math.min(READ_BATCH_SIZE,manifest.chunkCount-offset);
-  const result=await client.from(TABLE)
+  let query=client.from(TABLE)
    .select('chunk_index,chunk_count,chunk_bytes,chunk_data')
    .eq('user_id',userId)
    .eq('revision_id',manifest.revisionId)
    .order('chunk_index',{ascending:true})
    .range(offset,offset+pageCount-1);
+  query=attachAbortSignal(query,signal);
+  const result=await query;
   if(result&&result.error)throw result.error;
   if(!result||!Array.isArray(result.data)||result.data.length!==pageCount){
    throw fail('Cloud chunk upload could not be read back completely. The previous published snapshot is unchanged and the pending local snapshot is preserved.');
@@ -174,20 +181,24 @@ async function verifySnapshotChunks(client,userId,manifest,serialized,ranges){
  }
  if(expectedIndex!==manifest.chunkCount)throw fail('Cloud chunk upload could not be fully verified. The previous published snapshot is unchanged and the pending local snapshot is preserved.');
 }
-async function cleanupOldChunks(client,userId,activeRevisionId){
+async function cleanupOldChunks(client,userId,activeRevisionId,signal){
  const cutoff=new Date(Date.now()-CLEANUP_AGE_MS).toISOString();
- const selected=await client.from(TABLE).select('id')
+ let query=client.from(TABLE).select('id')
   .eq('user_id',userId).lt('created_at',cutoff)
   .neq('revision_id',activeRevisionId)
   .order('created_at',{ascending:true}).limit(CLEANUP_BATCH_SIZE);
+ query=attachAbortSignal(query,signal);
+ const selected=await query;
  if(selected&&selected.error)throw selected.error;
  const ids=(selected&&selected.data||[]).map(row=>row&&row.id).filter(Boolean);
  if(!ids.length)return 0;
- const removed=await client.from(TABLE).delete().eq('user_id',userId).in('id',ids);
+ let deletion=client.from(TABLE).delete().eq('user_id',userId).in('id',ids);
+ deletion=attachAbortSignal(deletion,signal);
+ const removed=await deletion;
  if(removed&&removed.error)throw removed.error;
  return ids.length;
 }
-async function writeSnapshot(client,userId,payload,expectedStamp,stamp,backupUtils,serializedOverride){
+async function writeSnapshot(client,userId,payload,expectedStamp,stamp,backupUtils,serializedOverride,signal){
  if(!client||typeof userId!=='string'||!userId||!payload||!payload.state||
    !Array.isArray(payload.state.streams)||!payload.featureState||typeof payload.featureState!=='object'){
   throw fail('A complete workspace and verified account are required for chunked cloud sync.');
@@ -219,7 +230,9 @@ async function writeSnapshot(client,userId,payload,expectedStamp,stamp,backupUti
    chunk_bytes:range.bytes,
    chunk_data:serialized.slice(range.start,range.end)
   }));
-  const inserted=await client.from(TABLE).insert(batch).select('chunk_index');
+  let insertion=client.from(TABLE).insert(batch);
+  insertion=attachAbortSignal(insertion,signal);
+  const inserted=await insertion.select('chunk_index');
   if(inserted&&inserted.error)throw inserted.error;
   if(!inserted||!Array.isArray(inserted.data)||inserted.data.length!==batch.length){
    throw fail('Cloud chunk upload could not be confirmed. The previous published snapshot is unchanged and the pending local snapshot is preserved.');
@@ -227,15 +240,17 @@ async function writeSnapshot(client,userId,payload,expectedStamp,stamp,backupUti
  }
  // Verify database contents against the source string page by page. Do not rebuild
  // and JSON.parse another copy of the entire payload just to verify an upload.
- await verifySnapshotChunks(client,userId,manifest,serialized,ranges);
- await backupUtils.writeCloudSnapshot(client,userId,manifest,expectedStamp,stamp);
- const published=await client.from('nexus_user_data').select('payload,updated_at').eq('user_id',userId).maybeSingle();
+ await verifySnapshotChunks(client,userId,manifest,serialized,ranges,signal);
+ await backupUtils.writeCloudSnapshot(client,userId,manifest,expectedStamp,stamp,signal);
+ let publishedQuery=client.from('nexus_user_data').select('payload,updated_at').eq('user_id',userId);
+ publishedQuery=attachAbortSignal(publishedQuery,signal);
+ const published=await publishedQuery.maybeSingle();
  if(published&&published.error)throw published.error;
  if(!published||!published.data||!sameManifest(published.data.payload,manifest)){
   const conflict=fail('The cloud snapshot publication could not be verified. The local pending snapshot remains preserved.','NEXUS_CLOUD_CONFLICT');
   throw conflict;
  }
- try{await cleanupOldChunks(client,userId,revisionId);}
+ try{await cleanupOldChunks(client,userId,revisionId,signal);}
  catch(error){if(root&&root.console)root.console.warn('Old Nexus cloud snapshot chunks could not be cleaned up; the active snapshot remains verified.',error);}
  return {manifest,payload,updated_at:published.data.updated_at||stamp,verifiedChunks:true,storageMode:'chunked'};
 }

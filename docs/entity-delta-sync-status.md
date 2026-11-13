@@ -78,3 +78,8 @@ Do not enable delta mode or change the authoritative local store until the clien
 6. Only after these tests pass, enable delta mode for a controlled staging test account and verify the shared browser/Android source path. APK build and device testing remain a separate explicitly authorised task.
 
 No Phase 3.5 work is included. This protocol does not establish unlimited dataset capacity or lag-free performance; that requires separate measured performance testing.
+
+
+### Client enablement gate (14 November 2026)
+
+The staging audit confirmed that the browser runtime still uses snapshot/chunk sync only; it does not yet publish entity operations, read/apply remote operation groups, persist a remote cursor, or coordinate delta compaction. The `nexus_enable_entity_delta` RPC was nevertheless executable by the `authenticated` role and changes the caller's snapshot marker and sync-state mode. That could strand an account on a protocol the current client cannot read or write. Migration `20261114000000_defer_entity_delta_enablement_until_client_ready` revokes client-role execution until the web publisher, reader, cursor, compaction, compatibility fallback, and recovery gates are implemented and reviewed. Snapshot fallback remains authoritative.

@@ -10,7 +10,15 @@ const policy = require('../cloud-sync-recovery.js');
 const cloud = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
 const index = readFileSync(resolve(root, 'index.html'), 'utf8');
 const bootstrap = readFileSync(resolve(root, 'nexus-app-bootstrap.js'), 'utf8');
+const chunks = readFileSync(resolve(root, 'cloud-chunk-storage.js'), 'utf8');
+const backup = readFileSync(resolve(root, 'backup-restore-utils.js'), 'utf8');
 
+assert.ok(cloud.includes('SYNC_REQUEST_TIMEOUT_MS=180000')&&cloud.includes('createSyncAbortScope')&&cloud.includes('NEXUS_CLOUD_TIMEOUT'),
+  'cloud reads and uploads must have a finite abort deadline so the UI cannot remain Syncing forever');
+assert.ok(cloud.includes('query=attachAbortSignal(query,activeSignal)')&&chunks.includes('function attachAbortSignal(query,signal)')&&backup.includes("typeof query.abortSignal==='function'"),
+  'snapshot reads, chunk upload/readback, and legacy snapshot writes must propagate AbortSignal when supported');
+assert.ok(cloud.includes('!pendingForUser&&!(remote&&remote.payload)')&&cloud.includes('This browser contains unassigned offline data and a separate pending snapshot'),
+  'first-login guest data and a separate account-bound pending snapshot must not bypass the explicit conflict gate');
 assert.equal(policy.retryDelay(0), 1500, 'the first transient retry should be delayed rather than spun');
 assert.equal(policy.retryDelay(1), 3000, 'retry delay should back off after repeated failures');
 assert.equal(policy.retryDelay(8), 300000, 'retry backoff must have a five-minute cap');

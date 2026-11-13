@@ -9,6 +9,7 @@ const read = relativePath => readFileSync(path.join(root, relativePath), 'utf8')
 const schema = read('supabase/migrations/20261113095723_nexus_entity_delta_sync.sql');
 const hardening = read('supabase/migrations/20261113101625_harden_nexus_entity_delta_reads_and_compaction.sql');
 const integration = read('supabase/tests/nexus_entity_delta_sync.sql');
+const enablementGate = read('supabase/migrations/20261114000000_defer_entity_delta_enablement_until_client_ready.sql');
 
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_sync_state/);
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_operation_receipts/);
@@ -21,6 +22,8 @@ assert.match(schema, /extensions\.digest/);
 assert.match(schema, /p_expected_revision <> v_state\.head_revision/);
 assert.match(schema, /CREATE OR REPLACE FUNCTION public\.nexus_publish_entity_snapshot/);
 assert.match(schema, /CREATE OR REPLACE FUNCTION public\.nexus_guard_chunked_snapshot_update/);
+assert.match(enablementGate, /REVOKE EXECUTE ON FUNCTION public\.nexus_enable_entity_delta\(timestamptz\)[\s\S]*FROM PUBLIC, anon, authenticated/);
+assert.match(enablementGate, /until the web entity-delta publisher, reader, compaction, and recovery gates are complete/);
 
 assert.match(hardening, /v_revision <> v_next_revision \+ 1/);
 assert.match(hardening, /v_expected_count IS DISTINCT FROM v_count/);
