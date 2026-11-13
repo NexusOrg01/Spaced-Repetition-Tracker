@@ -40,7 +40,7 @@ assert.ok(studyHub.includes('function paperRows(){') &&
 assert.ok(studyHub.includes('function deleteStudyHubRecord(collection,id,options={})') &&
   studyHub.includes('if(!saveFs([featureEntityDeleteChange(collection,id)])){') &&
   studyHub.includes('fsState[collection]=previous;window.NexusCancelUndoAction?.();renderHub();') &&
-  studyHub.includes('if(options.persist!==false&&!saveFs()){if(cascadeUndoState){Object.assign(fsState,cascadeUndoState);'),
+  studyHub.includes('if(options.persist!==false&&!saveFs(featureEntityChanges)){if(cascadeUndoState){Object.assign(fsState,cascadeUndoState);'),
   'Study Hub record deletions and curriculum cascades must restore in-memory data when persistence fails');
 assert.ok(appCore.includes('NexusCascadeDeleteSubject(id,topicIds,{persist:false,render:false})') &&
   studyHub.includes('window.NexusUndoCascadeDelete=(options={})=>'),
