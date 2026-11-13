@@ -111,7 +111,7 @@
     cascadeUndoState=captureCascadeUndo();
     window.NexusDeleteDiagnosticPhase?.('cascade:stream:filter-journal');
     const removedJournal=fsState.journal.filter(item=>subjectIdSet.has(item.subjectId)||topicIdSet.has(item.topicId));
-    fsState.journal=fsState.journal.filter(item=>subjectIdSet.has(item.subjectId)||topicIdSet.has(item.topicId));
+    fsState.journal=fsState.journal.filter(item=>!subjectIdSet.has(item.subjectId)&&!topicIdSet.has(item.topicId));
     window.NexusDeleteDiagnosticPhase?.('cascade:stream:filter-papers');
     const removedPapers=fsState.papers.filter(item=>subjectIdSet.has(item.subjectId));
     fsState.papers=fsState.papers.filter(item=>!subjectIdSet.has(item.subjectId));
