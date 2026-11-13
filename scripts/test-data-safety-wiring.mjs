@@ -160,7 +160,13 @@ assert.ok(cloudSync.includes("activeView.id==='view-studyhub'") &&
   !cloudSync.includes('if(window.NexusRenderHub)window.NexusRenderHub();'),
   'sync application must not render the hidden Study Hub and force expensive planner work during initial cloud restoration');
 
-assert.ok(cloudChunkStorage.includes('async function writeSnapshot(') && cloudChunkStorage.includes('await verifySnapshotChunks(client,userId,manifest,serialized,ranges)') && cloudChunkStorage.includes('sha256'), 'large cloud snapshots must be chunked, read back against the source string, and SHA-256 verified before publication');
+const snapshotVerifyCall=cloudChunkStorage.indexOf('await verifySnapshotChunks(');
+const snapshotPublishCall=cloudChunkStorage.indexOf('await backupUtils.writeCloudSnapshot(');
+assert.ok(cloudChunkStorage.includes('async function writeSnapshot(') &&
+  snapshotVerifyCall>=0 && snapshotPublishCall>snapshotVerifyCall &&
+  cloudChunkStorage.includes('await verifySnapshotChunks(client,userId,manifest,serialized,ranges,signal)') &&
+  cloudChunkStorage.includes('sha256:await sha256(serialized)'),
+  'large cloud snapshots must be read back against the exact source string and hashed before the manifest is conditionally published');
 assert.ok(cloudChunkStorage.includes('const READ_BATCH_SIZE=16') && cloudChunkStorage.includes('offset+=READ_BATCH_SIZE'), 'large chunked snapshots must be read back in bounded pages rather than one oversized API response');
 assert.ok(chunkMigration.includes('chunk_count <= 900') && chunkLimitMigration.includes('chunk_count <= 900'), 'the database and client must enforce the same bounded chunk-count limit');
 assert.ok(cloudSync.includes('knownWrite.manifest') && cloudSync.includes('chunks.sameManifest(remote.payload,knownWrite.manifest)'), 'post-publication verification must reuse the already verified chunk manifest and avoid a second full workspace download');
