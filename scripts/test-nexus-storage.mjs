@@ -511,7 +511,9 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const firstAcknowledgementRanges=idb.rangeQueries.slice(firstAcknowledgementQueryStart)
     .filter(query=>query.store==='outbox'&&query.lower);
   assert.equal(firstAcknowledgementRanges.length,2,
-    'partial acknowledgement must query the bounded change and operation-marker sequence ranges separately');
+    'partial acknowledgement must query the change and operation-marker sequence ranges separately');
+  assert.ok(firstAcknowledgementRanges.every(query=>query.count===400),
+    'acknowledgement must apply a bounded IndexedDB page limit to both change and marker cleanup');
   assert.ok(firstAcknowledgementRanges.some(query=>query.lower.endsWith(':seq:0000000000000001')&&
     query.upper.includes(':seq:0000000000000001')),
     'partial acknowledgement must limit change-row cleanup to the confirmed cursor');
@@ -531,12 +533,33 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     .filter(query=>query.store==='outbox'&&query.lower);
   assert.equal(finalAcknowledgementRanges.length,2,
     'final acknowledgement must remain sequence-bounded');
+  assert.ok(finalAcknowledgementRanges.every(query=>query.count===400),
+    'final acknowledgement must keep both IndexedDB cleanup queries bounded');
   const ownerOutboxRows=[...idb.databases.get('nexus-workspace-v1').stores.get('outbox').values()]
     .filter(row=>row&&row.ownerId==='entity-owner-a');
   assert.equal(ownerOutboxRows.length,0,
     'full acknowledgement must remove the change rows and legacy direct idempotency marker');
   assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)).length,0,
     'acknowledging a verified sequence must remove its change events');
+
+  const largeEntityChanges=Array.from({length:850},(_,index)=>({
+    collection:'topics',id:'bulk-ack-topic-'+index,operation:'put',position:null,
+    value:{id:'bulk-ack-topic-'+index,subjectId:'subject-1',name:'Bulk acknowledgement topic '+index}
+  }));
+  const largeOperation=await loaded.api.writeWorkspaceEntityChanges('entity-owner-a',largeEntityChanges,
+    {operationId:'entity-op-large-ack'});
+  const largeAcknowledgementQueryStart=idb.rangeQueries.length;
+  assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',largeOperation.lastSequence),850,
+    'large outbox acknowledgement must remove every confirmed change across multiple bounded pages');
+  const largeAcknowledgementQueries=idb.rangeQueries.slice(largeAcknowledgementQueryStart)
+    .filter(query=>query.store==='outbox'&&query.lower);
+  assert.ok(largeAcknowledgementQueries.length>=4,
+    'large acknowledgement must use multiple change pages and a separate marker cleanup page');
+  assert.ok(largeAcknowledgementQueries.every(query=>query.count===400),
+    'no large acknowledgement query may materialise more than one 400-row page');
+  assert.equal([...idb.databases.get('nexus-workspace-v1').stores.get('outbox').values()]
+    .filter(row=>row&&row.ownerId==='entity-owner-a').length,0,
+    'large acknowledgement must also clear all completed operation markers');
 
   await loaded.api.writeWorkspaceEntityChanges('entity-owner-a',[
     {collection:'topics',id:'topic-1',operation:'put',position:null,

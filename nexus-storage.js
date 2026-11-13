@@ -498,21 +498,31 @@
   function entityOperationSequenceKey(ownerId,sequence,operationId){
     return entityOutboxPrefix(ownerId)+'opseq:'+String(sequence).padStart(16,'0')+':'+encodeURIComponent(operationId);
   }
-  function entityOutboxSequenceRange(ownerId,afterSequence){
+  function entityOutboxSequenceRange(ownerId,afterSequence,throughSequence){
     const factory=root&&root.IDBKeyRange;
     if(!factory||typeof factory.bound!=='function')return null;
+    const after=Math.max(0,Math.floor(Number(afterSequence)||0));
+    const upperSequence=Number(throughSequence);
+    const hasUpper=Number.isSafeInteger(upperSequence)&&upperSequence>=0;
+    if(hasUpper&&after>=upperSequence)return null;
     const prefix=entityOutboxPrefix(ownerId)+'seq:';
+    const upper=hasUpper
+      ?prefix+String(upperSequence).padStart(16,'0')
+      :prefix+String.fromCharCode(65535);
     try{
-      return factory.bound(prefix+String(afterSequence+1).padStart(16,'0'),prefix+String.fromCharCode(65535));
+      return factory.bound(prefix+String(after+1).padStart(16,'0'),upper);
     }catch(_){return null;}
   }
-  function entityOutboxThroughRange(ownerId,kind,throughSequence){
+  function entityOutboxThroughRange(ownerId,kind,throughSequence,afterSequence=0){
     const factory=root&&root.IDBKeyRange;
     if(!factory||typeof factory.bound!=='function')return null;
+    const after=Math.max(0,Math.floor(Number(afterSequence)||0));
+    const through=Math.max(0,Math.floor(Number(throughSequence)||0));
+    if(after>=through)return null;
     const prefix=entityOutboxPrefix(ownerId)+kind+':';
     try{
-      return factory.bound(prefix+'0000000000000001',
-        prefix+String(throughSequence).padStart(16,'0')+String.fromCharCode(65535));
+      return factory.bound(prefix+String(after+1).padStart(16,'0'),
+        prefix+String(through).padStart(16,'0')+String.fromCharCode(65535));
     }catch(_){return null;}
   }
   function entityPrefixRange(prefix){
@@ -1003,68 +1013,158 @@
     const owner=entityOwnerKey(ownerId),
       through=Math.min(Number.MAX_SAFE_INTEGER,Math.max(0,Math.floor(Number(throughSequence)||0)));
     if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner||through===0)return 0;
-    const sequenceRange=entityOutboxThroughRange(owner,'seq',through),
-      markerRange=entityOutboxThroughRange(owner,'opseq',through);
-    if(!sequenceRange||!markerRange)return 0;
-    // Validate the owner, active generation and workspace revision in the same
-    // IndexedDB transaction that removes acknowledged rows. A newer compatibility
-    // snapshot therefore cannot be acknowledged using an older cloud cursor.
-    return transaction(['outbox',WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
-      const store=tx.objectStore('outbox'),entities=tx.objectStore(WORKSPACES),
-        meta=tx.objectStore('migrationMeta');
-      const manifestRequest=meta.get(entityManifestKey(owner));
-      const workspaceRequest=entities.get(workspaceKey(owner));
-      const values={manifest:null,workspace:null};let remaining=2,started=false;
-      const begin=()=>{
-        if(started||remaining!==0)return;
-        started=true;
-        const manifest=values.manifest,row=values.workspace;
-        const workspaceRevision=row&&Number.isSafeInteger(Number(row.workspaceRevision))
-          ?Number(row.workspaceRevision):(row&&Number.isSafeInteger(Number(row.revision))?Number(row.revision):null);
-        if(!manifest||manifest.status!=='ready'||!manifest.activeGeneration||
-           !validWorkspaceRow(row,owner)||!Number.isSafeInteger(workspaceRevision)||
-           Number(manifest.sourceWorkspaceRevision)!==workspaceRevision){
-          set(0);return;
-        }
-        const removeAcknowledged=(sequenceRows,markerRows)=>{
-          const rows=sequenceRows.filter(item=>item&&item.ownerId===owner&&
-            item.generation===manifest.activeGeneration&&item.kind==='change'&&Number(item.sequence)<=through);
-          const markers=markerRows.filter(item=>item&&item.ownerId===owner&&
-            item.generation===manifest.activeGeneration&&item.kind==='operation-marker-sequence'&&
-            Number(item.lastSequence)<=through);
+    let removed=0,afterSequence=0;
+    // Acknowledgement is a destructive queue operation, so every bounded page
+    // revalidates the owner, active generation and compatibility workspace revision
+    // in the same transaction that removes its rows.
+    while(afterSequence<through){
+      if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner)return removed;
+      const sequenceRange=entityOutboxSequenceRange(owner,afterSequence,through);
+      if(!sequenceRange)break;
+      const page=await transaction(['outbox',WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
+        const store=tx.objectStore('outbox'),entities=tx.objectStore(WORKSPACES),
+          meta=tx.objectStore('migrationMeta');
+        const manifestRequest=meta.get(entityManifestKey(owner));
+        const workspaceRequest=entities.get(workspaceKey(owner));
+        const sequenceRequest=store.getAll(sequenceRange,ENTITY_BATCH_SIZE);
+        const values={manifest:null,workspace:null,rows:null};
+        let remaining=3,started=false;
+        const begin=()=>{
+          if(started||remaining!==0)return;
+          started=true;
+          const manifest=values.manifest,row=values.workspace;
+          const workspaceRevision=row&&Number.isSafeInteger(Number(row.workspaceRevision))
+            ?Number(row.workspaceRevision):(row&&Number.isSafeInteger(Number(row.revision))?Number(row.revision):null);
+          if(entityRemovalOwners.has(owner)||!enabled||committedOwnerId!==owner||
+             !manifest||manifest.status!=='ready'||!manifest.activeGeneration||
+             !validWorkspaceRow(row,owner)||!Number.isSafeInteger(workspaceRevision)||
+             Number(manifest.sourceWorkspaceRevision)!==workspaceRevision){
+            set({invalid:true,read:0,removed:0,lastSequence:afterSequence});return;
+          }
+          const rows=values.rows||[];
+          for(const item of rows){
+            const sequence=Number(item&&item.sequence);
+            if(!item||item.ownerId!==owner||item.generation!==manifest.activeGeneration||
+               item.kind!=='change'||typeof item.operationId!=='string'||!item.operationId||
+               !Number.isSafeInteger(sequence)||sequence<=afterSequence||sequence>through||
+               typeof item.key!=='string'||!item.key.startsWith(entityOutboxPrefix(owner)+'seq:')){
+              try{tx.abort();}catch(_){}
+              return;
+            }
+          }
+          if(!rows.length){set({invalid:false,read:0,removed:0,lastSequence:afterSequence});return;}
           for(const item of rows)store.delete(item.key);
-          for(const marker of markers)store.delete(marker.key);
-          // Older queued operations may have only the original idempotency marker.
-          // Retain it until the operation's final sequence is acknowledged.
-          const operationIds=[...new Set(rows.map(item=>item.operationId).filter(Boolean))];
+          const operationIds=[...new Set(rows.map(item=>item.operationId))];
           let markerRemaining=operationIds.length;
-          const finish=()=>{if(markerRemaining===0)set(rows.length);};
-          if(!markerRemaining){set(rows.length);return;}
+          const finish=()=>{
+            if(markerRemaining===0)set({invalid:false,read:rows.length,removed:rows.length,
+              lastSequence:Number(rows[rows.length-1].sequence)});
+          };
+          if(!markerRemaining){finish();return;}
           for(const operationId of operationIds){
             const request=store.get(entityOperationKey(owner,operationId));
             request.onsuccess=()=>{
               const marker=request.result;
-              if(marker&&marker.generation===manifest.activeGeneration&&Number(marker.lastSequence)<=through){
-                store.delete(marker.key);
+              if(marker){
+                if(marker.ownerId!==owner||marker.generation!==manifest.activeGeneration||
+                   marker.kind!=='operation-marker'||marker.operationId!==operationId||
+                   !Number.isSafeInteger(Number(marker.lastSequence))){
+                  try{tx.abort();}catch(_){}
+                  return;
+                }
+                if(Number(marker.lastSequence)<=through){
+                  store.delete(marker.key);
+                  store.delete(entityOperationSequenceKey(owner,Number(marker.lastSequence),operationId));
+                }
               }
-              markerRemaining--;
-              finish();
+              markerRemaining--;finish();
             };
           }
         };
-        const sequenceRequest=store.getAll(sequenceRange);
-        const markerRequest=store.getAll(markerRange);
-        const pages={sequences:null,markers:null};
-        const finish=()=>{
-          if(!pages.sequences||!pages.markers)return;
-          removeAcknowledged(pages.sequences,pages.markers);
+        manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;remaining--;begin();};
+        workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;remaining--;begin();};
+        sequenceRequest.onsuccess=()=>{values.rows=sequenceRequest.result||[];remaining--;begin();};
+      });
+      if(page.invalid)return removed;
+      removed+=page.removed;
+      if(page.read<ENTITY_BATCH_SIZE||page.lastSequence<=afterSequence)break;
+      afterSequence=page.lastSequence;
+      await new Promise(resolve=>root.setTimeout(resolve,0));
+    }
+
+    // Sweep the sequence-indexed idempotency markers separately. This is also
+    // paginated: a long-lived offline device can accumulate many operation markers.
+    let afterMarkerSequence=0;
+    while(afterMarkerSequence<through){
+      if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner)return removed;
+      const markerRange=entityOutboxThroughRange(owner,'opseq',through,afterMarkerSequence);
+      if(!markerRange)break;
+      const page=await transaction(['outbox',WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
+        const store=tx.objectStore('outbox'),entities=tx.objectStore(WORKSPACES),
+          meta=tx.objectStore('migrationMeta');
+        const manifestRequest=meta.get(entityManifestKey(owner));
+        const workspaceRequest=entities.get(workspaceKey(owner));
+        const markerRequest=store.getAll(markerRange,ENTITY_BATCH_SIZE);
+        const values={manifest:null,workspace:null,rows:null};
+        let remaining=3,started=false;
+        const begin=()=>{
+          if(started||remaining!==0)return;
+          started=true;
+          const manifest=values.manifest,row=values.workspace;
+          const workspaceRevision=row&&Number.isSafeInteger(Number(row.workspaceRevision))
+            ?Number(row.workspaceRevision):(row&&Number.isSafeInteger(Number(row.revision))?Number(row.revision):null);
+          if(entityRemovalOwners.has(owner)||!enabled||committedOwnerId!==owner||
+             !manifest||manifest.status!=='ready'||!manifest.activeGeneration||
+             !validWorkspaceRow(row,owner)||!Number.isSafeInteger(workspaceRevision)||
+             Number(manifest.sourceWorkspaceRevision)!==workspaceRevision){
+            set({invalid:true,read:0,lastSequence:afterMarkerSequence});return;
+          }
+          const rows=values.rows||[];
+          for(const item of rows){
+            const sequence=Number(item&&item.lastSequence);
+            if(!item||item.ownerId!==owner||item.generation!==manifest.activeGeneration||
+               item.kind!=='operation-marker-sequence'||typeof item.operationId!=='string'||
+               !item.operationId||!Number.isSafeInteger(sequence)||
+               sequence<=afterMarkerSequence||sequence>through||
+               typeof item.key!=='string'||!item.key.startsWith(entityOutboxPrefix(owner)+'opseq:')){
+              try{tx.abort();}catch(_){}
+              return;
+            }
+          }
+          if(!rows.length){set({invalid:false,read:0,lastSequence:afterMarkerSequence});return;}
+          let markerRemaining=rows.length;
+          const finish=()=>{
+            if(markerRemaining===0)set({invalid:false,read:rows.length,
+              lastSequence:Number(rows[rows.length-1].lastSequence)});
+          };
+          for(const item of rows){
+            const request=store.get(entityOperationKey(owner,item.operationId));
+            request.onsuccess=()=>{
+              const marker=request.result;
+              if(marker){
+                if(marker.ownerId!==owner||marker.generation!==manifest.activeGeneration||
+                   marker.kind!=='operation-marker'||marker.operationId!==item.operationId||
+                   Number(marker.lastSequence)!==Number(item.lastSequence)){
+                  try{tx.abort();}catch(_){}
+                  return;
+                }
+                store.delete(marker.key);
+              }
+              store.delete(item.key);
+              markerRemaining--;finish();
+            };
+          }
         };
-        sequenceRequest.onsuccess=()=>{pages.sequences=sequenceRequest.result||[];finish();};
-        markerRequest.onsuccess=()=>{pages.markers=markerRequest.result||[];finish();};
-      };
-      manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;remaining--;begin();};
-      workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;remaining--;begin();};
-    });
+        manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;remaining--;begin();};
+        workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;remaining--;begin();};
+        markerRequest.onsuccess=()=>{values.rows=markerRequest.result||[];remaining--;begin();};
+      });
+      if(page.invalid)return removed;
+      if(page.read<ENTITY_BATCH_SIZE||page.lastSequence<=afterMarkerSequence)break;
+      afterMarkerSequence=page.lastSequence;
+      await new Promise(resolve=>root.setTimeout(resolve,0));
+    }
+    return removed;
   }
   async function readEntityManifest(ownerId){
     const owner=entityOwnerKey(ownerId),key=entityManifestKey(owner);
