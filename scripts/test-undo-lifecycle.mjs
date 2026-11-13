@@ -158,4 +158,62 @@ for(const collection of ['studyLogs','papers','journal','goals']){
  assert.equal(failedRender,1);assert.equal(failedCancel,1);assert.equal(failedRefresh,0);
  assert.deepEqual(failureMessages,['save failed']);
 }
-console.log('Undo lifecycle tests passed: 15-second expiry, Undo-only notification, feature restoration and all four Study Hub delete types.');
+const streamCascadeStart=studyHub.indexOf('  window.NexusCascadeDeleteStream=');
+const streamCascadeEnd=studyHub.indexOf('  window.NexusUndoCascadeDelete=',streamCascadeStart);
+assert.ok(streamCascadeStart>=0&&streamCascadeEnd>streamCascadeStart,
+ 'the stream cascade lifecycle must remain directly testable');
+function runStreamCascade(state,saveResult){
+ let savedChanges='not-called',renders=0;
+ const sandbox={
+  window:{NexusDeleteDiagnosticPhase(){}},fsState:state,cascadeUndoState:null,
+  captureCascadeUndo:()=>({
+   journal:state.journal,papers:state.papers,
+   syllabusTargets:{...state.syllabusTargets},selectedTopicIds:state.selectedTopicIds
+  }),
+  featureEntityDeleteChange:(collection,id)=>({collection,id:String(id),operation:'delete'}),
+  saveFs:changes=>{savedChanges=changes;return saveResult;},
+  renderHub:()=>{renders++;}
+ };
+ vm.createContext(sandbox);
+ vm.runInContext(studyHub.slice(streamCascadeStart,streamCascadeEnd)+
+  '\\nthis.runStreamCascade=window.NexusCascadeDeleteStream;',sandbox);
+ return {result:sandbox.runStreamCascade('stream-1',['subject-1'],['topic-1']),savedChanges,renders,sandbox};
+}
+const streamJournal=[{id:'journal-remove',subjectId:'subject-1',topicId:'topic-1'},{id:'journal-keep',subjectId:'subject-2'}];
+const streamPapers=[{id:'paper-remove',subjectId:'subject-1'},{id:'paper-keep',subjectId:'subject-2'}];
+const streamState={journal:streamJournal,papers:streamPapers,syllabusTargets:{'subject-1':5,'subject-2':10},selectedTopicIds:['topic-1','topic-keep']};
+const streamCascade=runStreamCascade(streamState,true);
+assert.equal(streamCascade.result,true);
+assert.deepEqual(streamCascade.savedChanges,[
+ {collection:'journal',id:'journal-remove',operation:'delete'},
+ {collection:'papers',id:'paper-remove',operation:'delete'}
+],'stream cascades must send every removed Study Hub record through the entity outbox');
+assert.deepEqual(streamState.journal,[{id:'journal-keep',subjectId:'subject-2'}]);
+assert.deepEqual(streamState.papers,[{id:'paper-keep',subjectId:'subject-2'}]);
+assert.deepEqual(streamState.syllabusTargets,{'subject-2':10});
+assert.deepEqual(streamState.selectedTopicIds,['topic-keep']);
+assert.equal(streamCascade.renders,1);
+
+const failedStreamJournal=[{id:'journal-failed',subjectId:'subject-1',topicId:'topic-1'}];
+const failedStreamPapers=[{id:'paper-failed',subjectId:'subject-1'}];
+const failedStreamState={journal:failedStreamJournal,papers:failedStreamPapers,syllabusTargets:{'subject-1':7},selectedTopicIds:['topic-1']};
+const failedStreamCascade=runStreamCascade(failedStreamState,false);
+assert.equal(failedStreamCascade.result,false);
+assert.strictEqual(failedStreamState.journal,failedStreamJournal,
+ 'a failed stream-cascade persistence must restore the original journal array');
+assert.strictEqual(failedStreamState.papers,failedStreamPapers,
+ 'a failed stream-cascade persistence must restore the original papers array');
+assert.deepEqual(failedStreamState.syllabusTargets,{'subject-1':7});
+assert.deepEqual(failedStreamState.selectedTopicIds,['topic-1']);
+assert.equal(failedStreamCascade.renders,1);
+
+const largeStreamJournal=Array.from({length:1001},(_,index)=>({
+ id:'large-journal-'+index,subjectId:'subject-1',topicId:'topic-1'
+}));
+const largeStreamState={journal:largeStreamJournal,papers:[],syllabusTargets:{'subject-1':1},selectedTopicIds:['topic-1']};
+const largeStreamCascade=runStreamCascade(largeStreamState,true);
+assert.equal(largeStreamCascade.result,true);
+assert.equal(largeStreamCascade.savedChanges,null,
+ 'stream cascades over 1,000 feature records must rebuild from the snapshot rather than exceed the bounded outbox write limit');
+
+console.log('Undo lifecycle tests passed: 15-second expiry, Undo-only notification, feature restoration, all four Study Hub delete types, and bounded stream-cascade entity tombstones.');
