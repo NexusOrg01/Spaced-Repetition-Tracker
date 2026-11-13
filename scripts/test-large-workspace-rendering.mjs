@@ -104,8 +104,12 @@ assert.ok(appCore.includes('NexusCascadeDeleteSubject(id,topicIds,{persist:false
   'subject deletion must defer the Study Hub save/render until the combined workspace commit');
 assert.ok(appCore.includes('NexusCascadeDeleteStream(id,subjectIds,topicIds,{persist:false,render:false})'),
   'stream deletion must defer the Study Hub save/render until the combined workspace commit');
-assert.ok(studyHub.includes('if(options.persist!==false&&!saveFs())'),
+assert.ok(studyHub.includes('if(options.persist!==false&&!saveFs('),
   'cascade helpers must support a single combined persistence transaction');
+assert.ok(studyHub.includes('removedFeatureCount<=1000')&&
+  studyHub.includes('saveFs(featureEntityChanges)')&&
+  studyHub.includes('featureEntityDeleteChange(collection,id)'),
+  'stream cascades must publish bounded Study Hub entity tombstones and rebuild when the bounded delta is unsafe');
 assert.ok(studyHub.includes('if(options.render!==false)renderHub()'),
   'cascade helpers must allow the caller to avoid redundant large Study Hub renders');
 
