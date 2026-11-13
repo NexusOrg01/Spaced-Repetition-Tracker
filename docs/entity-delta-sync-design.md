@@ -1,6 +1,6 @@
 # Remote entity-delta synchronization design
 
-**Status: design proposal only. No server-side delta schema, RPC, client publisher, or compaction implementation is active.** This document records the safe next step for Phase 3.4. The existing snapshot/chunk protocol remains the only supported cloud synchronization path.
+**Status: server-side delta schema/RPCs are deployed to isolated staging, but the client publisher/reader and authoritative local entity integration are not implemented.** This document remains the protocol design and test contract; see [implementation status](entity-delta-sync-status.md). Snapshot/chunk remains the only enabled cloud path for all accounts.
 
 ## 1. Verified current boundary (13 November 2026)
 
@@ -10,9 +10,9 @@ The current client and staging schema establish these facts:
 - `nexus-storage.js` maintains owner-scoped IndexedDB entity rows, generation metadata, and a bounded local entity outbox. The entity projection is a recoverable mirror, not the application source of truth. Startup, backup/restore, and cloud sync still depend on compatibility snapshots.
 - Entity outbox rows are local-only. They are not published to Supabase.
 - `cloud-sync.js` reads and reconciles complete workspace snapshots using `nexus_user_data.updated_at`. Large snapshots use `cloud-chunk-storage.js`: 256 KiB UTF-8 chunks, four-row insert batches, sixteen-row read pages, SHA-256 verification, and a maximum of 900 chunks.
-- The isolated Supabase project `nexus-sync-staging` currently has only `nexus_user_data` and `nexus_user_data_chunks` as Nexus public tables. Its applied Nexus migrations are the initial permission alignment and the two chunk-storage migrations. It has no entity-operation table, operation receipt table, per-user delta revision state, or delta publication/read/compaction RPC.
+- The isolated Supabase project `nexus-sync-staging` now has the additive `nexus_workspace_sync_state`, `nexus_workspace_operation_receipts`, and `nexus_workspace_operations` tables plus owner-scoped delta RPCs. All four existing workspace states remain in snapshot mode; there are currently no operation or receipt rows. See [implementation status](entity-delta-sync-status.md) for applied migration versions and staging evidence.
 - Staging RLS is owner-scoped. Authenticated users can select/insert/update their own snapshot row. For chunk rows they can select/insert/delete their own rows, but have no UPDATE grant. The chunk table has the account foreign key and bounded size/count constraints. The current trigger prevents a legacy payload update from replacing a published `chunked-v1` manifest.
-- The staging project identity was checked independently from the production project. No migration, data write, auth change, policy change, or secret change was performed during this inspection.
+- The staging project identity was checked independently from production. Two additive staging migrations were applied; existing snapshots and chunks were not rewritten, and disposable integration-test users/data were rolled back or deleted. No production data, schema, auth, policies, or secrets were changed.
 
 The timestamp `updated_at` is a snapshot compare-and-swap token, not a suitable monotonic event cursor. Do not infer a contiguous operation sequence from timestamps or client clocks.
 
@@ -127,7 +127,7 @@ The server acknowledgement must be committed locally only after the server retur
 6. Keep snapshot fallback available for unsupported schema, missing/gapped revisions, expired receipts, failed verification, and compaction-floor misses.
 7. Run two-device, offline, account-switch, backup/restore, deletion/undo, and interrupted-publication tests before considering any production proposal. Production requires a separate explicit approval and is outside this PR task.
 
-## 4. Required tests before any staging migration is applied
+## 4. Required tests before enabling delta mode or proposing production rollout
 
 ### Migration and authorization
 
@@ -171,14 +171,15 @@ The server acknowledgement must be committed locally only after the server retur
 
 ## 5. Current decision and stop conditions
 
-As of this design review, the isolated staging project has no remote operation log or delta RPC. No server migration or write has been applied. The current local entity projection is not authoritative, and cloud sync, backup, and recovery still rely on compatibility snapshots.
+The server-side schema and RPCs are now present on isolated staging, and their SQL-level idempotency, owner isolation, revision conflict, bounded-read, incomplete-group, gap, snapshot-CAS, marker-guard, and compaction behavior have been exercised with disposable staging fixtures. The follow-up migration closes two discovered read-integrity gaps and bounds receipt retention through snapshot-floor compaction.
 
-Therefore:
+The client side remains snapshot-authoritative:
 
 - Keep snapshot/chunk synchronization as the only enabled cloud protocol.
-- Do not publish local entity outbox rows to the current two-table schema.
-- Do not make the local entity projection authoritative until startup, mutation, restore, undo, account handoff, and recovery paths have passed end-to-end tests together.
-- Do not enable a remote delta protocol until its migration, RLS, concurrency, idempotency, bounded read, tombstone, compaction, crash-recovery, and legacy-client tests all pass against isolated staging.
-- Do not claim unlimited-size or lag-free performance. The protocol addresses transfer and recovery efficiency; rendering, startup, memory, and device responsiveness require separate measured performance work.
+- Do not publish local entity outbox rows until the shared client publisher, durable receipt acknowledgement, pull/apply cursor, and fail-closed snapshot recovery are integrated and tested.
+- Do not make the local entity projection authoritative until normal mutations, startup, restore, undo, account handoff, backup, deletion, and recovery use the same verified generation boundary.
+- Do not enable delta mode for existing staging accounts or production. The four existing staging accounts remain in snapshot mode.
+- Do not claim Phase 3.4 complete until browser and shared Android source paths pass the cross-path tests described above. APK generation and physical-device validation remain a separate explicitly authorised task.
+- Do not claim unlimited-size or lag-free performance. Rendering, startup, memory, and device responsiveness require separate measured performance work.
 
-This is a design record and an implementation gate, not a claim that remote incremental synchronization has been delivered.
+This is a partially implemented server protocol and a client-integration gate, not a claim that remote incremental synchronization has been delivered.
