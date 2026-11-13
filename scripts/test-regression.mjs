@@ -12,6 +12,8 @@ const studyHub = readFileSync(resolve(root, 'study-hub.js'), 'utf8');
 const cloudSync = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
 const offlineQueue = readFileSync(resolve(root, 'offline-sync-queue.js'), 'utf8');
 const durableStorage = readFileSync(resolve(root, 'nexus-storage.js'), 'utf8');
+const staticBuild = readFileSync(resolve(root, 'scripts/build.mjs'), 'utf8');
+const androidAssetBuild = readFileSync(resolve(root, 'scripts/build-android-assets.mjs'), 'utf8');
 const appSource = html + '\n' + appCore + '\n' + studyHub;
 const bundle = readFileSync(resolve(root, 'fsrs-bundle.js'), 'utf8');
 const backupUtils = readFileSync(resolve(root, 'backup-restore-utils.js'), 'utf8');
@@ -25,6 +27,51 @@ assert.ok(appCore.includes('window.NexusTrackerEntityPutChange=trackerEntityPutC
 assert.ok(appCore.includes("state=loadState();save({entityChanges:[]})") &&
   appCore.includes("state.settings.theme=$('themeSelect').value;save({entityChanges:[]})"),
   'ordinary startup and theme saves must not rebuild the full entity generation');
+
+const revisionHelperStart=appCore.indexOf('function workspaceEntityRevisionEntry(ownerId){');
+const revisionHelperEnd=appCore.indexOf('window.NexusWorkspaceEntityRevisionEntry=workspaceEntityRevisionEntry;',revisionHelperStart);
+assert.ok(revisionHelperStart>=0&&revisionHelperEnd>revisionHelperStart,
+  'the shared workspace revision-entry helper must be available before snapshot replacement flows');
+const revisionHelperSandbox={
+  window:{NexusStorage:{getWorkspaceEntityRevisionKey:owner=>'nexus.workspace.entity-revision:'+encodeURIComponent(owner)}},
+  localStorage:{getItem:()=> 'account-a'},Date,Math
+};
+vm.createContext(revisionHelperSandbox);
+vm.runInContext(appCore.slice(revisionHelperStart,revisionHelperEnd)+String.fromCharCode(10)+
+  'globalThis.createRevisionEntry=workspaceEntityRevisionEntry;',revisionHelperSandbox);
+const currentRevisionEntry=revisionHelperSandbox.createRevisionEntry();
+assert.equal(currentRevisionEntry.key,'nexus.workspace.entity-revision:account-a',
+  'the revision helper must bind the marker to the active account');
+assert.match(currentRevisionEntry.value,/^[a-z0-9]+-[a-z0-9]+$/,
+  'each snapshot replacement must receive a unique revision marker');
+assert.equal(revisionHelperSandbox.createRevisionEntry('account-b').key,
+  'nexus.workspace.entity-revision:account-b',
+  'account handoff must bind the revision marker to the target owner');
+assert.equal(revisionHelperSandbox.createRevisionEntry(null),null,
+  'unassigned guest workspaces must not receive an owner-bound revision marker');
+
+assert.ok(appCore.includes('const revisionEntry=workspaceEntityRevisionEntry();')&&
+  appCore.includes('if(revisionEntry)entries.push(revisionEntry);')&&
+  appCore.includes('queue.commitWorkspace(localStorage,entries,{state:data,featureState}'),
+  'startup curriculum repair must atomically invalidate any prior entity projection');
+assert.equal(cloudSync.split('window.NexusWorkspaceEntityRevisionEntry?.(ownerId)').length-1,2,
+  'cloud snapshot application and previous-account checkpoints must both advance the owner revision');
+assert.equal(studyHub.split('window.NexusWorkspaceEntityRevisionEntry?.()').length-1,2,
+  'CSV import and JSON backup restore must atomically invalidate the prior entity generation');
+assert.ok(studyHub.includes('window.NexusWorkspaceEntityRevisionEntry?.(owner)'),
+  'manual workspace reset must invalidate the prior entity generation for the active account');
+
+for(const asset of ['app-core.js','study-hub.js','cloud-sync.js']){
+  assert.ok(bootstrap.includes("'" + asset + "'"),
+    'the shared runtime bootstrap must include ' + asset + ' for browser and Android execution');
+}
+assert.ok(staticBuild.includes("const output = resolve(root, 'dist')")&&
+  staticBuild.includes("await cp(join(root, entry.name), join(output, entry.name), { recursive: true });"),
+  'the static source build must copy shared application modules into the common dist tree');
+assert.ok(androidAssetBuild.includes("const dist = join(root, 'dist')")&&
+  androidAssetBuild.includes("patchFile('index.html'")&&
+  androidAssetBuild.includes('nexus-app-bootstrap.js'),
+  'Android asset preparation must consume the same dist tree and storage-gated shared bootstrap without a separate app-logic fork');
 assert.ok(appCore.includes("save({entityChanges:[trackerEntityDeleteChange('history',id)]})") &&
   appCore.includes("const entityChangeCount=1+topicIds.length+historyIds.length+journalIds.length+paperIds.length") &&
   appCore.includes("const entityChangeCount=1+subjectIds.length+topicIds.length+historyIds.length+journalIds.length+paperIds.length"),

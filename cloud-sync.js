@@ -266,6 +266,8 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
      {key:'nexus.fsrs.settings.v1',value:JSON.stringify(nextFeatures.fsrsSettings)}
   ];
   if(ownerId)entries.push({key:OWNER_KEY,value:String(ownerId)});
+  const revisionEntry=window.NexusWorkspaceEntityRevisionEntry?.(ownerId);
+  if(revisionEntry)entries.push(revisionEntry);
   // Free redundant snapshot space before applying a cloud workspace to this browser.
   if(window.NexusOfflineSyncQueue&&typeof window.NexusOfflineSyncQueue.compactMetadata==='function')window.NexusOfflineSyncQueue.compactMetadata(localStorage);
   await window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,entries);
@@ -475,10 +477,13 @@ async function checkpointPreviousAccountWorkspace(ownerId,targetUserId,payload){
  const existingPending=queue.getPending(storage,ownerId),verifiedBase=queue.getBase(storage,ownerId);
  const baseVersion=existingPending?existingPending.baseServerVersion:(verifiedBase&&typeof verifiedBase.serverVersion==='string'?verifiedBase.serverVersion:queue.getStamp(storage,ownerId));
  const checkpoint={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:clone(payload.state),featureState:clone(payload.featureState)};
- queue.commitWorkspace(storage,[
+ const entries=[
   {key:window.NexusStorageKey,value:JSON.stringify(checkpoint.state)},
   {key:window.NexusFeatureStorageKey,value:JSON.stringify(checkpoint.featureState)}
- ],checkpoint,{baseServerVersion:baseVersion,returnOperationPayload:false});
+ ];
+ const revisionEntry=window.NexusWorkspaceEntityRevisionEntry?.(ownerId);
+ if(revisionEntry)entries.push(revisionEntry);
+ queue.commitWorkspace(storage,entries,checkpoint,{baseServerVersion:baseVersion,returnOperationPayload:false});
  const verified=queue.getPending(storage,ownerId);
  if(!verified||verified.ownerUserId!==ownerId||!(await sameWorkspace(verified.payload,checkpoint)))throw new Error('The previous account’s pending snapshot could not be verified. The account switch was stopped.');
  return true;

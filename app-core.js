@@ -295,13 +295,27 @@
   window.NexusRepairNormalizedCurriculumState=repairCurriculumState;
   window.NexusRepairNormalizedCurriculumStateWithResult=repairCurriculumStateResult;
   window.NexusRepairCurriculumState=function(data){return repairCurriculumState(normalizeState(data));};
+  function workspaceEntityRevisionEntry(ownerId){
+    let currentOwner='';
+    if(ownerId===undefined){try{currentOwner=localStorage.getItem('nexus.cloud.last-user-id')||'';}catch(_){}}
+    const owner=String(ownerId===undefined?currentOwner:(ownerId||'')).trim();
+    if(!owner)return null;
+    const storage=window.NexusStorage;
+    const key=storage&&typeof storage.getWorkspaceEntityRevisionKey==='function'
+      ?storage.getWorkspaceEntityRevisionKey(owner):'';
+    return key?{key,value:Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)}:null;
+  }
+  window.NexusWorkspaceEntityRevisionEntry=workspaceEntityRevisionEntry;
   function persistLoadedRepair(data){
     const queue=window.NexusOfflineSyncQueue;
     if(!queue||typeof queue.commitWorkspace!=='function')throw new Error('Safe offline sync queue is unavailable.');
     const rawFeatures=localStorage.getItem('recall.study.features.v1');
     const featureState=rawFeatures===null?{}:JSON.parse(rawFeatures);
     if(!featureState||typeof featureState!=='object'||Array.isArray(featureState))throw new Error('Saved Study Hub data is invalid.');
-    queue.commitWorkspace(localStorage,[{key:STORAGE_KEY,value:JSON.stringify(data)}],{state:data,featureState},{returnOperationPayload:false});
+    const entries=[{key:STORAGE_KEY,value:JSON.stringify(data)}];
+    const revisionEntry=workspaceEntityRevisionEntry();
+    if(revisionEntry)entries.push(revisionEntry);
+    queue.commitWorkspace(localStorage,entries,{state:data,featureState},{returnOperationPayload:false});
   }
   function loadAndRepair(data){
     const normalized=normalizeState(data);

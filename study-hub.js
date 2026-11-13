@@ -1916,9 +1916,12 @@
       added++;
     }
     if(!added){notify(`CSV import complete: 0 added, ${dupes} duplicates skipped, ${invalid} invalid rows skipped.`);return;}
-    window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[
-      {key:window.NexusStorageKey,value:JSON.stringify(nextState)}
-    ],{state:nextState,featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}},{returnOperationPayload:false});
+    const entries=[{key:window.NexusStorageKey,value:JSON.stringify(nextState)}];
+    const revisionEntry=window.NexusWorkspaceEntityRevisionEntry?.();
+    if(revisionEntry)entries.push(revisionEntry);
+    window.NexusOfflineSyncQueue.commitWorkspace(localStorage,entries,
+      {state:nextState,featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}},
+      {returnOperationPayload:false});
     state=nextState;
     await window.NexusRebuildEntityProjection?.();
     const saveStatus=$('saveStatus');
@@ -1979,12 +1982,17 @@
       const serializedCards=JSON.stringify(Object.fromEntries((nextState.topics||[]).filter(topic=>topic&&topic.fsrs).map(topic=>[String(topic.id),topic.fsrs])));
       const serializedFsrsSettings=JSON.stringify(nextFeatures.fsrsSettings);
       if(mode==='REPLACE'&&window.NexusOfflineSyncQueue.hasPending(localStorage,localStorage.getItem('nexus.cloud.last-user-id'))&&!confirm('This account has an unsynced local snapshot. Continue with REPLACE? The pending snapshot will be preserved in local recovery metadata, and only the restored workspace will be queued for upload.'))return;
-      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[
+      const entries=[
         {key:STORAGE_KEY,value:serializedState},
         {key:FEATURE_KEY,value:serializedFeatures},
         {key:'nexus.fsrs.cards.v1',value:serializedCards},
         {key:'nexus.fsrs.settings.v1',value:serializedFsrsSettings}
-      ],{state:nextState,featureState:nextFeatures},{archivePending:mode==='REPLACE',reason:'manual-restore-replace',returnOperationPayload:false});
+      ];
+      const revisionEntry=window.NexusWorkspaceEntityRevisionEntry?.();
+      if(revisionEntry)entries.push(revisionEntry);
+      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,entries,
+        {state:nextState,featureState:nextFeatures},
+        {archivePending:mode==='REPLACE',reason:'manual-restore-replace',returnOperationPayload:false});
       committed=true;
       state=nextState;
       fsState=nextFeatures;
@@ -2253,6 +2261,8 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
         {key:'nexus.fsrs.cards.v1',value:'{}'},
         {key:'nexus.fsrs.settings.v1',value:JSON.stringify(resetFeatures.fsrsSettings)}
       ];
+      const revisionEntry=window.NexusWorkspaceEntityRevisionEntry?.(owner);
+      if(revisionEntry)entries.push(revisionEntry);
       queue.commitWorkspace(localStorage,entries,{state:resetState,featureState:resetFeatures},{archivePending:true,reason:'manual-reset',returnOperationPayload:false});
       state=resetState;fsState=resetFeatures;
       if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(resetFeatures.fsrsSettings,{syncFeature:false,persist:false});
