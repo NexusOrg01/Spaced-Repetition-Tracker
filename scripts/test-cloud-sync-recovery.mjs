@@ -15,10 +15,12 @@ const backup = readFileSync(resolve(root, 'backup-restore-utils.js'), 'utf8');
 
 assert.ok(cloud.includes('SYNC_REQUEST_TIMEOUT_MS=180000')&&cloud.includes('createSyncAbortScope')&&cloud.includes('NEXUS_CLOUD_TIMEOUT'),
   'cloud reads and uploads must have a finite abort deadline so the UI cannot remain Syncing forever');
-assert.ok(cloud.includes('query=attachAbortSignal(query,activeSignal)')&&chunks.includes('function attachAbortSignal(query,signal)')&&backup.includes("typeof query.abortSignal==='function'"),
+assert.ok(cloud.includes('query=attachAbortSignal(query,activeSignal)')&&chunks.includes('function attachAbortSignal(query,signal)')&&backup.includes("typeof query.abortSignal === 'function'"),
   'snapshot reads, chunk upload/readback, and legacy snapshot writes must propagate AbortSignal when supported');
 assert.ok(cloud.includes('!pendingForUser&&!(remote&&remote.payload)')&&cloud.includes('This browser contains unassigned offline data and a separate pending snapshot'),
   'first-login guest data and a separate account-bound pending snapshot must not bypass the explicit conflict gate');
+assert.ok(cloud.includes('if(initializing&&hasQueuedSession){queuedSession=newSession||null;hasQueuedSession=true;}')&&cloud.includes('const nextSession=queuedSession||session||null;')&&cloud.includes('requestedUserId===lastUserId&&ready'),
+  'the latest auth event must replace a stale queued session and duplicate same-user initialization must be skipped');
 assert.equal(policy.retryDelay(0), 1500, 'the first transient retry should be delayed rather than spun');
 assert.equal(policy.retryDelay(1), 3000, 'retry delay should back off after repeated failures');
 assert.equal(policy.retryDelay(8), 300000, 'retry backoff must have a five-minute cap');
