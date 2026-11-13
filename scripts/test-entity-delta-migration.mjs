@@ -30,7 +30,7 @@ assert.match(hardening, /NOT EXISTS \([\s\S]*public\.nexus_workspace_operations/
 assert.match(hardening, /DROP INDEX IF EXISTS public\.nexus_workspace_operations_owner_revision_idx/);
 assert.match(hardening, /COMMIT;/);
 
-assert.match(integration, /^BEGIN;[\s\S]*ROLLBACK;\s*$/);
+assert.ok(integration.includes('BEGIN;') && integration.trimEnd().endsWith('ROLLBACK;'), 'The staging integration SQL must wrap all fixtures in a rollback-only transaction.');
 assert.match(integration, /auth\.users/);
 assert.match(integration, /nexus_enable_entity_delta/);
 assert.match(integration, /nexus_publish_entity_operation/);
