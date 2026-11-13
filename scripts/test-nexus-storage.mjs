@@ -869,6 +869,46 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(metadataOnlyRead.state.settings.theme,'dark',
     'metadata-only tracker settings must be reflected in the entity metadata root');
 
+  // If multiple compatibility commits occur before the entity sync runs, the
+  // latest delta alone is not a complete change set. Rebuild from the latest
+  // snapshot instead of trying to append it to an older generation.
+  const gapBase=metadataOnlyRead;
+  const gapTopicFirst={id:'topic-revision-gap-first',subjectId:'subject-1',name:'First missed revision'};
+  const gapTopicSecond={id:'topic-revision-gap-second',subjectId:'subject-1',name:'Second missed revision'};
+  const gapJournal={id:'journal-revision-gap',text:'Study Hub change in first missed revision'};
+  const gapPaper={id:'paper-revision-gap',name:'Study Hub change in second missed revision'};
+  const gapTrackerFirst={...gapBase.state,topics:[...gapBase.state.topics,gapTopicFirst]};
+  const gapFeaturesFirst={...gapBase.featureState,journal:[...gapBase.featureState.journal,gapJournal]};
+  const gapTrackerSecond={...gapTrackerFirst,topics:[...gapTrackerFirst.topics,gapTopicSecond]};
+  const gapFeaturesSecond={...gapFeaturesFirst,papers:[...gapFeaturesFirst.papers,gapPaper]};
+  await loaded.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(gapTrackerFirst)},
+    {key:'recall.study.features.v1',value:JSON.stringify(gapFeaturesFirst)},
+    {key:ownerEntityRevisionKey,value:'revision-gap-first'}
+  ]);
+  await loaded.api.flush();
+  await loaded.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(gapTrackerSecond)},
+    {key:'recall.study.features.v1',value:JSON.stringify(gapFeaturesSecond)},
+    {key:ownerEntityRevisionKey,value:'revision-gap-second'}
+  ]);
+  await loaded.api.flush();
+  const revisionGapSync=await loaded.api.syncWorkspaceEntities('entity-owner-a',[
+    {collection:'topics',id:gapTopicSecond.id,operation:'put',position:null,value:gapTopicSecond}
+  ],{
+    trackerRoot:trackerRootFor(gapTrackerSecond),featureRoot:featureRootFor(gapFeaturesSecond),
+    trackerSnapshotJson:JSON.stringify(gapTrackerSecond),featureSnapshotJson:JSON.stringify(gapFeaturesSecond)
+  });
+  assert.equal(revisionGapSync.mode,'snapshot-backfill',
+    'a non-empty latest delta must not conceal multiple missed workspace revisions');
+  const revisionGapRead=await loaded.api.readWorkspaceEntities('entity-owner-a');
+  assert.ok(revisionGapRead.state.topics.some(row=>row.id===gapTopicFirst.id)&&
+    revisionGapRead.state.topics.some(row=>row.id===gapTopicSecond.id),
+    'snapshot backfill must retain tracker records from every missed revision');
+  assert.ok(revisionGapRead.featureState.journal.some(row=>row.id===gapJournal.id)&&
+    revisionGapRead.featureState.papers.some(row=>row.id===gapPaper.id),
+    'snapshot backfill must retain Study Hub records from every missed revision');
+
   // A queued entity delta from the old projection must not be published after a
   // newer compatibility snapshot commits but before its projection backfill runs.
   const staleOutboxTopic={id:'topic-stale-entity-outbox',subjectId:'subject-1',name:'Superseded before projection sync'};
