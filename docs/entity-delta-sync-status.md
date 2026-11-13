@@ -89,6 +89,6 @@ The staging audit confirmed that the browser runtime still uses snapshot/chunk s
 
 A read-only staging security-advisor check found that five entity-delta `SECURITY DEFINER` RPCs were still executable by the `authenticated` role even though the browser client does not yet use the protocol. The earlier enablement gate revoked only `nexus_enable_entity_delta`; the publisher, reader, snapshot publisher, sync-state reader, and compaction RPCs remained exposed.
 
-Migration `20261114040000_revoke_unwired_entity_delta_rpc_execution` revokes execution of all six delta RPCs from `PUBLIC`, `anon`, and `authenticated`. This keeps the unfinished protocol server-internal until the web client integration and rollout gates are complete. It does not change existing snapshot/chunk sync, table data, or account modes. The migration contract test now checks every signature and rejects accidental re-grants.
+Migration `20261113222129_revoke_unwired_entity_delta_rpc_execution` revokes execution of all six delta RPCs from `PUBLIC`, `anon`, and `authenticated`. This keeps the unfinished protocol server-internal until the web client integration and rollout gates are complete. It does not change existing snapshot/chunk sync, table data, or account modes. The migration contract test now checks every signature and rejects accidental re-grants.
 
 Do not re-grant browser execution until the publisher, remote reader/cursor, durable acknowledgements, compaction, snapshot fallback, backup/restore, account-switch, deletion/undo, and offline recovery tests pass together.
