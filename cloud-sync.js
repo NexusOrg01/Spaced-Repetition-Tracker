@@ -573,8 +573,7 @@ async function recoverCachedWorkspaceForOfflineAccount(userId){
  syncDiag('offline-account-workspace-restored',{state:normalizedState,featureState:normalizedFeatures},{source,queueRebuilt:oversizedQueueDetected});
  return source||'indexeddb';
 }
-async function initializeSession(s){syncDiag('initialize-start',diagnosticWorkspace(),{hasSession:!!(s&&s.user),ownerPresent:!!localStorage.getItem(OWNER_KEY)});const requestedSession=s||null,requestedUserId=requestedSession&&requestedSession.user?requestedSession.user.id:null;if(!initializing&&requestedUserId&&requestedUserId===lastUserId&&ready){session=requestedSession;setControls();return;}
-if(initializing){
+async function initializeSession(s){syncDiag('initialize-start',diagnosticWorkspace(),{hasSession:!!(s&&s.user),ownerPresent:!!localStorage.getItem(OWNER_KEY)});const requestedSession=s||null,requestedUserId=requestedSession&&requestedSession.user?requestedSession.user.id:null;if(initializing){
  // Coalesce auth notifications to the latest observed session. If SIGNED_OUT
  // queued a null session, a later same-user SIGNED_IN/INITIAL_SESSION must replace it.
  session=requestedSession;
@@ -666,7 +665,11 @@ ready=true;const adoptedUpload=await upload();if(!adoptedUpload){lastUserId=newU
   say('Cloud sync error: '+((e&&e.message)||'unknown error')+'. Local changes are preserved and sync is paused. If you signed into another account while offline, its workspace is not cached here. The previous account remains protected and hidden. Reconnect to load the correct account.');
  }
  console.error('Nexus account initialization failed',e);scheduleRetry();
-}finally{syncDiag('initialize-settled',diagnosticWorkspace(),{hasSession:!!(session&&session.user),ready,ownerPresent:!!localStorage.getItem(OWNER_KEY)});initializing=false;initializingUserId=null;setControls();if(hasQueuedSession){const nextSession=queuedSession||session||null;queuedSession=null;hasQueuedSession=false;setTimeout(()=>initializeSession(nextSession),0);}}}
+}finally{syncDiag('initialize-settled',diagnosticWorkspace(),{hasSession:!!(session&&session.user),ready,ownerPresent:!!localStorage.getItem(OWNER_KEY)});initializing=false;initializingUserId=null;setControls();if(hasQueuedSession){
+ const nextSession=queuedSession||session||null;queuedSession=null;hasQueuedSession=false;
+ if(nextSession&&nextSession.user&&nextSession.user.id===lastUserId&&ready){session=nextSession;setControls();}
+ else setTimeout(()=>initializeSession(nextSession),0);
+}}}
 
 async function sameWorkspace(a,b){if(!a||!b)return false;const merger=window.NexusWorkspaceSyncMerge;if(!merger||typeof merger.sameAsync!=='function')throw new Error('Safe large-workspace comparison is unavailable.');return merger.sameAsync({state:a.state||{},featureState:a.featureState||{}},{state:b.state||{},featureState:b.featureState||{}});}
 async function upload(){
@@ -845,7 +848,10 @@ async function ensureClient(){if(isUnsafeCloudOrigin())throw new Error('Cloud sy
  // already queued a different/null session, this later event must replace it
  // before the in-flight promise settles.
  if(initializing&&hasQueuedSession){queuedSession=newSession||null;hasQueuedSession=true;}
- if(uid!==lastUserId||!ready)setTimeout(()=>initializeSession(newSession),0);
+ if(uid!==lastUserId||!ready)setTimeout(()=>{
+  if(uid!==lastUserId||!ready)initializeSession(newSession);
+  else{session=newSession;setControls();}
+ },0);
  else{session=newSession;setControls();}
 }});}return client;}
 let connectPromise=null;function connect(){if(isUnsafeCloudOrigin()){previewCloudBlockedMessage();setControls();return Promise.resolve();}if(connectPromise)return connectPromise;connectPromise=(async()=>{try{await ensureClient();const {data:{session:s},error}=await client.auth.getSession();if(error)throw error;await initializeSession(s);}catch(e){status('Connection error');say('Connection error: '+((e&&e.message)||'unknown error')+'. You can still use Nexus offline; reconnect to sign in and sync.');console.error('Nexus connection failed',e);scheduleRetry();}finally{connectPromise=null;}})();return connectPromise;}

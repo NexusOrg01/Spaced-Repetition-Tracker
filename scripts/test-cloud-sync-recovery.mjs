@@ -19,7 +19,7 @@ assert.ok(cloud.includes('query=attachAbortSignal(query,activeSignal)')&&chunks.
   'snapshot reads, chunk upload/readback, and legacy snapshot writes must propagate AbortSignal when supported');
 assert.ok(cloud.includes('!pendingForUser&&!(remote&&remote.payload)')&&cloud.includes('This browser contains unassigned offline data and a separate pending snapshot'),
   'first-login guest data and a separate account-bound pending snapshot must not bypass the explicit conflict gate');
-assert.ok(cloud.includes('if(initializing&&hasQueuedSession){queuedSession=newSession||null;hasQueuedSession=true;}')&&cloud.includes('const nextSession=queuedSession||session||null;')&&cloud.includes('requestedUserId===lastUserId&&ready'),
+assert.ok(cloud.includes('if(initializing&&hasQueuedSession){queuedSession=newSession||null;hasQueuedSession=true;}')&&cloud.includes('const nextSession=queuedSession||session||null;')&&cloud.includes('nextSession.user.id===lastUserId&&ready')&&cloud.includes('if(uid!==lastUserId||!ready)initializeSession(newSession)'),
   'the latest auth event must replace a stale queued session and duplicate same-user initialization must be skipped');
 assert.equal(policy.retryDelay(0), 1500, 'the first transient retry should be delayed rather than spun');
 assert.equal(policy.retryDelay(1), 3000, 'retry delay should back off after repeated failures');
