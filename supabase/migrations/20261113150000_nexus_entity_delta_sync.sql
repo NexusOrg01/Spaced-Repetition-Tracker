@@ -430,7 +430,8 @@ DECLARE
   v_revision bigint;
   v_first_revision bigint;
   v_changes jsonb;
-  v_operation_id text;
+  v_operation_id_min text;
+  v_operation_id_max text;
   v_count integer;
   v_min_ordinal integer;
   v_max_ordinal integer;
@@ -492,12 +493,12 @@ BEGIN
       ) ORDER BY ordinal),
       count(*)::integer, min(ordinal), max(ordinal), min(operation_id), max(operation_id)
     INTO v_changes, v_count, v_min_ordinal, v_max_ordinal,
-      v_operation_id, v_operation_id
+      v_operation_id_min, v_operation_id_max
     FROM public.nexus_workspace_operations
     WHERE user_id = v_uid AND revision = v_revision;
 
     IF v_changes IS NULL OR v_count < 1 OR v_min_ordinal <> 0
-       OR v_max_ordinal <> v_count - 1 THEN
+       OR v_max_ordinal <> v_count - 1 OR v_operation_id_min IS DISTINCT FROM v_operation_id_max THEN
       RETURN jsonb_build_object('mode','delta','snapshot_required',true,
         'head_revision',v_state.head_revision,'snapshot_revision',v_state.snapshot_revision,
         'compacted_through_revision',v_state.compacted_through_revision,
@@ -515,7 +516,7 @@ BEGIN
       EXIT;
     END IF;
     v_groups := v_groups || jsonb_build_array(jsonb_build_object(
-      'revision',v_revision,'operation_id',v_operation_id,'changes',v_changes));
+      'revision',v_revision,'operation_id',v_operation_id_min,'changes',v_changes));
     v_group_count := v_group_count + 1;
     v_total_bytes := v_total_bytes + v_group_bytes;
     v_next_revision := v_revision;
