@@ -958,12 +958,19 @@
         const manifest=values.manifest,row=values.workspace;
         const workspaceRevision=row&&Number.isSafeInteger(Number(row.workspaceRevision))
           ?Number(row.workspaceRevision):(row&&Number.isSafeInteger(Number(row.revision))?Number(row.revision):null);
+        const manifestWorkspaceRevision=Number(manifest&&manifest.sourceWorkspaceRevision);
+        const expectedWorkspaceRevision=Number(options.expectedWorkspaceRevision);
+        const expectedManifestWorkspaceRevision=Number(options.expectedManifestWorkspaceRevision);
         const sequence=Math.max(0,Number(values.sequence&&values.sequence.value)||0);
+        const revisionMatches=Number.isSafeInteger(manifestWorkspaceRevision)&&(
+          manifestWorkspaceRevision===workspaceRevision||
+          (Number.isSafeInteger(expectedWorkspaceRevision)&&expectedWorkspaceRevision===workspaceRevision&&
+           Number.isSafeInteger(expectedManifestWorkspaceRevision)&&
+           expectedManifestWorkspaceRevision===manifestWorkspaceRevision&&
+           workspaceRevision===manifestWorkspaceRevision+1));
         if(!manifest||manifest.ownerId!==owner||!['ready','updating'].includes(manifest.status)||
            !manifest.activeGeneration||!validWorkspaceRow(row,owner)||
-           !Number.isSafeInteger(workspaceRevision)||
-           !Number.isSafeInteger(Number(manifest.sourceWorkspaceRevision))||
-           Number(manifest.sourceWorkspaceRevision)!==workspaceRevision||
+           !Number.isSafeInteger(workspaceRevision)||!revisionMatches||
            (values.sequence&&values.sequence.ownerId!==owner)){
           // A snapshot replacement and an entity write share the WORKSPACES store.
           // Reject a stale projection inside this transaction so a late direct/outbox
@@ -1277,10 +1284,19 @@
         throw new Error('The active compatibility workspace is not durably available for entity synchronization.');
       }
       let manifest=await readEntityManifest(owner);
-      const entityRevisionChanged=!Number.isSafeInteger(Number(manifest&&manifest.sourceWorkspaceRevision))||
-        Number(manifest.sourceWorkspaceRevision)!==sourceWorkspaceRevision;
+      const manifestWorkspaceRevision=manifest?Number(manifest.sourceWorkspaceRevision):NaN;
+      const entityRevisionChanged=!Number.isSafeInteger(manifestWorkspaceRevision)||
+        manifestWorkspaceRevision!==sourceWorkspaceRevision;
+      const workspaceRevisionDelta=Number.isSafeInteger(manifestWorkspaceRevision)
+        ?sourceWorkspaceRevision-manifestWorkspaceRevision:null;
+      // A delta is complete only when it describes the single durable workspace
+      // revision immediately after the entity generation. If multiple snapshot
+      // commits were missed, or a caller supplied changes without advancing the
+      // mutation marker, rebuild from the latest compatibility snapshot.
+      const canApplyIncrementally=entityRevisionChanged&&capturedChanges.length>0&&workspaceRevisionDelta===1;
       const needsReplacement=replace||!manifest||manifest.status!=='ready'||!manifest.activeGeneration||
-        (entityRevisionChanged&&capturedChanges.length===0);
+        (entityRevisionChanged&&!canApplyIncrementally)||
+        (!entityRevisionChanged&&capturedChanges.length>0);
       if(needsReplacement){
         let stateSnapshot=null,featureSnapshot=null;
         if(trackerSnapshotJson!==null&&featureSnapshotJson!==null){
@@ -1318,7 +1334,9 @@
           if(!enabled||committedOwnerId!==owner)throw new Error('The active account changed during entity synchronization.');
           const batch=delta.slice(offset,offset+1000);
           const result=await writeWorkspaceEntityChanges(owner,batch,{
-            operationId:operationId+'-'+String(batches+1)
+            operationId:operationId+'-'+String(batches+1),
+            expectedWorkspaceRevision:sourceWorkspaceRevision,
+            expectedManifestWorkspaceRevision:manifestWorkspaceRevision
           });
           if(!result||result.ownerId!==owner)throw new Error('An entity-change batch could not be committed.');
           applied+=batch.length;batches++;
