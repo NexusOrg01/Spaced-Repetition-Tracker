@@ -324,8 +324,11 @@ assert.ok(serviceWorker.includes("'./curriculum-integrity.js'") &&
 
 const startupRepairSource = appCore.slice(appCore.indexOf('function persistLoadedRepair'), appCore.indexOf('function save()'));
 assert.ok(startupRepairSource.includes('function persistLoadedRepair(data)'), 'startup repair persistence must be explicit and auditable');
-assert.ok(startupRepairSource.includes('queue.commitWorkspace(localStorage,[{key:STORAGE_KEY,value:JSON.stringify(data)}],{state:data,featureState},{returnOperationPayload:false})'),
-  'a repaired startup workspace must be committed atomically with the matching offline outbox payload');
+assert.ok(startupRepairSource.includes('const entries=[{key:STORAGE_KEY,value:JSON.stringify(data)}];') &&
+  startupRepairSource.includes('const revisionEntry=workspaceEntityRevisionEntry();') &&
+  startupRepairSource.includes('if(revisionEntry)entries.push(revisionEntry);') &&
+  startupRepairSource.includes('queue.commitWorkspace(localStorage,entries,{state:data,featureState},{returnOperationPayload:false})'),
+  'a repaired startup workspace and its entity-revision invalidation must be committed atomically with the matching offline outbox payload');
 assert.ok(startupRepairSource.includes('const result=repairCurriculumStateResult(normalized)') && startupRepairSource.includes('if(result.changed)'),
   'startup must use the repair result instead of serializing the entire workspace to detect changes');
 assert.ok(appCore.includes('window.NexusRepairNormalizedCurriculumState=repairCurriculumState') &&
