@@ -188,8 +188,8 @@ assert.equal(JSON.stringify(streamCascade.savedChanges),JSON.stringify([
  {collection:'journal',id:'journal-remove',operation:'delete'},
  {collection:'papers',id:'paper-remove',operation:'delete'}
 ]),'stream cascades must send every removed Study Hub record through the entity outbox');
-assert.deepEqual(streamState.journal,[{id:'journal-keep',subjectId:'subject-2'}]);
-assert.deepEqual(streamState.papers,[{id:'paper-keep',subjectId:'subject-2'}]);
+assert.equal(JSON.stringify(streamState.journal),JSON.stringify([{id:'journal-keep',subjectId:'subject-2'}]));
+assert.equal(JSON.stringify(streamState.papers),JSON.stringify([{id:'paper-keep',subjectId:'subject-2'}]));
 assert.deepEqual(streamState.syllabusTargets,{'subject-2':10});
 assert.deepEqual(streamState.selectedTopicIds,['topic-keep']);
 assert.equal(streamCascade.renders,1);
