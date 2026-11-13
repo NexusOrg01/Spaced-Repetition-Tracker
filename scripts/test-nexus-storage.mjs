@@ -1214,4 +1214,87 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'large entity hydration must query only the active owner/generation key range');
 }
 
+// The remote-delta publisher must consume only complete, bounded local operation groups.
+// Reading a group never acknowledges it; acknowledgement remains a separate post-receipt step.
+{
+  const owner='entity-outbox-group-owner';
+  const state={
+    schema:3,
+    streams:[{id:'group-stream',name:'Commerce'}],
+    subjects:[{id:'group-subject',streamId:'group-stream',name:'Accounting'}],
+    topics:[{id:'group-topic-existing',subjectId:'group-subject',name:'Existing topic'}],
+    history:[],exams:[],settings:{}
+  };
+  const features={version:1,journal:[],papers:[],goals:[],studyLogs:[],selectedTopicIds:[]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true,'outbox-group fixture must initialize durable storage');
+  await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+  const first=await loaded.api.writeWorkspaceEntityChanges(owner,[
+    {collection:'topics',id:'group-topic-new',operation:'put',position:null,
+      value:{id:'group-topic-new',subjectId:'group-subject',name:'New topic'}},
+    {collection:'journal',id:'group-journal-new',operation:'put',position:null,
+      value:{id:'group-journal-new',subjectId:'group-subject',text:'Study note'}}
+  ],{operationId:'group-operation-one'});
+  const second=await loaded.api.writeWorkspaceEntityChanges(owner,[
+    {collection:'history',id:'group-history-new',operation:'put',position:null,
+      value:{id:'group-history-new',topicId:'group-topic-existing',rating:4,reviewedAt:'2026-11-13'}}
+  ],{operationId:'group-operation-two'});
+  assert.equal(first.count,2);
+  assert.equal(second.count,1);
+
+  const firstPage=await loaded.api.readWorkspaceEntityOutboxGroups(owner,0,2,4096);
+  assert.equal(firstPage.snapshotRequired,false);
+  assert.equal(firstPage.groups.length,1,
+    'the reader must not split or partially include the next logical operation group');
+  assert.equal(firstPage.groups[0].operationId,'group-operation-one');
+  assert.equal(firstPage.groups[0].changeCount,2);
+  assert.equal(firstPage.groups[0].changes.length,2);
+  assert.ok(firstPage.groups[0].changes.every(change=>
+    Number.isSafeInteger(change.position)&&change.operation==='put'),
+    'every published put must carry the stable numeric ordering position stored in IndexedDB');
+  assert.equal(firstPage.throughSequence,first.lastSequence,
+    'the returned cursor must stop at the end of the last complete operation group');
+  assert.equal(firstPage.hasMore,true,
+    'the reader must signal that another complete group remains after the bounded page');
+  assert.ok(firstPage.bytes>0&&firstPage.bytes<=4096);
+
+  const secondPage=await loaded.api.readWorkspaceEntityOutboxGroups(
+    owner,firstPage.throughSequence,2,4096);
+  assert.equal(secondPage.snapshotRequired,false);
+  assert.equal(secondPage.groups.length,1);
+  assert.equal(secondPage.groups[0].operationId,'group-operation-two');
+  assert.equal(secondPage.groups[0].changes[0].collection,'history');
+  assert.equal(secondPage.throughSequence,second.lastSequence);
+
+  const db=idb.databases.get('nexus-workspace-v1');
+  const markerKey='workspace-entity-change:'+encodeURIComponent(owner)+':op:'+encodeURIComponent('group-operation-two');
+  const outbox=db.stores.get('outbox');
+  const pendingBefore=[...outbox.values()].filter(row=>row&&row.kind==='change'&&row.ownerId===owner).length;
+  const marker=outbox.get(markerKey);
+  outbox.set(markerKey,{...marker,count:2});
+  const corrupt=await loaded.api.readWorkspaceEntityOutboxGroups(
+    owner,firstPage.throughSequence,2,4096);
+  assert.equal(corrupt.snapshotRequired,true,
+    'a missing/mismatched operation receipt marker must fail closed before publication');
+  assert.equal(corrupt.groups.length,0);
+  assert.equal(corrupt.throughSequence,firstPage.throughSequence,
+    'a malformed local group must not advance the local publisher cursor');
+  assert.equal([...outbox.values()].filter(row=>row&&row.kind==='change'&&row.ownerId===owner).length,pendingBefore,
+    'reading or rejecting an outbox group must never acknowledge or delete local changes');
+
+  const smallLimit=await loaded.api.readWorkspaceEntityOutboxGroups(owner,0,1,4096);
+  assert.equal(smallLimit.snapshotRequired,true,
+    'a logical group larger than the requested bounded batch must require safe snapshot recovery');
+  assert.equal(smallLimit.groups.length,0);
+
+  assert.equal(loaded.api.getStatus().enabled,true,
+    'outbox grouping must not change the snapshot-backed authoritative storage path');
+}
+
 console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, clear scoping, failed-write recovery, and account-handoff isolation.');

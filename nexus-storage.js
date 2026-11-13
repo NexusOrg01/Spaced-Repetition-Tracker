@@ -1049,6 +1049,180 @@
     return rows.filter(row=>row&&row.ownerId===owner&&
       row.generation===manifest.activeGeneration&&row.kind==='change'&&Number(row.sequence)>after);
   }
+  function entityOutboxUtf8ByteLength(value){
+    const text=String(value),length=text.length;
+    let bytes=0;
+    for(let index=0;index<length;index++){
+      const code=text.charCodeAt(index);
+      if(code<0x80)bytes++;
+      else if(code<0x800)bytes+=2;
+      else if(code>=0xd800&&code<=0xdbff&&index+1<length){
+        const next=text.charCodeAt(index+1);
+        if(next>=0xdc00&&next<=0xdfff){bytes+=4;index++;}
+        else bytes+=3;
+      }else bytes+=3;
+    }
+    return bytes;
+  }
+  async function readWorkspaceEntityOutboxGroups(ownerId,afterSequence=0,maxChanges=1000,maxBytes=921600){
+    const owner=entityOwnerKey(ownerId),after=Math.max(0,Math.floor(Number(afterSequence)||0)),
+      changeLimit=Math.max(1,Math.min(1000,Math.floor(Number(maxChanges)||1000))),
+      byteLimit=Math.max(1024,Math.min(1048576,Math.floor(Number(maxBytes)||921600)));
+    const empty={ownerId:owner,generation:null,workspaceRevision:null,groups:[],
+      throughSequence:after,changeCount:0,bytes:0,hasMore:false,snapshotRequired:false};
+    if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner){
+      return {...empty,unavailable:true};
+    }
+    const manifest=await readEntityManifest(owner);
+    if(!manifest||manifest.status!=='ready'||!manifest.activeGeneration){
+      return {...empty,snapshotRequired:true,reason:'entity_projection_unavailable'};
+    }
+    const workspaceRevision=await readWorkspaceRevision(owner);
+    if(!Number.isSafeInteger(workspaceRevision)||
+       Number(manifest.sourceWorkspaceRevision)!==workspaceRevision){
+      return {...empty,snapshotRequired:true,reason:'stale_entity_projection'};
+    }
+    const sequenceRange=entityOutboxSequenceRange(owner,after);
+    if(!sequenceRange)return {...empty,generation:manifest.activeGeneration,workspaceRevision};
+    const pageLimit=Math.min(1000,changeLimit+1);
+    const page=await transaction(['outbox'],'readonly',(tx,set)=>{
+      const store=tx.objectStore('outbox'),request=store.getAll(sequenceRange,pageLimit);
+      request.onsuccess=()=>{
+        const rows=request.result||[],ids=[],seen=new Set();
+        for(const row of rows){
+          if(!row||typeof row.operationId!=='string'||!row.operationId||seen.has(row.operationId))continue;
+          seen.add(row.operationId);ids.push(row.operationId);
+        }
+        const markers=new Map();
+        let remaining=ids.length;
+        const finish=()=>{if(remaining===0)set({rows,markers});};
+        if(!remaining){finish();return;}
+        for(const operationId of ids){
+          const markerRequest=store.get(entityOperationKey(owner,operationId));
+          markerRequest.onsuccess=()=>{
+            markers.set(operationId,markerRequest.result||null);
+            remaining--;finish();
+          };
+        }
+      };
+    });
+    if(!enabled||committedOwnerId!==owner||entityRemovalOwners.has(owner)){
+      return {...empty,unavailable:true};
+    }
+    const rows=page.rows||[];
+    for(const row of rows){
+      if(!row||row.ownerId!==owner||row.generation!==manifest.activeGeneration||
+         row.kind!=='change'||!Number.isSafeInteger(Number(row.sequence))||
+         Number(row.sequence)<=after||typeof row.operationId!=='string'||!row.operationId){
+        return {...empty,generation:manifest.activeGeneration,workspaceRevision,
+          snapshotRequired:true,reason:'invalid_local_outbox_row'};
+      }
+    }
+    const groups=[];
+    let through=after,totalChanges=0,totalBytes=0,hasMore=false,index=0;
+    while(index<rows.length){
+      const operationId=rows[index].operationId;
+      let end=index+1;
+      while(end<rows.length&&rows[end].operationId===operationId)end++;
+      const groupRows=rows.slice(index,end),marker=page.markers.get(operationId);
+      if(!marker){
+        if(!groups.length)return {...empty,generation:manifest.activeGeneration,workspaceRevision,
+          snapshotRequired:true,reason:'missing_local_operation_marker'};
+        hasMore=true;break;
+      }
+      const first=Number(marker.firstSequence),last=Number(marker.lastSequence),count=Number(marker.count);
+      if(marker.ownerId!==owner||marker.generation!==manifest.activeGeneration||
+         marker.kind!=='operation-marker'||marker.operationId!==operationId||
+         !Number.isSafeInteger(first)||first<1||!Number.isSafeInteger(last)||last<first||
+         !Number.isSafeInteger(count)||count<1||count>1000||last-first+1!==count){
+        if(!groups.length)return {...empty,generation:manifest.activeGeneration,workspaceRevision,
+          snapshotRequired:true,reason:'invalid_local_operation_marker'};
+        hasMore=true;break;
+      }
+      if(first!==through+1){
+        if(!groups.length)return {...empty,generation:manifest.activeGeneration,workspaceRevision,
+          snapshotRequired:true,reason:'local_outbox_sequence_gap'};
+        hasMore=true;break;
+      }
+      if(count>changeLimit){
+        if(!groups.length)return {...empty,generation:manifest.activeGeneration,workspaceRevision,
+          snapshotRequired:true,reason:'operation_group_exceeds_batch'};
+        hasMore=true;break;
+      }
+      if(groupRows.length!==count){
+        const pageEnded=end===rows.length&&rows.length===pageLimit&&
+          Number(groupRows[groupRows.length-1]?.sequence)<last;
+        if(pageEnded&&groups.length){hasMore=true;break;}
+        if(pageEnded&&!groups.length){
+          return {...empty,generation:manifest.activeGeneration,workspaceRevision,
+            snapshotRequired:true,reason:'operation_group_exceeds_batch'};
+        }
+        if(!groups.length)return {...empty,generation:manifest.activeGeneration,workspaceRevision,
+          snapshotRequired:true,reason:'incomplete_local_operation_group'};
+        hasMore=true;break;
+      }
+      if(Number(groupRows[0].sequence)!==first||
+         Number(groupRows[groupRows.length-1].sequence)!==last||
+         groupRows.some((row,offset)=>Number(row.sequence)!==first+offset)){
+        if(!groups.length)return {...empty,generation:manifest.activeGeneration,workspaceRevision,
+          snapshotRequired:true,reason:'local_operation_sequence_gap'};
+        hasMore=true;break;
+      }
+      if(totalChanges+count>changeLimit){hasMore=true;break;}
+      const changes=[];
+      for(const row of groupRows){
+        if(!ALL_ENTITY_COLLECTIONS.has(row.collection)||
+           typeof row.entityId!=='string'||!row.entityId||row.entityId.length>512||
+           !['put','delete'].includes(row.operation)){
+          if(!groups.length)return {...empty,generation:manifest.activeGeneration,workspaceRevision,
+            snapshotRequired:true,reason:'invalid_local_operation_change'};
+          hasMore=true;break;
+        }
+        if(row.operation==='put'){
+          if(!row.value||typeof row.value!=='object'||Array.isArray(row.value)||
+             !Number.isSafeInteger(row.position)||row.position < -1000000000||row.position > 1000000000){
+            if(!groups.length)return {...empty,generation:manifest.activeGeneration,workspaceRevision,
+              snapshotRequired:true,reason:'invalid_local_put_change'};
+            hasMore=true;break;
+          }
+          changes.push({collection:row.collection,id:row.entityId,operation:'put',
+            position:row.position,value:row.value});
+        }else{
+          if(row.value!==undefined&&row.value!==null){
+            if(!groups.length)return {...empty,generation:manifest.activeGeneration,workspaceRevision,
+              snapshotRequired:true,reason:'invalid_local_delete_change'};
+            hasMore=true;break;
+          }
+          changes.push({collection:row.collection,id:row.entityId,operation:'delete'});
+        }
+      }
+      if(changes.length!==count)break;
+      const groupBytes=entityOutboxUtf8ByteLength(JSON.stringify(changes));
+      if(groupBytes>byteLimit){
+        if(!groups.length)return {...empty,generation:manifest.activeGeneration,workspaceRevision,
+          snapshotRequired:true,reason:'operation_group_exceeds_byte_limit'};
+        hasMore=true;break;
+      }
+      if(totalBytes+groupBytes>byteLimit){hasMore=true;break;}
+      groups.push({operationId,firstSequence:first,lastSequence:last,changeCount:count,
+        bytes:groupBytes,changes});
+      through=last;totalChanges+=count;totalBytes+=groupBytes;index=end;
+    }
+    if(rows.length===pageLimit||index<rows.length)hasMore=true;
+    const finalManifest=await readEntityManifest(owner);
+    const finalWorkspaceRevision=await readWorkspaceRevision(owner);
+    if(!enabled||committedOwnerId!==owner||entityRemovalOwners.has(owner)||
+       !finalManifest||finalManifest.status!=='ready'||
+       finalManifest.activeGeneration!==manifest.activeGeneration||
+       Number(finalManifest.sourceWorkspaceRevision)!==workspaceRevision||
+       finalWorkspaceRevision!==workspaceRevision){
+      return {...empty,snapshotRequired:true,reason:'entity_generation_changed_during_outbox_read'};
+    }
+    return {ownerId:owner,generation:manifest.activeGeneration,workspaceRevision,
+      groups,throughSequence:through,changeCount:totalChanges,bytes:totalBytes,
+      hasMore,snapshotRequired:false};
+  }
+
   async function acknowledgeWorkspaceEntityOutbox(ownerId,throughSequence){
     const owner=entityOwnerKey(ownerId),
       through=Math.min(Number.MAX_SAFE_INTEGER,Math.max(0,Math.floor(Number(throughSequence)||0)));
@@ -1873,6 +2047,7 @@
     writeWorkspaceEntityChanges,
     syncWorkspaceEntities,
     readWorkspaceEntityOutbox,
+    readWorkspaceEntityOutboxGroups,
     acknowledgeWorkspaceEntityOutbox,
     getStatus: () => ({
       enabled,
