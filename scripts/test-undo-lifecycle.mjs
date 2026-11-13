@@ -175,8 +175,8 @@ function runStreamCascade(state,saveResult){
   renderHub:()=>{renders++;}
  };
  vm.createContext(sandbox);
- vm.runInContext(studyHub.slice(streamCascadeStart,streamCascadeEnd)+
-  '\\nthis.runStreamCascade=window.NexusCascadeDeleteStream;',sandbox);
+ vm.runInContext(studyHub.slice(streamCascadeStart,streamCascadeEnd)+String.fromCharCode(10)+
+  'this.runStreamCascade=window.NexusCascadeDeleteStream;',sandbox);
  return {result:sandbox.runStreamCascade('stream-1',['subject-1'],['topic-1']),savedChanges,renders,sandbox};
 }
 const streamJournal=[{id:'journal-remove',subjectId:'subject-1',topicId:'topic-1'},{id:'journal-keep',subjectId:'subject-2'}];
