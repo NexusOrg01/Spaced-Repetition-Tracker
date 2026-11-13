@@ -1537,7 +1537,7 @@ storage.setItem(STATE_KEY,JSON.stringify(payloadE.state));
 storage.setItem(FEATURE_KEY,JSON.stringify(payloadE.featureState));
 context.state=payloadE.state;
 rows.set(accountE.id,{user_id:accountE.id,payload:payloadE,updated_at:'2026-11-13T18:10:00.000Z'});
-activeSession={user:accountE};networkAvailable=true;deferNextRemoteRead=true;
+activeSession={user:accountE};networkAvailable=true;releaseDeferredRemoteRead=null;deferNextRemoteRead=true;
 const authRaceInitialization=window.NexusCloudSync.reconnect();
 for(let i=0;i<100&&!releaseDeferredRemoteRead;i++)await new Promise(resolve=>setTimeout(resolve,5));
 assert.equal(typeof authStateCallback,'function','the Supabase auth subscription must be installed before the race test');
@@ -1545,8 +1545,18 @@ assert.equal(typeof releaseDeferredRemoteRead,'function','the initial cloud read
 authStateCallback('SIGNED_OUT',null);
 authStateCallback('SIGNED_IN',{user:accountE});
 authStateCallback('INITIAL_SESSION',{user:accountE});
-releaseDeferredRemoteRead();
-await authRaceInitialization;
+const releaseAuthRaceRead=releaseDeferredRemoteRead;
+releaseAuthRaceRead();
+releaseDeferredRemoteRead=null;
+let authRaceTimeout;
+try{
+  await Promise.race([
+    authRaceInitialization,
+    new Promise((_,reject)=>{
+      authRaceTimeout=setTimeout(()=>reject(new Error('Auth-event initialization did not settle within 10 seconds after the deferred cloud read was released.')),10000);
+    })
+  ]);
+}finally{clearTimeout(authRaceTimeout);}
 await new Promise(resolve=>setTimeout(resolve,100));
 assert.equal(window.NexusCloudSync.getAccountState().signedIn,true,
   'the latest same-user SIGNED_IN event must replace a queued SIGNED_OUT null session');

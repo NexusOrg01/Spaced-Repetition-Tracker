@@ -83,3 +83,12 @@ No Phase 3.5 work is included. This protocol does not establish unlimited datase
 ### Client enablement gate (14 November 2026)
 
 The staging audit confirmed that the browser runtime still uses snapshot/chunk sync only; it does not yet publish entity operations, read/apply remote operation groups, persist a remote cursor, or coordinate delta compaction. The `nexus_enable_entity_delta` RPC was nevertheless executable by the `authenticated` role and changes the caller's snapshot marker and sync-state mode. That could strand an account on a protocol the current client cannot read or write. Migration `20261113215301_defer_entity_delta_enablement_until_client_ready` revokes client-role execution until the web publisher, reader, cursor, compaction, compatibility fallback, and recovery gates are implemented and reviewed. Snapshot fallback remains authoritative.
+
+
+### RPC exposure hardening (14 November 2026)
+
+A read-only staging security-advisor check found that five entity-delta `SECURITY DEFINER` RPCs were still executable by the `authenticated` role even though the browser client does not yet use the protocol. The earlier enablement gate revoked only `nexus_enable_entity_delta`; the publisher, reader, snapshot publisher, sync-state reader, and compaction RPCs remained exposed.
+
+Migration `20261114040000_revoke_unwired_entity_delta_rpc_execution` revokes execution of all six delta RPCs from `PUBLIC`, `anon`, and `authenticated`. This keeps the unfinished protocol server-internal until the web client integration and rollout gates are complete. It does not change existing snapshot/chunk sync, table data, or account modes. The migration contract test now checks every signature and rejects accidental re-grants.
+
+Do not re-grant browser execution until the publisher, remote reader/cursor, durable acknowledgements, compaction, snapshot fallback, backup/restore, account-switch, deletion/undo, and offline recovery tests pass together.

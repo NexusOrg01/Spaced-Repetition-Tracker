@@ -10,6 +10,7 @@ const schema = read('supabase/migrations/20261113095723_nexus_entity_delta_sync.
 const hardening = read('supabase/migrations/20261113101625_harden_nexus_entity_delta_reads_and_compaction.sql');
 const integration = read('supabase/tests/nexus_entity_delta_sync.sql');
 const enablementGate = read('supabase/migrations/20261113215301_defer_entity_delta_enablement_until_client_ready.sql');
+const rpcExposureGate = read('supabase/migrations/20261114040000_revoke_unwired_entity_delta_rpc_execution.sql');
 
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_sync_state/);
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_operation_receipts/);
@@ -24,6 +25,21 @@ assert.match(schema, /CREATE OR REPLACE FUNCTION public\.nexus_publish_entity_sn
 assert.match(schema, /CREATE OR REPLACE FUNCTION public\.nexus_guard_chunked_snapshot_update/);
 assert.match(enablementGate, /REVOKE EXECUTE ON FUNCTION public\.nexus_enable_entity_delta\(timestamptz\)[\s\S]*FROM PUBLIC, anon, authenticated/);
 assert.match(enablementGate, /until the web entity-delta publisher, reader, compaction, and recovery gates are complete/);
+
+const gatedRpcSignatures = [
+  'public.nexus_get_entity_sync_state()',
+  'public.nexus_enable_entity_delta(timestamptz)',
+  'public.nexus_publish_entity_operation(text,bigint,jsonb)',
+  'public.nexus_read_entity_operations(bigint,integer,integer)',
+  'public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb)',
+  'public.nexus_compact_entity_operations(integer)'
+];
+for (const signature of gatedRpcSignatures) {
+  assert.ok(rpcExposureGate.includes(`REVOKE EXECUTE ON FUNCTION ${signature} FROM PUBLIC, anon, authenticated;`),
+    `unwired SECURITY DEFINER RPC ${signature} must not be executable by browser roles`);
+}
+assert.match(rpcExposureGate, /BEGIN;[\s\S]*COMMIT;/);
+assert.doesNotMatch(rpcExposureGate, /GRANT EXECUTE ON FUNCTION/);
 
 assert.match(hardening, /v_revision <> v_next_revision \+ 1/);
 assert.match(hardening, /v_expected_count IS DISTINCT FROM v_count/);
