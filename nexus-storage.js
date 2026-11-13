@@ -898,8 +898,9 @@
     const markerKey=entityOperationKey(owner,operationId);
     return transaction([WORKSPACES,'migrationMeta','outbox'],'readwrite',(tx,set)=>{
       const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta'),outbox=tx.objectStore('outbox');
-      const manifestRequest=meta.get(manifestKey),sequenceRequest=meta.get(sequenceKey),markerRequest=outbox.get(markerKey);
-      const values={manifest:null,sequence:null,marker:null};let coreRemaining=3,started=false;
+      const manifestRequest=meta.get(manifestKey),sequenceRequest=meta.get(sequenceKey),
+        markerRequest=outbox.get(markerKey),workspaceRequest=entities.get(workspaceKey(owner));
+      const values={manifest:null,sequence:null,marker:null,workspace:null};let coreRemaining=4,started=false;
       const applyChanges=existingRows=>{
         const manifest=values.manifest,sequence=Math.max(0,Number(values.sequence&&values.sequence.value)||0);
         let next=sequence,rowDelta=0;
@@ -954,15 +955,46 @@
       const startChanges=()=>{
         if(started||coreRemaining!==0)return;
         started=true;
-        if(values.marker){
-          set({ownerId,operationId,replayed:true,firstSequence:values.marker.firstSequence,
-            lastSequence:values.marker.lastSequence,count:values.marker.count});
-          return;
-        }
-        const manifest=values.manifest;
-        if(!manifest||!['ready','updating'].includes(manifest.status)||!manifest.activeGeneration){
+        const manifest=values.manifest,row=values.workspace;
+        const workspaceRevision=row&&Number.isSafeInteger(Number(row.workspaceRevision))
+          ?Number(row.workspaceRevision):(row&&Number.isSafeInteger(Number(row.revision))?Number(row.revision):null);
+        const sequence=Math.max(0,Number(values.sequence&&values.sequence.value)||0);
+        if(!manifest||manifest.ownerId!==owner||!['ready','updating'].includes(manifest.status)||
+           !manifest.activeGeneration||!validWorkspaceRow(row,owner)||
+           !Number.isSafeInteger(workspaceRevision)||
+           !Number.isSafeInteger(Number(manifest.sourceWorkspaceRevision))||
+           Number(manifest.sourceWorkspaceRevision)!==workspaceRevision||
+           (values.sequence&&values.sequence.ownerId!==owner)){
+          // A snapshot replacement and an entity write share the WORKSPACES store.
+          // Reject a stale projection inside this transaction so a late direct/outbox
+          // writer cannot append changes that no longer belong to the active snapshot.
           try{tx.abort();}catch(_){}
           return;
+        }
+        if(values.marker){
+          const marker=values.marker;
+          const first=Number(marker.firstSequence),last=Number(marker.lastSequence),count=Number(marker.count);
+          if(marker.ownerId!==owner||marker.kind!=='operation-marker'||marker.operationId!==operationId||
+             typeof marker.generation!=='string'||!marker.generation||
+             !Number.isSafeInteger(first)||first<1||!Number.isSafeInteger(last)||last<first||
+             !Number.isSafeInteger(count)||count<1||last-first+1!==count||last>sequence){
+            try{tx.abort();}catch(_){}
+            return;
+          }
+          if(marker.generation===manifest.activeGeneration){
+            if(count!==normalized.length){
+              // Reusing an idempotency key for a different-sized operation is not a
+              // valid replay. Fail closed rather than silently reporting old work.
+              try{tx.abort();}catch(_){}
+              return;
+            }
+            set({ownerId,operationId,replayed:true,firstSequence:first,lastSequence:last,count});
+            return;
+          }
+          // Best-effort generation pruning can be interrupted. A marker from an old
+          // generation must not suppress a new operation that reuses the same ID.
+          outbox.delete(markerKey);
+          outbox.delete(entityOperationSequenceKey(owner,last,operationId));
         }
         const existingRows=new Array(normalized.length);let remaining=normalized.length;
         normalized.forEach((change,index)=>{
@@ -978,6 +1010,7 @@
       manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;coreRemaining--;startChanges();};
       sequenceRequest.onsuccess=()=>{values.sequence=sequenceRequest.result||null;coreRemaining--;startChanges();};
       markerRequest.onsuccess=()=>{values.marker=markerRequest.result||null;coreRemaining--;startChanges();};
+      workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;coreRemaining--;startChanges();};
     });
   }
   async function readWorkspaceEntityOutbox(ownerId,afterSequence=0,limit=100){
