@@ -598,8 +598,15 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(preservedGeneration.state.history[0].id,'review-2',
     'the previous generation must retain committed deletions after failed backfill');
 
+  const pruneQueryStart=idb.rangeQueries.length;
   const resumedMigration=await loaded.api.migrateWorkspaceEntities('entity-owner-a',expandedState,afterChanges.featureState,
     {expectedRevision:loaded.api.getStatus().revision});
+  const pruneQueries=idb.rangeQueries.slice(pruneQueryStart).filter(query=>
+    query.store==='workspaces'&&query.lower&&query.lower.startsWith('workspace-entity:entity-owner-a:'));
+  assert.ok(pruneQueries.length>=2,
+    'inactive entity-generation cleanup must continue through multiple bounded pages');
+  assert.ok(pruneQueries.every(query=>query.count===400),
+    'every inactive-generation cleanup page must cap materialized IndexedDB rows at 400');
   assert.ok(resumedMigration.prunedRows>=400,
     'a successful replacement must prune the interrupted hidden generation in bounded batches');
   assert.ok(resumedMigration.prunedOutboxRows>=3,
@@ -839,6 +846,15 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(metadataOnlyRead.state.settings.theme,'dark',
     'metadata-only tracker settings must be reflected in the entity metadata root');
 
+  // A queued entity delta from the old projection must not be published after a
+  // newer compatibility snapshot commits but before its projection backfill runs.
+  const staleOutboxTopic={id:'topic-stale-entity-outbox',subjectId:'subject-1',name:'Superseded before projection sync'};
+  await loaded.api.writeWorkspaceEntityChanges('entity-owner-a',[
+    {collection:'topics',id:staleOutboxTopic.id,operation:'put',position:null,value:staleOutboxTopic}
+  ],{operationId:'stale-outbox-before-snapshot-replacement'});
+  assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)).length,1,
+    'a current-generation entity delta must be readable before a newer snapshot is committed');
+
   // Simulate closing the page after its durable compatibility snapshots commit,
   // but before syncWorkspaceEntities is called. On the next launch, an empty
   // startup delta must detect the version gap and rebuild from the snapshots.
@@ -854,6 +870,10 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const durableAfterMissedSync=await loaded.api.getWorkspace('entity-owner-a');
   assert.ok(durableAfterMissedSync.workspaceRevision>workspaceAfterUnrelated.workspaceRevision,
     'a changed tracker/Study Hub snapshot must advance the workspace-only revision');
+  assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)).length,0,
+    'stale entity outbox rows must not be exposed after a newer compatibility snapshot commits');
+  assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',100),0,
+    'stale entity outbox rows must not be acknowledged against a newer compatibility snapshot');
   assert.equal(await loaded.api.readWorkspaceEntities('entity-owner-a'),null,
     'entity hydration must reject the prior generation while a newer compatibility snapshot is waiting for projection backfill');
   const recoveredMissedSync=await loaded.api.syncWorkspaceEntities('entity-owner-a',[],{

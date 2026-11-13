@@ -565,16 +565,24 @@
   async function pruneWorkspaceEntityOutbox(ownerId){
     const owner=entityOwnerKey(ownerId);
     if(!enabled||!database||committedOwnerId!==owner)return 0;
-    const prefix=entityOutboxPrefix(owner);
+    const prefix=entityOutboxPrefix(owner),range=entityPrefixRange(prefix);
+    // Without an owner key range, a bounded getAll page could repeatedly return
+    // another account's rows and never make progress. Leave stale metadata in place
+    // rather than scan or delete outside the selected owner's prefix.
+    if(!range)return 0;
     let removed=0;
-    // Read and delete a bounded prefix page each transaction. This runs only after
-    // a complete replacement generation is published, so older deltas are superseded.
     while(true){
       const count=await transaction(['outbox'],'readwrite',(tx,set)=>{
-        const store=tx.objectStore('outbox'),request=store.getAll(entityPrefixRange(prefix),ENTITY_BATCH_SIZE);
+        const store=tx.objectStore('outbox'),request=store.getAll(range,ENTITY_BATCH_SIZE);
         request.onsuccess=()=>{
           const rows=request.result||[];
-          for(const row of rows)if(row&&row.ownerId===owner)store.delete(row.key);
+          for(const row of rows){
+            if(!row||row.ownerId!==owner||typeof row.key!=='string'||!row.key.startsWith(prefix)){
+              try{tx.abort();}catch(_){}
+              return;
+            }
+            store.delete(row.key);
+          }
           set(rows.length);
         };
       });
@@ -588,33 +596,57 @@
     const owner=entityOwnerKey(ownerId);
     if(committedOwnerId!==owner||!enabled||!database)return 0;
     const prefix=entityOwnerRecordPrefix(owner);
-    const rows=await transaction([WORKSPACES],'readonly',(tx,set)=>{
-      const request=tx.objectStore(WORKSPACES).getAll(entityPrefixRange(prefix));
-      request.onsuccess=()=>set(request.result||[]);
-    });
-    const staleKeys=rows.filter(row=>row&&row.entityRow===true&&row.ownerId===owner&&
-      row.generation!==activeGeneration).map(row=>row.key);
-    let removed=0;
-    for(let start=0;start<staleKeys.length;start+=ENTITY_BATCH_SIZE){
-      if(committedOwnerId!==owner||!enabled)return removed;
-      const batch=staleKeys.slice(start,start+ENTITY_BATCH_SIZE);
-      const count=await transaction([WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
-        const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta');
-        const request=meta.get(entityManifestKey(owner));
-        request.onsuccess=()=>{
-          const manifest=request.result;
-          // Never prune the pending generation or race a concurrent replacement.
-          if(committedOwnerId!==owner||!manifest||manifest.activeGeneration!==activeGeneration||
-             manifest.pendingGeneration){
-            set(0);return;
-          }
-          for(const key of batch)entities.delete(key);
-          set(batch.length);
-        };
+    const keyRanges=root&&root.IDBKeyRange;
+    // Entity cleanup is best-effort. If key ranges are unavailable, retain stale
+    // generations instead of materialising an unbounded owner-wide row set.
+    if(!keyRanges||typeof keyRanges.bound!=='function')return 0;
+    const upper=prefix+'\uffff';
+    let removed=0,afterKey=null;
+    while(true){
+      if(committedOwnerId!==owner||!enabled||!database)return removed;
+      const range=afterKey
+        ?keyRanges.bound(afterKey+'\u0000',upper)
+        :entityPrefixRange(prefix);
+      if(!range)return removed;
+      const rows=await transaction([WORKSPACES],'readonly',(tx,set)=>{
+        const request=tx.objectStore(WORKSPACES).getAll(range,ENTITY_BATCH_SIZE);
+        request.onsuccess=()=>set(request.result||[]);
       });
-      removed+=count;
-      if(count===0)break;
-      if(start+ENTITY_BATCH_SIZE<staleKeys.length)await new Promise(resolve=>root.setTimeout(resolve,0));
+      if(!rows.length)break;
+      const last=rows[rows.length-1];
+      if(!last||typeof last.key!=='string'||!last.key.startsWith(prefix)){
+        throw new Error('IndexedDB returned an invalid row while pruning inactive entity generations.');
+      }
+      const staleKeys=[];
+      for(const row of rows){
+        if(!row||row.ownerId!==owner||typeof row.key!=='string'||!row.key.startsWith(prefix)){
+          throw new Error('Owner-scoped entity cleanup encountered a row outside the requested account prefix.');
+        }
+        if(row.entityRow===true&&row.generation!==activeGeneration)staleKeys.push(row.key);
+      }
+      if(staleKeys.length){
+        const count=await transaction([WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
+          const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta');
+          const request=meta.get(entityManifestKey(owner));
+          request.onsuccess=()=>{
+            const manifest=request.result;
+            // Never prune the pending generation or race a concurrent replacement.
+            if(committedOwnerId!==owner||!manifest||manifest.status!=='ready'||
+               manifest.activeGeneration!==activeGeneration||manifest.pendingGeneration){
+              set(0);return;
+            }
+            for(const key of staleKeys)entities.delete(key);
+            set(staleKeys.length);
+          };
+        });
+        removed+=count;
+        if(count===0)break;
+      }
+      if(rows.length<ENTITY_BATCH_SIZE)break;
+      // Continue after the last key read, not the last key deleted. The next bounded
+      // range therefore advances even when the entire page contained stale rows.
+      afterKey=last.key;
+      await new Promise(resolve=>root.setTimeout(resolve,0));
     }
     return removed;
   }
@@ -753,6 +785,9 @@
     const upper=prefix+'\uffff';
     const keyRangeFactory=root&&root.IDBKeyRange;
     const supportsRanges=!!(keyRangeFactory&&typeof keyRangeFactory.bound==='function');
+    // The compatibility snapshot remains the safe fallback on an IndexedDB host
+    // without range support; never hydrate by loading every entity row at once.
+    if(!supportsRanges)return null;
     const collections=TRACKER_ENTITY_COLLECTIONS.concat(FEATURE_ENTITY_COLLECTIONS);
     const grouped=new Map(collections.map(collection=>[collection,[]]));
     let activeRowCount=0,trackerRoot=null,featureRoot=null;
@@ -940,70 +975,95 @@
     if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner)return [];
     const manifest=await readEntityManifest(owner);
     if(!manifest||manifest.status!=='ready'||!manifest.activeGeneration)return [];
-    const activeGeneration=manifest.activeGeneration;
-    const sequenceRange=entityOutboxSequenceRange(owner,after),prefix=entityOutboxPrefix(owner);
+    const workspaceRevision=await readWorkspaceRevision(owner);
+    // A compatibility snapshot may have committed while its entity projection task
+    // is still queued. Its old outbox must not be published against the newer snapshot.
+    if(!Number.isSafeInteger(workspaceRevision)||
+       Number(manifest.sourceWorkspaceRevision)!==workspaceRevision)return [];
+    const sequenceRange=entityOutboxSequenceRange(owner,after);
+    // Do not fall back to an unbounded prefix read on browsers without IDBKeyRange.
+    if(!sequenceRange)return [];
     const rows=await transaction(['outbox'],'readonly',(tx,set)=>{
-      // Sequence keys are zero-padded and lexicographically ordered. Let IndexedDB
-      // discard acknowledged rows and cap the page before materialising it.
-      const request=tx.objectStore('outbox').getAll(
-        sequenceRange||entityPrefixRange(prefix),sequenceRange?size:undefined);
+      const request=tx.objectStore('outbox').getAll(sequenceRange,size);
       request.onsuccess=()=>set(request.result||[]);
     });
-    const matching=rows.filter(row=>row&&row.ownerId===owner&&row.generation===activeGeneration&&
-      row.kind==='change'&&Number(row.sequence)>after);
-    // Ignore historical entries from superseded entity generations. The snapshot
-    // fallback/rebuild owns those changes; only the published generation can sync.
-    return sequenceRange?matching:matching.sort((a,b)=>a.sequence-b.sequence).slice(0,size);
+    if(!enabled||committedOwnerId!==owner)return [];
+    // Account handoff, snapshot replacement, or generation rebuild may have raced
+    // the page read. Revalidate before exposing queued changes to a cloud writer.
+    const finalManifest=await readEntityManifest(owner);
+    const finalWorkspaceRevision=await readWorkspaceRevision(owner);
+    if(!finalManifest||finalManifest.status!=='ready'||
+       finalManifest.activeGeneration!==manifest.activeGeneration||
+       Number(finalManifest.sourceWorkspaceRevision)!==workspaceRevision||
+       finalWorkspaceRevision!==workspaceRevision)return [];
+    return rows.filter(row=>row&&row.ownerId===owner&&
+      row.generation===manifest.activeGeneration&&row.kind==='change'&&Number(row.sequence)>after);
   }
   async function acknowledgeWorkspaceEntityOutbox(ownerId,throughSequence){
     const owner=entityOwnerKey(ownerId),
       through=Math.min(Number.MAX_SAFE_INTEGER,Math.max(0,Math.floor(Number(throughSequence)||0)));
     if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner||through===0)return 0;
-    const prefix=entityOutboxPrefix(owner),
-      sequenceRange=entityOutboxThroughRange(owner,'seq',through),
+    const sequenceRange=entityOutboxThroughRange(owner,'seq',through),
       markerRange=entityOutboxThroughRange(owner,'opseq',through);
-    return transaction(['outbox'],'readwrite',(tx,set)=>{
-      const store=tx.objectStore('outbox');
-      const removeAcknowledged=(sequenceRows,markerRows)=>{
-        const rows=sequenceRows.filter(row=>row&&row.ownerId===owner&&row.kind==='change'&&Number(row.sequence)<=through);
-        const markers=markerRows.filter(row=>row&&row.ownerId===owner&&
-          row.kind==='operation-marker-sequence'&&Number(row.lastSequence)<=through);
-        for(const row of rows)store.delete(row.key);
-        for(const marker of markers)store.delete(marker.key);
-        // Older entity outbox entries may predate the sequence-indexed marker.
-        // Look up only operation markers referenced by this acknowledged page,
-        // and retain them until the operation's final sequence is acknowledged.
-        const operationIds=[...new Set(rows.map(row=>row.operationId).filter(Boolean))];
-        let remaining=operationIds.length;
-        const finish=()=>{if(remaining===0)set(rows.length);};
-        if(!remaining){set(rows.length);return;}
-        for(const operationId of operationIds){
-          const request=store.get(entityOperationKey(owner,operationId));
-          request.onsuccess=()=>{
-            const marker=request.result;
-            if(marker&&Number(marker.lastSequence)<=through)store.delete(marker.key);
-            remaining--;
-            finish();
-          };
+    if(!sequenceRange||!markerRange)return 0;
+    // Validate the owner, active generation and workspace revision in the same
+    // IndexedDB transaction that removes acknowledged rows. A newer compatibility
+    // snapshot therefore cannot be acknowledged using an older cloud cursor.
+    return transaction(['outbox',WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
+      const store=tx.objectStore('outbox'),entities=tx.objectStore(WORKSPACES),
+        meta=tx.objectStore('migrationMeta');
+      const manifestRequest=meta.get(entityManifestKey(owner));
+      const workspaceRequest=entities.get(workspaceKey(owner));
+      const values={manifest:null,workspace:null};let remaining=2,started=false;
+      const begin=()=>{
+        if(started||remaining!==0)return;
+        started=true;
+        const manifest=values.manifest,row=values.workspace;
+        const workspaceRevision=row&&Number.isSafeInteger(Number(row.workspaceRevision))
+          ?Number(row.workspaceRevision):(row&&Number.isSafeInteger(Number(row.revision))?Number(row.revision):null);
+        if(!manifest||manifest.status!=='ready'||!manifest.activeGeneration||
+           !validWorkspaceRow(row,owner)||!Number.isSafeInteger(workspaceRevision)||
+           Number(manifest.sourceWorkspaceRevision)!==workspaceRevision){
+          set(0);return;
         }
-      };
-      if(!sequenceRange||!markerRange){
-        const request=store.getAll(entityPrefixRange(prefix));
-        request.onsuccess=()=>{
-          const all=request.result||[];
-          removeAcknowledged(all,all);
+        const removeAcknowledged=(sequenceRows,markerRows)=>{
+          const rows=sequenceRows.filter(item=>item&&item.ownerId===owner&&
+            item.generation===manifest.activeGeneration&&item.kind==='change'&&Number(item.sequence)<=through);
+          const markers=markerRows.filter(item=>item&&item.ownerId===owner&&
+            item.generation===manifest.activeGeneration&&item.kind==='operation-marker-sequence'&&
+            Number(item.lastSequence)<=through);
+          for(const item of rows)store.delete(item.key);
+          for(const marker of markers)store.delete(marker.key);
+          // Older queued operations may have only the original idempotency marker.
+          // Retain it until the operation's final sequence is acknowledged.
+          const operationIds=[...new Set(rows.map(item=>item.operationId).filter(Boolean))];
+          let markerRemaining=operationIds.length;
+          const finish=()=>{if(markerRemaining===0)set(rows.length);};
+          if(!markerRemaining){set(rows.length);return;}
+          for(const operationId of operationIds){
+            const request=store.get(entityOperationKey(owner,operationId));
+            request.onsuccess=()=>{
+              const marker=request.result;
+              if(marker&&marker.generation===manifest.activeGeneration&&Number(marker.lastSequence)<=through){
+                store.delete(marker.key);
+              }
+              markerRemaining--;
+              finish();
+            };
+          }
         };
-        return;
-      }
-      const sequenceRequest=store.getAll(sequenceRange);
-      const markerRequest=store.getAll(markerRange);
-      const values={sequences:null,markers:null};
-      const finish=()=>{
-        if(!values.sequences||!values.markers)return;
-        removeAcknowledged(values.sequences,values.markers);
+        const sequenceRequest=store.getAll(sequenceRange);
+        const markerRequest=store.getAll(markerRange);
+        const pages={sequences:null,markers:null};
+        const finish=()=>{
+          if(!pages.sequences||!pages.markers)return;
+          removeAcknowledged(pages.sequences,pages.markers);
+        };
+        sequenceRequest.onsuccess=()=>{pages.sequences=sequenceRequest.result||[];finish();};
+        markerRequest.onsuccess=()=>{pages.markers=markerRequest.result||[];finish();};
       };
-      sequenceRequest.onsuccess=()=>{values.sequences=sequenceRequest.result||[];finish();};
-      markerRequest.onsuccess=()=>{values.markers=markerRequest.result||[];finish();};
+      manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;remaining--;begin();};
+      workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;remaining--;begin();};
     });
   }
   async function readEntityManifest(ownerId){
