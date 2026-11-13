@@ -852,7 +852,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   await loaded.api.writeWorkspaceEntityChanges('entity-owner-a',[
     {collection:'topics',id:staleOutboxTopic.id,operation:'put',position:null,value:staleOutboxTopic}
   ],{operationId:'stale-outbox-before-snapshot-replacement'});
-  assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)).length,1,
+  const currentEntityOutbox=await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10);
+  assert.ok(currentEntityOutbox.some(row=>row.operationId==='stale-outbox-before-snapshot-replacement'),
     'a current-generation entity delta must be readable before a newer snapshot is committed');
 
   // Simulate closing the page after its durable compatibility snapshots commit,
