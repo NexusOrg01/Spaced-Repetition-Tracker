@@ -112,8 +112,28 @@ let turnOfflineDuringRacingCommit = false;
 const rows = new Map();
 const listeners = {};
 const elements = new Map();
+let dialogEnabled = false;
+let dialogChoice = 'merge';
+let dialogShownCount = 0;
+const accountChoiceDialog = {
+  open: false,
+  buttons: [],
+  addEventListener() {},
+  removeEventListener() {},
+  querySelectorAll() {
+    this.buttons = ['merge', 'replace-cloud', 'replace'].map(value => ({ dataset: { accountChoice: value }, onclick: null }));
+    return this.buttons;
+  },
+  showModal() {
+    this.open = true;
+    dialogShownCount++;
+    const selected = this.buttons.find(button => button.dataset.accountChoice === dialogChoice);
+    if (selected && selected.onclick) selected.onclick();
+  },
+  close() { this.open = false; }
+};
 const getElement = id => {
-  if (id === 'accountChoiceDialog') return null;
+  if (id === 'accountChoiceDialog') return dialogEnabled ? accountChoiceDialog : null;
   if (!elements.has(id)) elements.set(id, makeElement());
   return elements.get(id);
 };
@@ -1022,8 +1042,14 @@ for (const scenario of [
   context.state = guestCommerceState;
   activeSession = { user: accountB };
   networkAvailable = true;
+  dialogEnabled = true;
+  dialogChoice = 'merge';
+  const choiceCountBefore = dialogShownCount;
 
   await window.NexusCloudSync.reconnect();
+  dialogEnabled = false;
+  assert.equal(dialogShownCount, choiceCountBefore + 1,
+    'first sign-in with a guest workspace and account-bound pending snapshot must require an explicit merge choice');
 
   const localAfterSignIn = JSON.parse(storage.getItem(STATE_KEY));
   const synced = rows.get(accountB.id).payload.state;
@@ -1487,17 +1513,20 @@ storage.setItem(STATE_KEY,JSON.stringify(guestD.state));
 storage.setItem(FEATURE_KEY,JSON.stringify(guestD.featureState));
 context.state=guestD.state;
 rows.set(accountD.id,{user_id:accountD.id,payload:guestD,updated_at:'2026-11-13T18:05:00.000Z'});
-activeSession={user:accountD};
+activeSession={user:accountD};dialogEnabled=true;dialogChoice='merge';
+const dialogCountBeforeD=dialogShownCount;
 await window.NexusCloudSync.reconnect();
-assert.equal(getElement('cloudStatus').textContent,'Data choice required',
-  'a guest workspace plus a different account-bound pending snapshot must be blocked for explicit recovery');
-assert.equal(storage.getItem(OWNER),null,'the guest workspace must remain unassigned while both local snapshots exist');
-assert.deepEqual(JSON.parse(storage.getItem(STATE_KEY)).topics.map(topic=>topic.id),['cloud-same-D'],
-  'the visible guest workspace must remain unchanged');
-assert.deepEqual(queue.getPending(storage,accountD.id).payload.state.topics.map(topic=>topic.id),['pending-only-D'],
-  'the separate account-bound pending snapshot must remain intact');
-assert.deepEqual(rows.get(accountD.id).payload.state.topics.map(topic=>topic.id),['cloud-same-D'],
-  'the matching cloud snapshot must not be overwritten by the hidden pending snapshot');
+dialogEnabled=false;
+assert.equal(dialogShownCount,dialogCountBeforeD+1,
+  'the unassigned guest and account-bound pending snapshot must require an explicit user merge choice');
+assert.equal(storage.getItem(OWNER),accountD.id,'the account may claim the combined workspace only after the user chooses');
+const mergedD=JSON.parse(storage.getItem(STATE_KEY));
+assert.ok(mergedD.topics.some(topic=>topic.id==='cloud-same-D'),'the current guest workspace must survive the explicit merge');
+assert.ok(mergedD.topics.some(topic=>topic.id==='pending-only-D'),'the account-bound pending snapshot must survive the explicit merge');
+assert.ok(rows.get(accountD.id).payload.state.topics.some(topic=>topic.id==='cloud-same-D'),'the guest workspace must be verified in cloud');
+assert.ok(rows.get(accountD.id).payload.state.topics.some(topic=>topic.id==='pending-only-D'),'the account pending snapshot must be verified in cloud');
+assert.equal(queue.hasPending(storage,accountD.id),false,'the combined pending queue clears only after read-back verification');
+assert.equal(getElement('cloudStatus').textContent,'Synced','the explicit merge must finish in a terminal synced state');
 
 // A SIGNED_OUT event followed by SIGNED_IN for the same user during initialization
 // must not let the queued null session overwrite the newer authenticated session.
