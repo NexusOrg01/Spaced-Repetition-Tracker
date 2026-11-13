@@ -110,32 +110,47 @@
     window.NexusDeleteDiagnosticPhase?.('cascade:stream:capture-undo');
     cascadeUndoState=captureCascadeUndo();
     window.NexusDeleteDiagnosticPhase?.('cascade:stream:filter-journal');
-    const removedJournal=fsState.journal.filter(item=>subjectIdSet.has(item.subjectId)||topicIdSet.has(item.topicId));
-    fsState.journal=fsState.journal.filter(item=>!subjectIdSet.has(item.subjectId)&&!topicIdSet.has(item.topicId));
+    const removedJournalIds=[],removedPaperIds=[],seenFeatureIds=new Set();
+    let removedFeatureCount=0,addressable=true;
+    const retainedJournal=[];
+    for(const item of fsState.journal){
+      if(subjectIdSet.has(item.subjectId)||topicIdSet.has(item.topicId)){
+        removedFeatureCount++;
+        if(removedFeatureCount<=1000){
+          const id=item&&item.id!==undefined&&item.id!==null?String(item.id):'';
+          const identity='journal'+String.fromCharCode(0)+id;
+          if(!id||seenFeatureIds.has(identity))addressable=false;
+          else{seenFeatureIds.add(identity);removedJournalIds.push(id);}
+        }else addressable=false;
+      }else retainedJournal.push(item);
+    }
+    fsState.journal=retainedJournal;
     window.NexusDeleteDiagnosticPhase?.('cascade:stream:filter-papers');
-    const removedPapers=fsState.papers.filter(item=>subjectIdSet.has(item.subjectId));
-    fsState.papers=fsState.papers.filter(item=>!subjectIdSet.has(item.subjectId));
+    const retainedPapers=[];
+    for(const item of fsState.papers){
+      if(subjectIdSet.has(item.subjectId)){
+        removedFeatureCount++;
+        if(removedFeatureCount<=1000){
+          const id=item&&item.id!==undefined&&item.id!==null?String(item.id):'';
+          const identity='papers'+String.fromCharCode(0)+id;
+          if(!id||seenFeatureIds.has(identity))addressable=false;
+          else{seenFeatureIds.add(identity);removedPaperIds.push(id);}
+        }else addressable=false;
+      }else retainedPapers.push(item);
+    }
+    fsState.papers=retainedPapers;
     window.NexusDeleteDiagnosticPhase?.('cascade:stream:remove-syllabus-targets');
     for(const id of subjectIds)delete fsState.syllabusTargets[id];
     window.NexusDeleteDiagnosticPhase?.('cascade:stream:filter-selected-topics');
     fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIdSet.has(id));
-    // Stream cascades also remove Study Hub entities. Use bounded tombstones when
-    // every deleted row has a unique stable ID; large or malformed sets fall back
-    // to a complete generation rebuild instead of advancing an incomplete projection.
+    // Retain at most 1,000 deleted IDs. Larger or malformed sets rebuild from the
+    // compatibility snapshot without materialising another full deleted-record array.
     let featureEntityChanges=null;
-    const removedFeatureCount=removedJournal.length+removedPapers.length;
-    if(removedFeatureCount<=1000){
-      const changes=[],seen=new Set();let addressable=true;
-      for(const [collection,rows] of [['journal',removedJournal],['papers',removedPapers]]){
-        for(const item of rows){
-          const id=item&&item.id!==undefined&&item.id!==null?String(item.id):'';
-          const identity=collection+String.fromCharCode(0)+id;
-          if(!id||seen.has(identity)){addressable=false;break;}
-          seen.add(identity);changes.push(featureEntityDeleteChange(collection,id));
-        }
-        if(!addressable)break;
-      }
-      if(addressable)featureEntityChanges=changes;
+    if(removedFeatureCount<=1000&&addressable){
+      featureEntityChanges=[
+        ...removedJournalIds.map(id=>featureEntityDeleteChange('journal',id)),
+        ...removedPaperIds.map(id=>featureEntityDeleteChange('papers',id))
+      ];
     }
     if(options.persist!==false&&!saveFs(featureEntityChanges)){if(cascadeUndoState){Object.assign(fsState,cascadeUndoState);cascadeUndoState=null;}if(options.render!==false)renderHub();return false;}
     if(options.render!==false)renderHub();return true;
