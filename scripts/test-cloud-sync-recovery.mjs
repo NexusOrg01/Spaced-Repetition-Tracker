@@ -75,7 +75,7 @@ assert.ok(cloud.includes("else if(pendingAutomaticallySynced){say('Offline work 
   'automatic recovery must retain the verified post-upload revision for the next conditional write');
 assert.ok(cloud.includes("status('Cloud conflict')") && cloud.includes('queue.acknowledge(localStorage,uploadUserId,pending.operationId'),
   'conflicts pause and only verified uploads acknowledge the queued operation');
-assert.ok(cloud.includes('const latest=await fetchRemote(uploadUserId)') &&
+assert.ok(cloud.includes('const latest=await fetchRemote(uploadUserId,null,uploadScope.signal)') &&
   cloud.includes('sameWorkspace(latest.payload,attemptedPayload)') &&
   cloud.includes('queue.rememberBase(localStorage,uploadUserId,latest.payload,lastRemoteStamp)') &&
   cloud.includes('interrupted write was safely acknowledged'),
