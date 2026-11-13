@@ -46,6 +46,14 @@ The disposable-account tests used only temporary staging users and either rolled
 
 The reproducible rollback-only SQL test is in `supabase/tests/nexus_entity_delta_sync.sql`. The repository's PR validation now checks its migration contract.
 
+## Local outbox grouping checkpoint (13 November 2026)
+
+The shared IndexedDB adapter now exposes `readWorkspaceEntityOutboxGroups(ownerId, afterSequence, maxChanges, maxBytes)`. It reads a bounded sequence page and its durable local operation markers, verifies owner/generation/workspace-revision binding, complete group counts and sequence continuity, stable numeric ordering positions, duplicate entity identities, and a conservative UTF-8 byte budget. It returns only whole groups and a cursor at the last included group. Corrupt or oversized first groups request snapshot recovery. Reading never acknowledges or deletes queued changes; the existing acknowledgement method remains a separate operation that must only run after a confirmed server receipt.
+
+The storage regression suite covers multiple logical groups across page boundaries, stable ordering positions, marker corruption, fractional cursor rejection, no acknowledgement during reads, and bounded-group fallback. PR-head validation run [#1298](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43453239735) passed, including `node --check nexus-storage.js` and `scripts/test-nexus-storage.mjs`.
+
+This is local publisher-preparation only. It does **not** publish to Supabase, read/apply remote deltas, store a remote cursor, or change the authoritative workspace. Snapshot/chunk cloud sync and compatibility fallback remain the only enabled path.
+
 ## Important client-integration blocker
 
 **Phase 3.4 is not complete.** The server protocol is present in staging, but the browser/Android shared runtime does not yet use it.

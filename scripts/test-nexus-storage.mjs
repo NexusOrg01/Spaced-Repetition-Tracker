@@ -1288,6 +1288,10 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal([...outbox.values()].filter(row=>row&&row.kind==='change'&&row.ownerId===owner).length,pendingBefore,
     'reading or rejecting an outbox group must never acknowledge or delete local changes');
 
+  const invalidCursor=await loaded.api.readWorkspaceEntityOutboxGroups(owner,1.5,2,4096);
+  assert.equal(invalidCursor.snapshotRequired,true,'fractional local cursors must fail closed');
+  assert.equal(invalidCursor.throughSequence,0,'an invalid cursor must not advance local publication state');
+
   const smallLimit=await loaded.api.readWorkspaceEntityOutboxGroups(owner,0,1,4096);
   assert.equal(smallLimit.snapshotRequired,true,
     'a logical group larger than the requested bounded batch must require safe snapshot recovery');

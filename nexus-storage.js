@@ -1065,11 +1065,15 @@
     return bytes;
   }
   async function readWorkspaceEntityOutboxGroups(ownerId,afterSequence=0,maxChanges=1000,maxBytes=921600){
-    const owner=entityOwnerKey(ownerId),after=Math.max(0,Math.floor(Number(afterSequence)||0)),
+    const owner=entityOwnerKey(ownerId),rawAfter=afterSequence===undefined?0:Number(afterSequence),
+      after=Number.isSafeInteger(rawAfter)&&rawAfter>=0?rawAfter:0,
       changeLimit=Math.max(1,Math.min(1000,Math.floor(Number(maxChanges)||1000))),
       byteLimit=Math.max(1024,Math.min(1048576,Math.floor(Number(maxBytes)||921600)));
     const empty={ownerId:owner,generation:null,workspaceRevision:null,groups:[],
       throughSequence:after,changeCount:0,bytes:0,hasMore:false,snapshotRequired:false};
+    if(!Number.isSafeInteger(rawAfter)||rawAfter<0){
+      return {...empty,snapshotRequired:true,reason:'invalid_local_cursor'};
+    }
     if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner){
       return {...empty,unavailable:true};
     }
@@ -1169,15 +1173,17 @@
         hasMore=true;break;
       }
       if(totalChanges+count>changeLimit){hasMore=true;break;}
-      const changes=[];
+      const changes=[],identities=new Set();
       for(const row of groupRows){
+        const identity=String(row.collection)+'\u0000'+String(row.entityId||'');
         if(!ALL_ENTITY_COLLECTIONS.has(row.collection)||
            typeof row.entityId!=='string'||!row.entityId||row.entityId.length>512||
-           !['put','delete'].includes(row.operation)){
+           !['put','delete'].includes(row.operation)||identities.has(identity)){
           if(!groups.length)return {...empty,generation:manifest.activeGeneration,workspaceRevision,
             snapshotRequired:true,reason:'invalid_local_operation_change'};
           hasMore=true;break;
         }
+        identities.add(identity);
         if(row.operation==='put'){
           if(!row.value||typeof row.value!=='object'||Array.isArray(row.value)||
              !Number.isSafeInteger(row.position)||row.position < -1000000000||row.position > 1000000000){
