@@ -561,7 +561,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     .filter(row=>row&&row.ownerId==='entity-owner-a').length,0,
     'large acknowledgement must also clear all completed operation markers');
 
-  await loaded.api.writeWorkspaceEntityChanges('entity-owner-a',[
+  const staleGenerationOperation=await loaded.api.writeWorkspaceEntityChanges('entity-owner-a',[
     {collection:'topics',id:'topic-1',operation:'put',position:null,
       value:{...trackerState.topics[0],notes:'superseded by next full generation'}}
   ],{operationId:'entity-op-superseded-by-rebuild'});
@@ -642,6 +642,46 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(resumedWorkspace.state.topics.length,402,'the resumed generation must contain the complete topic collection');
   assert.equal(resumedWorkspace.counts.topics,402,'the resumed manifest must contain exact collection counts');
   assert.equal(resumedWorkspace.rowCount,412,'the resumed manifest must publish an exact total entity row count');
+
+  // A best-effort cleanup interruption can leave an old generation's marker behind.
+  // Reusing that operation ID in the new generation must apply the new change, not
+  // report a replay of the old generation's operation.
+  const reusedOperationId='entity-op-superseded-by-rebuild';
+  const ownerOutboxPrefix='workspace-entity-change:'+encodeURIComponent('entity-owner-a')+':';
+  const staleMarkerKey=ownerOutboxPrefix+'op:'+encodeURIComponent(reusedOperationId);
+  const staleMarkerSequenceKey=ownerOutboxPrefix+'opseq:'+
+    String(staleGenerationOperation.lastSequence).padStart(16,'0')+':'+encodeURIComponent(reusedOperationId);
+  const outboxStoreBeforeReuse=idb.databases.get('nexus-workspace-v1').stores.get('outbox');
+  outboxStoreBeforeReuse.set(staleMarkerKey,{
+    key:staleMarkerKey,ownerId:'entity-owner-a',generation:afterChanges.generation,
+    kind:'operation-marker',operationId:reusedOperationId,
+    firstSequence:staleGenerationOperation.firstSequence,lastSequence:staleGenerationOperation.lastSequence,
+    count:1,createdAt:new Date().toISOString()
+  });
+  outboxStoreBeforeReuse.set(staleMarkerSequenceKey,{
+    key:staleMarkerSequenceKey,ownerId:'entity-owner-a',generation:afterChanges.generation,
+    kind:'operation-marker-sequence',operationId:reusedOperationId,
+    lastSequence:staleGenerationOperation.lastSequence,createdAt:new Date().toISOString()
+  });
+  const reusedOperation=await loaded.api.writeWorkspaceEntityChanges('entity-owner-a',[
+    {collection:'topics',id:'topic-reused-after-generation',operation:'put',position:null,
+      value:{id:'topic-reused-after-generation',subjectId:'subject-1',name:'New generation operation'}}
+  ],{operationId:reusedOperationId});
+  assert.equal(reusedOperation.replayed,false,
+    'an old-generation marker must not suppress a new operation that reuses its ID');
+  const afterReusedOperation=await loaded.api.readWorkspaceEntities('entity-owner-a');
+  assert.equal(afterReusedOperation.generation,resumedMigration.generation,
+    'the reused operation must update only the active entity generation');
+  assert.ok(afterReusedOperation.state.topics.some(row=>row.id==='topic-reused-after-generation'),
+    'the new generation must contain the newly submitted record');
+  const outboxStoreAfterReuse=idb.databases.get('nexus-workspace-v1').stores.get('outbox');
+  const currentReusedMarker=outboxStoreAfterReuse.get(staleMarkerKey);
+  assert.equal(currentReusedMarker.generation,resumedMigration.generation,
+    'the idempotency marker must be replaced with the active generation');
+  assert.equal(currentReusedMarker.lastSequence,reusedOperation.lastSequence,
+    'the replacement marker must point at the newly committed sequence');
+  assert.equal(outboxStoreAfterReuse.has(staleMarkerSequenceKey),false,
+    'the old generation sequence index must be removed when its marker is replaced');
 
   const duplicateIdState={
     ...resumedWorkspace.state,
@@ -900,6 +940,17 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'stale entity outbox rows must not be acknowledged against a newer compatibility snapshot');
   assert.equal(await loaded.api.readWorkspaceEntities('entity-owner-a'),null,
     'entity hydration must reject the prior generation while a newer compatibility snapshot is waiting for projection backfill');
+  const outboxRowsBeforeStaleWrite=[...idb.databases.get('nexus-workspace-v1').stores.get('outbox').values()]
+    .filter(row=>row&&row.ownerId==='entity-owner-a').length;
+  await assert.rejects(loaded.api.writeWorkspaceEntityChanges('entity-owner-a',[
+    {collection:'topics',id:'topic-stale-after-snapshot',operation:'put',position:null,
+      value:{id:'topic-stale-after-snapshot',subjectId:'subject-1',name:'Must not enter stale generation'}}
+  ],{operationId:'stale-write-after-snapshot-replacement'}),/aborted/i,
+    'direct entity writers must reject changes after the compatibility snapshot revision has advanced');
+  const outboxRowsAfterStaleWrite=[...idb.databases.get('nexus-workspace-v1').stores.get('outbox').values()]
+    .filter(row=>row&&row.ownerId==='entity-owner-a').length;
+  assert.equal(outboxRowsAfterStaleWrite,outboxRowsBeforeStaleWrite,
+    'a stale direct entity write must not append any outbox rows');
   const recoveredMissedSync=await loaded.api.syncWorkspaceEntities('entity-owner-a',[],{
     trackerRoot:trackerRootFor(missedSyncTracker),featureRoot:featureRootFor(missedSyncFeatures),
     trackerSnapshotJson:JSON.stringify(missedSyncTracker),featureSnapshotJson:JSON.stringify(missedSyncFeatures)
