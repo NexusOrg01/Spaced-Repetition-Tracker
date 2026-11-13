@@ -110,7 +110,7 @@
     window.NexusDeleteDiagnosticPhase?.('cascade:stream:capture-undo');
     cascadeUndoState=captureCascadeUndo();
     window.NexusDeleteDiagnosticPhase?.('cascade:stream:filter-journal');
-    const removedJournal=fsState.journal.filter(item=>!subjectIdSet.has(item.subjectId)&&!topicIdSet.has(item.topicId));
+    const removedJournal=fsState.journal.filter(item=>subjectIdSet.has(item.subjectId)||topicIdSet.has(item.topicId));
     fsState.journal=fsState.journal.filter(item=>subjectIdSet.has(item.subjectId)||topicIdSet.has(item.topicId));
     window.NexusDeleteDiagnosticPhase?.('cascade:stream:filter-papers');
     const removedPapers=fsState.papers.filter(item=>subjectIdSet.has(item.subjectId));
@@ -129,7 +129,7 @@
       for(const [collection,rows] of [['journal',removedJournal],['papers',removedPapers]]){
         for(const item of rows){
           const id=item&&item.id!==undefined&&item.id!==null?String(item.id):'';
-          const identity=collection+'\\u0000'+id;
+          const identity=collection+String.fromCharCode(0)+id;
           if(!id||seen.has(identity)){addressable=false;break;}
           seen.add(identity);changes.push(featureEntityDeleteChange(collection,id));
         }
