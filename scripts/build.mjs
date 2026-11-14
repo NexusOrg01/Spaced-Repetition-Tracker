@@ -51,12 +51,28 @@ export function resolvePreviewConfig(env) {
   return { url: url.origin, key };
 }
 
-export function renderConfigScript(config) {
-  return "/* Generated at build time; do not edit or commit project credentials. */\n" +
-    "(function(){'use strict';const config=" + JSON.stringify(config) +
-    ";if(!config)return;try{localStorage.setItem('nexus.cloud.config.v1',JSON.stringify(config));}catch(_){}})();\n";
+export function resolvePostHogConfig(env) {
+  const key = String(env.NEXUS_POSTHOG_KEY || '').trim();
+  const rawHost = String(env.NEXUS_POSTHOG_HOST || '').trim();
+  if (!key || !rawHost) return null;
+  let host;
+  try { host = new URL(rawHost); } catch (_) {
+    throw new Error('NEXUS_POSTHOG_HOST must be a valid HTTPS PostHog ingestion URL.');
+  }
+  if (host.protocol !== 'https:' ||
+      !['us.i.posthog.com', 'eu.i.posthog.com'].includes(host.hostname) ||
+      host.pathname !== '/' || host.search || host.hash || host.username || host.password) {
+    throw new Error('NEXUS_POSTHOG_HOST must use the official US or EU PostHog ingestion host.');
+  }
+  return { key, host: host.origin };
 }
 
+export function renderConfigScript(config, posthogConfig = null) {
+  return "window.NexusBuildConfig=Object.freeze({posthog:" + JSON.stringify(posthogConfig) + "});\\n" +
+    "/* Generated at build time; do not edit or commit project credentials. */\\n" +
+    "(function(){'use strict';const config=" + JSON.stringify(config) +
+    ";if(!config)return;try{localStorage.setItem('nexus.cloud.config.v1',JSON.stringify(config));}catch(_){}})();\\n";
+}
 
 async function verifySafeAuthStorage() {
   const source = await readFile(join(root, 'cloud-sync.js'), 'utf8');
@@ -88,10 +104,11 @@ async function verifyStorageBootstrap() {
   const storage = await readFile(join(root, 'nexus-storage.js'), 'utf8');
   const bootstrap = await readFile(join(root, 'nexus-app-bootstrap.js'), 'utf8');
   const expected = [
-    'workspace-isolation-guard.js', 'backup-restore-utils.js', 'offline-sync-queue.js',
-    'curriculum-integrity.js', 'explore-curriculum.js', 'app-core.js', 'fsrs-bundle.js',
-    'study-hub.js', 'nexus-build-config.js', 'cloud-sync-recovery.js',
-    'workspace-sync-merge.js', 'cloud-chunk-storage.js', 'entity-delta-sync.js', 'cloud-sync.js', 'nexus-app-inline.js'
+    'nexus-build-config.js', 'nexus-analytics.js', 'workspace-isolation-guard.js',
+    'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
+    'explore-curriculum.js', 'app-core.js', 'fsrs-bundle.js', 'study-hub.js',
+    'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-chunk-storage.js',
+    'entity-delta-sync.js', 'cloud-sync.js', 'nexus-app-inline.js'
   ];
   assert.equal(html.split('<script src="./nexus-storage.js"></script>').length - 1, 1,
     'index.html must load the storage adapter exactly once.');
@@ -112,7 +129,7 @@ async function verifyStorageBootstrap() {
   }
   for (const asset of [
     'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
-    'explore-curriculum.js', 'app-core.js', 'study-hub.js', 'nexus-build-config.js',
+    'explore-curriculum.js', 'app-core.js', 'study-hub.js', 'nexus-build-config.js', 'nexus-analytics.js',
     'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-chunk-storage.js', 'entity-delta-sync.js', 'cloud-sync.js', 'workspace-isolation-guard.js', 'fsrs-bundle.js'
   ]) {
     assert.ok(!html.includes('<script src="./' + asset + '"></script>'),
@@ -131,7 +148,9 @@ async function copySiteFiles() {
     await cp(join(root, entry.name), join(output, entry.name), { recursive: true });
   }
   const config = resolvePreviewConfig(process.env);
-  await writeFile(join(output, 'nexus-build-config.js'), renderConfigScript(config), 'utf8');
+  const posthogConfig = resolvePostHogConfig(process.env);
+  await writeFile(join(output, 'nexus-build-config.js'), renderConfigScript(config, posthogConfig), 'utf8');
+  if (posthogConfig) console.log('Built optional PostHog exception-monitoring config.');
   assert.ok(await readdir(output).then(items => items.includes('index.html')), 'static build must include index.html');
   if (config) {
     console.log('Built isolated Supabase staging config for the designated Preview branch.');
