@@ -7,7 +7,7 @@ import vm from 'node:vm';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const source = readFileSync(resolve(root, 'sw.js'), 'utf8');
 const ORIGIN = 'https://nexus.test/';
-const CACHE_NAME = 'nexus-rating-analytics-v34';
+const CACHE_NAME = 'nexus-rating-analytics-v33';
 const CACHE_PREFIX = 'nexus-rating-analytics-';
 
 function response(status = 200, type = 'basic', label = '') {
@@ -119,7 +119,7 @@ async function settle(event) {
 {
   const h = createHarness(async () => response(200, 'basic', 'fresh-network'));
   const cache = await h.caches.open(CACHE_NAME);
-  for (const asset of ['./nexus-storage.js', './nexus-app-bootstrap.js', './nexus-app-inline.js', './app-core.js', './study-hub.js', './fsrs-bundle.js', './backup-restore-utils.js', './offline-sync-queue.js', './explore-curriculum.js', './workspace-isolation-guard.js', './nexus-build-config.js', './nexus-analytics.js', './cloud-sync-recovery.js', './workspace-sync-merge.js', './cloud-chunk-storage.js', './entity-delta-sync.js', './cloud-sync.js']) {
+  for (const asset of ['./nexus-storage.js', './nexus-app-bootstrap.js', './nexus-app-inline.js', './app-core.js', './study-hub.js', './fsrs-bundle.js', './backup-restore-utils.js', './offline-sync-queue.js', './explore-curriculum.js', './workspace-isolation-guard.js', './nexus-build-config.js', './cloud-sync-recovery.js', './workspace-sync-merge.js', './cloud-chunk-storage.js', './entity-delta-sync.js', './cloud-sync.js']) {
     const request = new h.RequestStub(asset);
     await cache.put(request, response(200, 'basic', 'stale-cache'));
     h.resetNetworkCalls();
@@ -136,7 +136,7 @@ async function settle(event) {
 {
   const h = createHarness(async () => { throw new Error('offline'); });
   const cache = await h.caches.open(CACHE_NAME);
-  for (const asset of ['./nexus-storage.js', './nexus-app-bootstrap.js', './nexus-app-inline.js', './app-core.js', './study-hub.js', './backup-restore-utils.js', './offline-sync-queue.js', './explore-curriculum.js', './nexus-build-config.js', './nexus-analytics.js', './cloud-sync-recovery.js', './workspace-sync-merge.js', './entity-delta-sync.js', './cloud-sync.js']) {
+  for (const asset of ['./nexus-storage.js', './nexus-app-bootstrap.js', './nexus-app-inline.js', './app-core.js', './study-hub.js', './backup-restore-utils.js', './offline-sync-queue.js', './explore-curriculum.js', './nexus-build-config.js', './cloud-sync-recovery.js', './workspace-sync-merge.js', './entity-delta-sync.js', './cloud-sync.js']) {
     const request = new h.RequestStub(asset);
     await cache.put(request, response(200, 'basic', 'offline-cache'));
     const event = eventFor(request);
