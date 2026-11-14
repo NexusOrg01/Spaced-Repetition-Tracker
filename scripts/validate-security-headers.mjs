@@ -20,7 +20,6 @@ const directives = new Map(csp.split(';').map(part => {
 const scriptSources = new Set(directives.get('script-src') || []);
 assert.ok(scriptSources.has("'self'"), 'same-origin app scripts must remain allowed');
 assert.ok(scriptSources.has('https://cdn.jsdelivr.net'), 'Supabase client CDN must remain allowed');
-assert.ok(scriptSources.has('https://us-assets.i.posthog.com'), 'PostHog browser SDK host must be allowed by script-src');
 assert.ok(!scriptSources.has("'unsafe-inline'"), 'inline scripts must not use unsafe-inline');
 assert.ok(!scriptSources.has("'unsafe-eval'"), 'script-src must not permit eval');
 assert.ok((directives.get('script-src-attr') || []).includes("'none'"), 'HTML inline event attributes must be blocked');
@@ -47,7 +46,6 @@ for (const [name, value] of Object.entries(expectedDirectives)) {
 assert.ok((directives.get('style-src') || []).includes("'unsafe-inline'"), 'inline CSS remains necessary until it is refactored');
 assert.ok((directives.get('connect-src') || []).includes('https://*.supabase.co'), 'isolated Supabase staging HTTPS requests must be allowed');
 assert.ok((directives.get('connect-src') || []).includes('wss://*.supabase.co'), 'isolated Supabase staging realtime websockets must be allowed');
-assert.ok((directives.get('connect-src') || []).includes('https://us.i.posthog.com'), 'PostHog ingestion host must be allowed by connect-src');
 for (const [name, value] of [
   ['x-content-type-options', 'nosniff'],
   ['referrer-policy', 'strict-origin-when-cross-origin'],
