@@ -819,7 +819,7 @@
         if(!staged||staged.ownerId!==owner||staged.pending!==true)
           return {ok:false,retryable:true,snapshotRequired:true,reason:'staged_recovery_generation_unavailable'};
         const metadata=intent.payloadMetadata&&typeof intent.payloadMetadata==='object'?intent.payloadMetadata:{};
-        candidate={...metadata,state:staged.state,featureState:staged.featureState};
+        candidate={...metadata,__nexusDeltaSync:'entity-delta-v1',state:staged.state,featureState:staged.featureState};
         const digest=await workspaceDigest(candidate);
         if(digest!==intent.candidateDigest)
           return {ok:false,snapshotRequired:true,reason:'staged_recovery_candidate_digest_mismatch'};
