@@ -103,6 +103,175 @@
       snapshotRevision:snapshot,compactedThroughRevision:floor,bytes:totalBytes};
   }
 
+  const TRACKER_RECORD_COLLECTIONS=new Set(['streams','subjects','topics','history','exams']);
+  const FEATURE_RECORD_COLLECTIONS=new Set(['journal','papers','goals','studyLogs']);
+  const MAX_RECONCILIATION_GROUPS=10000;
+  const MAX_RECONCILIATION_CHANGES=250000;
+  const MAX_RECONCILIATION_BYTES=64*1024*1024;
+
+  function isRecord(value){
+    return !!value&&typeof value==='object'&&!Array.isArray(value);
+  }
+  function jsonCopy(value){
+    return JSON.parse(JSON.stringify(value));
+  }
+  function boundedLimit(value,fallback,maximum,minimum=1){
+    const requested=Math.floor(Number(value));
+    return Number.isFinite(requested)&&requested>=minimum
+      ?Math.min(maximum,requested):fallback;
+  }
+
+  // Rebuild the cloud view in memory from the verified snapshot plus a contiguous
+  // event tail. It deliberately does not touch IndexedDB, localStorage, or cursors.
+  function reconstructRemoteSnapshot(basePayload,groups,afterRevision,expectedHead,limits={}){
+    const after=safeInteger(afterRevision),head=safeInteger(expectedHead);
+    if(!isRecord(basePayload)||!isRecord(basePayload.state)||!isRecord(basePayload.featureState)||
+       !Array.isArray(groups)||after===null||head===null||head<after){
+      return {ok:false,snapshotRequired:true,reason:'invalid_reconciliation_snapshot_inputs'};
+    }
+    const maxGroups=boundedLimit(limits.maxGroups,MAX_RECONCILIATION_GROUPS,MAX_RECONCILIATION_GROUPS);
+    const maxChanges=boundedLimit(limits.maxChanges,MAX_RECONCILIATION_CHANGES,MAX_RECONCILIATION_CHANGES);
+    const maxBytes=boundedLimit(limits.maxBytes,MAX_RECONCILIATION_BYTES,MAX_RECONCILIATION_BYTES,1024);
+    if(groups.length>maxGroups)return {ok:false,snapshotRequired:true,reason:'remote_reconciliation_group_limit'};
+    const payload={...basePayload,state:{...basePayload.state},featureState:{...basePayload.featureState}};
+    const recordMaps=new Map(),operationIds=new Set();
+    let revision=after,totalChanges=0,totalBytes=0;
+
+    function targetFor(collection){
+      if(TRACKER_RECORD_COLLECTIONS.has(collection))return payload.state;
+      if(FEATURE_RECORD_COLLECTIONS.has(collection))return payload.featureState;
+      throw new Error('unsupported_snapshot_collection');
+    }
+    function mapFor(collection){
+      if(recordMaps.has(collection))return recordMaps.get(collection);
+      const target=targetFor(collection),source=Object.prototype.hasOwnProperty.call(target,collection)
+        ?target[collection]:[];
+      if(!Array.isArray(source))throw new Error('snapshot_collection_is_not_an_array');
+      const map=new Map();
+      for(let index=0;index<source.length;index++){
+        const row=source[index];
+        if(!isRecord(row)||row.id===undefined||row.id===null||String(row.id)===''||
+           String(row.id).length>512)throw new Error('snapshot_contains_invalid_record_identity');
+        const id=String(row.id);
+        if(map.has(id))throw new Error('snapshot_contains_duplicate_record_identity');
+        map.set(id,{position:index,value:row});
+      }
+      recordMaps.set(collection,map);
+      return map;
+    }
+    function applyMetadata(change){
+      const tracker=change.collection==='trackerMeta';
+      const targetKey=tracker?'state':'featureState';
+      const forbidden=tracker?TRACKER_RECORD_COLLECTIONS:FEATURE_RECORD_COLLECTIONS;
+      for(const key of forbidden){
+        if(Object.prototype.hasOwnProperty.call(change.value,key)){
+          throw new Error('metadata_root_contains_entity_collection');
+        }
+      }
+      const current=payload[targetKey],preserved={};
+      for(const key of forbidden){
+        if(Object.prototype.hasOwnProperty.call(current,key))preserved[key]=current[key];
+      }
+      payload[targetKey]={...current,...jsonCopy(change.value),...preserved};
+    }
+
+    try{
+      for(const group of groups){
+        const groupRevision=safeInteger(group&&group.revision,1);
+        if(groupRevision===null||groupRevision!==revision+1||
+           typeof group.operation_id!=='string'||!group.operation_id||
+           group.operation_id.length>160||operationIds.has(group.operation_id)){
+          return {ok:false,snapshotRequired:true,reason:'remote_revision_gap'};
+        }
+        operationIds.add(group.operation_id);
+        if(!Array.isArray(group.changes)||!group.changes.length){
+          return {ok:false,snapshotRequired:true,reason:'invalid_remote_changes'};
+        }
+        const changes=validateChanges(group.changes);
+        if(!changes||changes.length!==group.changes.length){
+          return {ok:false,snapshotRequired:true,reason:'invalid_remote_changes'};
+        }
+        for(let index=0;index<group.changes.length;index++){
+          if(group.changes[index].ordinal!==undefined&&
+             safeInteger(group.changes[index].ordinal)!==index){
+            return {ok:false,snapshotRequired:true,reason:'invalid_remote_ordinals'};
+          }
+        }
+        let groupBytes;
+        try{groupBytes=utf8ByteLength(JSON.stringify(group));}
+        catch(_){return {ok:false,snapshotRequired:true,reason:'invalid_remote_group_encoding'};}
+        if(groupBytes>MAX_BYTES||totalBytes+groupBytes>maxBytes){
+          return {ok:false,snapshotRequired:true,reason:'remote_reconciliation_byte_limit'};
+        }
+        totalChanges+=changes.length;
+        if(totalChanges>maxChanges){
+          return {ok:false,snapshotRequired:true,reason:'remote_reconciliation_change_limit'};
+        }
+        totalBytes+=groupBytes;
+        for(const change of changes){
+          if(change.collection==='trackerMeta'||change.collection==='featureMeta'){
+            applyMetadata(change);
+            continue;
+          }
+          const map=mapFor(change.collection);
+          if(change.operation==='delete')map.delete(change.id);
+          else map.set(change.id,{position:change.position,value:jsonCopy(change.value)});
+        }
+        revision=groupRevision;
+      }
+      if(revision!==head){
+        return {ok:false,snapshotRequired:true,reason:'remote_reconciliation_incomplete',
+          throughRevision:revision,expectedHeadRevision:head};
+      }
+      for(const [collection,map] of recordMaps){
+        const target=targetFor(collection),entries=Array.from(map.values());
+        const positions=new Set();
+        for(const entry of entries){
+          if(!Number.isSafeInteger(entry.position)||positions.has(entry.position)){
+            return {ok:false,snapshotRequired:true,reason:'remote_snapshot_position_collision'};
+          }
+          positions.add(entry.position);
+        }
+        entries.sort((left,right)=>left.position-right.position);
+        target[collection]=entries.map(entry=>entry.value);
+      }
+    }catch(error){
+      return {ok:false,snapshotRequired:true,
+        reason:String(error&&error.message||'remote_snapshot_reconstruction_failed')};
+    }
+    return {ok:true,payload,throughRevision:revision,groupCount:groups.length,
+      changeCount:totalChanges,bytes:totalBytes};
+  }
+
+  async function prepareSnapshotReconciliation(basePayload,localPayload,groups,
+      snapshotRevision,headRevision,mergeWorkspace,limits={}){
+    if(!isRecord(localPayload)||!isRecord(localPayload.state)||!isRecord(localPayload.featureState)){
+      return {ok:false,snapshotRequired:true,reason:'invalid_local_reconciliation_snapshot'};
+    }
+    const remote=reconstructRemoteSnapshot(basePayload,groups,snapshotRevision,headRevision,limits);
+    if(!remote.ok)return remote;
+    const merger=typeof mergeWorkspace==='function'?mergeWorkspace:
+      (root&&root.NexusWorkspaceSyncMerge&&
+       (root.NexusWorkspaceSyncMerge.mergeAsync||root.NexusWorkspaceSyncMerge.merge));
+    if(typeof merger!=='function'){
+      return {ok:false,snapshotRequired:true,reason:'workspace_three_way_merge_unavailable'};
+    }
+    let merged;
+    try{merged=await merger(basePayload,localPayload,remote.payload);}
+    catch(error){
+      return {ok:false,snapshotRequired:true,reason:'workspace_three_way_merge_failed',
+        errorCode:String(error&&error.code||'unknown')};
+    }
+    if(!merged||!isRecord(merged.payload)||!isRecord(merged.payload.state)||
+       !isRecord(merged.payload.featureState)){
+      return {ok:false,snapshotRequired:true,reason:'invalid_workspace_three_way_merge_result'};
+    }
+    return {ok:true,remotePayload:remote.payload,payload:merged.payload,
+      conflicts:Array.isArray(merged.conflicts)?merged.conflicts:[],
+      throughRevision:remote.throughRevision,groupCount:remote.groupCount,
+      changeCount:remote.changeCount,bytes:remote.bytes};
+  }
+
   function createClient(options={}){
     const enabled=options.enabled===true;
     const client=options.client||null,storage=options.storage||null;
@@ -110,6 +279,7 @@
     const getLocalBase=options.getLocalBase,getLocalWorkspace=options.getLocalWorkspace;
     const getPendingSnapshot=options.getPendingSnapshot,sameWorkspace=options.sameWorkspace;
     const applyWorkspace=options.applyWorkspace;
+    const mergeWorkspace=options.mergeWorkspace||null;
 
     async function assertOwner(owner){
       if(!enabled)throw new Error('Entity-delta client is disabled.');
@@ -413,6 +583,144 @@
       }
     }
 
+    async function prepareConflictRecovery(ownerId,recoveryOptions={}){
+      if(!enabled)return {ok:false,skipped:true,reason:'feature_disabled'};
+      const owner=String(ownerId||'').trim();
+      if(!owner||!client||!client.rpc||typeof getLocalBase!=='function'||
+         typeof getLocalWorkspace!=='function'||typeof getPendingSnapshot!=='function'||
+         typeof sameWorkspace!=='function'){
+        return unavailable('snapshot_reconciliation_dependencies_unavailable');
+      }
+      try{
+        await assertOwner(owner);
+        const stateResult=await client.rpc('nexus_get_entity_sync_state');
+        if(stateResult.error)return unavailable('remote_state_read_failed',{
+          retryable:true,errorCode:String(stateResult.error.code||'unknown')
+        });
+        await assertOwner(owner);
+        const state=stateResult.data;
+        if(!state||typeof state!=='object'){
+          return {ok:false,snapshotRequired:true,reason:'invalid_remote_sync_state'};
+        }
+        if(state.mode==='snapshot')return {ok:true,skipped:true,mode:'snapshot'};
+        const head=safeInteger(state.head_revision),snapshot=safeInteger(state.snapshot_revision),
+          floor=safeInteger(state.compacted_through_revision);
+        if(state.mode!=='delta'||Number(state.protocol_version)!==1||
+           head===null||snapshot===null||floor===null||floor>snapshot||snapshot>head||
+           typeof state.snapshot_updated_at!=='string'||!state.snapshot_updated_at){
+          return {ok:false,snapshotRequired:true,reason:'unsupported_remote_sync_state'};
+        }
+        const base=await getLocalBase(owner),local=await getLocalWorkspace(owner);
+        if(!base||base.serverVersion!==state.snapshot_updated_at||
+           !isRecord(base.state)||!isRecord(base.featureState)){
+          return {ok:false,snapshotRequired:true,reason:'local_snapshot_baseline_mismatch'};
+        }
+        if(!isRecord(local)||!isRecord(local.state)||!isRecord(local.featureState)){
+          return {ok:false,snapshotRequired:true,reason:'local_workspace_unavailable'};
+        }
+        const pendingBefore=await getPendingSnapshot(owner);
+        const pendingToken=value=>{
+          if(value===null||value===undefined)return '';
+          if(typeof value!=='object')return String(value);
+          return [
+            value.operationId||value.operation_id||value.id||'present',
+            value.ownerUserId||value.owner_id||'',
+            value.baseServerVersion||value.base_server_version||'',
+            value.localSequence??value.sequence??'',
+            value.status||''
+          ].join('|');
+        };
+        const pendingIdentity=pendingToken(pendingBefore);
+        const maxGroups=boundedLimit(recoveryOptions.maxGroups,MAX_RECONCILIATION_GROUPS,MAX_RECONCILIATION_GROUPS);
+        const maxBytes=boundedLimit(recoveryOptions.maxBytes,MAX_RECONCILIATION_BYTES,MAX_RECONCILIATION_BYTES,1024);
+        const groups=[];
+        let after=snapshot,totalBytes=0,pages=0;
+        while(after<head){
+          if(groups.length>=maxGroups){
+            return {ok:false,retryable:true,snapshotRequired:true,reason:'remote_reconciliation_group_limit',
+              throughRevision:after,expectedHeadRevision:head};
+          }
+          const pageLimit=Math.min(100,maxGroups-groups.length);
+          const page=await readRemotePage(owner,after,{
+            limitGroups:pageLimit,maxBytes:Math.min(MAX_BYTES,maxBytes)
+          });
+          if(!page||page.ok!==true)return {...(page||unavailable('remote_reconciliation_page_unavailable')),
+            phase:'remote_reconstruction',throughRevision:after};
+          if(page.mode!=='delta'||page.snapshotRevision!==snapshot||
+             page.headRevision!==head||page.compactedThroughRevision>snapshot){
+            return {ok:false,retryable:true,snapshotRequired:true,reason:'remote_state_changed_during_reconciliation',
+              throughRevision:after,expectedHeadRevision:head,actualHeadRevision:page.headRevision};
+          }
+          if(!page.groups.length||page.nextRevision<=after){
+            return {ok:false,snapshotRequired:true,reason:'remote_reconciliation_made_no_progress',
+              throughRevision:after,expectedHeadRevision:head};
+          }
+          for(const group of page.groups){
+            const bytes=utf8ByteLength(JSON.stringify(group));
+            totalBytes+=bytes;
+            if(totalBytes>maxBytes){
+              return {ok:false,snapshotRequired:true,reason:'remote_reconciliation_byte_limit',
+                throughRevision:after,expectedHeadRevision:head};
+            }
+            groups.push(group);
+          }
+          after=page.nextRevision;
+          pages++;
+        }
+        if(after!==head){
+          return {ok:false,retryable:true,snapshotRequired:true,reason:'remote_reconciliation_incomplete',
+            throughRevision:after,expectedHeadRevision:head};
+        }
+
+        await assertOwner(owner);
+        const latestStateResult=await client.rpc('nexus_get_entity_sync_state');
+        if(latestStateResult.error)return unavailable('remote_state_recheck_failed',{
+          retryable:true,errorCode:String(latestStateResult.error.code||'unknown')
+        });
+        const latestState=latestStateResult.data;
+        if(!latestState||latestState.mode!=='delta'||
+           latestState.snapshot_updated_at!==state.snapshot_updated_at||
+           Number(latestState.head_revision)!==head||
+           Number(latestState.snapshot_revision)!==snapshot||
+           Number(latestState.compacted_through_revision)>snapshot){
+          return {ok:false,retryable:true,snapshotRequired:true,reason:'remote_state_changed_during_reconciliation',
+            expectedHeadRevision:head,actualHeadRevision:safeInteger(latestState&&latestState.head_revision)};
+        }
+        const latestBase=await getLocalBase(owner);
+        const latestLocal=await getLocalWorkspace(owner);
+        const latestPending=await getPendingSnapshot(owner);
+        if(!latestBase||latestBase.serverVersion!==base.serverVersion||
+           !(await sameWorkspace(local,latestLocal))||
+           pendingToken(latestPending)!==pendingIdentity){
+          return {ok:false,retryable:true,reason:'local_workspace_changed_during_reconciliation'};
+        }
+        const prepared=await prepareSnapshotReconciliation(base,local,groups,snapshot,head,
+          mergeWorkspace,recoveryOptions);
+        if(!prepared.ok)return prepared;
+        await assertOwner(owner);
+        const finalStateResult=await client.rpc('nexus_get_entity_sync_state');
+        if(finalStateResult.error)return unavailable('remote_state_final_check_failed',{
+          retryable:true,errorCode:String(finalStateResult.error.code||'unknown')
+        });
+        const finalState=finalStateResult.data;
+        if(!finalState||finalState.mode!=='delta'||
+           finalState.snapshot_updated_at!==state.snapshot_updated_at||
+           Number(finalState.head_revision)!==head||
+           Number(finalState.snapshot_revision)!==snapshot){
+          return {ok:false,retryable:true,snapshotRequired:true,reason:'remote_state_changed_during_reconciliation',
+            expectedHeadRevision:head,actualHeadRevision:safeInteger(finalState&&finalState.head_revision)};
+        }
+        return {...prepared,ownerId:owner,snapshotUpdatedAt:state.snapshot_updated_at,
+          expectedHeadRevision:head,snapshotRevision:snapshot,
+          compactedThroughRevision:floor,pagesRead:pages,
+          requiresSnapshotPublication:true,requiresLocalRebase:true};
+      }catch(error){
+        return unavailable('account_or_snapshot_reconciliation_verification_failed',{
+          retryable:true,errorCode:String(error&&error.code||'unknown')
+        });
+      }
+    }
+
     async function synchronize(ownerId,syncOptions={}){
       if(!enabled)return {ok:true,skipped:true,reason:'feature_disabled'};
       const owner=String(ownerId||'').trim();
@@ -476,8 +784,8 @@
         appliedCount,publishedCount,acknowledgedCount,rounds:maxRounds};
     }
 
-    return Object.freeze({readRemotePage,applyRemotePage,publishPending ,synchronize});
+    return Object.freeze({readRemotePage,applyRemotePage,publishPending,prepareConflictRecovery,synchronize});
   }
 
-  root.NexusEntityDeltaSync=Object.freeze({createClient,validateRemotePage});
+  root.NexusEntityDeltaSync=Object.freeze({createClient,validateRemotePage,reconstructRemoteSnapshot,prepareSnapshotReconciliation});
 })(typeof window!=='undefined'?window:globalThis);
