@@ -406,7 +406,7 @@ function coordinatorHarness(options={}){
           bytes:100,groups:page},error:null};
       }
       if(name==='nexus_publish_entity_operation'){
-        if(state.head_revision!==args.p_expected_revision){
+        if(options.rejectLocalPublish||state.head_revision!==args.p_expected_revision){
           return {data:{ok:false,code:'revision_conflict',head_revision:state.head_revision},error:null};
         }
         const revision=state.head_revision+1;
@@ -519,11 +519,15 @@ function coordinatorHarness(options={}){
   const h=coordinatorHarness({
     headRevision:250,snapshotRevision:250,compactedThroughRevision:250,initialPublishRevision:250,
     localGroups:[makeGroup('still-pending-local-change',1,[putChange('topics','pending-topic')])],
+    rejectLocalPublish:true,
     compactOperations:async()=>{cleanupCalls++;return {ok:true,complete:true,pending:false};}
   });
   const result=await h.api.synchronize('account-A',{maxRounds:5});
-  assert.equal(result.ok,false,
-    'a local outbox action must not be bypassed merely to run server cleanup');
+  assert.equal(result.ok,false);
+  assert.equal(result.conflict,true,
+    'the simulated server revision conflict must leave the local outbox unresolved');
+  assert.equal(h.acknowledgements.length,0,
+    'the local outbox group must remain unacknowledged after a server revision conflict');
   assert.equal(cleanupCalls,0,'physical cleanup must wait until all local operation groups are reconciled');
 }
 
