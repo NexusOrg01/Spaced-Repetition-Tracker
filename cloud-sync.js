@@ -704,6 +704,11 @@ async function runStagingEntityDeltaSync(ownerId,signal){
   getLocalBase:userId=>queue.getBase(localStorage,userId),
   getLocalWorkspace:()=>snapshot(),
   getPendingSnapshot:userId=>queue.getPending(localStorage,userId),
+  readRemoteSnapshot:async(userId,requestSignal)=>{
+   const remote=await fetchRemote(userId,null,requestSignal||signal||null);
+   if(!remote||!remote.payload)return null;
+   return {payload:remote.payload,updated_at:remote.updated_at,storageMode:remote.storageMode||'legacy'};
+  },
   sameWorkspace,
   applyWorkspace:async workspace=>{
    if(!workspace||!workspace.state||!workspace.featureState||
