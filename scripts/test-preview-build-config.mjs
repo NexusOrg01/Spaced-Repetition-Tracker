@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { resolvePreviewConfig, resolvePostHogConfig, renderConfigScript } from './build.mjs';
+import { resolvePreviewConfig, renderConfigScript } from './build.mjs';
 
 const previewEnv = {
   VERCEL_ENV: 'preview',
@@ -114,24 +114,6 @@ assert.throws(() => resolvePreviewConfig({ ...previewEnv, NEXUS_SUPABASE_ANON_KE
 assert.throws(() => resolvePreviewConfig({ ...previewEnv, NEXUS_SUPABASE_ANON_KEY: '' }),
   /requires both/, 'missing staging variables must fail the legacy designated preview build');
 assert.match(renderConfigScript(null), /const config=null/);
-assert.deepEqual(resolvePostHogConfig({
-  NEXUS_POSTHOG_KEY: 'phc_test_public_token',
-  NEXUS_POSTHOG_HOST: 'https://us.i.posthog.com'
-}), { key: 'phc_test_public_token', host: 'https://us.i.posthog.com' },
-'PostHog should accept the selected US Cloud project configuration');
-assert.equal(resolvePostHogConfig({
-  NEXUS_POSTHOG_KEY: '',
-  NEXUS_POSTHOG_HOST: 'https://us.i.posthog.com'
-}), null, 'missing PostHog key must leave the integration disabled');
-assert.throws(() => resolvePostHogConfig({
-  NEXUS_POSTHOG_KEY: 'phc_test_public_token',
-  NEXUS_POSTHOG_HOST: 'https://evil.example.com'
-}), /official US or EU PostHog ingestion host/,
-'PostHog configuration must reject unapproved ingestion hosts');
-assert.match(renderConfigScript(null, {
-  key: 'phc_test_public_token',
-  host: 'https://us.i.posthog.com'
-}), /window\.NexusBuildConfig/);
 assert.match(renderConfigScript({ url: previewEnv.NEXUS_SUPABASE_URL, key: previewEnv.NEXUS_SUPABASE_ANON_KEY }), /nexus\.cloud\.config\.v1/);
 
 const netlifyConfig = readFileSync(new URL('../netlify.toml', import.meta.url), 'utf8');
