@@ -339,7 +339,7 @@ function remoteOperation(revision,id){
 }
 function coordinatorHarness(options={}){
   const owner='account-A',activeOwner={value:owner};
-  const state={mode:options.mode||'delta',protocol_version:1,
+  const state={mode:options.mode||'delta',protocol_version:Number(options.protocolVersion??1),
     head_revision:Number(options.headRevision??(options.remoteGroups||[]).length),
     snapshot_revision:Number(options.snapshotRevision??0),
     compacted_through_revision:Number(options.compactedThroughRevision??0),
@@ -465,6 +465,15 @@ function coordinatorHarness(options={}){
   assert.equal(result.skipped,true);
   assert.equal(result.mode,'snapshot','snapshot-mode accounts must stay on the legacy snapshot protocol');
   assert.equal(h.calls.some(call=>call.name==='nexus_publish_entity_operation'),false);
+}
+{
+  const h=coordinatorHarness({protocolVersion:2});
+  const result=await h.api.synchronize('account-A');
+  assert.equal(result.ok,false,'an unsupported future delta protocol must not be interpreted using version 1 rules');
+  assert.equal(result.snapshotRequired,true);
+  assert.equal(result.reason,'unsupported_remote_sync_state');
+  assert.equal(h.calls.some(call=>call.name==='nexus_publish_entity_operation'),false,
+    'an unsupported mixed-version state must fail closed before publishing local changes');
 }
 
 {

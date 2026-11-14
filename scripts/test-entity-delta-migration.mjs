@@ -26,6 +26,8 @@ assert.match(schema, /extensions\.digest/);
 assert.match(schema, /p_expected_revision <> v_state\.head_revision/);
 assert.match(schema, /CREATE OR REPLACE FUNCTION public\.nexus_publish_entity_snapshot/);
 assert.match(schema, /CREATE OR REPLACE FUNCTION public\.nexus_guard_chunked_snapshot_update/);
+assert.match(schema, /v_delta_mode[\s\S]*NEW\.payload ->> '__nexusDeltaSync' IS DISTINCT FROM 'entity-delta-v1'/,
+  'delta-mode JSONB snapshot writes must preserve the entity-delta marker');
 assert.match(enablementGate, /REVOKE EXECUTE ON FUNCTION public\.nexus_enable_entity_delta\(timestamptz\)[\s\S]*FROM PUBLIC, anon, authenticated/);
 assert.match(enablementGate, /until the web entity-delta publisher, reader, compaction, and recovery gates are complete/);
 
@@ -85,5 +87,7 @@ assert.match(integration, /incomplete_operation_group/);
 assert.match(integration, /revision_gap/);
 assert.match(integration, /nexus_publish_entity_snapshot/);
 assert.match(integration, /nexus_compact_entity_operations/);
+assert.match(integration, /UPDATE public\.nexus_user_data[\s\S]*payload = payload - '__nexusDeltaSync'[\s\S]*SQLSTATE '55000'/,
+  'the rollback-only integration fixture must exercise a legacy snapshot downgrade attempt');
 
 console.log('Nexus entity-delta migration and staging-test contract checks passed.');

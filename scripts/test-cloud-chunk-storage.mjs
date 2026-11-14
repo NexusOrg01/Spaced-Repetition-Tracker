@@ -10,7 +10,7 @@ const OWNER_A='10000000-0000-4000-8000-000000000001';
 const OWNER_B='20000000-0000-4000-8000-000000000002';
 
 class MemoryCloud {
- constructor(){this.rows=new Map();this.chunks=[];this.activeUser=OWNER_A;this.failChunkBatch=null;this.chunkBatchCount=0;}
+ constructor(){this.rows=new Map();this.chunks=[];this.activeUser=OWNER_A;this.failChunkBatch=null;this.chunkBatchCount=0;this.chunkSelectLimits=[];this.chunkDeleteBatchSizes=[];}
  from(table){return new Query(this,table);}
 }
 class Query {
@@ -55,6 +55,9 @@ class Query {
     if(!row||row.updated_at!==this.filters.eq?.updated_at)return {data:[],error:null};
     if(row.payload?.__nexusStorage==='chunked-v1'&&this.values.payload?.__nexusStorage!=='chunked-v1')
      return {data:null,error:{code:'55000',message:'chunked storage requires an updated client'}};
+    if(this.cloud.syncStates?.get(owner)?.mode==='delta'&&
+       this.values.payload?.__nexusDeltaSync!=='entity-delta-v1')
+     return {data:null,error:{code:'55000',message:'incremental entity sync requires an updated client'}};
     this.cloud.rows.set(owner,{...row,...this.values});
     return {data:this.returning?[{updated_at:this.values.updated_at}]:null,error:null};
    }
@@ -74,7 +77,10 @@ class Query {
     let rows=this.cloud.chunks.filter(row=>this.matches(row));
     if(this.sort)rows.sort((a,b)=>(a[this.sort.key]<b[this.sort.key]?-1:a[this.sort.key]>b[this.sort.key]?1:0)*(this.sort.ascending?1:-1));
     if(this.rangeValue)rows=rows.slice(this.rangeValue[0],this.rangeValue[1]+1);
-    if(this.limitValue!==null)rows=rows.slice(0,this.limitValue);
+    if(this.limitValue!==null){
+     this.cloud.chunkSelectLimits.push(this.limitValue);
+     rows=rows.slice(0,this.limitValue);
+    }
     return {data:rows.map(row=>({...row})),error:null};
    }
    if(this.operation==='delete'){
@@ -87,6 +93,7 @@ class Query {
       row.user_id===this.cloud.activeUser&&ids.includes(row.id)&&row.revision_id===activeRevision)){
      return {data:null,error:{code:'55000',message:'Cannot delete chunks referenced by the active manifest.'}};
     }
+    this.cloud.chunkDeleteBatchSizes.push(ids.length);
     const before=this.cloud.chunks.length;
     this.cloud.chunks=this.cloud.chunks.filter(row=>!(row.user_id===this.cloud.activeUser&&ids.includes(row.id)));
     return {data:null,error:null,count:before-this.cloud.chunks.length};
@@ -196,6 +203,15 @@ const makePayload=(label,repeat=6000)=>({
  featureState:{version:1,journal:[],papers:[],goals:[],studyLogs:[],settings:{},label}
 });
 
+// The oldest snapshot-only writer remains compatible before an account opts into delta mode.
+const legacyCompatibleCloud=new MemoryCloud();
+legacyCompatibleCloud.rows.set(OWNER_A,{user_id:OWNER_A,payload:makePayload('legacy-baseline',4),updated_at:'legacy-snapshot-stamp'});
+const legacyCompatibleWrite=await backup.writeCloudSnapshot(legacyCompatibleCloud,OWNER_A,
+ makePayload('legacy-compatible-update',5),'legacy-snapshot-stamp','legacy-snapshot-next');
+assert.equal(legacyCompatibleWrite.updated_at,'legacy-snapshot-next',
+ 'snapshot-mode JSONB workspaces must remain writable by a legacy snapshot-only client');
+assert.equal(legacyCompatibleCloud.rows.get(OWNER_A).payload.featureState.label,'legacy-compatible-update');
+
 const unicodeBoundary='a'.repeat(chunks.CHUNK_BYTES-1)+'😀'+'b'.repeat(12);
 for(const source of ['', 'plain ASCII', 'සිංහල தமிழ் 😀', unicodeBoundary]){
   const parts=chunks.splitUtf8(source);
@@ -233,6 +249,16 @@ const staleAttempt=await chunks.writeSnapshot(cloud,OWNER_A,makePayload('stale-w
 assert.equal(staleAttempt.code,'NEXUS_CLOUD_CONFLICT','a stale device must not replace a newer published manifest');
 assert.equal(cloud.rows.get(OWNER_A).payload.revisionId,second.manifest.revisionId,'the losing compare-and-swap must leave the winning manifest active');
 
+// A superseded immutable revision becomes reclaimable only after the active pointer moves.
+const oldRevisionChunks=cloud.chunks.filter(row=>row.user_id===OWNER_A&&row.revision_id===first.manifest.revisionId);
+assert.ok(oldRevisionChunks.length>0,'the prior snapshot revision must still have retained chunks before cleanup');
+for(const row of oldRevisionChunks)row.created_at=new Date(Date.now()-8*24*60*60*1000).toISOString();
+const reclaimedOldRevision=await chunks.cleanupOldChunks(cloud,OWNER_A,second.manifest.revisionId);
+assert.equal(reclaimedOldRevision,oldRevisionChunks.length,'a superseded revision older than the retention window should be reclaimed');
+assert.equal(cloud.chunks.some(row=>row.revision_id===first.manifest.revisionId),false,'cleanup should remove the inactive revision');
+assert.equal(cloud.chunks.filter(row=>row.revision_id===second.manifest.revisionId).length,second.manifest.chunkCount,
+ 'the active revision must remain complete after old-revision cleanup');
+
 const tamper=cloud.chunks.find(row=>row.user_id===OWNER_A&&row.revision_id===second.manifest.revisionId);
 const originalChunk=tamper.chunk_data;
 tamper.chunk_data=originalChunk+'tampered';
@@ -261,6 +287,34 @@ assert.ok(cloud.chunks.some(row=>row.id===protectedActiveChunk.id),
  'the active manifest chunk must remain present after a rejected cleanup attempt');
 protectedActiveChunk.created_at=protectedChunkCreatedAt;
 
+// Cleanup is deliberately bounded: repeated passes must converge without crossing owners
+// or deleting an active manifest, even when its own timestamp is older than the TTL.
+const retentionCloud=new MemoryCloud();
+const staleCreatedAt=new Date(Date.now()-8*24*60*60*1000).toISOString();
+retentionCloud.rows.set(OWNER_A,{user_id:OWNER_A,payload:{__nexusStorage:'chunked-v1',version:1,revisionId:'retained-active-revision'},updated_at:'retention-stamp'});
+retentionCloud.chunks.push({id:'retained-active-chunk',user_id:OWNER_A,revision_id:'retained-active-revision',
+ chunk_index:0,chunk_count:1,chunk_bytes:1,chunk_data:'active',created_at:staleCreatedAt});
+for(let index=0;index<205;index++)retentionCloud.chunks.push({
+ id:'orphan-'+index,user_id:OWNER_A,revision_id:'orphan-revision-'+index,
+ chunk_index:0,chunk_count:1,chunk_bytes:1,chunk_data:'orphan',created_at:staleCreatedAt});
+retentionCloud.chunks.push({id:'other-owner-orphan',user_id:OWNER_B,revision_id:'other-owner-revision',
+ chunk_index:0,chunk_count:1,chunk_bytes:1,chunk_data:'other-owner',created_at:staleCreatedAt});
+const firstCleanup=await chunks.cleanupOldChunks(retentionCloud,OWNER_A,'retained-active-revision');
+assert.equal(firstCleanup,200,'a cleanup pass must be capped at the configured 200-row batch');
+assert.deepEqual(retentionCloud.chunkDeleteBatchSizes,[200]);
+assert.deepEqual(retentionCloud.chunkSelectLimits,[200]);
+assert.equal(retentionCloud.chunks.filter(row=>row.user_id===OWNER_A&&row.revision_id!=='retained-active-revision').length,5,
+ 'the first pass must leave excess stale rows for a later retry');
+assert.ok(retentionCloud.chunks.some(row=>row.id==='retained-active-chunk'),
+ 'an aged active-manifest chunk must be preserved');
+const secondCleanup=await chunks.cleanupOldChunks(retentionCloud,OWNER_A,'retained-active-revision');
+assert.equal(secondCleanup,5,'a subsequent pass must finish the stale backlog');
+assert.deepEqual(retentionCloud.chunkDeleteBatchSizes,[200,5]);
+assert.deepEqual(retentionCloud.chunkSelectLimits,[200,200]);
+assert.deepEqual(retentionCloud.chunks.map(row=>row.id).sort(),
+ ['other-owner-orphan','retained-active-chunk'].sort(),
+ 'retention cleanup must preserve the active revision and rows belonging to other users');
+
 const interruptedCloud=new MemoryCloud();
 interruptedCloud.failChunkBatch=2;
 const interrupted=await chunks.writeSnapshot(interruptedCloud,OWNER_A,firstPayload,null,'2026-11-09T05:04:00.000Z',backup).then(()=>null,error=>error);
@@ -284,6 +338,26 @@ assert.ok(preservedCloud.chunks.some(row=>row.revision_id!==previousRevision),'a
 const deltaSmallCloud=new DeltaMemoryCloud();
 const deltaBaseline=seedDeltaCloud(deltaSmallCloud);
 const deltaSmallPayload=makePayload('delta-small',12);
+const legacyJsonbOverwrite=await backup.writeCloudSnapshot(deltaSmallCloud,OWNER_A,
+ makePayload('legacy-jsonb-overwrite',3),'delta-baseline-stamp','legacy-jsonb-overwrite-stamp').then(()=>null,error=>error);
+assert.equal(legacyJsonbOverwrite.code,'55000',
+ 'a legacy snapshot-only client must not remove the delta marker from a JSONB delta workspace');
+assert.deepEqual(deltaSmallCloud.rows.get(OWNER_A).payload,deltaBaseline,
+ 'a rejected mixed-version update must preserve the exact active delta payload');
+assert.equal(deltaSmallCloud.rows.get(OWNER_A).updated_at,'delta-baseline-stamp');
+assert.equal(deltaSmallCloud.syncStates.get(OWNER_A).mode,'delta');
+
+const unmarkedDeltaCloud=new DeltaMemoryCloud();
+seedDeltaCloud(unmarkedDeltaCloud);
+delete unmarkedDeltaCloud.rows.get(OWNER_A).payload.__nexusDeltaSync;
+const unmarkedDeltaWrite=await chunks.writeDeltaSnapshot(unmarkedDeltaCloud,OWNER_A,deltaSmallPayload,4,
+ 'delta-baseline-stamp').then(()=>null,error=>error);
+assert.equal(unmarkedDeltaWrite.code,'NEXUS_DELTA_SNAPSHOT_BASELINE_INVALID',
+ 'a delta writer must reject a baseline without its protocol marker');
+assert.equal(unmarkedDeltaCloud.rows.get(OWNER_A).updated_at,'delta-baseline-stamp');
+assert.equal(unmarkedDeltaCloud.rpcCalls.length,0,
+ 'an invalid mixed-version baseline must fail before any publication or compaction RPC');
+
 const deltaSmall=await chunks.writeDeltaSnapshot(deltaSmallCloud,OWNER_A,deltaSmallPayload,4,
  'delta-baseline-stamp');
 assert.equal(deltaSmall.verified,true,'a delta snapshot must only return after server-state and payload read-back verification');
@@ -384,6 +458,15 @@ assert.deepEqual(await chunks.readSnapshot(deltaLargeCloud,OWNER_A,deltaLarge.ma
  'the server-published delta manifest must reconstruct the exact recovery snapshot');
 
 assert.equal(deltaLargeCloud.rows.get(OWNER_A).payload.revisionId,deltaLarge.manifest.revisionId);
+const legacyChunkedOverwrite=await backup.writeCloudSnapshot(deltaLargeCloud,OWNER_A,
+ makePayload('legacy-chunked-overwrite',4),deltaLarge.updated_at,'legacy-chunked-overwrite-stamp').then(()=>null,error=>error);
+assert.equal(legacyChunkedOverwrite.code,'55000',
+ 'a legacy writer must not downgrade a chunked delta manifest to an unmarked JSONB snapshot');
+assert.equal(deltaLargeCloud.rows.get(OWNER_A).payload.revisionId,deltaLarge.manifest.revisionId,
+ 'a rejected legacy downgrade must leave the active chunk revision unchanged');
+assert.deepEqual(await chunks.readSnapshot(deltaLargeCloud,OWNER_A,deltaLarge.manifest),
+ {...deltaLargePayload,__nexusDeltaSync:'entity-delta-v1'},
+ 'the delta chunk set must remain readable after the legacy downgrade attempt');
 const smallCandidateOnChunked=await chunks.writeDeltaSnapshot(deltaLargeCloud,OWNER_A,
  deltaSmallPayload,4,deltaLarge.updated_at);
 assert.equal(smallCandidateOnChunked.storageMode,'chunked',
@@ -417,4 +500,4 @@ assert.equal(wrongOwnerDelta.code,'NEXUS_ENTITY_DELTA_OWNER_MISMATCH',
 assert.equal(wrongOwnerDeltaCloud.rpcCalls.length,0,'wrong-owner recovery must not call any RPC');
 
 
-console.log('Cloud chunk storage tests passed: 27 MB-scale UTF-8 chunking, paginated SHA-256 reconstruction, atomic manifest publication, active-manifest deletion protection, legacy overwrite guard, compare-and-swap conflict, corruption rejection, owner isolation, and preservation of the previous snapshot after interrupted replacement.');
+console.log('Cloud chunk storage tests passed: UTF-8 and 27 MB chunking, active-manifest retention, bounded/repeatable orphan cleanup, snapshot-mode legacy compatibility, JSONB and chunked delta downgrade rejection, CAS conflicts, corruption rejection, owner isolation, and interrupted-upload recovery.');

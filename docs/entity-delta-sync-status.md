@@ -268,3 +268,14 @@ This entry supersedes earlier pending-work notes above where they conflict.
 - Migration `20261114103353_protect_active_nexus_chunk_manifests` was applied to isolated staging project `nexus-sync-staging` only. The committed rollback-only SQL test passed against staging. Read-only verification confirms one installed trigger, no authenticated schema USAGE/function EXECUTE, and unchanged staging counts: 4 snapshots, 3,526 chunks, 4 snapshot-mode sync-state rows, 0 delta-mode rows, 0 operations, and 0 receipts.
 - Supabase performance advisors returned no findings. Security advisors returned one pre-existing Auth warning: leaked-password protection is disabled; no chunk-trigger/RLS warning was returned.
 - The staging migration is additive. No production Supabase query or change, production deployment, merge, or live Nexus operation was performed. PR #126 remains open and draft.
+
+### 14 November 2026 — recovery, retention and mixed-version regression coverage
+
+- The chunk-storage test double now mirrors the database delta-marker guard for ordinary JSONB snapshots as well as the existing chunked-format downgrade guard. It proves a legacy snapshot-only writer still updates snapshot-mode JSONB accounts, but is rejected with SQLSTATE `55000` for JSONB delta accounts.
+- Mixed-version coverage rejects a missing delta marker on a delta baseline before publication, rejects legacy downgrade attempts against both JSONB and chunked delta snapshots, and verifies the active payload, revision timestamp, and chunk data remain unchanged after rejection.
+- Retention regressions prove a superseded immutable revision can be reclaimed after the active pointer moves, active-manifest chunks survive cleanup even when aged past the retention threshold, and 205 stale/orphan rows are removed in bounded 200-row passes without crossing account ownership.
+- The coordinator test now rejects an unsupported future protocol version before publishing local operations; snapshot-mode compatibility remains separately asserted.
+- Existing journal restart coverage at prepared/staged/published phases, lost-publication-response recovery, stale-device recovery from a verified compacted snapshot plus its contiguous delta tail, bounded operation/receipt compaction, cursor-floor fallback, and account-deletion cascade checks remain in place.
+- Migration contract assertions now explicitly cover the JSONB delta-marker trigger branch and the rollback-only SQL legacy-writer rejection case.
+
+These are regression tests and documentation only. They do not enable delta mode, grant browser RPC execution, mutate staging data or schema, generate an APK, deploy production, or merge PR #126.
