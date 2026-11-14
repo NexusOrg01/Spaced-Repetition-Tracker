@@ -488,6 +488,8 @@
   function entityManifestKey(ownerId){return 'workspace-entities:'+encodeURIComponent(entityOwnerKey(ownerId));}
   function entitySequenceKey(ownerId){return 'workspace-entity-sequence:'+encodeURIComponent(entityOwnerKey(ownerId));}
   function entityDeltaCursorKey(ownerId){return 'workspace-entity-delta-cursor:'+encodeURIComponent(entityOwnerKey(ownerId));}
+  function entityDeltaRecoveryKey(ownerId){return 'workspace-entity-delta-recovery:'+encodeURIComponent(entityOwnerKey(ownerId));}
+  function entityDeltaRecoveryCompletedKey(ownerId){return 'workspace-entity-delta-recovery-completed:'+encodeURIComponent(entityOwnerKey(ownerId));}
   function entityOwnerRecordPrefix(ownerId){return 'workspace-entity:'+encodeURIComponent(entityOwnerKey(ownerId))+':';}
   function entityRecordPrefix(ownerId,generation){return entityOwnerRecordPrefix(ownerId)+encodeURIComponent(generation)+':';}
   function entityOutboxPrefix(ownerId){return 'workspace-entity-change:'+encodeURIComponent(entityOwnerKey(ownerId))+':';}
@@ -683,11 +685,16 @@
        Number(options.expectedRevision)!==sourceRevision){
       throw new Error('A matching expectedRevision is required. Read the active local revision and retry from a fresh workspace snapshot.');
     }
+    const deferActivation=options.deferActivation===true;
+    const recoveryIntentId=String(options.recoveryIntentId||'');
     const manifestKey=entityManifestKey(owner),generation=entityGeneration();
     const previous=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
       const request=tx.objectStore('migrationMeta').get(manifestKey);
       request.onsuccess=()=>set(request.result||null);
     });
+    if(deferActivation&&(!recoveryIntentId||!previous||previous.status!=='ready'||!previous.activeGeneration||previous.pendingGeneration||previous.pendingRecoveryIntentId)){
+      throw new Error('A verified active entity generation and recovery intent are required before staging snapshot recovery.');
+    }
     await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
       tx.objectStore('migrationMeta').put({
         // Retain the prior generation's integrity metadata (rowCount, counts,
@@ -701,7 +708,10 @@
         // generation; migrationStatus records background replacement progress.
         status:previous&&previous.activeGeneration?'ready':'building',
         activeGeneration:previous&&previous.activeGeneration?previous.activeGeneration:null,
-        pendingGeneration:generation,migrationStatus:'building',updatedAt:timestamp()
+        pendingGeneration:generation,pendingRecoveryIntentId:deferActivation?recoveryIntentId:null,
+        pendingRowCount:null,pendingCounts:null,pendingPositionBounds:null,
+        pendingSourceRevision:null,pendingSourceWorkspaceRevision:null,
+        migrationStatus:deferActivation?'recovery-staging':'building',updatedAt:timestamp()
       });
       set(true);
     });
@@ -740,15 +750,49 @@
             try{tx.abort();}catch(_){}
             return;
           }
+          if(deferActivation){
+            const intentRequest=store.get(entityDeltaRecoveryKey(owner));
+            intentRequest.onsuccess=()=>{
+              const intent=intentRequest.result;
+              if(!intent||intent.ownerId!==owner||intent.intentId!==recoveryIntentId||
+                 intent.phase!=='prepared'||intent.activeGeneration!==current.activeGeneration||
+                 current.pendingRecoveryIntentId!==recoveryIntentId){
+                try{tx.abort();}catch(_){}
+                return;
+              }
+              store.put({...current,status:'ready',formatVersion:1,
+                activeGeneration:current.activeGeneration,pendingGeneration:generation,
+                pendingRecoveryIntentId:recoveryIntentId,pendingRowCount:rowCount,
+                pendingCounts:counts,pendingPositionBounds:positionBounds,
+                pendingSourceRevision:revision,pendingSourceWorkspaceRevision:sourceWorkspaceRevision,
+                migrationStatus:'recovery-staged',updatedAt:timestamp()});
+              store.put({...intent,phase:'staged',pendingGeneration:generation,
+                sourceRevision:revision,sourceWorkspaceRevision,updatedAt:timestamp()});
+              set({staged:true,generation,rowCount,counts,sourceRevision:revision,sourceWorkspaceRevision});
+            };
+            return;
+          }
           store.put({
             key:manifestKey,ownerId:owner,status:'ready',formatVersion:1,migrationStatus:null,
-            activeGeneration:generation,pendingGeneration:null,rowCount,counts,positionBounds,
-            sourceRevision:revision,sourceWorkspaceRevision,updatedAt:timestamp()
+            activeGeneration:generation,pendingGeneration:null,pendingRecoveryIntentId:null,
+            rowCount,counts,positionBounds,sourceRevision:revision,
+            sourceWorkspaceRevision,updatedAt:timestamp()
           });
-          set(true);
+          set({staged:false,generation,rowCount,counts,sourceRevision:revision,sourceWorkspaceRevision});
         };
       });
       let prunedRows=0,prunedOutboxRows=0;
+      if(deferActivation){
+        const intent=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
+          const request=tx.objectStore('migrationMeta').get(entityDeltaRecoveryKey(owner));
+          request.onsuccess=()=>set(request.result||null);
+        });
+        if(!intent||intent.intentId!==recoveryIntentId||intent.phase!=='staged'||intent.pendingGeneration!==generation){
+          throw new Error('The staged recovery generation could not be verified.');
+        }
+        return {ownerId:owner,generation,rowCount,counts,sourceRevision:revision,
+          sourceWorkspaceRevision,staged:true,prunedRows:0,prunedOutboxRows:0};
+      }
       try{prunedRows=await pruneInactiveWorkspaceEntityGenerations(owner,generation);}
       catch(error){console.warn('Inactive Nexus entity generations could not be fully pruned; the active generation remains safe.',error);}
       try{prunedOutboxRows=await pruneWorkspaceEntityOutbox(owner);}
@@ -767,7 +811,9 @@
               // is committed. Only a first-time migration has no readable fallback.
               store.put({...current,
                 status:current.activeGeneration?'ready':'interrupted',
-                pendingGeneration:null,
+                pendingGeneration:null,pendingRecoveryIntentId:null,
+                pendingRowCount:null,pendingCounts:null,pendingPositionBounds:null,
+                pendingSourceRevision:null,pendingSourceWorkspaceRevision:null,
                 migrationStatus:'interrupted',
                 updatedAt:timestamp()
               });
@@ -779,89 +825,68 @@
       throw error;
     }
   }
-  async function readWorkspaceEntities(ownerId){
+  async function readWorkspaceEntities(ownerId,options={}){
     const owner=entityOwnerKey(ownerId);
     if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner)return null;
-    const manifestKey=entityManifestKey(owner);
     const manifest=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
-      const request=tx.objectStore('migrationMeta').get(manifestKey);
+      const request=tx.objectStore('migrationMeta').get(entityManifestKey(owner));
       request.onsuccess=()=>set(request.result||null);
     });
-    // A partially applied delta or an older projection must never be exposed as the
-    // current workspace. The compatibility snapshot remains authoritative during
-    // the interval before its matching entity projection is published.
-    if(!manifest||manifest.status!=='ready'||!manifest.activeGeneration)return null;
+    const pending=options.pending===true;
+    const generation=pending?manifest&&manifest.pendingGeneration:manifest&&manifest.activeGeneration;
+    const recoveryIntentId=pending?String(options.recoveryIntentId||''):'';
+    const rowCount=pending?manifest&&manifest.pendingRowCount:manifest&&manifest.rowCount;
+    const sourceWorkspaceRevision=pending?manifest&&manifest.pendingSourceWorkspaceRevision:manifest&&manifest.sourceWorkspaceRevision;
+    if(!manifest||manifest.status!=='ready'||!generation||
+       (pending&&(!recoveryIntentId||manifest.pendingRecoveryIntentId!==recoveryIntentId)))return null;
     const workspaceRevision=await readWorkspaceRevision(owner);
-    if(!Number.isSafeInteger(workspaceRevision)||
-       Number(manifest.sourceWorkspaceRevision)!==workspaceRevision)return null;
-    const prefix=entityRecordPrefix(owner,manifest.activeGeneration);
-    const upper=prefix+'\uffff';
+    if(!Number.isSafeInteger(workspaceRevision)||Number(sourceWorkspaceRevision)!==workspaceRevision)return null;
+    const prefix=entityRecordPrefix(owner,generation),upper=prefix+'\\uffff';
     const keyRangeFactory=root&&root.IDBKeyRange;
-    const supportsRanges=!!(keyRangeFactory&&typeof keyRangeFactory.bound==='function');
-    // The compatibility snapshot remains the safe fallback on an IndexedDB host
-    // without range support; never hydrate by loading every entity row at once.
-    if(!supportsRanges)return null;
+    if(!keyRangeFactory||typeof keyRangeFactory.bound!=='function')return null;
     const collections=TRACKER_ENTITY_COLLECTIONS.concat(FEATURE_ENTITY_COLLECTIONS);
     const grouped=new Map(collections.map(collection=>[collection,[]]));
-    let activeRowCount=0,trackerRoot=null,featureRoot=null;
-    let afterKey=null;
-    // A cursor page is deliberately capped before rows enter JavaScript. The old
-    // getAll(range) call materialised every IndexedDB wrapper row at once, adding a
-    // second 149k-object working set on top of the actual application records.
-    // Separate read transactions keep each temporary page bounded and let the UI
-    // process input between pages. The application still receives complete arrays.
+    let rowCountRead=0,trackerRoot=null,featureRoot=null,afterKey=null;
     while(true){
       if(!enabled||committedOwnerId!==owner)return null;
-      const range=supportsRanges
-        ?keyRangeFactory.bound(afterKey?afterKey+'\u0000':prefix,upper)
-        :entityPrefixRange(prefix);
+      const range=keyRangeFactory.bound(afterKey?afterKey+'\\u0000':prefix,upper);
       const page=await transaction([WORKSPACES],'readonly',(tx,set)=>{
-        const request=tx.objectStore(WORKSPACES).getAll(range,supportsRanges?ENTITY_BATCH_SIZE:undefined);
+        const request=tx.objectStore(WORKSPACES).getAll(range,ENTITY_BATCH_SIZE);
         request.onsuccess=()=>set(request.result||[]);
       });
       for(const row of page){
-        if(!row||row.entityRow!==true||row.ownerId!==owner||row.generation!==manifest.activeGeneration)continue;
-        activeRowCount++;
+        if(!row||row.entityRow!==true||row.ownerId!==owner||row.generation!==generation)continue;
+        rowCountRead++;
         if(row.collection==='_meta'){
-          if(row.entityId==='tracker'){
-            if(trackerRoot)return null;
-            trackerRoot=row;
-          }else if(row.entityId==='features'){
-            if(featureRoot)return null;
-            featureRoot=row;
-          }
+          if(row.entityId==='tracker'){if(trackerRoot)return null;trackerRoot=row;}
+          else if(row.entityId==='features'){if(featureRoot)return null;featureRoot=row;}
           continue;
         }
-        const bucket=grouped.get(row.collection);
-        if(bucket)bucket.push(row);
+        const bucket=grouped.get(row.collection);if(bucket)bucket.push(row);
       }
-      if(!supportsRanges||page.length<ENTITY_BATCH_SIZE)break;
+      if(page.length<ENTITY_BATCH_SIZE)break;
       afterKey=page[page.length-1]&&page[page.length-1].key;
       if(typeof afterKey!=='string'||!afterKey.startsWith(prefix))return null;
       await new Promise(resolve=>root.setTimeout(resolve,0));
     }
     if(!enabled||committedOwnerId!==owner)return null;
-    // A concurrent rebuild/replacement may publish while pages are being read.
-    // Re-check the manifest so a mixed-generation result is never returned.
-    const finalManifest=await readEntityManifest(owner);
-    const finalWorkspaceRevision=await readWorkspaceRevision(owner);
-    if(!finalManifest||!Number.isSafeInteger(finalWorkspaceRevision)||
-       finalWorkspaceRevision!==workspaceRevision||
-       Number(finalManifest.sourceWorkspaceRevision)!==workspaceRevision||
-       finalManifest.status!=='ready'||
-       finalManifest.activeGeneration!==manifest.activeGeneration||
-       finalManifest.rowCount!==manifest.rowCount)return null;
-    if(Number.isSafeInteger(Number(manifest.rowCount))&&activeRowCount!==Number(manifest.rowCount))return null;
+    const finalManifest=await readEntityManifest(owner),finalWorkspaceRevision=await readWorkspaceRevision(owner);
+    const stillSelected=pending
+      ?finalManifest&&finalManifest.pendingGeneration===generation&&finalManifest.pendingRecoveryIntentId===recoveryIntentId
+      :finalManifest&&finalManifest.activeGeneration===generation;
+    const finalExpectedRows=pending?finalManifest&&finalManifest.pendingRowCount:finalManifest&&finalManifest.rowCount;
+    if(!stillSelected||!Number.isSafeInteger(finalWorkspaceRevision)||finalWorkspaceRevision!==workspaceRevision||
+       finalManifest.status!=='ready'||Number(finalExpectedRows)!==Number(rowCount))return null;
+    if(Number.isSafeInteger(Number(rowCount))&&rowCountRead!==Number(rowCount))return null;
     if(!trackerRoot||!featureRoot||!trackerRoot.value||!featureRoot.value)return null;
     const stateSnapshot={...trackerRoot.value},featureSnapshot={...featureRoot.value};
     for(const collection of collections){
       const target=TRACKER_ENTITY_COLLECTIONS.includes(collection)?stateSnapshot:featureSnapshot;
-      target[collection]=grouped.get(collection)
-        .sort((a,b)=>a.position-b.position).map(row=>row.value);
+      target[collection]=grouped.get(collection).sort((a,b)=>a.position-b.position).map(row=>row.value);
     }
-    return {ownerId:owner,generation:manifest.activeGeneration,state:stateSnapshot,
-      featureState:featureSnapshot,revision:manifest.sourceRevision,rowCount:manifest.rowCount,
-      counts:manifest.counts||{}};
+    return {ownerId:owner,generation,state:stateSnapshot,featureState:featureSnapshot,
+      revision:pending?manifest.pendingSourceRevision:manifest.sourceRevision,rowCount:rowCountRead,
+      counts:pending?manifest.pendingCounts:manifest.counts,pending};
   }
 
   // Read both small metadata roots without scanning the record collection. The
@@ -1986,6 +2011,9 @@
         throw new Error('The active compatibility workspace is not durably available for entity synchronization.');
       }
       let manifest=await readEntityManifest(owner);
+      if(manifest&&manifest.pendingRecoveryIntentId){
+        throw new Error('An entity-delta snapshot recovery is being committed. Record-level synchronization is paused to protect the staged generation.');
+      }
       const manifestWorkspaceRevision=manifest?Number(manifest.sourceWorkspaceRevision):NaN;
       const entityRevisionChanged=!Number.isSafeInteger(manifestWorkspaceRevision)||
         manifestWorkspaceRevision!==sourceWorkspaceRevision;
@@ -2076,6 +2104,224 @@
     return task;
   }
 
+  async function beginWorkspaceEntityRecovery(ownerId,input){
+    const owner=entityOwnerKey(ownerId),intentId=String(input&&input.intentId||'').trim(),
+      candidateDigest=String(input&&input.candidateDigest||''),baseUpdatedAt=String(input&&input.baseUpdatedAt||''),
+      expectedHeadRevision=Number(input&&input.expectedHeadRevision),snapshotRevision=Number(input&&input.snapshotRevision);
+    if(!input||typeof input!=='object'||entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner)
+      throw new Error('The active account is not available for local recovery staging.');
+    if(!intentId||intentId.length>160||!/^[a-f0-9]{64}$/i.test(candidateDigest)||!baseUpdatedAt||
+       !Number.isSafeInteger(expectedHeadRevision)||expectedHeadRevision<0||
+       !Number.isSafeInteger(snapshotRevision)||snapshotRevision<0||snapshotRevision>expectedHeadRevision||
+       !Array.isArray(input.conflicts)||input.conflicts.length>10000)
+      throw new Error('The entity-delta recovery intent is invalid.');
+    const conflictsJson=JSON.stringify(input.conflicts);
+    if(conflictsJson.length>5*1024*1024)throw new Error('The recovery conflict archive exceeds the safe size limit.');
+    await entitySyncSerial.catch(()=>undefined);
+    const manifestKey=entityManifestKey(owner),intentKey=entityDeltaRecoveryKey(owner);
+    return transaction(['migrationMeta'],'readwrite',(tx,set)=>{
+      const store=tx.objectStore('migrationMeta'),values={manifest:null,intent:null};let remaining=2;
+      const finish=()=>{
+        remaining--;if(remaining!==0)return;
+        const manifest=values.manifest,current=values.intent;
+        if(current){
+          set(current.ownerId===owner&&current.intentId===intentId&&current.candidateDigest===candidateDigest&&
+            current.expectedHeadRevision===expectedHeadRevision&&current.baseUpdatedAt===baseUpdatedAt
+            ?{ok:true,created:false,intent:{...current}}:{ok:false,reason:'another_entity_recovery_is_pending'});
+          return;
+        }
+        if(!manifest||manifest.ownerId!==owner||manifest.status!=='ready'||!manifest.activeGeneration||
+           manifest.pendingGeneration||manifest.pendingRecoveryIntentId){
+          set({ok:false,reason:'active_entity_generation_unavailable'});return;
+        }
+        const intent={key:intentKey,ownerId:owner,intentId,phase:'prepared',activeGeneration:manifest.activeGeneration,
+          baseUpdatedAt,expectedHeadRevision,snapshotRevision,candidateDigest,
+          conflicts:JSON.parse(conflictsJson),createdAt:timestamp(),updatedAt:timestamp()};
+        store.put(intent);set({ok:true,created:true,intent});
+      };
+      const m=store.get(manifestKey),i=store.get(intentKey);
+      m.onsuccess=()=>{values.manifest=m.result||null;finish();};
+      i.onsuccess=()=>{values.intent=i.result||null;finish();};
+    });
+  }
+
+  async function readWorkspaceEntityRecovery(ownerId){
+    const owner=entityOwnerKey(ownerId);
+    if(!enabled||!database||committedOwnerId!==owner||entityRemovalOwners.has(owner))return null;
+    return transaction(['migrationMeta'],'readonly',(tx,set)=>{
+      const store=tx.objectStore('migrationMeta'),values={intent:null,manifest:null};let remaining=2;
+      const finish=()=>{remaining--;if(remaining===0)set(values.intent?{intent:{...values.intent},manifest:values.manifest}:null);};
+      const i=store.get(entityDeltaRecoveryKey(owner)),m=store.get(entityManifestKey(owner));
+      i.onsuccess=()=>{values.intent=i.result||null;finish();};
+      m.onsuccess=()=>{values.manifest=m.result||null;finish();};
+    });
+  }
+
+  async function markWorkspaceEntityRecoveryPublished(ownerId,intentId,publication){
+    const owner=entityOwnerKey(ownerId),id=String(intentId||''),
+      stamp=String(publication&&publication.updated_at||''),snapshot=Number(publication&&publication.snapshotRevision),
+      head=Number(publication&&publication.headRevision),compacted=Number(publication&&publication.compactedThroughRevision);
+    if(!publication||publication.verified!==true||!stamp||!Number.isSafeInteger(snapshot)||
+       !Number.isSafeInteger(head)||!Number.isSafeInteger(compacted)||snapshot<0||head<snapshot||compacted<snapshot)
+      throw new Error('A verified, revision-matched server snapshot is required to advance local recovery.');
+    return transaction(['migrationMeta'],'readwrite',(tx,set)=>{
+      const store=tx.objectStore('migrationMeta'),values={intent:null,manifest:null};let remaining=2;
+      const finish=()=>{
+        remaining--;if(remaining!==0)return;
+        const intent=values.intent,manifest=values.manifest;
+        if(!intent||intent.ownerId!==owner||intent.intentId!==id||!manifest||manifest.ownerId!==owner||
+           manifest.pendingRecoveryIntentId!==id||manifest.pendingGeneration!==intent.pendingGeneration||
+           snapshot!==intent.expectedHeadRevision){
+          set({ok:false,reason:'recovery_publication_does_not_match_staged_generation'});return;
+        }
+        if(intent.phase==='published'){
+          const prior=intent.publication||{};
+          set(prior.updated_at===stamp&&Number(prior.snapshotRevision)===snapshot
+            ?{ok:true,alreadyPublished:true,intent:{...intent}}:{ok:false,reason:'recovery_publication_mismatch'});
+          return;
+        }
+        if(intent.phase!=='staged'){set({ok:false,reason:'recovery_generation_not_staged'});return;}
+        const next={...intent,phase:'published',
+          publication:{updated_at:stamp,snapshotRevision:snapshot,headRevision:head,
+            compactedThroughRevision:compacted,storageMode:String(publication.storageMode||'unknown')},
+          publishedAt:timestamp(),updatedAt:timestamp()};
+        store.put(next);set({ok:true,alreadyPublished:false,intent:next});
+      };
+      const i=store.get(entityDeltaRecoveryKey(owner)),m=store.get(entityManifestKey(owner));
+      i.onsuccess=()=>{values.intent=i.result||null;finish();};
+      m.onsuccess=()=>{values.manifest=m.result||null;finish();};
+    });
+  }
+
+  async function commitWorkspaceEntityRecovery(ownerId,intentId,entries,candidateDigest){
+    const owner=entityOwnerKey(ownerId),id=String(intentId||'');
+    if(!Array.isArray(entries)||entries.length<4)throw new Error('A complete local recovery transaction is required.');
+    const seen=new Set(),normalized=entries.map(entry=>{
+      if(!entry||typeof entry.key!=='string'||!(typeof entry.value==='string'||entry.value===null)||
+         !isManagedKey(entry.key)||seen.has(entry.key))throw new Error('The local recovery transaction contains invalid or duplicate storage entries.');
+      seen.add(entry.key);return {key:entry.key,value:entry.value};
+    });
+    const trackerEntry=normalized.find(entry=>entry.key===TRACKER_KEY),featureEntry=normalized.find(entry=>entry.key===FEATURE_KEY);
+    if(!trackerEntry||!featureEntry||typeof trackerEntry.value!=='string'||typeof featureEntry.value!=='string'||
+       normalized.some(entry=>entry.key===OWNER_KEY))
+      throw new Error('A recovery commit must include both workspace snapshots without changing account ownership.');
+    let tracker,features;
+    try{tracker=JSON.parse(trackerEntry.value);features=JSON.parse(featureEntry.value);}
+    catch(_){throw new Error('The candidate workspace snapshots are not valid JSON.');}
+    if(!tracker||typeof tracker!=='object'||Array.isArray(tracker)||!features||typeof features!=='object'||Array.isArray(features))
+      throw new Error('The candidate workspace snapshots are invalid.');
+    if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner)
+      throw new Error('The active account is not available for local recovery commit.');
+    await entitySyncSerial.catch(()=>undefined);
+    const task=serial.catch(()=>undefined).then(async()=>{
+      await persistPending();
+      if(!enabled||committedOwnerId!==owner||pending.size)
+        throw new Error('Local workspace writes could not be quiesced for recovery commit.');
+      const capturedWriteSequence=writeSequence,manifestKey=entityManifestKey(owner),
+        intentKey=entityDeltaRecoveryKey(owner),cursorKey=entityDeltaCursorKey(owner),
+        sequenceKey=entitySequenceKey(owner),completedKey=entityDeltaRecoveryCompletedKey(owner);
+      const result=await transaction([RECORDS,META,WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
+        const records=tx.objectStore(RECORDS),meta=tx.objectStore(META),workspaces=tx.objectStore(WORKSPACES),
+          migration=tx.objectStore('migrationMeta');
+        const values={owner:null,workspace:null,manifest:null,intent:null,sequence:null,
+          lastRevision:null,trackerRoot:null,featureRoot:null,completed:null};
+        let remaining=9,finished=false;
+        const finish=()=>{
+          remaining--;if(remaining!==0||finished)return;finished=true;
+          const completed=values.completed;
+          if(completed&&completed.ownerId===owner&&completed.intentId===id){
+            set(typeof candidateDigest==='string'&&completed.candidateDigest===candidateDigest
+              ?{ok:true,alreadyCommitted:true,revision:Number(values.lastRevision&&values.lastRevision.value)||revision,
+                generation:completed.generation,cursor:completed.cursor}
+              :{ok:false,reason:'recovery_intent_id_reused'});return;
+          }
+          const manifest=values.manifest,intent=values.intent,workspace=values.workspace,
+            workspaceRevision=workspace&&Number.isSafeInteger(Number(workspace.workspaceRevision))
+              ?Number(workspace.workspaceRevision):(workspace&&Number.isSafeInteger(Number(workspace.revision))?Number(workspace.revision):null),
+            publication=intent&&intent.publication;
+          if(writeSequence!==capturedWriteSequence||!enabled||committedOwnerId!==owner||entityRemovalOwners.has(owner)||
+             rowValue(values.owner)!==owner||!manifest||manifest.ownerId!==owner||manifest.status!=='ready'||
+             manifest.activeGeneration!==intent?.activeGeneration||manifest.pendingRecoveryIntentId!==id||
+             manifest.pendingGeneration!==intent?.pendingGeneration||!intent||intent.ownerId!==owner||
+             intent.intentId!==id||intent.phase!=='published'||intent.candidateDigest!==candidateDigest||
+             !publication||publication.snapshotRevision!==intent.expectedHeadRevision||
+             !validWorkspaceRow(workspace,owner)||!Number.isSafeInteger(workspaceRevision)||
+             workspaceRevision!==Number(manifest.pendingSourceWorkspaceRevision)||
+             !values.trackerRoot||!values.featureRoot||values.trackerRoot.ownerId!==owner||
+             values.featureRoot.ownerId!==owner||values.trackerRoot.generation!==manifest.pendingGeneration||
+             values.featureRoot.generation!==manifest.pendingGeneration||values.trackerRoot.collection!=='_meta'||
+             values.trackerRoot.entityId!=='tracker'||values.featureRoot.collection!=='_meta'||
+             values.featureRoot.entityId!=='features'||
+             JSON.stringify(values.trackerRoot.value)!==JSON.stringify(tracker)||
+             JSON.stringify(values.featureRoot.value)!==JSON.stringify(features)||
+             !Number.isSafeInteger(Number(manifest.pendingRowCount))||Number(manifest.pendingRowCount)<2){
+            set({ok:false,reason:'local_recovery_commit_precondition_failed'});return;
+          }
+          const nextRevision=Math.max(0,Number(values.lastRevision&&values.lastRevision.value)||0)+1,
+            highWatermark=values.sequence?Number(values.sequence.value):0;
+          if(!Number.isSafeInteger(highWatermark)||highWatermark<0){
+            set({ok:false,reason:'invalid_local_outbox_high_watermark'});return;
+          }
+          for(const entry of normalized)records.put({key:entry.key,value:entry.value,
+            deleted:entry.value===null,revision:nextRevision,updatedAt:timestamp()});
+          workspaces.put(makeWorkspaceRow(owner,tracker,features,nextRevision,workspaceRevision));
+          meta.put({key:'lastCommittedRevision',value:nextRevision,updatedAt:timestamp()});
+          const generation=manifest.pendingGeneration,snapshotRevision=Number(publication.snapshotRevision),
+            headRevision=Number(publication.headRevision);
+          migration.put({...manifest,status:'ready',formatVersion:1,migrationStatus:null,
+            activeGeneration:generation,pendingGeneration:null,pendingRecoveryIntentId:null,
+            rowCount:manifest.pendingRowCount,counts:manifest.pendingCounts||{},
+            positionBounds:manifest.pendingPositionBounds||{},sourceRevision:nextRevision,
+            sourceWorkspaceRevision:workspaceRevision,pendingRowCount:null,pendingCounts:null,
+            pendingPositionBounds:null,pendingSourceRevision:null,pendingSourceWorkspaceRevision:null,
+            updatedAt:timestamp()});
+          const cursor={key:cursorKey,ownerId:owner,protocolVersion:1,generation,workspaceRevision,
+            publishRevision:snapshotRevision,acknowledgedSequence:highWatermark,
+            remoteHeadRevision:headRevision,snapshotUpdatedAt:publication.updated_at,
+            requiresPull:headRevision>snapshotRevision,createdAt:timestamp(),updatedAt:timestamp()};
+          migration.put(cursor);
+          migration.put({key:completedKey,ownerId:owner,intentId:id,candidateDigest:intent.candidateDigest,
+            generation,publication:{...publication},cursor:{...cursor},completedAt:timestamp()});
+          migration.delete(intentKey);
+          set({ok:true,alreadyCommitted:false,revision:nextRevision,generation,cursor});
+        };
+        const ownerRequest=records.get(OWNER_KEY),workspaceRequest=workspaces.get(workspaceKey(owner)),
+          manifestRequest=migration.get(manifestKey),intentRequest=migration.get(intentKey),
+          sequenceRequest=migration.get(sequenceKey),revisionRequest=meta.get('lastCommittedRevision'),
+          completedRequest=migration.get(completedKey);
+        const readRoots=()=>{
+          const generation=values.manifest&&values.manifest.pendingGeneration;
+          if(!generation){values.trackerRoot=null;values.featureRoot=null;finish();finish();return;}
+          const tr=workspaces.get(entityRecordKey(owner,generation,'_meta','tracker')),
+            fr=workspaces.get(entityRecordKey(owner,generation,'_meta','features'));
+          tr.onsuccess=()=>{values.trackerRoot=tr.result||null;finish();};
+          fr.onsuccess=()=>{values.featureRoot=fr.result||null;finish();};
+        };
+        ownerRequest.onsuccess=()=>{values.owner=ownerRequest.result||null;finish();};
+        workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;finish();};
+        manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;readRoots();finish();};
+        intentRequest.onsuccess=()=>{values.intent=intentRequest.result||null;finish();};
+        sequenceRequest.onsuccess=()=>{values.sequence=sequenceRequest.result||null;finish();};
+        revisionRequest.onsuccess=()=>{values.lastRevision=revisionRequest.result||null;finish();};
+        completedRequest.onsuccess=()=>{values.completed=completedRequest.result||null;finish();};
+      });
+      if(!result||result.ok!==true)throw new Error(result&&result.reason||'The local entity-delta recovery commit was not completed.');
+      if(!result.alreadyCommitted){
+        revision=result.revision;
+        if(writeSequence===capturedWriteSequence){
+          for(const entry of normalized){if(entry.value===null)cache.delete(entry.key);else cache.set(entry.key,entry.value);knownKeys.add(entry.key);}
+          mirrorBatch(normalized);
+        }
+        try{await pruneInactiveWorkspaceEntityGenerations(owner,result.generation);}
+        catch(error){console.warn('Old Nexus entity recovery generations could not be pruned; the new active generation remains verified.',error);}
+        try{await pruneWorkspaceEntityOutbox(owner);}
+        catch(error){console.warn('Superseded Nexus entity outbox rows could not be pruned; the new active generation remains verified.',error);}
+      }
+      return result;
+    });
+    serial=task.then(()=>revision);task.catch(reportFailure);return task;
+  }
+
   async function deleteWorkspaceEntities(ownerId){
     const owner=entityOwnerKey(ownerId);
     if(!enabled||!database)throw new Error('IndexedDB must be enabled before account entity cleanup can run.');
@@ -2088,30 +2334,38 @@
     }
 
     const manifestKey=entityManifestKey(owner),sequenceKey=entitySequenceKey(owner),
-      cursorKey=entityDeltaCursorKey(owner);
+      cursorKey=entityDeltaCursorKey(owner),recoveryKey=entityDeltaRecoveryKey(owner),
+      completedKey=entityDeltaRecoveryCompletedKey(owner);
     const removedMetadata=await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
       const store=tx.objectStore('migrationMeta');
       const manifestRequest=store.get(manifestKey),sequenceRequest=store.get(sequenceKey),
-        cursorRequest=store.get(cursorKey);
-      const values={manifest:null,sequence:null,cursor:null};let remaining=3;
+        cursorRequest=store.get(cursorKey),recoveryRequest=store.get(recoveryKey),
+        completedRequest=store.get(completedKey);
+      const values={manifest:null,sequence:null,cursor:null,recovery:null,completed:null};let remaining=5;
       const finish=()=>{
         remaining--;
         if(remaining!==0)return;
         if((values.manifest&&values.manifest.ownerId!==owner)||
            (values.sequence&&values.sequence.ownerId!==owner)||
-           (values.cursor&&values.cursor.ownerId!==owner)){
+           (values.cursor&&values.cursor.ownerId!==owner)||
+           (values.recovery&&values.recovery.ownerId!==owner)||
+           (values.completed&&values.completed.ownerId!==owner)){
           try{tx.abort();}catch(_){}
           return;
         }
         store.delete(manifestKey);
         store.delete(sequenceKey);
         store.delete(cursorKey);
+        store.delete(recoveryKey);
+        store.delete(completedKey);
         set({manifestRemoved:!!values.manifest,sequenceRemoved:!!values.sequence,
-          cursorRemoved:!!values.cursor});
+          cursorRemoved:!!values.cursor,recoveryRemoved:!!values.recovery});
       };
       manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;finish();};
       sequenceRequest.onsuccess=()=>{values.sequence=sequenceRequest.result||null;finish();};
       cursorRequest.onsuccess=()=>{values.cursor=cursorRequest.result||null;finish();};
+      recoveryRequest.onsuccess=()=>{values.recovery=recoveryRequest.result||null;finish();};
+      completedRequest.onsuccess=()=>{values.completed=completedRequest.result||null;finish();};
     });
 
     const removeOwnerPrefix=async(storeName,prefix)=>{
@@ -2648,6 +2902,10 @@
     getWorkspaceEntityRevisionKey,
     migrateWorkspaceEntities,
     readWorkspaceEntities,
+    beginWorkspaceEntityRecovery,
+    readWorkspaceEntityRecovery,
+    markWorkspaceEntityRecoveryPublished,
+    commitWorkspaceEntityRecovery,
     deleteWorkspaceEntities,
     writeWorkspaceEntityChanges,
     syncWorkspaceEntities,
