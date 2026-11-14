@@ -89,6 +89,73 @@ class Query {
  }
 }
 
+
+class DeltaMemoryCloud extends MemoryCloud{
+ constructor(){
+  super();
+  this.syncStates=new Map();
+  this.rpcCalls=[];
+  this.failDeltaResponseAfterCommit=false;
+  this.auth={getUser:async()=>({data:{user:{id:this.activeUser}},error:null})};
+ }
+ async rpc(name,args){
+  this.rpcCalls.push({name,args});
+  if(name==='nexus_get_entity_sync_state'){
+   if(this.activeUser!==OWNER_A&&this.activeUser!==OWNER_B)return {data:null,error:{code:'42501',message:'authentication required'}};
+   const state=this.syncStates.get(this.activeUser);
+   return state?{data:{...state},error:null}:{data:null,error:{code:'PGRST116',message:'sync state missing'}};
+  }
+  if(name!=='nexus_publish_entity_snapshot')return {data:null,error:{code:'42883',message:'unknown RPC'}};
+  const owner=this.activeUser,row=this.rows.get(owner),state=this.syncStates.get(owner);
+  if(!row||!state)return {data:null,error:{code:'55000',message:'snapshot state missing'}};
+  if(Number(args.p_expected_head_revision)!==state.head_revision||
+     args.p_expected_updated_at!==row.updated_at){
+   return {data:{ok:false,code:'revision_conflict',head_revision:state.head_revision,
+    snapshot_updated_at:row.updated_at},error:null};
+  }
+  const candidate=args.p_payload;
+  if(!candidate||candidate.__nexusDeltaSync!=='entity-delta-v1')
+   return {data:null,error:{code:'22023',message:'delta marker missing'}};
+  if(candidate.__nexusStorage==='chunked-v1'){
+   const rows=this.chunks.filter(item=>item.user_id===owner&&item.revision_id===candidate.revisionId);
+   if(rows.length!==candidate.chunkCount||
+      rows.reduce((total,item)=>total+item.chunk_bytes,0)!==candidate.totalBytes){
+    return {data:null,error:{code:'55000',message:'chunk manifest incomplete'}};
+   }
+  }else if(!candidate.state||!Array.isArray(candidate.state.streams)||
+     !candidate.featureState||typeof candidate.featureState!=='object'){
+   return {data:null,error:{code:'22023',message:'invalid workspace payload'}};
+  }
+  const stamp='delta-snapshot-'+(this.rpcCalls.length);
+  row.payload={...candidate};
+  row.updated_at=stamp;
+  state.snapshot_revision=state.head_revision;
+  state.compacted_through_revision=state.head_revision;
+  state.snapshot_updated_at=stamp;
+  const data={ok:true,head_revision:state.head_revision,
+   snapshot_revision:state.snapshot_revision,
+   compacted_through_revision:state.compacted_through_revision,
+   snapshot_updated_at:stamp};
+  if(this.failDeltaResponseAfterCommit){
+   this.failDeltaResponseAfterCommit=false;
+   return {data:null,error:{code:'57014',message:'simulated lost publication response'}};
+  }
+  return {data,error:null};
+ }
+}
+
+function seedDeltaCloud(cloud,owner=OWNER_A,stamp='delta-baseline-stamp'){
+ const payload={
+  app:'Nexus Spaced Repetition Tracker',schema:4,__nexusDeltaSync:'entity-delta-v1',
+  state:{schema:3,streams:[{id:'stream-general',name:'General'}],subjects:[],topics:[],history:[],exams:[]},
+  featureState:{journal:[],papers:[],goals:[],studyLogs:[]}
+ };
+ cloud.rows.set(owner,{user_id:owner,payload,updated_at:stamp});
+ cloud.syncStates.set(owner,{mode:'delta',protocol_version:1,head_revision:4,
+  snapshot_revision:3,compacted_through_revision:3,snapshot_updated_at:stamp});
+ return payload;
+}
+
 const makePayload=(label,repeat=6000)=>({
  app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:'2026-11-09T00:00:00.000Z',
  state:{
@@ -170,5 +237,76 @@ assert.equal(interruptedReplacement.code,'57014','interrupted replacement upload
 assert.equal(preservedCloud.rows.get(OWNER_A).payload.revisionId,previousRevision,'an interrupted replacement must leave the previous manifest active');
 assert.deepEqual(await chunks.readSnapshot(preservedCloud,OWNER_A,previousManifest),secondPayload,'the previous verified snapshot must remain fully readable after an interrupted replacement');
 assert.ok(preservedCloud.chunks.some(row=>row.revision_id!==previousRevision),'abandoned replacement chunks must remain separate from the active snapshot');
+
+
+const deltaSmallCloud=new DeltaMemoryCloud();
+const deltaBaseline=seedDeltaCloud(deltaSmallCloud);
+const deltaSmallPayload=makePayload('delta-small',12);
+const deltaSmall=await chunks.writeDeltaSnapshot(deltaSmallCloud,OWNER_A,deltaSmallPayload,4,
+ 'delta-baseline-stamp');
+assert.equal(deltaSmall.verified,true,'a delta snapshot must only return after server-state and payload read-back verification');
+assert.equal(deltaSmall.storageMode,'jsonb','small recovery snapshots should retain the JSONB representation');
+assert.equal(deltaSmall.payload.__nexusDeltaSync,'entity-delta-v1','the delta protocol marker must survive publication');
+assert.equal(deltaSmallCloud.rows.get(OWNER_A).payload.__nexusDeltaSync,'entity-delta-v1');
+assert.equal(deltaSmall.snapshotRevision,4);
+assert.equal(deltaSmall.compactedThroughRevision,4);
+assert.deepEqual(deltaSmall.payload.state,deltaSmallPayload.state,'the published snapshot must preserve the full tracker state');
+assert.equal(deltaSmallCloud.rpcCalls.filter(call=>call.name==='nexus_publish_entity_snapshot').length,1,
+ 'delta snapshots must use the dedicated compare-and-swap publication RPC');
+
+const staleDeltaCloud=new DeltaMemoryCloud();
+seedDeltaCloud(staleDeltaCloud);
+staleDeltaCloud.syncStates.get(OWNER_A).head_revision=5;
+const staleDelta=await chunks.writeDeltaSnapshot(staleDeltaCloud,OWNER_A,deltaSmallPayload,4,
+ 'delta-baseline-stamp').then(()=>null,error=>error);
+assert.equal(staleDelta.code,'NEXUS_CLOUD_CONFLICT','a stale recovery candidate must not replace a newer server revision');
+assert.equal(staleDeltaCloud.rows.get(OWNER_A).updated_at,'delta-baseline-stamp',
+ 'a losing recovery publication must leave the active snapshot unchanged');
+
+const ambiguousDeltaCloud=new DeltaMemoryCloud();
+seedDeltaCloud(ambiguousDeltaCloud);
+ambiguousDeltaCloud.failDeltaResponseAfterCommit=true;
+const ambiguousDelta=await chunks.writeDeltaSnapshot(ambiguousDeltaCloud,OWNER_A,deltaSmallPayload,4,
+ 'delta-baseline-stamp');
+assert.equal(ambiguousDelta.verified,true,
+ 'a lost RPC response may be accepted only after exact snapshot payload and server revision read-back');
+assert.equal(ambiguousDeltaCloud.rows.get(OWNER_A).payload.__nexusDeltaSync,'entity-delta-v1');
+
+const deltaLargeCloud=new DeltaMemoryCloud();
+seedDeltaCloud(deltaLargeCloud);
+const deltaLargePayload=makePayload('delta-large',6000);
+const deltaLarge=await chunks.writeDeltaSnapshot(deltaLargeCloud,OWNER_A,deltaLargePayload,4,
+ 'delta-baseline-stamp');
+assert.equal(deltaLarge.storageMode,'chunked','large recovery snapshots must use verified immutable chunks');
+assert.ok(chunks.isManifest(deltaLarge.manifest));
+assert.equal(deltaLarge.manifest.__nexusDeltaSync,'entity-delta-v1',
+ 'the chunk manifest must retain the delta marker required by the snapshot RPC and legacy-client guard');
+assert.deepEqual(await chunks.readSnapshot(deltaLargeCloud,OWNER_A,deltaLarge.manifest),
+ {...deltaLargePayload,__nexusDeltaSync:'entity-delta-v1'},
+ 'the server-published delta manifest must reconstruct the exact recovery snapshot');
+assert.equal(deltaLargeCloud.rows.get(OWNER_A).payload.revisionId,deltaLarge.manifest.revisionId);
+
+const interruptedDeltaCloud=new DeltaMemoryCloud();
+const oldDeltaSnapshot=seedDeltaCloud(interruptedDeltaCloud);
+interruptedDeltaCloud.failChunkBatch=2;
+const interruptedDelta=await chunks.writeDeltaSnapshot(interruptedDeltaCloud,OWNER_A,
+ makePayload('delta-interrupted',6000),4,'delta-baseline-stamp').then(()=>null,error=>error);
+assert.equal(interruptedDelta.code,'57014','an interrupted delta chunk upload must remain a failure');
+assert.equal(interruptedDeltaCloud.rpcCalls.some(call=>call.name==='nexus_publish_entity_snapshot'),false,
+ 'an incomplete delta snapshot must never reach the publication RPC');
+assert.equal(interruptedDeltaCloud.rows.get(OWNER_A).updated_at,'delta-baseline-stamp',
+ 'an interrupted delta snapshot must leave the active server snapshot untouched');
+assert.equal(interruptedDeltaCloud.rows.get(OWNER_A).payload,oldDeltaSnapshot,
+ 'the prior delta snapshot payload must remain active during interrupted upload');
+
+const wrongOwnerDeltaCloud=new DeltaMemoryCloud();
+seedDeltaCloud(wrongOwnerDeltaCloud);
+wrongOwnerDeltaCloud.activeUser=OWNER_B;
+const wrongOwnerDelta=await chunks.writeDeltaSnapshot(wrongOwnerDeltaCloud,OWNER_A,
+ deltaSmallPayload,4,'delta-baseline-stamp').then(()=>null,error=>error);
+assert.equal(wrongOwnerDelta.code,'NEXUS_ENTITY_DELTA_OWNER_MISMATCH',
+ 'delta recovery must verify auth.uid against the requested local owner before uploading');
+assert.equal(wrongOwnerDeltaCloud.rpcCalls.length,0,'wrong-owner recovery must not call any RPC');
+
 
 console.log('Cloud chunk storage tests passed: 27 MB-scale UTF-8 chunking, paginated SHA-256 reconstruction, atomic manifest publication, legacy overwrite guard, compare-and-swap conflict, corruption rejection, owner isolation, and preservation of the previous snapshot after interrupted replacement.');
