@@ -4,8 +4,6 @@
 
   const RUNTIME_ASSETS = [
     'workspace-isolation-guard.js',
-    'nexus-build-config.js',
-    'nexus-analytics.js',
     'backup-restore-utils.js',
     'offline-sync-queue.js',
     'curriculum-integrity.js',
@@ -13,6 +11,7 @@
     'app-core.js',
     'fsrs-bundle.js',
     'study-hub.js',
+    'nexus-build-config.js',
     'cloud-sync-recovery.js',
     'workspace-sync-merge.js',
     'cloud-chunk-storage.js',
@@ -87,17 +86,9 @@
     }
 
     try {
-      for (const asset of RUNTIME_ASSETS) {
-        if (asset === 'nexus-analytics.js') {
-          try { await loadScript(asset); }
-          catch (_) { console.warn('Nexus optional error reporting is unavailable; the app will continue normally.'); }
-          continue;
-        }
-        await loadScript(asset);
-      }
+      for (const asset of RUNTIME_ASSETS) await loadScript(asset);
     } catch (error) {
       window.NexusDeferInitialRender = false;
-      window.NexusAnalytics?.captureHandledError(error, 'module-load');
       console.error('Nexus application startup stopped before all required modules loaded.', error);
       try {
         if (typeof window.NexusRenderAll === 'function') window.NexusRenderAll();
@@ -114,7 +105,6 @@
         window.NexusRenderAll();
         window.NexusDeferredRenderRequested = false;
       } catch (error) {
-        window.NexusAnalytics?.captureHandledError(error, 'workspace-render');
         console.error('Nexus workspace rendering failed after startup.', error);
         showNotice('Nexus loaded, but the workspace could not finish rendering. Keep your local data intact and reload the app.', true);
       }
@@ -134,7 +124,6 @@
         try {
           consistencyRenderer();
         } catch (error) {
-          window.NexusAnalytics?.captureHandledError(error, 'consistency-render');
           console.error('Nexus Overview consistency summary failed during startup.', error);
         }
         if (!consistencyTarget.childElementCount || consistencyTarget.querySelector('.consistency-loading')) {
