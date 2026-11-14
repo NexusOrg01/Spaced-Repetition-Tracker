@@ -1,18 +1,19 @@
 # Remote entity-delta synchronization design
 
-**Status: server-side delta schema/RPCs are deployed to isolated staging, but the client publisher/reader and authoritative local entity integration are not implemented.** This document remains the protocol design and test contract; see [implementation status](entity-delta-sync-status.md). Snapshot/chunk remains the only enabled cloud path for all accounts.
+**Status (14 November 2026):** the server-side delta schema/RPCs are deployed to isolated staging. The shared client now has a gated publisher with durable receipt acknowledgement, strict remote-page retrieval/validation, atomic local remote application with an inbound cursor, and a bounded pull-before-publish coordinator. These are dormant protocol primitives: `cloud-sync.js` still uses snapshot/chunk sync, delta RPC execution remains revoked for browser roles, and all existing staging accounts remain in snapshot mode. See [implementation status](entity-delta-sync-status.md). Snapshot/chunk remains the only enabled cloud path for all accounts.
 
-## 1. Verified current boundary (13 November 2026)
+## 1. Verified current boundary (14 November 2026)
 
 The current client and staging schema establish these facts:
 
-- `app-core.js` serializes the complete tracker and Study Hub compatibility snapshots on save and commits them through the account-bound offline snapshot queue.
-- `nexus-storage.js` maintains owner-scoped IndexedDB entity rows, generation metadata, and a bounded local entity outbox. The entity projection is a recoverable mirror, not the application source of truth. Startup, backup/restore, and cloud sync still depend on compatibility snapshots.
-- Entity outbox rows are local-only. They are not published to Supabase.
-- `cloud-sync.js` reads and reconciles complete workspace snapshots using `nexus_user_data.updated_at`. Large snapshots use `cloud-chunk-storage.js`: 256 KiB UTF-8 chunks, four-row insert batches, sixteen-row read pages, SHA-256 verification, and a maximum of 900 chunks.
-- The isolated Supabase project `nexus-sync-staging` now has the additive `nexus_workspace_sync_state`, `nexus_workspace_operation_receipts`, and `nexus_workspace_operations` tables plus owner-scoped delta RPCs. All four existing workspace states remain in snapshot mode; there are currently no operation or receipt rows. See [implementation status](entity-delta-sync-status.md) for applied migration versions and staging evidence.
-- Staging RLS is owner-scoped. Authenticated users can select/insert/update their own snapshot row. For chunk rows they can select/insert/delete their own rows, but have no UPDATE grant. The chunk table has the account foreign key and bounded size/count constraints. The current trigger prevents a legacy payload update from replacing a published `chunked-v1` manifest.
-- The staging project identity was checked independently from production. Two additive staging migrations were applied; existing snapshots and chunks were not rewritten, and disposable integration-test users/data were rolled back or deleted. No production data, schema, auth, policies, or secrets were changed.
+- `NexusStorage.bootstrap({ hydrateEntities: true })` hydrates a verified owner-bound IndexedDB entity generation before the application modules load. The tracker and Study Hub compatibility snapshots are refreshed as mirrors for the offline queue, backup/restore, and the still snapshot-based cloud path.
+- `nexus-storage.js` maintains owner-scoped entity rows, generation metadata, durable local operation groups, a bounded outbox, owner/generation/revision-bound delta cursors, atomic receipt acknowledgements, and an atomic one-group remote-apply transaction. Remote application is blocked while unacknowledged local outbox rows remain.
+- `entity-delta-sync.js` contains a gated publisher, remote-page reader/validator, remote apply adapter, and bounded `synchronize()` coordinator. It verifies the authenticated Supabase user and local owner around network calls. The coordinator pulls one complete group at a time before publishing and returns a conflict requiring snapshot reconciliation when both remote and local pending work overlap. It does not perform the three-way merge or snapshot fallback itself.
+- `cloud-sync.js` still reads, reconciles, and publishes complete workspace snapshots using `nexus_user_data.updated_at`. It does not instantiate or call the delta coordinator. Large snapshots use `cloud-chunk-storage.js`: 256 KiB UTF-8 chunks, four-row insert batches, sixteen-row read pages, SHA-256 verification, and a maximum of 900 chunks.
+- The isolated Supabase project `nexus-sync-staging` has the additive `nexus_workspace_sync_state`, `nexus_workspace_operation_receipts`, and `nexus_workspace_operations` tables plus owner-scoped delta RPCs. Four existing sync-state rows remain in snapshot mode; operation and receipt tables contain zero rows.
+- Staging RLS exposes owner-scoped SELECT policies for delta state, operations, and receipts. Authenticated and anonymous roles have no direct INSERT/UPDATE/DELETE privileges on those delta tables. All six delta RPCs currently have EXECUTE revoked from `PUBLIC`, `anon`, and `authenticated`; the normal browser client therefore cannot activate this unfinished protocol.
+- The chunk table retains its owner-scoped SELECT/INSERT/DELETE access, no client UPDATE grant, account foreign key, and bounded size/count constraints. The snapshot guard prevents a legacy payload update from replacing a published `chunked-v1` manifest.
+- The staging project identity was independently verified as `nexus-sync-staging` (`xuwfzibxhxzxxupprxsq`, `ap-southeast-1`), separate from production. No staging writes were made during this continuation. No production data, schema, auth, policies, secrets, or live application resources were changed.
 
 The timestamp `updated_at` is a snapshot compare-and-swap token, not a suitable monotonic event cursor. Do not infer a contiguous operation sequence from timestamps or client clocks.
 
@@ -22,9 +23,9 @@ Do not publish the current IndexedDB outbox directly to a new table and call tha
 
 The proposed protocol keeps the existing full snapshot as a recovery and compaction base. Entity deltas are applied only after a client has verified that it has the exact base snapshot revision. Any missing revision, cursor older than the compaction floor, unsupported schema, malformed group, or integrity failure must cause a full snapshot recovery; it must never apply a partial delta stream.
 
-### 2.1 Proposed additive schema
+### 2.1 Implemented additive schema
 
-Use three owner-scoped tables. Names are proposals and must be reconciled with the final migration before implementation.
+The three owner-scoped tables below are present in the staging migrations. Their deployed definitions and grants in the migrations are authoritative if any prose here differs.
 
 **`nexus_workspace_sync_state`**
 
@@ -119,13 +120,15 @@ The server acknowledgement must be committed locally only after the server retur
 
 ## 3. Migration and rollout sequence
 
-1. Keep the current snapshot-only staging contract unchanged while the protocol schema, RPCs, and regression tests are reviewed.
-2. Add the three tables and required indexes in an additive, transactional staging migration. Backfill each existing account with snapshot mode and a sync-state row whose snapshot/head/floor all describe the current verified snapshot. Do not infer event history that does not exist.
-3. Add owner-scoped SELECT RLS, revoke direct client writes to operation/receipt tables, add authenticated RPC grants, and add the protocol-marker protection to the snapshot trigger. Verify grants as well as policies.
-4. Add server RPC tests and client protocol tests before enabling any account. A migration that merely creates tables is not evidence that the protocol is safe.
-5. Enable delta mode only for a controlled staging account after a new client has verified its base snapshot and demonstrated account/version compatibility.
+The additive schema, owner-scoped RLS, snapshot-marker guard, RPC contracts, and server-side integration tests have been applied to isolated staging. The current staging safety migrations also revoke all six delta RPCs from browser roles until client integration is complete. The remaining rollout sequence is:
+
+1. Keep all existing accounts in snapshot mode and keep browser RPC execution revoked while the client integration is unfinished.
+2. Complete normal `cloud-sync.js` integration behind an explicit staging-only feature gate; prove the default-off path still uses the existing snapshot/chunk protocol without extra RPC calls.
+3. Implement concurrent local/remote reconciliation and snapshot publication/compaction, preserving stable operation IDs, cursor floors, tombstones, and previous snapshots on any failed compare-and-swap.
+4. Integrate restore, import, reset, undo, curriculum repair, account handoff, and deletion with cursor/generation invalidation and verified snapshot boundaries.
+5. Re-run server and client tests, then re-grant only the minimum required RPC execution to a controlled staging cohort after review. Verify two-device, offline, account-switch, backup/restore, deletion/undo, and interrupted-publication behavior.
 6. Keep snapshot fallback available for unsupported schema, missing/gapped revisions, expired receipts, failed verification, and compaction-floor misses.
-7. Run two-device, offline, account-switch, backup/restore, deletion/undo, and interrupted-publication tests before considering any production proposal. Production requires a separate explicit approval and is outside this PR task.
+7. Any production proposal requires separate review and explicit user approval; production remains outside this PR task.
 
 ## 4. Required tests before enabling delta mode or proposing production rollout
 
@@ -173,13 +176,14 @@ The server acknowledgement must be committed locally only after the server retur
 
 The server-side schema and RPCs are now present on isolated staging, and their SQL-level idempotency, owner isolation, revision conflict, bounded-read, incomplete-group, gap, snapshot-CAS, marker-guard, and compaction behavior have been exercised with disposable staging fixtures. The follow-up migration closes two discovered read-integrity gaps and bounds receipt retention through snapshot-floor compaction.
 
-The client side remains snapshot-authoritative:
+Normal cloud sync remains snapshot-authoritative even though gated client primitives now exist:
 
-- Keep snapshot/chunk synchronization as the only enabled cloud protocol.
-- Do not publish local entity outbox rows until the shared client publisher, durable receipt acknowledgement, pull/apply cursor, and fail-closed snapshot recovery are integrated and tested.
-- Do not make the local entity projection authoritative until normal mutations, startup, restore, undo, account handoff, backup, deletion, and recovery use the same verified generation boundary.
-- Do not enable delta mode for existing staging accounts or production. The four existing staging accounts remain in snapshot mode.
-- Do not claim Phase 3.4 complete until browser and shared Android source paths pass the cross-path tests described above. APK generation and physical-device validation remain a separate explicitly authorised task.
+- Keep snapshot/chunk synchronization as the only enabled cloud protocol. The normal runtime must not instantiate the delta coordinator until the conflict and recovery paths are complete.
+- The publisher, durable receipt acknowledgement, remote reader, atomic local apply, inbound cursor, and bounded coordinator are implemented as shared-source primitives with mocked regression coverage. They are not yet wired into `cloud-sync.js`.
+- The coordinator deliberately refuses overlapping local and remote pending changes. Implement the three-way merge and conflict archive/recovery flow before treating this as a supported multi-device sync path.
+- The local IndexedDB entity generation is already the verified startup hydration source for accounts with a complete generation. Do not confuse that Phase 3.3 local hydration with enabling the remote delta event log as the cloud source; retain compatibility snapshots for backup/restore, offline recovery, and snapshot fallback.
+- Do not re-grant delta RPC execution or enable delta mode for existing staging accounts or production. The four existing staging accounts remain in snapshot mode and the six RPCs remain revoked for browser roles.
+- Do not claim Phase 3.4 complete until normal runtime integration, conflict/fallback/compaction, browser and shared Android source paths, and the cross-path staging tests described above pass. APK generation and physical-device validation remain a separate explicitly authorised task.
 - Do not claim unlimited-size or lag-free performance. Rendering, startup, memory, and device responsiveness require separate measured performance work.
 
 This is a partially implemented server protocol and a client-integration gate, not a claim that remote incremental synchronization has been delivered.
