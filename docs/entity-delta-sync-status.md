@@ -103,3 +103,36 @@ Do not re-grant browser execution until the publisher, remote reader/cursor, dur
 - Added a restart regression proving that a newer entity record and metadata survive while the compatibility snapshot is older, and that the snapshot mirror is refreshed without changing the workspace record revision. Existing 149,148-row bounded migration/hydration tests remain in place.
 - The compatibility snapshot is deliberately retained for the still snapshot/chunk-based offline queue and cloud sync. This does **not** enable remote delta sync; Phase 3.4's publisher/reader, receipts, remote cursor, compaction and cross-device rollout gates remain separate.
 - No production deployment, production Supabase mutation, live Nexus data/configuration change, merge, or APK build is part of this implementation.
+
+
+## 2026-11-14 client publisher/read-transport checkpoint
+
+### Implemented on PR #126
+
+- Added the dormant shared entity-delta-sync.js transport module. It is loaded by the storage-gated bootstrap and service-worker shell, but it does not create a client or issue RPC calls by itself.
+- Added a durable owner- and entity-generation-bound outbound cursor in the existing IndexedDB migrationMeta store. Cursor initialization requires an explicit verified-snapshot-baseline signal and records the current local outbox high-watermark, so changes already represented by the snapshot are not replayed as new deltas.
+- Added an atomic per-operation acknowledgement path. The operation rows, operation marker, sequence marker, and expected server revision advance are committed in one IndexedDB transaction only after a structurally valid server receipt is supplied. A stale generation, changed workspace, wrong owner, wrong operation, mismatched receipt, or incomplete local group fails closed.
+- Account entity cleanup now removes the delta cursor together with the owner manifest and local sequence metadata.
+- The publisher adapter checks the active Supabase user and local owner before and after network requests, refuses to run while a compatibility snapshot is pending, requires the local workspace to match the verified snapshot before first cursor initialization, preserves the expected server revision across ambiguous retries, and stops on revision conflicts or when remote changes must be applied first.
+- Added a strict remote-page validator for protocol mode, revision bounds, contiguous groups, operation IDs, ordinals, allowed collections, duplicate entity identities, change shape, and UTF-8 byte limits.
+- Added storage and mocked-client tests for baseline gating, atomic acknowledgement, generation invalidation, account switching, ambiguous committed-write retry, revision conflicts, malformed remote pages, and disabled-mode behavior.
+
+### Safety and activation boundary
+
+- **The normal cloud-sync runtime remains snapshot/chunk authoritative.** This checkpoint does not route ordinary sync through the delta adapter and does not enable delta mode for any account.
+- Supabase delta RPC execution remains revoked for PUBLIC, anon, and authenticated by the existing staging safety migration. No Supabase schema, grants, functions, data, or project settings were changed in this checkpoint.
+- No staging RPC was invoked. The new client path is verified with deterministic mocks and local IndexedDB harness tests; a live staging integration test remains blocked intentionally until the client reader/apply path and rollout contract are complete and RPC exposure is separately reviewed.
+- The remote reader currently validates and returns a complete page; it does not yet apply remote changes or advance an inbound cursor.
+- The publisher adapter is a transport primitive, not a production-ready cloud-sync integration. It is deliberately dormant until cloud-sync.js coordinates it with the snapshot queue, remote pull/apply, conflict recovery, and account rollout gates.
+
+### Remaining Phase 3.4 inventory
+
+| Workstream | Weight | Status |
+|---|---:|---|
+| Outbound publisher, stable retry, durable local receipt acknowledgement | 25% | Implemented as a gated transport/storage foundation; normal cloud sync not yet wired |
+| Remote page retrieval and strict validation | 10% | Implemented as a gated transport/validation primitive; no local apply |
+| Atomic remote entity application and durable inbound cursor | 25% | Pending |
+| Conflict reconciliation, snapshot fallback, compaction and retention integration | 20% | Pending |
+| Snapshot/restore/undo/account deletion/legacy-client compatibility and controlled rollout with staging end-to-end evidence | 20% | Pending |
+
+**Phase 3.4 assessment: 35% of the remaining client-protocol workstream implemented.** This is not a claim that incremental cloud sync is enabled or Phase 3.4 is complete. The main remaining work is inbound application, full runtime integration, recovery/compaction, and staged cross-device validation.

@@ -1,0 +1,215 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
+
+const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
+const source=readFileSync(resolve(root,'entity-delta-sync.js'),'utf8');
+const window={};
+const sandbox={window,Promise,Number,Object,Array,String,JSON,Error,Set,Math};
+vm.createContext(sandbox);
+vm.runInContext(source,sandbox,{filename:'entity-delta-sync.js'});
+const factory=window.NexusEntityDeltaSync.createClient;
+const payload={state:{streams:[],subjects:[],topics:[],history:[],exams:[]},featureState:{journal:[],papers:[],goals:[],studyLogs:[]}};
+const base={...payload,serverVersion:'snapshot-stamp'};
+const makeGroup=(operationId,firstSequence,changes)=>({
+  operationId,firstSequence,lastSequence:firstSequence+changes.length-1,
+  changeCount:changes.length,changes
+});
+const putChange=(collection,id)=>({
+  collection,id,operation:'put',position:0,value:{id,name:id}
+});
+function harness(options={}){
+  let activeOwner='account-A',localOwner='account-A';
+  const state={mode:'delta',protocol_version:1,head_revision:0,snapshot_revision:0,
+    compacted_through_revision:0,snapshot_updated_at:'snapshot-stamp',...(options.state||{})};
+  const groups=(options.groups||[makeGroup('op-one',11,[putChange('topics','topic-one')])]).map(group=>({...group,changes:group.changes.map(change=>({...change}))}));
+  let cursor=options.initialCursor?{...options.initialCursor}:null,ambiguousOnce=!!options.ambiguousOnce,changeOwnerOnPublish=!!options.changeOwnerOnPublish;
+  const receipts=new Map(),calls=[],acknowledgements=[];
+  const storage={
+    async readWorkspaceEntityDeltaCursor(){
+      return cursor?{ok:true,exists:true,cursor:{...cursor},generation:cursor.generation,workspaceRevision:cursor.workspaceRevision}:
+        {ok:true,exists:false,generation:'generation-A',workspaceRevision:1};
+    },
+    async initializeWorkspaceEntityDeltaCursor(owner,revision,stamp,verified){
+      if(!verified)return {ok:false,snapshotRequired:true,reason:'baseline'};
+      cursor={ownerId:owner,generation:'generation-A',workspaceRevision:1,
+        publishRevision:revision,acknowledgedSequence:10,remoteHeadRevision:revision,
+        snapshotUpdatedAt:stamp,requiresPull:false};
+      return {ok:true,created:true,cursor:{...cursor}};
+    },
+    async readWorkspaceEntityOutboxGroups(owner,afterSequence){
+      if(options.batchSnapshotRequired)return {ownerId:owner,snapshotRequired:true,reason:'fixture_snapshot_required'};
+      const pending=groups.filter(group=>group.lastSequence>afterSequence);
+      return {ownerId:owner,generation:'generation-A',workspaceRevision:2,
+        groups:pending,throughSequence:pending.length?pending[pending.length-1].lastSequence:afterSequence,
+        hasMore:false,snapshotRequired:false};
+    },
+    async acknowledgeWorkspaceEntityOutboxGroup(owner,batch,group,expectedRevision,receipt){
+      acknowledgements.push({owner,operationId:group.operationId,expectedRevision,receipt:{...receipt}});
+      if(options.failAcknowledgement)return {ok:false,snapshotRequired:true,reason:'fixture_ack_failed'};
+      if(!cursor||cursor.publishRevision!==expectedRevision||
+         cursor.acknowledgedSequence!==group.firstSequence-1)return {ok:false,snapshotRequired:true,reason:'cursor_mismatch'};
+      groups.splice(groups.findIndex(item=>item.operationId===group.operationId),1);
+      cursor={...cursor,workspaceRevision:batch.workspaceRevision,
+        publishRevision:receipt.revision,acknowledgedSequence:group.lastSequence,
+        remoteHeadRevision:receipt.head_revision,requiresPull:receipt.head_revision>receipt.revision};
+      return {ok:true,removed:group.changeCount,cursor:{...cursor}};
+    }
+  };
+  const client={
+    auth:{async getUser(){return {data:{user:{id:activeOwner}},error:null};}},
+    async rpc(name,args){
+      calls.push({name,args:args?JSON.parse(JSON.stringify(args)):null});
+      if(name==='nexus_get_entity_sync_state')return {data:{...state},error:null};
+      if(name==='nexus_read_entity_operations')return {data:options.readPage||{
+        mode:'delta',snapshot_required:false,head_revision:2,snapshot_revision:0,
+        compacted_through_revision:0,next_revision:1,bytes:100,
+        groups:[{revision:1,operation_id:'remote-op-one',changes:[
+          {ordinal:0,collection:'topics',id:'topic-remote',operation:'put',position:0,
+            value:{id:'topic-remote',name:'Remote topic'}}
+        ]}]
+      },error:null};
+      if(name!=='nexus_publish_entity_operation')return {data:null,error:{code:'unknown_rpc'}};
+      const operationId=args.p_operation_id;
+      const hash=JSON.stringify({expected_revision:args.p_expected_revision,changes:args.p_changes});
+      const prior=receipts.get(operationId);
+      if(prior){
+        if(prior.hash!==hash)return {data:{ok:false,code:'idempotency_conflict',head_revision:state.head_revision},error:null};
+        return {data:{...prior.receipt,replayed:true,head_revision:state.head_revision},error:null};
+      }
+      if(state.head_revision!==args.p_expected_revision){
+        return {data:{ok:false,code:'revision_conflict',head_revision:state.head_revision},error:null};
+      }
+      const revision=state.head_revision+1;
+      const receipt={ok:true,replayed:false,operation_id:operationId,revision,
+        change_count:args.p_changes.length,head_revision:revision};
+      receipts.set(operationId,{hash,receipt});
+      state.head_revision=revision;
+      if(changeOwnerOnPublish)activeOwner='account-B';
+      if(ambiguousOnce){ambiguousOnce=false;return {data:null,error:{code:'network_lost_after_commit'}};}
+      return {data:receipt,error:null};
+    }
+  };
+  const clientFactory=overrides=>factory({
+    enabled:options.enabled!==false,client,storage,
+    getActiveOwner:()=>activeOwner,getLocalOwner:()=>localOwner,
+    getLocalBase:async()=>base,getLocalWorkspace:async()=>payload,
+    getPendingSnapshot:async()=>options.pendingSnapshot?{status:'pending'}:null,
+    sameWorkspace:async(a,b)=>JSON.stringify(a.state)===JSON.stringify(b.state)&&
+      JSON.stringify(a.featureState)===JSON.stringify(b.featureState),
+    ...overrides
+  });
+  return {state,groups,cursor:()=>cursor,client:clientFactory(),calls,acknowledgements,
+    setActiveOwner:value=>{activeOwner=value;},setLocalOwner:value=>{localOwner=value;},
+    receipts};
+}
+
+{
+  const h=harness({enabled:false});
+  const result=await h.client.publishPending('account-A');
+  assert.equal(result.skipped,true);
+  assert.equal(h.calls.length,0,'the client must make no RPC calls while disabled');
+}
+{
+  const h=harness({state:{mode:'snapshot'}});
+  const result=await h.client.publishPending('account-A');
+  assert.equal(result.mode,'snapshot');
+  assert.equal(h.calls.some(call=>call.name==='nexus_publish_entity_operation'),false);
+}
+{
+  const h=harness({pendingSnapshot:true});
+  const result=await h.client.publishPending('account-A');
+  assert.equal(result.snapshotRequired,true);
+  assert.equal(h.cursor(),null,'a pending compatibility snapshot must block delta publication');
+}
+{
+  const h=harness({groups:[
+    makeGroup('op-one',11,[putChange('topics','topic-one')]),
+    makeGroup('op-two',12,[putChange('history','history-one')])
+  ]});
+  const result=await h.client.publishPending('account-A');
+  assert.equal(result.ok,true);
+  assert.equal(result.publishedCount,2);
+  assert.deepEqual(h.calls.filter(call=>call.name==='nexus_publish_entity_operation')
+    .map(call=>call.args.p_expected_revision),[0,1]);
+  assert.deepEqual(h.acknowledgements.map(item=>item.operationId),['op-one','op-two']);
+  assert.equal(h.cursor().publishRevision,2);
+  assert.equal(h.cursor().acknowledgedSequence,12);
+}
+{
+  const h=harness({ambiguousOnce:true});
+  const first=await h.client.publishPending('account-A');
+  assert.equal(first.ok,false);
+  assert.equal(first.receiptMayHaveCommitted,true);
+  assert.equal(h.acknowledgements.length,0,'an ambiguous network result must not acknowledge local data');
+  assert.equal(h.cursor().publishRevision,0,'an ambiguous result must leave the durable expected server revision unchanged');
+  assert.equal(h.cursor().acknowledgedSequence,10,'an ambiguous result must leave the durable local outbox cursor unchanged');
+  const second=await h.client.publishPending('account-A');
+  assert.equal(second.ok,true);
+  assert.equal(second.publishedCount,1);
+  const publishCalls=h.calls.filter(call=>call.name==='nexus_publish_entity_operation');
+  assert.deepEqual(publishCalls.map(call=>call.args.p_expected_revision),[0,0],
+    'retry must reuse the original expected server revision so the server receipt hash remains stable');
+  assert.equal(h.acknowledgements[0].receipt.replayed,true);
+}
+{
+  const h=harness({state:{head_revision:1},initialCursor:{ownerId:'account-A',generation:'generation-A',workspaceRevision:1,publishRevision:0,acknowledgedSequence:10,remoteHeadRevision:0,snapshotUpdatedAt:'snapshot-stamp',requiresPull:false}});
+  const result=await h.client.publishPending('account-A');
+  assert.equal(result.conflict,true);
+  assert.equal(h.acknowledgements.length,0,'a revision race must leave the local outbox untouched');
+}
+{
+  const h=harness({changeOwnerOnPublish:true});
+  const first=await h.client.publishPending('account-A');
+  assert.equal(first.ok,false);
+  assert.equal(first.receiptMayHaveCommitted,true);
+  assert.equal(h.acknowledgements.length,0,'an account switch during publication must prevent local acknowledgement');
+  h.setActiveOwner('account-A');
+  const retry=await h.client.publishPending('account-A');
+  assert.equal(retry.ok,true,'the same operation ID must recover through its durable server receipt');
+  assert.equal(h.acknowledgements.length,1);
+}
+{
+  const h=harness({batchSnapshotRequired:true});
+  const result=await h.client.publishPending('account-A');
+  assert.equal(result.snapshotRequired,true);
+  assert.equal(h.acknowledgements.length,0);
+}
+{
+  const h=harness({failAcknowledgement:true});
+  const result=await h.client.publishPending('account-A');
+  assert.equal(result.ok,false);
+  assert.equal(result.receiptMayHaveCommitted,true);
+  assert.equal(h.acknowledgements.length,1);
+}
+{
+  const validPage={mode:'delta',snapshot_required:false,head_revision:2,snapshot_revision:0,
+    compacted_through_revision:0,next_revision:1,bytes:100,
+    groups:[{revision:1,operation_id:'remote-op-one',changes:[
+      {ordinal:0,collection:'topics',id:'topic-remote',operation:'put',position:0,
+        value:{id:'topic-remote',name:'Remote topic'}}
+    ]}]};
+  const h=harness({readPage:validPage});
+  const result=await h.client.readRemotePage('account-A',0);
+  assert.equal(result.ok,true);
+  assert.equal(result.nextRevision,1);
+  assert.equal(result.groups.length,1);
+}
+{
+  const gapPage={mode:'delta',snapshot_required:false,head_revision:3,snapshot_revision:0,
+    compacted_through_revision:0,next_revision:3,
+    groups:[{revision:2,operation_id:'remote-op-two',changes:[
+      {ordinal:0,collection:'topics',id:'topic-remote',operation:'delete',position:null,value:null}
+    ]}]};
+  const h=harness({readPage:gapPage});
+  const result=await h.client.readRemotePage('account-A',0);
+  assert.equal(result.snapshotRequired,true,'a missing remote revision must fail closed before local application');
+}
+{
+  const h=harness({state:{head_revision:1},groups:[],initialCursor:{ownerId:'account-A',generation:'generation-A',workspaceRevision:1,publishRevision:0,acknowledgedSequence:10,remoteHeadRevision:0,snapshotUpdatedAt:'snapshot-stamp',requiresPull:false}});
+  const result=await h.client.publishPending('account-A');
+  assert.equal(result.requiresPull,true,'remote changes with no local retry group must block outbound publication');
+}
+console.log('Nexus entity-delta client tests passed: feature gate, baseline verification, stable receipt retry, owner checks, conflict safety, and strict remote-page validation.');

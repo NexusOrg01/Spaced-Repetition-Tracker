@@ -487,6 +487,7 @@
   }
   function entityManifestKey(ownerId){return 'workspace-entities:'+encodeURIComponent(entityOwnerKey(ownerId));}
   function entitySequenceKey(ownerId){return 'workspace-entity-sequence:'+encodeURIComponent(entityOwnerKey(ownerId));}
+  function entityDeltaCursorKey(ownerId){return 'workspace-entity-delta-cursor:'+encodeURIComponent(entityOwnerKey(ownerId));}
   function entityOwnerRecordPrefix(ownerId){return 'workspace-entity:'+encodeURIComponent(entityOwnerKey(ownerId))+':';}
   function entityRecordPrefix(ownerId,generation){return entityOwnerRecordPrefix(ownerId)+encodeURIComponent(generation)+':';}
   function entityOutboxPrefix(ownerId){return 'workspace-entity-change:'+encodeURIComponent(entityOwnerKey(ownerId))+':';}
@@ -1423,6 +1424,253 @@
     }
     return removed;
   }
+
+  // The outbound cursor and outbox acknowledgement share one IndexedDB commit.
+  // This preserves the server's expected revision across ambiguous network results:
+  // a retry reuses the same operation ID and expected revision, allowing the server
+  // receipt to prove whether the original request committed.
+  async function readWorkspaceEntityDeltaCursor(ownerId){
+    const owner=entityOwnerKey(ownerId),key=entityDeltaCursorKey(owner);
+    if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner){
+      return {ok:false,unavailable:true};
+    }
+    return transaction([WORKSPACES,'migrationMeta'],'readonly',(tx,set)=>{
+      const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta');
+      const values={manifest:null,workspace:null,cursor:null};let remaining=3;
+      const finish=()=>{
+        remaining--;
+        if(remaining!==0)return;
+        const manifest=values.manifest,row=values.workspace,cursor=values.cursor;
+        const workspaceRevision=row&&Number.isSafeInteger(Number(row.workspaceRevision))
+          ?Number(row.workspaceRevision):(row&&Number.isSafeInteger(Number(row.revision))?Number(row.revision):null);
+        if(entityRemovalOwners.has(owner)||!enabled||committedOwnerId!==owner||
+           !manifest||manifest.ownerId!==owner||manifest.status!=='ready'||
+           !manifest.activeGeneration||!validWorkspaceRow(row,owner)||
+           !Number.isSafeInteger(workspaceRevision)||
+           Number(manifest.sourceWorkspaceRevision)!==workspaceRevision){
+          set({ok:false,snapshotRequired:true,reason:'entity_projection_unavailable'});
+          return;
+        }
+        if(!cursor){
+          set({ok:true,exists:false,ownerId:owner,generation:manifest.activeGeneration,
+            workspaceRevision});
+          return;
+        }
+        const valid=cursor.key===key&&cursor.ownerId===owner&&cursor.protocolVersion===1&&
+          cursor.generation===manifest.activeGeneration&&
+          Number.isSafeInteger(Number(cursor.workspaceRevision))&&
+          Number(cursor.workspaceRevision)<=workspaceRevision&&
+          Number.isSafeInteger(Number(cursor.publishRevision))&&Number(cursor.publishRevision)>=0&&
+          Number.isSafeInteger(Number(cursor.acknowledgedSequence))&&Number(cursor.acknowledgedSequence)>=0&&
+          Number.isSafeInteger(Number(cursor.remoteHeadRevision))&&Number(cursor.remoteHeadRevision)>=0&&
+          Number(cursor.remoteHeadRevision)>=Number(cursor.publishRevision)&&
+          typeof cursor.snapshotUpdatedAt==='string'&&cursor.snapshotUpdatedAt.length>0&&
+          typeof cursor.requiresPull==='boolean'&&
+          cursor.requiresPull===(Number(cursor.remoteHeadRevision)>Number(cursor.publishRevision));
+        if(!valid){
+          set({ok:false,snapshotRequired:true,reason:'local_delta_cursor_mismatch'});
+          return;
+        }
+        set({ok:true,exists:true,cursor:{...cursor},generation:manifest.activeGeneration,
+          workspaceRevision});
+      };
+      const manifestRequest=meta.get(entityManifestKey(owner));
+      const workspaceRequest=entities.get(workspaceKey(owner));
+      const cursorRequest=meta.get(key);
+      manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;finish();};
+      workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;finish();};
+      cursorRequest.onsuccess=()=>{values.cursor=cursorRequest.result||null;finish();};
+    });
+  }
+
+  async function initializeWorkspaceEntityDeltaCursor(ownerId,expectedServerRevision,snapshotUpdatedAt,baselineVerified){
+    const owner=entityOwnerKey(ownerId),key=entityDeltaCursorKey(owner),
+      expected=Number(expectedServerRevision);
+    if(baselineVerified!==true)return {ok:false,snapshotRequired:true,reason:'snapshot_baseline_not_verified'};
+    if(!Number.isSafeInteger(expected)||expected<0||
+       typeof snapshotUpdatedAt!=='string'||!snapshotUpdatedAt){
+      return {ok:false,snapshotRequired:true,reason:'invalid_snapshot_baseline'};
+    }
+    if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner){
+      return {ok:false,unavailable:true};
+    }
+    return transaction([WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
+      const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta');
+      const values={manifest:null,workspace:null,cursor:null,sequence:null};let remaining=4;
+      const finish=()=>{
+        remaining--;
+        if(remaining!==0)return;
+        const manifest=values.manifest,row=values.workspace,cursor=values.cursor,
+          sequence=values.sequence;
+        const workspaceRevision=row&&Number.isSafeInteger(Number(row.workspaceRevision))
+          ?Number(row.workspaceRevision):(row&&Number.isSafeInteger(Number(row.revision))?Number(row.revision):null);
+        if(entityRemovalOwners.has(owner)||!enabled||committedOwnerId!==owner||
+           !manifest||manifest.ownerId!==owner||manifest.status!=='ready'||
+           !manifest.activeGeneration||!validWorkspaceRow(row,owner)||
+           !Number.isSafeInteger(workspaceRevision)||
+           Number(manifest.sourceWorkspaceRevision)!==workspaceRevision||
+           (sequence&&sequence.ownerId!==owner)){
+          set({ok:false,snapshotRequired:true,reason:'entity_projection_unavailable'});
+          return;
+        }
+        if(cursor){
+          const valid=cursor.key===key&&cursor.ownerId===owner&&cursor.protocolVersion===1&&
+            cursor.generation===manifest.activeGeneration&&
+            Number.isSafeInteger(Number(cursor.workspaceRevision))&&
+            Number(cursor.workspaceRevision)<=workspaceRevision&&
+            Number.isSafeInteger(Number(cursor.publishRevision))&&Number(cursor.publishRevision)>=0&&
+            Number.isSafeInteger(Number(cursor.acknowledgedSequence))&&Number(cursor.acknowledgedSequence)>=0&&
+            Number.isSafeInteger(Number(cursor.remoteHeadRevision))&&Number(cursor.remoteHeadRevision)>=0&&
+            Number(cursor.remoteHeadRevision)>=Number(cursor.publishRevision)&&
+            typeof cursor.snapshotUpdatedAt==='string'&&cursor.snapshotUpdatedAt===snapshotUpdatedAt&&
+            typeof cursor.requiresPull==='boolean'&&
+            cursor.requiresPull===(Number(cursor.remoteHeadRevision)>Number(cursor.publishRevision));
+          if(!valid){
+            set({ok:false,snapshotRequired:true,reason:'local_delta_cursor_mismatch'});
+            return;
+          }
+          set({ok:true,created:false,cursor:{...cursor},generation:manifest.activeGeneration,
+            workspaceRevision});
+          return;
+        }
+        const highWatermark=sequence?Number(sequence.value):0;
+        if(!Number.isSafeInteger(highWatermark)||highWatermark<0){
+          set({ok:false,snapshotRequired:true,reason:'invalid_local_outbox_high_watermark'});
+          return;
+        }
+        const cursorRecord={
+          key,ownerId:owner,protocolVersion:1,generation:manifest.activeGeneration,
+          workspaceRevision,publishRevision:expected,acknowledgedSequence:highWatermark,
+          remoteHeadRevision:expected,snapshotUpdatedAt,requiresPull:false,
+          createdAt:timestamp(),updatedAt:timestamp()
+        };
+        meta.put(cursorRecord);
+        set({ok:true,created:true,cursor:cursorRecord,generation:manifest.activeGeneration,
+          workspaceRevision});
+      };
+      const manifestRequest=meta.get(entityManifestKey(owner));
+      const workspaceRequest=entities.get(workspaceKey(owner));
+      const cursorRequest=meta.get(key);
+      const sequenceRequest=meta.get(entitySequenceKey(owner));
+      manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;finish();};
+      workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;finish();};
+      cursorRequest.onsuccess=()=>{values.cursor=cursorRequest.result||null;finish();};
+      sequenceRequest.onsuccess=()=>{values.sequence=sequenceRequest.result||null;finish();};
+    });
+  }
+
+  async function acknowledgeWorkspaceEntityOutboxGroup(ownerId,batch,group,expectedServerRevision,receipt){
+    const owner=entityOwnerKey(ownerId),expected=Number(expectedServerRevision);
+    if(!batch||batch.ownerId!==owner||!group||typeof group.operationId!=='string'||
+       !group.operationId||!Number.isSafeInteger(Number(group.firstSequence))||
+       !Number.isSafeInteger(Number(group.lastSequence))||
+       !Number.isSafeInteger(Number(group.changeCount))||
+       !Array.isArray(group.changes)||group.changes.length!==Number(group.changeCount)||
+       Number(group.firstSequence)<1||Number(group.lastSequence)<Number(group.firstSequence)||
+       Number(group.lastSequence)-Number(group.firstSequence)+1!==Number(group.changeCount)||
+       !Number.isSafeInteger(expected)||expected<0){
+      return {ok:false,snapshotRequired:true,reason:'invalid_local_acknowledgement'};
+    }
+    const revision=Number(receipt&&receipt.revision),head=Number(receipt&&receipt.head_revision),
+      changeCount=Number(receipt&&receipt.change_count);
+    if(!receipt||receipt.ok!==true||receipt.operation_id!==group.operationId||
+       !Number.isSafeInteger(revision)||revision!==expected+1||
+       !Number.isSafeInteger(head)||head<revision||changeCount!==Number(group.changeCount)){
+      return {ok:false,snapshotRequired:true,reason:'invalid_server_receipt'};
+    }
+    if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner){
+      return {ok:false,unavailable:true};
+    }
+    const first=Number(group.firstSequence),last=Number(group.lastSequence),count=Number(group.changeCount),
+      range=entityOutboxSequenceRange(owner,first-1,last);
+    if(!range)return {ok:false,snapshotRequired:true,reason:'key_range_unavailable'};
+    const cursorKey=entityDeltaCursorKey(owner),markerKey=entityOperationKey(owner,group.operationId),
+      sequenceMarkerKey=entityOperationSequenceKey(owner,last,group.operationId);
+    return transaction(['outbox',WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
+      const outbox=tx.objectStore('outbox'),entities=tx.objectStore(WORKSPACES),
+        meta=tx.objectStore('migrationMeta');
+      const values={manifest:null,workspace:null,cursor:null,marker:null,sequenceMarker:null,rows:null};
+      let remaining=6,finished=false;
+      const complete=()=>{
+        remaining--;
+        if(remaining!==0||finished)return;
+        finished=true;
+        const manifest=values.manifest,row=values.workspace,cursor=values.cursor,
+          marker=values.marker,sequenceMarker=values.sequenceMarker,rows=values.rows||[];
+        const workspaceRevision=row&&Number.isSafeInteger(Number(row.workspaceRevision))
+          ?Number(row.workspaceRevision):(row&&Number.isSafeInteger(Number(row.revision))?Number(row.revision):null);
+        const validCursor=cursor&&cursor.key===cursorKey&&cursor.ownerId===owner&&
+          cursor.protocolVersion===1&&cursor.generation===manifest?.activeGeneration&&
+          Number(cursor.publishRevision)===expected&&
+          Number(cursor.acknowledgedSequence)===first-1&&
+          Number.isSafeInteger(Number(cursor.workspaceRevision))&&
+          Number(cursor.workspaceRevision)<=Number(batch.workspaceRevision)&&
+          Number(cursor.remoteHeadRevision)===expected&&cursor.requiresPull===false&&
+          typeof cursor.snapshotUpdatedAt==='string'&&cursor.snapshotUpdatedAt;
+        if(entityRemovalOwners.has(owner)||!enabled||committedOwnerId!==owner||
+           !manifest||manifest.ownerId!==owner||manifest.status!=='ready'||
+           manifest.activeGeneration!==batch.generation||
+           !validWorkspaceRow(row,owner)||!Number.isSafeInteger(workspaceRevision)||
+           workspaceRevision!==Number(batch.workspaceRevision)||
+           Number(manifest.sourceWorkspaceRevision)!==workspaceRevision||
+           !Number.isSafeInteger(Number(batch.workspaceRevision))||
+           !validCursor||!marker||marker.key!==markerKey||marker.ownerId!==owner||
+           marker.generation!==manifest.activeGeneration||marker.kind!=='operation-marker'||
+           marker.operationId!==group.operationId||Number(marker.firstSequence)!==first||
+           Number(marker.lastSequence)!==last||Number(marker.count)!==count||
+           !sequenceMarker||sequenceMarker.key!==sequenceMarkerKey||
+           sequenceMarker.ownerId!==owner||sequenceMarker.generation!==manifest.activeGeneration||
+           sequenceMarker.kind!=='operation-marker-sequence'||
+           sequenceMarker.operationId!==group.operationId||
+           Number(sequenceMarker.lastSequence)!==last||rows.length!==count){
+          set({ok:false,snapshotRequired:true,reason:'local_outbox_changed_before_acknowledgement'});
+          return;
+        }
+        for(let index=0;index<rows.length;index++){
+          const rowChange=rows[index],change=group.changes[index],sequence=first+index;
+          if(!rowChange||rowChange.ownerId!==owner||rowChange.generation!==manifest.activeGeneration||
+             rowChange.kind!=='change'||rowChange.operationId!==group.operationId||
+             Number(rowChange.sequence)!==sequence||rowChange.key!==entityOutboxKey(owner,sequence)||
+             !change||change.collection!==rowChange.collection||change.id!==rowChange.entityId||
+             change.operation!==rowChange.operation){
+            set({ok:false,snapshotRequired:true,reason:'local_outbox_group_mismatch'});
+            return;
+          }
+          if(rowChange.operation==='put'){
+            if(change.position!==rowChange.position||
+               JSON.stringify(change.value)!==JSON.stringify(rowChange.value)){
+              set({ok:false,snapshotRequired:true,reason:'local_outbox_group_mismatch'});
+              return;
+            }
+          }else if(change.value!==undefined&&change.value!==null){
+            set({ok:false,snapshotRequired:true,reason:'local_outbox_group_mismatch'});
+            return;
+          }
+        }
+        const nextCursor={
+          ...cursor,workspaceRevision,publishRevision:revision,acknowledgedSequence:last,
+          remoteHeadRevision:head,requiresPull:head>revision,updatedAt:timestamp()
+        };
+        for(const rowChange of rows)outbox.delete(rowChange.key);
+        outbox.delete(markerKey);
+        outbox.delete(sequenceMarkerKey);
+        meta.put(nextCursor);
+        set({ok:true,removed:rows.length,cursor:nextCursor});
+      };
+      const requests=[
+        ['manifest',meta.get(entityManifestKey(owner))],
+        ['workspace',entities.get(workspaceKey(owner))],
+        ['cursor',meta.get(cursorKey)],
+        ['marker',outbox.get(markerKey)],
+        ['sequenceMarker',outbox.get(sequenceMarkerKey)],
+        ['rows',outbox.getAll(range,count+1)]
+      ];
+      for(const [name,request] of requests){
+        request.onsuccess=()=>{values[name]=request.result||null;complete();};
+      }
+    });
+  }
+
   async function readEntityManifest(ownerId){
     const owner=entityOwnerKey(ownerId),key=entityManifestKey(owner);
     return transaction(['migrationMeta'],'readonly',(tx,set)=>{
@@ -1602,27 +1850,31 @@
       throw new Error('The active account changed before entity cleanup could begin.');
     }
 
-    const manifestKey=entityManifestKey(owner),sequenceKey=entitySequenceKey(owner);
+    const manifestKey=entityManifestKey(owner),sequenceKey=entitySequenceKey(owner),
+      cursorKey=entityDeltaCursorKey(owner);
     const removedMetadata=await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
       const store=tx.objectStore('migrationMeta');
-      const manifestRequest=store.get(manifestKey),sequenceRequest=store.get(sequenceKey);
-      const values={manifest:null,sequence:null};let remaining=2;
+      const manifestRequest=store.get(manifestKey),sequenceRequest=store.get(sequenceKey),
+        cursorRequest=store.get(cursorKey);
+      const values={manifest:null,sequence:null,cursor:null};let remaining=3;
       const finish=()=>{
         remaining--;
         if(remaining!==0)return;
         if((values.manifest&&values.manifest.ownerId!==owner)||
-           (values.sequence&&values.sequence.ownerId!==owner)){
+           (values.sequence&&values.sequence.ownerId!==owner)||
+           (values.cursor&&values.cursor.ownerId!==owner)){
           try{tx.abort();}catch(_){}
           return;
         }
-        // Remove publication metadata first so readers cannot treat residual rows
-        // as an active projection while the bounded physical cleanup proceeds.
         store.delete(manifestKey);
         store.delete(sequenceKey);
-        set({manifestRemoved:!!values.manifest,sequenceRemoved:!!values.sequence});
+        store.delete(cursorKey);
+        set({manifestRemoved:!!values.manifest,sequenceRemoved:!!values.sequence,
+          cursorRemoved:!!values.cursor});
       };
       manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;finish();};
       sequenceRequest.onsuccess=()=>{values.sequence=sequenceRequest.result||null;finish();};
+      cursorRequest.onsuccess=()=>{values.cursor=cursorRequest.result||null;finish();};
     });
 
     const removeOwnerPrefix=async(storeName,prefix)=>{
@@ -1661,7 +1913,8 @@
     const entityRowsRemoved=await removeOwnerPrefix('workspaces',entityOwnerRecordPrefix(owner));
     const outboxRowsRemoved=await removeOwnerPrefix('outbox',entityOutboxPrefix(owner));
     return {ownerId:owner,entityRowsRemoved,outboxRowsRemoved,
-      manifestRemoved:removedMetadata.manifestRemoved,sequenceRemoved:removedMetadata.sequenceRemoved};
+      manifestRemoved:removedMetadata.manifestRemoved,sequenceRemoved:removedMetadata.sequenceRemoved,
+      cursorRemoved:removedMetadata.cursorRemoved};
   }
 
   function restoreNativeProperty() {
@@ -2164,6 +2417,9 @@
     readWorkspaceEntityOutbox,
     readWorkspaceEntityOutboxGroups,
     acknowledgeWorkspaceEntityOutbox,
+    readWorkspaceEntityDeltaCursor,
+    initializeWorkspaceEntityDeltaCursor,
+    acknowledgeWorkspaceEntityOutboxGroup,
     getStatus: () => ({
       enabled,
       database: DB_NAME,

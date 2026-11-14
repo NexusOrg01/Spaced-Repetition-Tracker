@@ -91,7 +91,7 @@ async function verifyStorageBootstrap() {
     'workspace-isolation-guard.js', 'backup-restore-utils.js', 'offline-sync-queue.js',
     'curriculum-integrity.js', 'explore-curriculum.js', 'app-core.js', 'fsrs-bundle.js',
     'study-hub.js', 'nexus-build-config.js', 'cloud-sync-recovery.js',
-    'workspace-sync-merge.js', 'cloud-chunk-storage.js', 'cloud-sync.js', 'nexus-app-inline.js'
+    'workspace-sync-merge.js', 'cloud-chunk-storage.js', 'entity-delta-sync.js', 'cloud-sync.js', 'nexus-app-inline.js'
   ];
   assert.equal(html.split('<script src="./nexus-storage.js"></script>').length - 1, 1,
     'index.html must load the storage adapter exactly once.');
@@ -113,7 +113,7 @@ async function verifyStorageBootstrap() {
   for (const asset of [
     'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
     'explore-curriculum.js', 'app-core.js', 'study-hub.js', 'nexus-build-config.js',
-    'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-chunk-storage.js', 'cloud-sync.js', 'workspace-isolation-guard.js', 'fsrs-bundle.js'
+    'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-chunk-storage.js', 'entity-delta-sync.js', 'cloud-sync.js', 'workspace-isolation-guard.js', 'fsrs-bundle.js'
   ]) {
     assert.ok(!html.includes('<script src="./' + asset + '"></script>'),
       'App module ' + asset + ' must not execute directly from index.html before durable storage initialization.');

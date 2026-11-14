@@ -1383,4 +1383,101 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'outbox grouping must not change the snapshot-backed authoritative storage path');
 }
 
-console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, clear scoping, failed-write recovery, and account-handoff isolation.');
+
+// The delta publisher cursor is bound to the active entity generation. A durable
+// receipt and its local outbox deletion/cursor advance must commit atomically.
+{
+  const owner='entity-delta-cursor-owner';
+  const state={
+    schema:3,streams:[{id:'delta-stream',name:'Commerce'}],
+    subjects:[{id:'delta-subject',streamId:'delta-stream',name:'Accounting'}],
+    topics:[{id:'delta-topic-existing',subjectId:'delta-subject',name:'Existing topic'}],
+    history:[],exams:[],settings:{}
+  };
+  const features={version:1,journal:[],papers:[],goals:[],studyLogs:[],selectedTopicIds:[]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true,'delta cursor fixture must initialize durable storage');
+  await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+  const denied=await loaded.api.initializeWorkspaceEntityDeltaCursor(
+    owner,0,'snapshot-baseline-2026-11-14',false);
+  assert.equal(denied.snapshotRequired,true,
+    'a publisher cursor must not be initialized without a verified matching snapshot baseline');
+  const initialized=await loaded.api.initializeWorkspaceEntityDeltaCursor(
+    owner,0,'snapshot-baseline-2026-11-14',true);
+  assert.equal(initialized.ok,true);
+  assert.equal(initialized.created,true);
+  assert.equal(initialized.cursor.acknowledgedSequence,0);
+  assert.equal(initialized.cursor.publishRevision,0);
+
+  const first=await loaded.api.writeWorkspaceEntityChanges(owner,[
+    {collection:'topics',id:'delta-topic-new',operation:'put',position:null,
+      value:{id:'delta-topic-new',subjectId:'delta-subject',name:'New topic'}},
+    {collection:'journal',id:'delta-journal-new',operation:'put',position:null,
+      value:{id:'delta-journal-new',subjectId:'delta-subject',text:'Delta note'}}
+  ],{operationId:'delta-operation-one'});
+  const second=await loaded.api.writeWorkspaceEntityChanges(owner,[
+    {collection:'history',id:'delta-history-new',operation:'put',position:null,
+      value:{id:'delta-history-new',topicId:'delta-topic-existing',rating:4,reviewedAt:'2026-11-14'}}
+  ],{operationId:'delta-operation-two'});
+  assert.equal(first.count,2);
+  assert.equal(second.count,1);
+  const page=await loaded.api.readWorkspaceEntityOutboxGroups(owner,0,1000,4096);
+  assert.equal(page.snapshotRequired,false);
+  assert.equal(page.groups.length,2);
+  const outbox=idb.databases.get('nexus-workspace-v1').stores.get('outbox');
+  const pendingCount=()=>[...outbox.values()].filter(row=>row&&row.ownerId===owner&&row.kind==='change').length;
+  const invalidReceipt=await loaded.api.acknowledgeWorkspaceEntityOutboxGroup(owner,page,page.groups[0],0,{
+    ok:true,operation_id:'delta-operation-one',revision:1,head_revision:1,change_count:1
+  });
+  assert.equal(invalidReceipt.ok,false,
+    'a receipt with a mismatched change count must not acknowledge local rows');
+  assert.equal(pendingCount(),3,'invalid receipts must leave every local outbox row intact');
+
+  const firstAck=await loaded.api.acknowledgeWorkspaceEntityOutboxGroup(owner,page,page.groups[0],0,{
+    ok:true,replayed:false,operation_id:'delta-operation-one',revision:1,head_revision:1,change_count:2
+  });
+  assert.equal(firstAck.ok,true);
+  assert.equal(firstAck.removed,2);
+  assert.equal(firstAck.cursor.publishRevision,1);
+  assert.equal(firstAck.cursor.acknowledgedSequence,first.lastSequence);
+  assert.equal(firstAck.cursor.requiresPull,false);
+  assert.equal(pendingCount(),1,'only the server-receipted first operation group should be removed');
+
+  const secondPage=await loaded.api.readWorkspaceEntityOutboxGroups(
+    owner,firstAck.cursor.acknowledgedSequence,1000,4096);
+  assert.equal(secondPage.groups.length,1);
+  assert.equal(secondPage.groups[0].operationId,'delta-operation-two');
+  const secondAck=await loaded.api.acknowledgeWorkspaceEntityOutboxGroup(
+    owner,secondPage,secondPage.groups[0],1,{
+      ok:true,replayed:false,operation_id:'delta-operation-two',revision:2,head_revision:2,change_count:1
+    });
+  assert.equal(secondAck.ok,true);
+  assert.equal(secondAck.cursor.publishRevision,2);
+  assert.equal(secondAck.cursor.acknowledgedSequence,second.lastSequence);
+  assert.equal(pendingCount(),0);
+
+  const changedHead=await loaded.api.acknowledgeWorkspaceEntityOutboxGroup(
+    owner,secondPage,secondPage.groups[0],2,{
+      ok:true,replayed:true,operation_id:'delta-operation-two',revision:3,head_revision:3,change_count:1
+    });
+  assert.equal(changedHead.ok,false,
+    'a repeated or stale local acknowledgement must not advance the cursor twice');
+
+  await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+  const staleCursor=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(staleCursor.snapshotRequired,true,
+    'a replacement entity generation must invalidate the old outbound cursor');
+  const cursorKey='workspace-entity-delta-cursor:'+encodeURIComponent(owner);
+  await loaded.api.deleteWorkspaceEntities(owner);
+  assert.equal(idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta').has(cursorKey),false,
+    'permanent account cleanup must remove the owner-bound delta cursor');
+}
+
+console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, delta cursor receipt atomicity, clear scoping, failed-write recovery, and account-handoff isolation.');

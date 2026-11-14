@@ -15,6 +15,7 @@
     'cloud-sync-recovery.js',
     'workspace-sync-merge.js',
     'cloud-chunk-storage.js',
+    'entity-delta-sync.js',
     'cloud-sync.js',
     'nexus-app-inline.js'
   ];
