@@ -2181,8 +2181,18 @@
         }
         if(intent.phase==='published'){
           const prior=intent.publication||{};
-          set(prior.updated_at===stamp&&Number(prior.snapshotRevision)===snapshot
-            ?{ok:true,alreadyPublished:true,intent:{...intent}}:{ok:false,reason:'recovery_publication_mismatch'});
+          if(prior.updated_at!==stamp||Number(prior.snapshotRevision)!==snapshot){
+            set({ok:false,reason:'recovery_publication_mismatch'});return;
+          }
+          // The candidate snapshot may remain unchanged while later server
+          // operations arrive. Preserve the furthest verified head for the
+          // cursor created by the final local commit.
+          const refreshed={...intent,publication:{...prior,
+            headRevision:Math.max(Number(prior.headRevision)||snapshot,head),
+            compactedThroughRevision:Math.max(Number(prior.compactedThroughRevision)||snapshot,compacted)},
+            updatedAt:timestamp()};
+          store.put(refreshed);
+          set({ok:true,alreadyPublished:true,intent:refreshed});
           return;
         }
         if(intent.phase!=='staged'){set({ok:false,reason:'recovery_generation_not_staged'});return;}
