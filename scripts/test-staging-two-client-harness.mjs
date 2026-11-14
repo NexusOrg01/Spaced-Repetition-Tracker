@@ -27,7 +27,7 @@ assert.match(source,/nexus_publish_entity_operation/);
 assert.match(source,/nexus_read_entity_operations/);
 assert.match(source,/revision_conflict/);
 assert.match(source,/idempotency_conflict/);
-assert.match(source,/localStorage|sessionStorage/,'explicitly inspect client storage usage');
+assert.doesNotMatch(source,/localStorage|sessionStorage/,'credentials must not be persisted in browser storage');
 assert.doesNotMatch(source,/service_role|service-role/i,
   'the browser harness must not contain service-role credentials');
 assert.match(source,/input\('passwordA'\)\.value=''/,
