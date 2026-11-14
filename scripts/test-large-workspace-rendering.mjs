@@ -472,9 +472,9 @@ assert.ok(renderAllSource.indexOf('if(window.NexusDeferInitialRender)')<renderAl
   'the first large-workspace render must be deferred before any Overview aggregation runs');
 assert.ok(appCore.includes('window.NexusRenderAll=()=>renderAll();'),
   'bootstrap must call the current, Study Hub-wrapped renderAll binding');
-assert.ok(bootstrap.indexOf('window.NexusDeferInitialRender = true;')<bootstrap.indexOf('for (const asset of RUNTIME_ASSETS) {'),
+assert.ok(bootstrap.indexOf('window.NexusDeferInitialRender = true;')<bootstrap.indexOf('for (const asset of RUNTIME_ASSETS) await loadScript(asset);'),
   'startup must defer the initial core render before loading app modules');
-assert.ok(bootstrap.indexOf('window.NexusDeferInitialRender = false;')>bootstrap.indexOf('for (const asset of RUNTIME_ASSETS) {')&&bootstrap.includes('window.NexusRenderAll();'),
+assert.ok(bootstrap.indexOf('window.NexusDeferInitialRender = false;')>bootstrap.indexOf('for (const asset of RUNTIME_ASSETS) await loadScript(asset);')&&bootstrap.includes('window.NexusRenderAll();'),
   'startup must render exactly after all runtime modules have loaded');
 assert.ok(studyHub.includes('if(!window.NexusDeferInitialRender)'),
   'Study Hub must not duplicate the dashboard metrics pass during staged startup');
