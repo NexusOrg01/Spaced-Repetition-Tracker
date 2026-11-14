@@ -25,6 +25,25 @@
     }
     return bytes;
   }
+  function stableJson(value){
+    if(Array.isArray(value))return '['+value.map(stableJson).join(',')+']';
+    if(value&&typeof value==='object')return '{'+Object.keys(value).sort().map(key=>JSON.stringify(key)+':'+stableJson(value[key])).join(',')+'}';
+    return JSON.stringify(value);
+  }
+  async function workspaceDigest(payload){
+    const cryptoRef=root&&root.crypto;
+    const Encoder=root&&root.TextEncoder||(typeof TextEncoder==='function'?TextEncoder:null);
+    if(!cryptoRef||!cryptoRef.subtle||!Encoder)throw new Error('Secure recovery snapshot hashing is unavailable.');
+    const candidate={...payload,__nexusDeltaSync:'entity-delta-v1'};
+    const digest=await cryptoRef.subtle.digest('SHA-256',new Encoder().encode(stableJson(candidate)));
+    return Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join('');
+  }
+  function recoveryIntentId(){
+    const cryptoRef=root&&root.crypto;
+    if(!cryptoRef||typeof cryptoRef.randomUUID!=='function')
+      throw new Error('Secure recovery intent ID generation is unavailable.');
+    return 'nexus-recovery-'+cryptoRef.randomUUID();
+  }
   function validateChanges(changes){
     if(!Array.isArray(changes)||changes.length<1||changes.length>MAX_CHANGES)return null;
     const seen=new Set(),normalized=[];
@@ -296,6 +315,8 @@
     const getPendingSnapshot=options.getPendingSnapshot,sameWorkspace=options.sameWorkspace;
     const applyWorkspace=options.applyWorkspace;
     const mergeWorkspace=options.mergeWorkspace||null;
+    const publishSnapshot=options.publishSnapshot||null;
+    const commitLocalRecovery=options.commitLocalRecovery||null;
 
     async function assertOwner(owner){
       if(!enabled)throw new Error('Entity-delta client is disabled.');
@@ -737,6 +758,120 @@
       }
     }
 
+    async function publishConflictRecovery(ownerId,recoveryOptions={}){
+      if(!enabled)return {ok:false,skipped:true,reason:'feature_disabled'};
+      const owner=String(ownerId||'').trim();
+      const publisher=recoveryOptions.publishSnapshot||publishSnapshot;
+      const localCommit=recoveryOptions.commitLocalRecovery||commitLocalRecovery;
+      if(!owner||!storage||typeof storage.beginWorkspaceEntityRecovery!=='function'||
+         typeof storage.readWorkspaceEntityRecovery!=='function'||
+         typeof storage.markWorkspaceEntityRecoveryPublished!=='function'||
+         typeof storage.commitWorkspaceEntityRecovery!=='function'||
+         typeof storage.migrateWorkspaceEntities!=='function'||
+         typeof storage.readWorkspaceEntities!=='function'||
+         typeof publisher!=='function'||typeof localCommit!=='function')
+        return unavailable('local_recovery_commit_dependencies_unavailable');
+      try{
+        await assertOwner(owner);
+        let recovery=await storage.readWorkspaceEntityRecovery(owner);
+        let intent=recovery&&recovery.intent||null,prepared=null,candidate=null,staged=null;
+        if(!intent||intent.phase==='prepared'){
+          prepared=await prepareConflictRecovery(owner,recoveryOptions);
+          if(!prepared||prepared.ok!==true)return prepared||unavailable('recovery_preparation_unavailable');
+          candidate=prepared.payload;
+          const digest=await workspaceDigest(candidate);
+          if(intent){
+            if(intent.candidateDigest!==digest||
+               intent.expectedHeadRevision!==prepared.expectedHeadRevision||
+               intent.snapshotRevision!==prepared.snapshotRevision||
+               intent.baseUpdatedAt!==prepared.snapshotUpdatedAt){
+              return {ok:false,retryable:true,snapshotRequired:true,
+                reason:'prepared_recovery_intent_is_stale',intentId:intent.intentId};
+            }
+          }else{
+            const metadata={};
+            for(const [key,value] of Object.entries(candidate)){
+              if(key!=='state'&&key!=='featureState'&&key!=='__nexusDeltaSync')metadata[key]=value;
+            }
+            const begun=await storage.beginWorkspaceEntityRecovery(owner,{
+              intentId:recoveryIntentId(),candidateDigest:digest,
+              baseUpdatedAt:prepared.snapshotUpdatedAt,
+              expectedHeadRevision:prepared.expectedHeadRevision,
+              snapshotRevision:prepared.snapshotRevision,
+              conflicts:prepared.conflicts,payloadMetadata:metadata
+            });
+            if(!begun||begun.ok!==true)
+              return {ok:false,retryable:true,reason:begun&&begun.reason||'recovery_intent_create_failed'};
+            intent=begun.intent;
+          }
+          const status=typeof storage.getStatus==='function'?storage.getStatus():null;
+          if(!status||!Number.isSafeInteger(Number(status.revision)))
+            return unavailable('local_recovery_revision_unavailable');
+          await storage.migrateWorkspaceEntities(owner,candidate.state,candidate.featureState,{
+            expectedRevision:Number(status.revision),deferActivation:true,recoveryIntentId:intent.intentId
+          });
+          recovery=await storage.readWorkspaceEntityRecovery(owner);
+          intent=recovery&&recovery.intent||null;
+        }
+        if(!intent||!['staged','published'].includes(intent.phase))
+          return {ok:false,retryable:true,reason:'local_recovery_generation_not_staged'};
+        staged=await storage.readWorkspaceEntities(owner,{pending:true,recoveryIntentId:intent.intentId});
+        if(!staged||staged.ownerId!==owner||staged.pending!==true)
+          return {ok:false,retryable:true,snapshotRequired:true,reason:'staged_recovery_generation_unavailable'};
+        const metadata=intent.payloadMetadata&&typeof intent.payloadMetadata==='object'?intent.payloadMetadata:{};
+        candidate={...metadata,state:staged.state,featureState:staged.featureState};
+        const digest=await workspaceDigest(candidate);
+        if(digest!==intent.candidateDigest)
+          return {ok:false,snapshotRequired:true,reason:'staged_recovery_candidate_digest_mismatch'};
+        await assertOwner(owner);
+        // A lost publication response is retried against the exact same expected
+        // head/stamp. The snapshot writer must verify the active payload idempotently.
+        const publication=await publisher(owner,candidate,intent.expectedHeadRevision,intent.baseUpdatedAt,
+          recoveryOptions.signal||null);
+        if(!publication||publication.verified!==true||
+           Number(publication.snapshotRevision)!==Number(intent.expectedHeadRevision)||
+           typeof publication.updated_at!=='string'||!publication.updated_at)
+          return {ok:false,retryable:true,snapshotRequired:true,
+            reason:'delta_snapshot_publication_unverified',intentId:intent.intentId};
+        await assertOwner(owner);
+        const marked=await storage.markWorkspaceEntityRecoveryPublished(owner,intent.intentId,publication);
+        if(!marked||marked.ok!==true)
+          return {ok:false,retryable:true,snapshotRequired:true,
+            reason:marked&&marked.reason||'recovery_publication_journal_failed',intentId:intent.intentId};
+        const committed=await localCommit(owner,candidate,publication,intent.conflicts||[],{
+          intentId:intent.intentId,candidateDigest:intent.candidateDigest,
+          baseServerVersion:intent.baseUpdatedAt,expectedHeadRevision:intent.expectedHeadRevision
+        });
+        if(!committed||committed.ok!==true)
+          return {ok:false,retryable:true,snapshotRequired:true,
+            reason:'verified_snapshot_waiting_for_local_recovery_commit',intentId:intent.intentId};
+        const active=await storage.readWorkspaceEntities(owner);
+        const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
+        if(!active||active.generation!==committed.generation||
+           !cursorResult||cursorResult.ok!==true||
+           cursorResult.cursor.publishRevision!==publication.snapshotRevision||
+           cursorResult.cursor.snapshotUpdatedAt!==publication.updated_at||
+           cursorResult.cursor.remoteHeadRevision!==publication.headRevision)
+          return {ok:false,retryable:true,snapshotRequired:true,recoveryCommitted:true,
+            reason:'local_recovery_post_commit_verification_failed',intentId:intent.intentId};
+        if(typeof applyWorkspace==='function'){
+          try{await applyWorkspace(active);await assertOwner(owner);}
+          catch(error){return {ok:false,retryable:true,recoveryCommitted:true,
+            reason:'recovered_workspace_in_memory_apply_failed',
+            errorCode:String(error&&error.code||'unknown')};}
+        }
+        return {ok:true,recovered:true,alreadyCommitted:!!committed.alreadyCommitted,
+          generation:active.generation,snapshotRevision:publication.snapshotRevision,
+          headRevision:publication.headRevision,cursor:cursorResult.cursor,
+          archivedConflicts:committed.archivedConflicts||0,intentId:intent.intentId};
+      }catch(error){
+        return unavailable('conflict_recovery_commit_failed',{
+          retryable:true,errorCode:String(error&&error.code||'unknown'),
+          errorMessage:String(error&&error.message||'unknown').slice(0,160)
+        });
+      }
+    }
+
     async function synchronize(ownerId,syncOptions={}){
       if(!enabled)return {ok:true,skipped:true,reason:'feature_disabled'};
       const owner=String(ownerId||'').trim();
@@ -800,7 +935,8 @@
         appliedCount,publishedCount,acknowledgedCount,rounds:maxRounds};
     }
 
-    return Object.freeze({readRemotePage,applyRemotePage,publishPending,prepareConflictRecovery,synchronize});
+    return Object.freeze({readRemotePage,applyRemotePage,publishPending,prepareConflictRecovery,
+      publishConflictRecovery,synchronize});
   }
 
   root.NexusEntityDeltaSync=Object.freeze({createClient,validateRemotePage,reconstructRemoteSnapshot,prepareSnapshotReconciliation});
