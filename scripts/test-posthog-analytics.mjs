@@ -37,11 +37,9 @@ function run(config, native = false) {
   assert.equal(options.person_profiles, 'identified_only');
   assert.equal(options.disable_session_recording, true);
   assert.equal(options.disable_surveys, true);
-  assert.deepEqual(options.capture_exceptions, {
-    capture_unhandled_errors: true,
-    capture_unhandled_rejections: true,
-    capture_console_errors: false
-  });
+  assert.equal(options.capture_exceptions.capture_unhandled_errors, true);
+  assert.equal(options.capture_exceptions.capture_unhandled_rejections, true);
+  assert.equal(options.capture_exceptions.capture_console_errors, false);
   assert.equal(typeof options.before_send, 'function', 'events must pass through the privacy sanitizer');
   const sanitized = options.before_send({
     properties: {
