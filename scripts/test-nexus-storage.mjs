@@ -1692,6 +1692,44 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(replay.ok,true);
   assert.equal(replay.alreadyCommitted,true,
     'a retry after local commit must confirm the completion receipt without applying a second transaction');
+
+  const secondIntent=await publishedRestarted.api.beginWorkspaceEntityRecovery(owner,{
+    intentId:'nexus-recovery-delete-pending-test',candidateDigest:'b'.repeat(64),
+    baseUpdatedAt:publication.updated_at,expectedHeadRevision:3,snapshotRevision:2,
+    conflicts:[],payloadMetadata:{schema:4}
+  });
+  assert.equal(secondIntent.ok,true,
+    'the account-deletion fixture must be able to create a pending recovery journal');
+  assert.equal(publishedRestarted.api.getStatus().entityRecoveryLocked,true,
+    'a pending recovery journal must hold the account write lock before deletion');
+  const purged=await publishedRestarted.api.deleteWorkspaceEntities(owner);
+  assert.equal(purged.ownerId,owner);
+  assert.equal(purged.cursorRemoved,true,
+    'account cleanup must remove the delta cursor after recovery has been used');
+  assert.equal(purged.recoveryRemoved,true,
+    'account cleanup must remove a pending recovery intent');
+  const meta=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  const workspaceRows=idb.databases.get('nexus-workspace-v1').stores.get('workspaces');
+  const outboxRows=idb.databases.get('nexus-workspace-v1').stores.get('outbox');
+  const encodedOwner=encodeURIComponent(owner);
+  assert.equal(meta.has('workspace-entities:'+encodedOwner),false,
+    'account cleanup must remove the active entity manifest');
+  assert.equal(meta.has('workspace-entity-sequence:'+encodedOwner),false,
+    'account cleanup must remove the entity outbox sequence');
+  assert.equal(meta.has('workspace-entity-delta-cursor:'+encodedOwner),false,
+    'account cleanup must remove the inbound/outbound delta cursor');
+  assert.equal(meta.has('workspace-entity-delta-recovery:'+encodedOwner),false,
+    'account cleanup must remove the pending recovery journal');
+  assert.equal(meta.has('workspace-entity-delta-recovery-completed:'+encodedOwner),false,
+    'account cleanup must remove the recovery completion receipt');
+  assert.equal([...workspaceRows.keys()].some(key=>
+    String(key).startsWith('workspace-entity:'+encodedOwner+':')),false,
+    'account cleanup must remove every active or staged entity generation row');
+  assert.equal([...outboxRows.keys()].some(key=>
+    String(key).startsWith('workspace-entity-change:'+encodedOwner+':')),false,
+    'account cleanup must remove the selected account operation outbox');
+  assert.equal(publishedRestarted.api.getStatus().entityRecoveryLocked,false,
+    'successful owner cleanup must release the in-memory recovery lock');
 }
 
 console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, delta cursor receipt atomicity, recovery journal restart at prepared/staged/published phases, recovery write locks, failed-write recovery, and account-handoff isolation.');
