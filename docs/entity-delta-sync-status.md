@@ -136,3 +136,20 @@ Do not re-grant browser execution until the publisher, remote reader/cursor, dur
 | Snapshot/restore/undo/account deletion/legacy-client compatibility and controlled rollout with staging end-to-end evidence | 20% | Pending |
 
 **Phase 3.4 assessment: 35% of the remaining client-protocol workstream implemented.** This is not a claim that incremental cloud sync is enabled or Phase 3.4 is complete. The main remaining work is inbound application, full runtime integration, recovery/compaction, and staged cross-device validation.
+
+
+### Verification evidence for this checkpoint
+
+- GitHub Actions Validate curriculum catalogue run #1320 completed successfully on commit 3d421bb5db05912fbf6530a4d4bfc3a7f38ac697: https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43551090210
+- The successful run included entity-delta migration contract checks, mocked publisher/reader tests, IndexedDB cursor and receipt atomicity tests, JavaScript syntax checks, backup/restore, offline queue, workspace merge, large-workspace rendering, chunk storage, cloud-sync runtime, account isolation, data-safety wiring, account deletion, security headers, regression, service-worker reliability, and undo lifecycle tests.
+- The Vercel deployment for that commit reached READY as a preview (target=null): https://spaced-repetition-tracker-ih7hiskx5-recall-ed03.vercel.app. Automated page retrieval was blocked by Vercel deployment protection, so the deployment state is verified but a browser-authenticated UI smoke test is still pending.
+- Read-only inspection confirmed the staging project is nexus-sync-staging (project ref xuwfzibxhxzxxupprxsq, ap-southeast-1). Its delta sync-state table contains 4 rows; operation and receipt tables contain 0 rows. Delta RPCs exist but EXECUTE is false for anon and authenticated, and direct table writes remain unavailable under the inspected grants/RLS. No staging schema, grants, functions, rows, or settings were changed during this run.
+- The separate production project nexus-spaced-repetition (project ref txugbdavblpettcnhcxl) was not selected for SQL or mutated.
+- The Supabase security advisor continues to report the existing leaked-password-protection setting as disabled; this is unrelated to the new delta client and was not changed. The performance advisor reported no findings.
+
+### Manual and integration checks still pending
+
+- Browser-authenticated preview smoke test and Android/Capacitor smoke test for the added shared asset and service-worker cache revision.
+- Connect the publisher to the normal cloud-sync orchestration only after inbound apply, durable inbound cursor, conflict handling, and snapshot-queue coordination are implemented.
+- Staging end-to-end tests after the RPC permission/rollout gate is separately reviewed: two-device publish/pull, interrupted acknowledgement retry, offline reconnect, account switching, large workspace pagination, compaction, and snapshot recovery.
+- Verify backup/export/restore, undo, account deletion, and legacy snapshot-only clients against a mixed-version staging cohort before any rollout.
