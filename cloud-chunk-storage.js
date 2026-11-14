@@ -490,6 +490,10 @@ async function writeDeltaSnapshot(client,userId,payload,expectedHeadRevision,exp
 
 return {
  TABLE,FORMAT,CHUNK_BYTES,INSERT_BATCH_SIZE,READ_BATCH_SIZE,CHUNK_THRESHOLD_BYTES,
- isManifest,sameManifest,utf8ByteLength,splitUtf8,splitUtf8Ranges,readSnapshot,writeSnapshot,writeDeltaSnapshot,cleanupOldChunks
+ isManifest,sameManifest,utf8ByteLength,splitUtf8,splitUtf8Ranges,readSnapshot,writeSnapshot,
+ writeDeltaSnapshot,
+ compactDeltaOperations:(client,userId,expectedFloor,signal)=>
+  compactPublishedDeltaOperations(client,userId,expectedFloor,signal),
+ cleanupOldChunks
 };
 });
