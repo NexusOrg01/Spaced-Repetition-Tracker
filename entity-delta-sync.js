@@ -924,12 +924,13 @@
           return {skipped:true,reason:'snapshot_compaction_local_snapshot_pending'};
         }
         const batch=await storage.readWorkspaceEntityOutboxGroups(owner,
-          Number(cursor.acknowledgedSequence),1,MAX_BYTES-65536);
+          Number(cursor.acknowledgedSequence),1000,MAX_BYTES-65536);
         if(!batch||batch.unavailable||batch.snapshotRequired){
           return {ok:false,pending:true,reason:batch&&batch.reason||'snapshot_compaction_outbox_unavailable'};
         }
         if(batch.ownerId!==owner||batch.generation!==cursor.generation||
-           Number(batch.workspaceRevision)!==Number(cursor.workspaceRevision)){
+           Number(batch.workspaceRevision)!==Number(cursor.workspaceRevision)||
+           !Array.isArray(batch.groups)){
           return {skipped:true,reason:'snapshot_compaction_local_generation_changed'};
         }
         if(batch.groups.length||batch.hasMore===true){
