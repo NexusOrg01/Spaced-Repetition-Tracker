@@ -1142,6 +1142,88 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'account B outbox row count must remain unchanged after account A deletion');
 }
 
+// The app opts into entity-first hydration. Existing workspace snapshots are
+// backfilled once, subsequent entity changes survive restart, and metadata-only
+// preferences are persisted into the entity roots without advancing record revision.
+{
+  const owner='entity-hydration-owner';
+  const trackerState={
+    schema:3,
+    streams:[{id:'hydrate-stream',name:'Commerce'}],
+    subjects:[{id:'hydrate-subject',name:'Accounting',streamId:'hydrate-stream'}],
+    topics:[{id:'hydrate-topic',subjectId:'hydrate-subject',name:'Original title'}],
+    history:[{id:'hydrate-review',topicId:'hydrate-topic',rating:4}],
+    exams:[],
+    settings:{theme:'dark',dailyGoal:90}
+  };
+  const featureState={
+    version:1,
+    settings:{dailyMinutes:90,sessionMinutes:25},
+    journal:[{id:'hydrate-journal',text:'Original note'}],
+    papers:[],goals:[],studyLogs:[],selectedTopicIds:[]
+  };
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(trackerState)],
+    ['recall.study.features.v1',JSON.stringify(featureState)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB();
+  const first=loadApi(makeWindow(native,idb));
+  assert.equal(await first.api.bootstrap({hydrateEntities:true}),true,
+    'entity-first app bootstrap must preserve the normal durable-storage startup');
+  assert.equal(first.api.getStatus().entityHydrationMode,'entity-store',
+    'first account startup must backfill and then hydrate a verified entity generation');
+  const initial=await first.api.readWorkspaceEntities(owner);
+  assert.ok(initial&&initial.generation,'the first startup must publish a complete owner-bound entity generation');
+  assert.equal(initial.state.topics[0].name,'Original title');
+  const originalWorkspace=await first.api.getWorkspace(owner);
+  const workspaceRevision=originalWorkspace.workspaceRevision;
+
+  await first.api.writeWorkspaceEntityChanges(owner,[{
+    collection:'topics',id:'hydrate-topic',operation:'put',position:0,
+    value:{...initial.state.topics[0],name:'Entity-authoritative title'}
+  }],{operationId:'entity-hydration-topic-edit'});
+  const trackerRoot={...initial.state};
+  for(const key of ['streams','subjects','topics','history','exams'])delete trackerRoot[key];
+  trackerRoot.settings={...trackerRoot.settings,theme:'light'};
+  const featureRoot={...initial.featureState};
+  for(const key of ['journal','papers','goals','studyLogs'])delete featureRoot[key];
+  featureRoot.settings={...featureRoot.settings,dailyMinutes:120};
+  const syncResult=await first.api.syncWorkspaceEntities(owner,[],{
+    trackerRoot,featureRoot,
+    trackerSnapshotJson:JSON.stringify(trackerState),
+    featureSnapshotJson:JSON.stringify(featureState)
+  });
+  assert.equal(syncResult.mode,'incremental',
+    'metadata-only changes must update the entity roots without rebuilding the generation');
+  const afterFirst=await first.api.readWorkspaceEntities(owner);
+  assert.equal(afterFirst.state.settings.theme,'light',
+    'metadata-only tracker preferences must be reflected in the entity root');
+  assert.equal(afterFirst.featureState.settings.dailyMinutes,120,
+    'metadata-only Study Hub preferences must be reflected in the entity root');
+  assert.equal(afterFirst.state.topics[0].name,'Entity-authoritative title');
+  assert.equal((await first.api.getWorkspace(owner)).workspaceRevision,workspaceRevision,
+    'metadata and entity projection writes must not fake a compatibility record revision');
+
+  // Simulate a fresh page context. Its first IndexedDB snapshot is older than the
+  // entity projection; startup must hydrate the newer entity state before modules read it.
+  const second=loadApi(makeWindow(native,idb));
+  assert.equal(await second.api.bootstrap({hydrateEntities:true}),true);
+  assert.equal(second.api.getStatus().entityHydrationMode,'entity-store');
+  const visibleTracker=JSON.parse(second.context.window.localStorage.getItem('recall.study.tracker.v1'));
+  const visibleFeatures=JSON.parse(second.context.window.localStorage.getItem('recall.study.features.v1'));
+  assert.equal(visibleTracker.topics[0].name,'Entity-authoritative title',
+    'the application storage facade must expose entity data rather than the older compatibility snapshot');
+  assert.equal(visibleTracker.settings.theme,'light');
+  assert.equal(visibleFeatures.settings.dailyMinutes,120);
+  const compatibility=await second.api.getWorkspace(owner);
+  assert.equal(compatibility.state.topics[0].name,'Entity-authoritative title',
+    'the portable/offline compatibility snapshot must be refreshed atomically from the verified entity generation');
+  assert.equal(compatibility.featureState.settings.dailyMinutes,120);
+  assert.equal(compatibility.workspaceRevision,workspaceRevision,
+    'hydration and snapshot mirror refresh must preserve the entity source revision');
+}
+
 // Full programme-scale backfill: mirror the established stress baseline while
 // verifying bounded yielding and owner/generation key-range reads.
 {

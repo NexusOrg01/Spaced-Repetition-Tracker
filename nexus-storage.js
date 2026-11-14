@@ -30,6 +30,8 @@
   let startupError = null;
   let lastError = null;
   let mirrorError = null;
+  let entityHydrationMode = 'not-started';
+  let entityHydrationError = null;
   let revision = 0;
   // The account owner exposed to the app must represent a completed IndexedDB commit,
   // not an optimistic value staged in the compatibility cache.
@@ -860,6 +862,41 @@
       featureState:featureSnapshot,revision:manifest.sourceRevision,rowCount:manifest.rowCount,
       counts:manifest.counts||{}};
   }
+
+  // Read both small metadata roots without scanning the record collection. The
+  // entity generation is only current when its owner and generation markers match.
+  function readWorkspaceEntityRoots(ownerId,generation){
+    const owner=entityOwnerKey(ownerId);
+    if(!enabled||!database||committedOwnerId!==owner)return Promise.resolve(null);
+    return transaction([WORKSPACES],'readonly',(tx,set)=>{
+      const store=tx.objectStore(WORKSPACES);
+      const trackerRequest=store.get(entityRecordKey(owner,generation,'_meta','tracker'));
+      const featureRequest=store.get(entityRecordKey(owner,generation,'_meta','features'));
+      const values={tracker:null,features:null};let remaining=2,invalid=false;
+      const complete=()=>{
+        remaining--;
+        if(remaining!==0)return;
+        set(invalid?null:values);
+      };
+      trackerRequest.onsuccess=()=>{
+        const row=trackerRequest.result;
+        if(!row||row.entityRow!==true||row.ownerId!==owner||row.generation!==generation||
+           row.collection!=='_meta'||row.entityId!=='tracker'||
+           !row.value||typeof row.value!=='object'||Array.isArray(row.value))invalid=true;
+        else values.tracker=row.value;
+        complete();
+      };
+      featureRequest.onsuccess=()=>{
+        const row=featureRequest.result;
+        if(!row||row.entityRow!==true||row.ownerId!==owner||row.generation!==generation||
+           row.collection!=='_meta'||row.entityId!=='features'||
+           !row.value||typeof row.value!=='object'||Array.isArray(row.value))invalid=true;
+        else values.features=row.value;
+        complete();
+      };
+    });
+  }
+
   async function writeWorkspaceEntityChanges(ownerId,changes,options={}){
     const owner=entityOwnerKey(ownerId);
     if(entityRemovalOwners.has(owner))throw new Error('This account workspace is being permanently deleted.');
@@ -1498,8 +1535,19 @@
       }
 
       const delta=capturedChanges.slice();
-      if(trackerRoot)delta.push({collection:'trackerMeta',id:'tracker',operation:'put',position:0,value:trackerRoot});
-      if(featureRoot)delta.push({collection:'featureMeta',id:'features',operation:'put',position:0,value:featureRoot});
+      if(trackerRoot||featureRoot){
+        const currentRoots=await readWorkspaceEntityRoots(owner,manifest.activeGeneration);
+        if(!currentRoots)throw new Error('The active entity metadata roots are unavailable; snapshot recovery is required.');
+        // Metadata-only edits (preferences, planner settings, curriculum markers)
+        // must update the entity roots without generating duplicate outbox records
+        // when an ordinary record mutation already carried unchanged metadata.
+        if(trackerRoot&&JSON.stringify(currentRoots.tracker)!==JSON.stringify(trackerRoot)){
+          delta.push({collection:'trackerMeta',id:'tracker',operation:'put',position:0,value:trackerRoot});
+        }
+        if(featureRoot&&JSON.stringify(currentRoots.features)!==JSON.stringify(featureRoot)){
+          delta.push({collection:'featureMeta',id:'features',operation:'put',position:0,value:featureRoot});
+        }
+      }
       if(!delta.length){
         entitySyncError=null;entitySyncLastSuccessAt=timestamp();
         return {ownerId:owner,mode:'unchanged',applied:0,batches:0,sourceRevision:manifest.sourceRevision};
@@ -1955,7 +2003,56 @@
     return storage;
   }
 
-  async function runBootstrap() {
+  // Entity data is the primary local workspace read path after Phase 3.3.
+  // Compatibility snapshots are retained and atomically refreshed for backup,
+  // offline-queue recovery, and the still snapshot-based cloud protocol.
+  async function hydrateWorkspaceCacheFromEntities(){
+    entityHydrationMode='compatibility-snapshot';
+    entityHydrationError=null;
+    const owner=committedOwnerId;
+    if(!owner){entityHydrationMode='unassigned-workspace';return false;}
+    const keyRangeFactory=root&&root.IDBKeyRange;
+    if(!keyRangeFactory||typeof keyRangeFactory.bound!=='function'){
+      entityHydrationMode='compatibility-snapshot-no-range-support';
+      return false;
+    }
+    try{
+      let workspace=await readWorkspaceEntities(owner);
+      if(!workspace){
+        const compatibility=await readWorkspace(owner);
+        if(!compatibility||!compatibility.state||!compatibility.featureState){
+          entityHydrationMode='compatibility-snapshot-missing';
+          return false;
+        }
+        const workspaceRevision=await readWorkspaceRevision(owner);
+        if(!Number.isSafeInteger(workspaceRevision)){
+          throw new Error('The compatibility workspace revision is unavailable for safe entity migration.');
+        }
+        await migrateWorkspaceEntities(owner,compatibility.state,compatibility.featureState,{
+          expectedRevision:revision,sourceWorkspaceRevision:workspaceRevision
+        });
+        workspace=await readWorkspaceEntities(owner);
+      }
+      if(!workspace||workspace.ownerId!==owner||!workspace.state||!workspace.featureState){
+        throw new Error('The active owner-bound entity generation could not be verified after hydration.');
+      }
+      const trackerJson=JSON.stringify(workspace.state);
+      const featureJson=JSON.stringify(workspace.featureState);
+      const snapshotEntries=[];
+      if(cache.get(TRACKER_KEY)!==trackerJson)snapshotEntries.push({key:TRACKER_KEY,value:trackerJson});
+      if(cache.get(FEATURE_KEY)!==featureJson)snapshotEntries.push({key:FEATURE_KEY,value:featureJson});
+      if(snapshotEntries.length)await commitLocalStorageEntries(snapshotEntries);
+      entityHydrationMode='entity-store';
+      return true;
+    }catch(error){
+      entityHydrationError=safeError(error,'The entity workspace could not be hydrated safely.');
+      entityHydrationMode='compatibility-snapshot-fallback';
+      console.warn('Nexus entity hydration did not complete; the verified compatibility workspace remains available.',error);
+      return false;
+    }
+  }
+
+  async function runBootstrap(options={}) {
     if (!root) {
       startupError = 'Browser window is unavailable.';
       return false;
@@ -2005,6 +2102,18 @@
       revision = snapshot.revision;
       enabled = true;
       await seedWorkspaceProjection(snapshot.rows, snapshot.revision);
+      if(options&&options.hydrateEntities===true)await hydrateWorkspaceCacheFromEntities();
+      // Reflect a verified entity-first cache in the native compatibility mirror,
+      // including a workspace key absent from an older snapshot.
+      for(const key of [TRACKER_KEY,FEATURE_KEY]){
+        if(!cache.has(key))continue;
+        const row=snapshot.rows.find(item=>item&&item.key===key);
+        if(row){row.value=cache.get(key);row.deleted=false;}
+        else snapshot.rows.push({key,value:cache.get(key),deleted:false});
+      }
+      for(const row of snapshot.rows){
+        if(row&&row.key&&cache.has(row.key))row.value=cache.get(row.key);
+      }
       mirrorAll(snapshot.rows);
       try { nativeStorage.removeItem(FALLBACK_JOURNAL_KEY); } catch (error) {
         mirrorError = safeError(error, 'The fallback recovery journal could not be cleared.');
@@ -2026,8 +2135,8 @@
     }
   }
 
-  function bootstrap() {
-    if (!bootPromise) bootPromise = runBootstrap();
+  function bootstrap(options={}) {
+    if (!bootPromise) bootPromise = runBootstrap(options);
     return bootPromise;
   }
 
@@ -2064,7 +2173,9 @@
       lastError,
       compatibilityMirrorWarning: mirrorError,
       entitySyncError,
-      entitySyncLastSuccessAt
+      entitySyncLastSuccessAt,
+      entityHydrationMode,
+      entityHydrationError
     })
   };
 });

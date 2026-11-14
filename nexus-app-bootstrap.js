@@ -78,7 +78,7 @@
     let durableStorage = false;
     if (window.NexusStorage && typeof window.NexusStorage.bootstrap === 'function') {
       try {
-        durableStorage = await window.NexusStorage.bootstrap();
+        durableStorage = await window.NexusStorage.bootstrap({ hydrateEntities: true });
       } catch (error) {
         console.error('Nexus storage bootstrap failed; using the browser-storage fallback.', error);
       }
