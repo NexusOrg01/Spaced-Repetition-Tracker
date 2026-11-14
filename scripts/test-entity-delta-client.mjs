@@ -6,9 +6,11 @@ import vm from 'node:vm';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const source=readFileSync(resolve(root,'entity-delta-sync.js'),'utf8');
+const mergeSource=readFileSync(resolve(root,'workspace-sync-merge.js'),'utf8');
 const window={};
-const sandbox={window,Promise,Number,Object,Array,String,JSON,Error,Set,Math};
+const sandbox={window,Promise,Number,Object,Array,String,JSON,Error,Set,Math,setTimeout};
 vm.createContext(sandbox);
+vm.runInContext(mergeSource,sandbox,{filename:'workspace-sync-merge.js'});
 vm.runInContext(source,sandbox,{filename:'entity-delta-sync.js'});
 const factory=window.NexusEntityDeltaSync.createClient;
 const payload={state:{streams:[],subjects:[],topics:[],history:[],exams:[]},featureState:{journal:[],papers:[],goals:[],studyLogs:[]}};
@@ -457,4 +459,151 @@ function coordinatorHarness(options={}){
   assert.equal(h.calls.some(call=>call.name==='nexus_publish_entity_operation'),false);
 }
 
-console.log('Nexus entity-delta client tests passed: feature gate, baseline verification, stable receipt retry, owner checks, conflict safety, and strict remote-page validation.');
+
+{
+  const baseSnapshot={
+    app:'Nexus Spaced Repetition Tracker',schema:4,serverVersion:'snapshot-stamp',
+    state:{
+      schema:3,streams:[{id:'stream-main',name:'Main'}],
+      subjects:[{id:'subject-main',name:'Main',streamId:'stream-main'}],
+      topics:[
+        {id:'topic-shared',name:'Shared',subjectId:'subject-main',notes:'Base notes'},
+        {id:'topic-delete',name:'Delete me',subjectId:'subject-main',notes:'Keep only in base'}
+      ],
+      history:[],exams:[],settings:{theme:'light',intervalCap:120}
+    },
+    featureState:{
+      settings:{dailyMinutes:90,weeklyReviewGoal:100},
+      fsrsSettings:{request_retention:0.9,maximum_interval:120},
+      selectedTopicIds:[],taskChecks:{},journal:[],papers:[],goals:[],studyLogs:[]
+    }
+  };
+  const localSnapshot=JSON.parse(JSON.stringify(baseSnapshot));
+  localSnapshot.state.topics[0].notes='Local notes';
+  localSnapshot.state.topics.push({id:'topic-local',name:'Local only',subjectId:'subject-main',notes:'Local addition'});
+  localSnapshot.state.settings.intervalCap=150;
+  localSnapshot.featureState.settings.weeklyReviewGoal=120;
+  const remoteGroups=[
+    {revision:1,operation_id:'remote-op-one',changes:[
+      {ordinal:0,collection:'trackerMeta',id:'tracker',operation:'put',position:0,
+        value:{schema:3,settings:{theme:'dark',intervalCap:120}}},
+      {ordinal:1,collection:'featureMeta',id:'features',operation:'put',position:0,
+        value:{settings:{dailyMinutes:120,weeklyReviewGoal:100},
+          fsrsSettings:{request_retention:0.9,maximum_interval:120},selectedTopicIds:[],taskChecks:{}}},
+      {ordinal:2,collection:'topics',id:'topic-shared',operation:'put',position:0,
+        value:{id:'topic-shared',name:'Shared',subjectId:'subject-main',notes:'Remote notes'}},
+      {ordinal:3,collection:'topics',id:'topic-remote',operation:'put',position:2,
+        value:{id:'topic-remote',name:'Remote only',subjectId:'subject-main',notes:'Remote addition'}}
+    ]},
+    {revision:2,operation_id:'remote-op-two',changes:[
+      {ordinal:0,collection:'topics',id:'topic-delete',operation:'delete',position:null,value:null}
+    ]}
+  ];
+  const prepared=await window.NexusEntityDeltaSync.prepareSnapshotReconciliation(
+    baseSnapshot,localSnapshot,remoteGroups,0,2
+  );
+  assert.equal(prepared.ok,true,'reconciliation should rebuild a contiguous remote snapshot and run the shared merge');
+  assert.equal(prepared.throughRevision,2);
+  assert.equal(prepared.groupCount,2);
+  assert.equal(prepared.changeCount,5);
+  const mergedTopics=prepared.payload.state.topics;
+  assert.equal(mergedTopics.find(row=>row.id==='topic-shared').notes,'Local notes',
+    'the existing merge policy should preserve the local side of a same-field conflict');
+  assert.ok(mergedTopics.some(row=>row.id==='topic-local'),'local-only records must survive');
+  assert.ok(mergedTopics.some(row=>row.id==='topic-remote'),'remote-only records must survive');
+  assert.ok(!mergedTopics.some(row=>row.id==='topic-delete'),'a one-sided remote deletion must be preserved');
+  assert.equal(prepared.payload.state.settings.theme,'dark','remote metadata-root edits must be reconstructed');
+  assert.equal(prepared.payload.state.settings.intervalCap,150,'independent local metadata-root edits must survive');
+  assert.equal(prepared.payload.featureState.settings.dailyMinutes,120,'Study Hub metadata-root edits must be reconstructed');
+  assert.equal(prepared.payload.featureState.settings.weeklyReviewGoal,120,'independent local Study Hub edits must survive');
+  assert.ok(prepared.conflicts.length>0,'the losing concurrent value must be surfaced for the existing conflict archive');
+  assert.equal(baseSnapshot.state.topics[0].notes,'Base notes','remote reconstruction must not mutate the verified base');
+  assert.equal(localSnapshot.state.topics[0].notes,'Local notes','remote reconstruction must not mutate the active local workspace');
+
+  const gap=window.NexusEntityDeltaSync.reconstructRemoteSnapshot(
+    baseSnapshot,[remoteGroups[1]],0,2
+  );
+  assert.equal(gap.ok,false,'a missing first revision must fail closed');
+  assert.equal(gap.reason,'remote_revision_gap');
+
+  const collision=window.NexusEntityDeltaSync.reconstructRemoteSnapshot(baseSnapshot,[{
+    revision:1,operation_id:'position-collision',changes:[{
+      collection:'topics',id:'topic-collision',operation:'put',position:0,
+      value:{id:'topic-collision',name:'Ambiguous position',subjectId:'subject-main'}
+    }]
+  }],0,1);
+  assert.equal(collision.ok,false,'ambiguous record order must not be guessed during reconstruction');
+  assert.equal(collision.reason,'remote_snapshot_position_collision');
+
+  const limited=window.NexusEntityDeltaSync.reconstructRemoteSnapshot(
+    baseSnapshot,remoteGroups,0,2,{maxGroups:1}
+  );
+  assert.equal(limited.ok,false,'reconstruction must enforce its total group budget');
+  assert.equal(limited.reason,'remote_reconciliation_group_limit');
+}
+
+{
+  const baseSnapshot={
+    app:'Nexus Spaced Repetition Tracker',schema:4,serverVersion:'snapshot-stamp',
+    state:{schema:3,streams:[],subjects:[],topics:[
+      {id:'topic-shared',name:'Shared',subjectId:'subject-main',notes:'Base notes'}
+    ],history:[],exams:[],settings:{}},
+    featureState:{settings:{dailyMinutes:90},journal:[],papers:[],goals:[],studyLogs:[]}
+  };
+  const localSnapshot=JSON.parse(JSON.stringify(baseSnapshot));
+  localSnapshot.state.topics[0].notes='Local recovery candidate';
+  const remoteGroups=[{
+    revision:1,operation_id:'remote-op-one',changes:[{
+      ordinal:0,collection:'topics',id:'topic-shared',operation:'put',position:0,
+      value:{id:'topic-shared',name:'Shared',subjectId:'subject-main',notes:'Remote recovery candidate'}
+    }]
+  }];
+  const state={
+    mode:'delta',protocol_version:1,head_revision:1,snapshot_revision:0,
+    compacted_through_revision:0,snapshot_updated_at:'snapshot-stamp'
+  };
+  const calls=[];
+  const client={
+    auth:{async getUser(){return {data:{user:{id:'account-A'}},error:null};}},
+    async rpc(name,args){
+      calls.push({name,args:args||null});
+      if(name==='nexus_get_entity_sync_state')return {data:{...state},error:null};
+      if(name==='nexus_read_entity_operations'){
+        const page=remoteGroups.filter(group=>group.revision>args.p_after_revision)
+          .slice(0,args.p_limit_groups);
+        return {data:{
+          mode:'delta',snapshot_required:false,head_revision:state.head_revision,
+          snapshot_revision:state.snapshot_revision,
+          compacted_through_revision:state.compacted_through_revision,
+          next_revision:page.length?page[page.length-1].revision:args.p_after_revision,
+          bytes:4096,groups:page
+        },error:null};
+      }
+      return {data:null,error:{code:'unexpected_rpc'}};
+    }
+  };
+  const pending={operationId:'local-queue-op',ownerUserId:'account-A',baseServerVersion:'snapshot-stamp'};
+  const api=factory({
+    enabled:true,client,storage:{},
+    getActiveOwner:()=> 'account-A',getLocalOwner:()=> 'account-A',
+    getLocalBase:async()=>({...baseSnapshot}),
+    getLocalWorkspace:async()=>localSnapshot,
+    getPendingSnapshot:async()=>pending,
+    sameWorkspace:async(left,right)=>JSON.stringify(left)===JSON.stringify(right)
+  });
+  const prepared=await api.prepareConflictRecovery('account-A');
+  assert.equal(prepared.ok,true,'the client should prepare a recoverable merge candidate from the snapshot revision');
+  assert.equal(prepared.requiresSnapshotPublication,true);
+  assert.equal(prepared.requiresLocalRebase,true);
+  assert.equal(prepared.expectedHeadRevision,1);
+  assert.equal(prepared.payload.state.topics[0].notes,'Local recovery candidate');
+  assert.ok(prepared.conflicts.length>0);
+  assert.equal(calls.filter(call=>call.name==='nexus_read_entity_operations').length,1);
+  assert.equal(calls.some(call=>call.name==='nexus_publish_entity_snapshot'),false,
+    'preparation must never publish or compact a snapshot');
+  assert.equal(calls.some(call=>call.name==='nexus_publish_entity_operation'),false,
+    'preparation must never publish or acknowledge local operations');
+}
+
+
+console.log('Nexus entity-delta client tests passed: feature gate, baseline verification, stable receipt retry, owner checks, conflict safety, and strict remote-page validation and bounded three-way recovery preparation.');
