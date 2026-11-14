@@ -736,6 +736,8 @@ async function runStagingEntityDeltaSync(ownerId,signal){
   },
   publishSnapshot:(userId,payload,expectedHead,expectedStamp,requestSignal)=>
    chunkStorage.writeDeltaSnapshot(client,userId,payload,expectedHead,expectedStamp,requestSignal),
+  compactOperations:(userId,expectedFloor,requestSignal)=>
+   chunkStorage.compactDeltaOperations(client,userId,expectedFloor,requestSignal),
   commitLocalRecovery:(userId,payload,publication,conflicts,metadata)=>
    queue.commitVerifiedEntityDeltaSnapshot(localStorage,userId,payload,publication.updated_at,
     conflicts,{baseServerVersion:metadata.baseServerVersion},
