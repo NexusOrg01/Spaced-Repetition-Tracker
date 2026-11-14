@@ -12,7 +12,7 @@ const integration = read('supabase/tests/nexus_entity_delta_sync.sql');
 const enablementGate = read('supabase/migrations/20261113215301_defer_entity_delta_enablement_until_client_ready.sql');
 const rpcExposureGate = read('supabase/migrations/20261113222129_revoke_unwired_entity_delta_rpc_execution.sql');
 const identityHardening = read('supabase/migrations/20261114093000_harden_nexus_entity_delta_record_identity.sql');
-const chunkManifestProtection = read('supabase/migrations/20261114160000_protect_active_nexus_chunk_manifests.sql');
+const chunkManifestProtection = read('supabase/migrations/20261114103353_protect_active_nexus_chunk_manifests.sql');
 const chunkManifestDeletionTest = read('supabase/tests/nexus_user_data_chunks_active_manifest.sql');
 
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_sync_state/);
