@@ -37,6 +37,28 @@ function run(config, native = false) {
   assert.equal(options.person_profiles, 'identified_only');
   assert.equal(options.disable_session_recording, true);
   assert.equal(options.disable_surveys, true);
+  assert.equal(typeof options.before_send, 'function', 'events must pass through the privacy sanitizer');
+  const sanitized = options.before_send({
+    properties: {
+      '$current_url': 'https://nexus.test/signin?code=oauth-secret#access_token',
+      '$referrer': 'https://referrer.test/path?email=private',
+      '$exception_message': 'Sensitive workspace value',
+      '$exception_list': [{
+        type: 'TypeError',
+        value: 'Sensitive workspace value',
+        stacktrace: { frames: [{ filename: 'https://nexus.test/app.js?token=secret#hash' }] }
+      }],
+      user_email: 'private@example.test',
+      nexus_area: 'cloud-connect'
+    }
+  });
+  assert.equal(sanitized.properties.$current_url, 'https://nexus.test/signin');
+  assert.equal(sanitized.properties.$referrer, 'https://referrer.test/path');
+  assert.equal(sanitized.properties.$exception_message, 'Nexus exception');
+  assert.equal(sanitized.properties.$exception_list[0].value, 'Nexus exception');
+  assert.equal(sanitized.properties.$exception_list[0].stacktrace.frames[0].filename, 'https://nexus.test/app.js');
+  assert.equal(sanitized.properties.user_email, undefined);
+  assert.equal(sanitized.properties.nexus_area, 'cloud-connect');
 
   window.NexusAnalytics.captureHandledError({
     message: 'Private study text must not be sent',
