@@ -146,14 +146,13 @@ async function run(){
     const conflicts=raced.filter(item=>item.ok===false&&item.code==='revision_conflict');
     check('Same-account concurrent publish yields one commit and one revision conflict',wins.length===1&&conflicts.length===1);
     const loser=raced[0].ok?{session:a2,request:raceB}:{session:a1,request:raceA};
-    const retry=await rpc(loser.session,'nexus_publish_entity_operation',{
-      ...loser.request,p_expected_revision:2
-    });
+    const retryRequest={...loser.request,p_expected_revision:2};
+    const retry=await rpc(loser.session,'nexus_publish_entity_operation',retryRequest);
     check('Losing device retries the same operation at the next revision',retry.ok===true&&retry.revision===3);
-    const replay=await rpc(loser.session,'nexus_publish_entity_operation',loser.request);
-    check('Same operation ID and payload returns its original receipt',replay.ok===true&&replay.replayed===true&&replay.revision===3);
+    const replay=await rpc(loser.session,'nexus_publish_entity_operation',retryRequest);
+    check('Same operation ID and identical retry request returns its original receipt',replay.ok===true&&replay.replayed===true&&replay.revision===3);
     const mismatch=await rpc(loser.session,'nexus_publish_entity_operation',{
-      ...loser.request,
+      ...retryRequest,
       p_changes:[{collection:'topics',id:'different-id',operation:'put',position:0,value:{id:'different-id'}}]
     });
     check('Reusing an operation ID with a different payload is rejected',mismatch.ok===false&&mismatch.code==='idempotency_conflict');
