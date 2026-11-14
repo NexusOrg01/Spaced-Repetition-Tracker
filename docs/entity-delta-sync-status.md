@@ -166,3 +166,27 @@ Do not re-grant browser execution until the publisher, remote reader/cursor, dur
 - Wire `prepareConflictRecovery` into `cloud-sync.js` behind a default-off staging gate; then publish with the dedicated snapshot RPC and atomically rebase/verify the local queue, entity generation, and delta cursor.
 - Staging end-to-end tests after the RPC permission/rollout gate is separately reviewed: two-device publish/pull, interrupted acknowledgement retry, offline reconnect, account switching, large workspace pagination, compaction, and snapshot recovery.
 - Verify backup/export/restore, undo, account deletion, and legacy snapshot-only clients against a mixed-version staging cohort before any rollout.
+### 14 November 2026 — verified delta snapshot publication primitive
+
+- Added `NexusCloudChunkStorage.writeDeltaSnapshot` as a separate publication path for a prepared three-way recovery candidate. The existing snapshot/chunk writer is unchanged.
+- Small recovery snapshots retain the JSONB representation. Large recovery snapshots are split into immutable 256 KiB chunks, uploaded in bounded batches, and checked by exact paginated read-back and SHA-256 before the manifest can be published.
+- Both JSONB payloads and chunk manifests carry `__nexusDeltaSync: "entity-delta-v1"`. The large manifest therefore satisfies the database's delta-marker guard as well as the existing chunk-manifest contract.
+- Publication uses `nexus_publish_entity_snapshot` with the captured `expected_head_revision` and `snapshot_updated_at`. It never falls back to the legacy `nexus_user_data` update path.
+- The writer verifies `auth.getUser()` against the requested owner before upload, before publication, and before confirmation. It then reads the sync state and active snapshot row, confirms the snapshot/compaction floor and timestamp, and verifies either the exact JSONB payload or the reconstructed chunked payload.
+- A lost RPC response is treated as ambiguous. The writer accepts it only when a fresh state read and full active-payload verification prove that the exact candidate was committed. A stale revision is rejected; an interrupted upload never calls the publication RPC. Old chunk cleanup is best-effort and occurs only after publication verification.
+- Added `scripts/test-cloud-chunk-storage.mjs` coverage for small JSONB publication, large chunked publication, delta-marker retention, stale compare-and-swap, lost-response confirmation, interrupted chunk upload, and wrong-owner rejection. The existing ordinary snapshot writer and its tests remain in place.
+
+**Boundary:** this is a reusable publication primitive, not normal cloud-sync integration. `cloud-sync.js` still uses the snapshot/chunk protocol. No existing account is in delta mode, and the six entity-delta RPCs remain revoked for browser roles on staging. The new writer was not invoked against Supabase; no staging data/grant/schema change was made. This checkpoint does not commit the prepared payload to the local entity generation, atomically rebase the offline snapshot queue, reset the IndexedDB delta cursor, or invoke operation compaction. Those steps must be implemented and crash-tested before this writer is wired into recovery or exposed behind a staging feature gate.
+
+### Next Phase 3.4 target
+
+Implement the **local recovery commit boundary** as an idempotent, crash-recoverable operation:
+
+1. Preserve a durable recovery-intent record tied to owner, entity generation, base stamp, expected server head, candidate digest, and candidate snapshot.
+2. Stage and verify a replacement IndexedDB entity generation without discarding the previously active generation.
+3. Commit compatibility snapshots, offline queue/base/conflict archive, owner binding, and recovery-intent progress through the existing atomic storage helpers.
+4. Rebind the inbound/outbound delta cursor to the newly verified generation and the server's published snapshot revision only after the candidate is confirmed.
+5. Resume or roll back safely after interruption at every boundary. Never clear local pending work or compact server operations while the local commit remains unverified.
+6. Keep `cloud-sync.js` on its current default snapshot path until the local commit, retry/replay, account-switch, restore/undo, and mixed-version tests pass.
+
+Do not re-grant the staging RPCs, enable a staging account, or change the normal cloud-sync runtime as part of this local-commit milestone. Revisit those gates only after the local commit is complete and independently reviewed.
