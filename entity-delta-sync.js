@@ -558,44 +558,33 @@
         }
         let cursor;
         if(!cursorResult.exists){
-          if(baselineMatches){
-            if(head!==snapshot||snapshot!==floor){
-              return {ok:false,snapshotRequired:true,reason:'remote_delta_history_precedes_local_baseline'};
-            }
-            const unchangedLocal=await getLocalWorkspace(owner);
-            if(!unchangedLocal||!(await sameWorkspace(unchangedLocal,base))){
-              return {ok:false,snapshotRequired:true,reason:'local_workspace_differs_from_verified_snapshot'};
-            }
-            const initialized=await storage.initializeWorkspaceEntityDeltaCursor(
-              owner,head,state.snapshot_updated_at,true);
-            if(!initialized||initialized.ok!==true){
-              return {ok:false,snapshotRequired:true,reason:initialized&&initialized.reason||'cursor_initialization_failed'};
-            }
-            cursor=initialized.cursor;
-          }else{
-            cursor=null;
+          if(head!==snapshot||snapshot!==floor){
+            return {ok:false,snapshotRequired:true,reason:'remote_delta_history_precedes_local_baseline'};
           }
+          const unchangedLocal=await getLocalWorkspace(owner);
+          if(!unchangedLocal||!(await sameWorkspace(unchangedLocal,base))){
+            return {ok:false,snapshotRequired:true,reason:'local_workspace_differs_from_verified_snapshot'};
+          }
+          const initialized=await storage.initializeWorkspaceEntityDeltaCursor(
+            owner,head,state.snapshot_updated_at,true);
+          if(!initialized||initialized.ok!==true){
+            return {ok:false,snapshotRequired:true,reason:initialized&&initialized.reason||'cursor_initialization_failed'};
+          }
+          cursor=initialized.cursor;
         }else{
           cursor=cursorResult.cursor;
         }
-        if(baselineMatches){
-          if(!cursor||cursor.snapshotUpdatedAt!==state.snapshot_updated_at||
-             cursor.generation!==cursorResult.generation&&cursorResult.generation){
-            return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_generation_mismatch'};
-          }
-          if(Number(cursor.publishRevision)<floor||Number(cursor.publishRevision)>head){
-            return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_outside_retention'};
-          }
-          if(cursor.requiresPull!==true&&Number(cursor.publishRevision)===head){
-            return {ok:true,idle:true,appliedCount:0,cursor};
-          }
-        }else if(cursor&&(
-          cursor.snapshotUpdatedAt!==base.serverVersion||
-          cursor.generation!==cursorResult.generation&&cursorResult.generation||
-          Number(cursor.publishRevision)>head)){
+        if(!cursor||cursor.snapshotUpdatedAt!==state.snapshot_updated_at||
+           cursor.generation!==cursorResult.generation&&cursorResult.generation){
           return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_generation_mismatch'};
         }
-        const page=await readRemotePage(owner,snapshot,{
+        if(Number(cursor.publishRevision)<floor||Number(cursor.publishRevision)>head){
+          return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_outside_retention'};
+        }
+        if(cursor.requiresPull!==true&&Number(cursor.publishRevision)===head){
+          return {ok:true,idle:true,appliedCount:0,cursor};
+        }
+        const page=await readRemotePage(owner,Number(cursor.publishRevision),{
           limitGroups:Math.max(1,Math.min(100,Math.floor(Number(readOptions.limitGroups)||1))),
           maxBytes:Math.max(1024,Math.min(MAX_BYTES,Math.floor(Number(readOptions.maxBytes)||MAX_BYTES)))
         });
