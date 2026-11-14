@@ -330,6 +330,8 @@
     const commitLocalRecovery=options.commitLocalRecovery||null;
     const compactSnapshot=typeof options.compactSnapshot==='function'
       ?options.compactSnapshot:null;
+    const compactOperations=typeof options.compactOperations==='function'
+      ?options.compactOperations:null;
 
     async function assertOwner(owner){
       if(!enabled)throw new Error('Entity-delta client is disabled.');
@@ -933,10 +935,7 @@
            typeof state.snapshot_updated_at!=='string'||!state.snapshot_updated_at){
           return {ok:false,pending:true,reason:'snapshot_compaction_remote_state_invalid'};
         }
-        if(head-snapshot<threshold){
-          return {skipped:true,reason:'snapshot_compaction_threshold_not_reached',
-            pendingRevisions:head-snapshot,threshold};
-        }
+        const pendingRevisions=head-snapshot;
         const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
         if(!cursorResult||cursorResult.ok!==true||cursorResult.exists!==true||!cursorResult.cursor){
           return {ok:false,pending:true,reason:'snapshot_compaction_cursor_unavailable'};
@@ -964,6 +963,21 @@
         }
         if(batch.groups.length||batch.hasMore===true){
           return {skipped:true,reason:'snapshot_compaction_local_outbox_not_empty'};
+        }
+        if(pendingRevisions<threshold){
+          if(floor===0||!compactOperations){
+            return {skipped:true,reason:'snapshot_compaction_threshold_not_reached',
+              pendingRevisions,threshold,compactionFloor:floor};
+          }
+          await assertOwner(owner);
+          const cleanup=await compactOperations(owner,floor,compactOptions.signal||null);
+          await assertOwner(owner);
+          return {
+            ok:!!(cleanup&&cleanup.ok===true),
+            completed:!!(cleanup&&cleanup.complete===true),
+            snapshotPublished:false,cleanup,cleanupPending:!!(cleanup&&cleanup.pending),
+            compactionFloor:floor,pendingRevisions,threshold
+          };
         }
         await assertOwner(owner);
         const recovery=await (compactSnapshot||publishConflictRecovery)(owner,{
