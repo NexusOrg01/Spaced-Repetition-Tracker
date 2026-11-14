@@ -104,7 +104,7 @@ async function verifyStorageBootstrap() {
   const storage = await readFile(join(root, 'nexus-storage.js'), 'utf8');
   const bootstrap = await readFile(join(root, 'nexus-app-bootstrap.js'), 'utf8');
   const expected = [
-    'nexus-build-config.js', 'nexus-analytics.js', 'workspace-isolation-guard.js',
+    'workspace-isolation-guard.js', 'nexus-build-config.js', 'nexus-analytics.js',
     'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
     'explore-curriculum.js', 'app-core.js', 'fsrs-bundle.js', 'study-hub.js',
     'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-chunk-storage.js',
