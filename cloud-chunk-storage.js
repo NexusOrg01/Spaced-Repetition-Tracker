@@ -322,7 +322,35 @@ async function writeDeltaSnapshot(client,userId,payload,expectedHeadRevision,exp
  const baselineResult=await baselineQuery.maybeSingle();
  if(baselineResult&&baselineResult.error)throw baselineResult.error;
  const baseline=baselineResult&&baselineResult.data;
- if(!baseline||baseline.updated_at!==expectedStamp){
+ if(!baseline){
+  throw fail('The recovery snapshot baseline is unavailable. The local recovery copy remains preserved.','NEXUS_CLOUD_CONFLICT');
+ }
+ if(baseline.updated_at!==expectedStamp){
+  // Reconcile an ambiguous prior response only when this exact candidate is still
+  // the active snapshot at the expected revision. Newer/different snapshots fail closed.
+  await assertDeltaSnapshotOwner(client,userId);
+  const stateResult=await client.rpc('nexus_get_entity_sync_state');
+  if(stateResult&&stateResult.error)throw stateResult.error;
+  const state=stateResult&&stateResult.data;
+  const snapshotRevision=Number(state&&state.snapshot_revision),
+   compactedThroughRevision=Number(state&&state.compacted_through_revision),
+   headRevision=Number(state&&state.head_revision);
+  if(state&&state.mode==='delta'&&snapshotRevision===expectedHead&&
+     compactedThroughRevision>=expectedHead&&headRevision>=expectedHead&&
+     state.snapshot_updated_at===baseline.updated_at&&baseline.payload&&
+     baseline.payload.__nexusDeltaSync==='entity-delta-v1'){
+   const candidate={...payload,__nexusDeltaSync:'entity-delta-v1'};
+   const activeManifest=isManifest(baseline.payload)?baseline.payload:null;
+   const activePayload=activeManifest
+     ?await readSnapshot(client,userId,activeManifest,signal):baseline.payload;
+   if(await sha256(stableJson(activePayload))===await sha256(stableJson(candidate))){
+    await assertDeltaSnapshotOwner(client,userId);
+    return {payload:activePayload,manifest:activeManifest,updated_at:baseline.updated_at,
+     headRevision,snapshotRevision,compactedThroughRevision,
+     verifiedChunks:!!activeManifest,storageMode:activeManifest?'chunked':'jsonb',
+     verified:true,alreadyPublished:true};
+   }
+  }
   throw fail('The recovery snapshot baseline changed before upload. The local recovery copy remains preserved.','NEXUS_CLOUD_CONFLICT');
  }
  if(!baseline.payload||baseline.payload.__nexusDeltaSync!=='entity-delta-v1'){
