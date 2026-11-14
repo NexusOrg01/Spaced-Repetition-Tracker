@@ -116,6 +116,8 @@ class DeltaMemoryCloud extends MemoryCloud{
   const candidate=args.p_payload;
   if(!candidate||candidate.__nexusDeltaSync!=='entity-delta-v1')
    return {data:null,error:{code:'22023',message:'delta marker missing'}};
+  if(row.payload.__nexusStorage==='chunked-v1'&&candidate.__nexusStorage!=='chunked-v1')
+   return {data:null,error:{code:'55000',message:'chunked workspaces cannot revert to JSONB'}};
   if(candidate.__nexusStorage==='chunked-v1'){
    const rows=this.chunks.filter(item=>item.user_id===owner&&item.revision_id===candidate.revisionId);
    if(rows.length!==candidate.chunkCount||
@@ -284,7 +286,17 @@ assert.equal(deltaLarge.manifest.__nexusDeltaSync,'entity-delta-v1',
 assert.deepEqual(await chunks.readSnapshot(deltaLargeCloud,OWNER_A,deltaLarge.manifest),
  {...deltaLargePayload,__nexusDeltaSync:'entity-delta-v1'},
  'the server-published delta manifest must reconstruct the exact recovery snapshot');
+
 assert.equal(deltaLargeCloud.rows.get(OWNER_A).payload.revisionId,deltaLarge.manifest.revisionId);
+const smallCandidateOnChunked=await chunks.writeDeltaSnapshot(deltaLargeCloud,OWNER_A,
+ deltaSmallPayload,4,deltaLarge.updated_at);
+assert.equal(smallCandidateOnChunked.storageMode,'chunked',
+ 'a previously chunked cloud workspace must remain chunked even when its new recovery candidate is small');
+assert.ok(chunks.isManifest(smallCandidateOnChunked.manifest));
+assert.equal(smallCandidateOnChunked.payload.__nexusDeltaSync,'entity-delta-v1');
+assert.deepEqual(await chunks.readSnapshot(deltaLargeCloud,OWNER_A,smallCandidateOnChunked.manifest),
+ {...deltaSmallPayload,__nexusDeltaSync:'entity-delta-v1'},
+ 'small recovery candidates published over chunked baselines must remain fully readable');
 
 const interruptedDeltaCloud=new DeltaMemoryCloud();
 const oldDeltaSnapshot=seedDeltaCloud(interruptedDeltaCloud);
