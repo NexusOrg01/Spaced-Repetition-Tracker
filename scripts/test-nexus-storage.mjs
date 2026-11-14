@@ -1191,8 +1191,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   featureRoot.settings={...featureRoot.settings,dailyMinutes:120};
   const syncResult=await first.api.syncWorkspaceEntities(owner,[],{
     trackerRoot,featureRoot,
-    trackerSnapshotJson:JSON.stringify(trackerState),
-    featureSnapshotJson:JSON.stringify(featureState)
+    trackerSnapshotJson:JSON.stringify(originalWorkspace.state),
+    featureSnapshotJson:JSON.stringify(originalWorkspace.featureState)
   });
   assert.equal(syncResult.mode,'incremental',
     'metadata-only changes must update the entity roots without rebuilding the generation');
