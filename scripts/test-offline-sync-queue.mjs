@@ -329,6 +329,10 @@ function withFacadeAtomic(storage,callback){
    for(const entry of entries)s.setItem(entry.key,entry.value);
    return Promise.resolve({ok:true,alreadyCommitted:false,generation:'generation-recovered',
     cursor:{publishRevision:7,snapshotUpdatedAt:'rev-recovered'}});
+  },
+  readWorkspaceEntityDeltaCursor(owner){
+   return Promise.resolve({ok:true,cursor:{generation:'generation-recovered',
+    publishRevision:7,snapshotUpdatedAt:'rev-recovered'}});
   }
  }};
  try{
@@ -356,6 +360,8 @@ function withFacadeAtomic(storage,callback){
    {intentId:'recovery-queue-test',candidateDigest:'b'.repeat(64)});
   assert.equal(replay.alreadyCommitted,true,
    'a replayed recovery completion marker must not repeat the underlying transaction');
+  assert.equal(replay.generation,'generation-recovered',
+   'the replayed completion result must recover its generation from the durable cursor');
   assert.equal(calls.length,1);
  }finally{
   if(previousWindow===undefined)delete globalThis.window;else globalThis.window=previousWindow;
