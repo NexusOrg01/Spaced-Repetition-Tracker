@@ -306,6 +306,53 @@ async function verifyDeltaSnapshotPublication(client,userId,expectedHead,manifes
  return {payload:verifiedPayload,updated_at:row.updated_at,headRevision:Number(state.head_revision),
   snapshotRevision:Number(state.snapshot_revision),compactedThroughRevision:Number(state.compacted_through_revision)};
 }
+async function compactPublishedDeltaOperations(client,userId,expectedFloor,signal){
+ const batchLimit=2000,maxRounds=4;
+ let deletedOperations=0,deletedReceipts=0,rounds=0;
+ for(;rounds<maxRounds;rounds++){
+  if(signal&&signal.aborted){
+   return {ok:false,retryable:true,complete:false,pending:true,reason:'entity_operation_compaction_aborted',
+    deletedOperations,deletedReceipts,rounds};
+  }
+  try{
+   await assertDeltaSnapshotOwner(client,userId);
+   const result=await client.rpc('nexus_compact_entity_operations',{p_limit:batchLimit});
+   if(result&&result.error){
+    return {ok:false,retryable:true,complete:false,pending:true,
+     reason:'entity_operation_compaction_unavailable',
+     errorCode:String(result.error.code||'unknown'),deletedOperations,deletedReceipts,rounds:rounds+1};
+   }
+   await assertDeltaSnapshotOwner(client,userId);
+   const data=result&&result.data;
+   const floor=Number(data&&data.compacted_through_revision);
+   const operations=Number(data&&data.deleted_operations);
+   const receipts=Number(data&&data.deleted_receipts);
+   if(!data||data.ok!==true||!Number.isSafeInteger(floor)||floor<expectedFloor||
+      !Number.isSafeInteger(operations)||operations<0||operations>batchLimit||
+      !Number.isSafeInteger(receipts)||receipts<0||receipts>batchLimit){
+    return {ok:false,retryable:true,complete:false,pending:true,
+     reason:'entity_operation_compaction_receipt_invalid',
+     deletedOperations,deletedReceipts,rounds:rounds+1};
+   }
+   deletedOperations+=operations;
+   deletedReceipts+=receipts;
+   if(operations===0&&receipts===0){
+    return {ok:true,complete:true,pending:false,deletedOperations,deletedReceipts,
+     compactedThroughRevision:floor,rounds:rounds+1};
+   }
+   if(operations<batchLimit&&receipts<batchLimit){
+    return {ok:true,complete:true,pending:false,deletedOperations,deletedReceipts,
+     compactedThroughRevision:floor,rounds:rounds+1};
+   }
+  }catch(error){
+   return {ok:false,retryable:true,complete:false,pending:true,
+    reason:'entity_operation_compaction_verification_failed',
+    errorCode:String(error&&error.code||'unknown'),deletedOperations,deletedReceipts,rounds:rounds+1};
+  }
+ }
+ return {ok:true,complete:false,pending:true,deletedOperations,deletedReceipts,
+  compactedThroughRevision:expectedFloor,rounds:maxRounds};
+}
 async function writeDeltaSnapshot(client,userId,payload,expectedHeadRevision,expectedStamp,signal){
  const expectedHead=Number(expectedHeadRevision);
  if(!client||typeof userId!=='string'||!userId||
@@ -345,10 +392,11 @@ async function writeDeltaSnapshot(client,userId,payload,expectedHeadRevision,exp
      ?await readSnapshot(client,userId,activeManifest,signal):baseline.payload;
    if(await sha256(stableJson(activePayload))===await sha256(stableJson(candidate))){
     await assertDeltaSnapshotOwner(client,userId);
+    const compaction=await compactPublishedDeltaOperations(client,userId,expectedHead,signal);
     return {payload:activePayload,manifest:activeManifest,updated_at:baseline.updated_at,
      headRevision,snapshotRevision,compactedThroughRevision,
      verifiedChunks:!!activeManifest,storageMode:activeManifest?'chunked':'jsonb',
-     verified:true,alreadyPublished:true};
+     verified:true,alreadyPublished:true,compaction};
    }
   }
   throw fail('The recovery snapshot baseline changed before upload. The local recovery copy remains preserved.','NEXUS_CLOUD_CONFLICT');
@@ -433,10 +481,11 @@ async function writeDeltaSnapshot(client,userId,payload,expectedHeadRevision,exp
   try{await cleanupOldChunks(client,userId,manifest.revisionId,signal);}
   catch(error){if(root&&root.console)root.console.warn('Old Nexus delta snapshot chunks could not be cleaned up; the newly published snapshot remains verified.',error);}
  }
+ const compaction=await compactPublishedDeltaOperations(client,userId,expectedHead,signal);
  return {payload:verified.payload,manifest,updated_at:verified.updated_at,
   headRevision:verified.headRevision,snapshotRevision:verified.snapshotRevision,
   compactedThroughRevision:verified.compactedThroughRevision,
-  verifiedChunks:!!manifest,storageMode:manifest?'chunked':'jsonb',verified:true};
+  verifiedChunks:!!manifest,storageMode:manifest?'chunked':'jsonb',verified:true,compaction};
 }
 
 return {
