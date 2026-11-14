@@ -863,6 +863,7 @@
         return {ok:true,recovered:true,alreadyCommitted:!!committed.alreadyCommitted,
           generation:active.generation,snapshotRevision:publication.snapshotRevision,
           headRevision:publication.headRevision,cursor:cursorResult.cursor,
+          compaction:publication.compaction||null,
           archivedConflicts:committed.archivedConflicts||0,intentId:intent.intentId};
       }catch(error){
         return unavailable('conflict_recovery_commit_failed',{
