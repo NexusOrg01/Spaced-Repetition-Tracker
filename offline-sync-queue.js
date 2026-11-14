@@ -52,7 +52,7 @@ function expandStorageValue(value){
 }
 
 const obj=x=>!!x&&typeof x==='object'&&!Array.isArray(x),copy=x=>JSON.parse(JSON.stringify(x)),now=()=>new Date().toISOString();
-const fresh=()=>({schemaVersion:SCHEMA,sequence:0,pending:{},archived:[]});
+const fresh=()=>({schemaVersion:SCHEMA,sequence:0,pending:{},archived:[],recoveryCommits:[]});
 function fail(m){const e=new Error(m);e.code='NEXUS_OFFLINE_QUEUE_UNAVAILABLE';return e;}function operationId(){const c=typeof globalThis!=='undefined'?globalThis.crypto:null;if(c&&typeof c.randomUUID==='function')return 'nexus-op-'+c.randomUUID();if(c&&typeof c.getRandomValues==='function'){const b=new Uint8Array(16);c.getRandomValues(b);b[6]=(b[6]&15)|64;b[8]=(b[8]&63)|128;const h=Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');return 'nexus-op-'+h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);}throw fail('Secure operation ID generation is unavailable. No workspace changes were written.');}
 function read(s){const raw=s.getItem(KEY);if(raw===null)return fresh();let q;try{q=JSON.parse(expandStorageValue(raw));}catch(error){const message=String(error&&error.message||'');if(message.includes('safe decode limit')){const oversized=fail('This account’s older offline sync snapshot exceeds the safe compressed-data limit. Your current workspace remains local. Nexus will attempt to rebuild a fresh queue from that workspace and retain the unreadable snapshot for recovery.');oversized.code='NEXUS_OFFLINE_QUEUE_TOO_LARGE';throw oversized;}throw fail('Offline sync queue is unreadable. Sync is paused.');}if(!obj(q)||q.schemaVersion!==SCHEMA||!Number.isSafeInteger(q.sequence)||!obj(q.pending)||!Array.isArray(q.archived))throw fail('Offline sync queue format is invalid or unsupported.');for(const owner of Object.keys(q.pending)){const x=q.pending[owner];if(!obj(x)||x.ownerUserId!==owner||typeof x.operationId!=='string'||!obj(x.payload)||!obj(x.payload.state)||!obj(x.payload.featureState)||!Number.isSafeInteger(x.localSequence))throw fail('Offline sync queue entry is invalid. Sync is paused.');}return q;}
 function stamps(s){try{const x=JSON.parse(s.getItem(STAMP)||'{}');return obj(x)?x:{};}catch(_){return {};}}
@@ -122,6 +122,57 @@ function archiveConflicts(s,owner,conflicts,metadata={}){
  write(s,[{key:CONFLICTS,value:JSON.stringify(map)}]);
  return conflicts.length;
 }
+function commitVerifiedEntityDeltaSnapshot(s,owner,payload,serverVersion,conflicts=[],metadata={},recovery={}){
+ if(!s||!owner||!obj(payload)||!obj(payload.state)||!obj(payload.featureState)||
+    typeof serverVersion!=='string'||!serverVersion||!Array.isArray(conflicts)||
+    !recovery||typeof recovery.intentId!=='string'||!recovery.intentId||
+    typeof recovery.candidateDigest!=='string'||!/^[a-f0-9]{64}$/i.test(recovery.candidateDigest)){
+  throw fail('A verified owner-bound delta recovery snapshot is required.');
+ }
+ const host=typeof window!=='undefined'?window:globalThis,storage=host&&host.NexusStorage;
+ if(!storage||typeof storage.commitWorkspaceEntityRecovery!=='function')
+  throw fail('The atomic local entity recovery commit is unavailable. The current workspace and recovery intent remain preserved.');
+ const key=String(owner),q=read(s),completed=Array.isArray(q.recoveryCommits)?q.recoveryCommits:[],
+  prior=completed.find(item=>item&&item.intentId===recovery.intentId);
+ if(prior){
+  if(prior.candidateDigest!==recovery.candidateDigest||prior.serverVersion!==serverVersion)
+   throw fail('A recovery intent ID was reused for a different candidate or server revision.');
+  return {ok:true,alreadyCommitted:true,archivedConflicts:0};
+ }
+ const sm=stamps(s),bases=readOwnerMap(s,BASE,'The last-synced workspace base'),
+  conflictMap=readOwnerMap(s,CONFLICTS,'The sync conflict recovery archive');
+ const old=q.pending[key];
+ if(old&&old.status==='pending'){
+  const archived={...copy(old),status:'archived',archivedAt:now(),
+   archiveReason:'verified-entity-delta-snapshot-recovery'};
+  q.archived.push(archived);q.pending[key]=archived;
+ }else if(!old)delete q.pending[key];
+ q.archived=q.archived.slice(-1000);
+ sm[key]=serverVersion;bases[key]={state:payload.state,featureState:payload.featureState,serverVersion};
+ let archivedConflicts=0;
+ if(conflicts.length){
+  const rows=Array.isArray(conflictMap[key])?conflictMap[key]:[];
+  rows.push({ownerUserId:key,createdAt:now(),baseServerVersion:metadata.baseServerVersion||null,
+   remoteServerVersion:serverVersion,conflicts:copy(conflicts)});
+  conflictMap[key]=rows.slice(-10);archivedConflicts=conflicts.length;
+ }
+ q.recoveryCommits=completed.concat([{
+  intentId:recovery.intentId,candidateDigest:recovery.candidateDigest,
+  serverVersion,committedAt:now()
+ }]).slice(-20);
+ const entries=[
+  {key:'recall.study.tracker.v1',value:JSON.stringify(payload.state)},
+  {key:'recall.study.features.v1',value:JSON.stringify(payload.featureState)},
+  {key:KEY,value:JSON.stringify(q)},{key:BASE,value:JSON.stringify(bases)},
+  {key:STAMP,value:JSON.stringify(sm)},{key:CONFLICTS,value:JSON.stringify(conflictMap)}
+ ];
+ return storage.commitWorkspaceEntityRecovery(key,recovery.intentId,entries,recovery.candidateDigest)
+  .then(result=>{
+   if(!result||result.ok!==true)throw fail('The local entity recovery transaction could not be verified.');
+   return {ok:true,alreadyCommitted:!!result.alreadyCommitted,archivedConflicts,
+    generation:result.generation,cursor:result.cursor};
+  });
+}
 function getConflictHistory(s,owner){
  if(!owner)return [];
  const map=readOwnerMap(s,CONFLICTS,'The sync conflict recovery archive');
@@ -172,5 +223,5 @@ function compactMetadata(s){
 }
 function summary(s,owner){const q=read(s),x=owner?q.pending[String(owner)]:null;return {schemaVersion:SCHEMA,pendingForOwner:!!(x&&x.status==='pending'),localSequence:x&&x.status==='pending'?x.localSequence:null,archivedForOwner:q.archived.filter(a=>a&&a.ownerUserId===String(owner)).length};}
 function allPending(s){const q=read(s);return Object.keys(q.pending).map(k=>q.pending[k]).filter(x=>x&&x.status==='pending');}
-return {KEY,OWNER,STAMP,BASE,CONFLICTS,QUARANTINE,SCHEMA,commitWorkspace,forgetAccount,compactMetadata,getPending,hasPending:(s,o)=>!!getPending(s,o),getAllPending:allPending,rebase,rebaseWithBase,archive,acknowledge,rememberStamp,getStamp,getBase,rememberBase,archiveConflicts,getConflictHistory,summary};
+return {KEY,OWNER,STAMP,BASE,CONFLICTS,QUARANTINE,SCHEMA,commitWorkspace,forgetAccount,compactMetadata,getPending,hasPending:(s,o)=>!!getPending(s,o),getAllPending:allPending,rebase,rebaseWithBase,archive,acknowledge,rememberStamp,getStamp,getBase,rememberBase,archiveConflicts,commitVerifiedEntityDeltaSnapshot,getConflictHistory,summary};
 });
