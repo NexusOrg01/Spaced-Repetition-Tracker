@@ -477,6 +477,7 @@
   let entitySyncSerial=Promise.resolve();
   // Prevent new entity writes from recreating rows while an account is being deleted.
   const entityRemovalOwners=new Set();
+  const entityRecoveryLockedOwners=new Set();
   let entitySyncError=null;
   let entitySyncLastSuccessAt=null;
 
@@ -2122,8 +2123,10 @@
     if(conflictsJson.length>5*1024*1024||payloadMetadata.length>64*1024)
       throw new Error('The recovery intent metadata exceeds the safe size limit.');
     await entitySyncSerial.catch(()=>undefined);
+    await serial.catch(()=>undefined);
+    await persistPending();
     const manifestKey=entityManifestKey(owner),intentKey=entityDeltaRecoveryKey(owner);
-    return transaction(['migrationMeta'],'readwrite',(tx,set)=>{
+    const result=await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
       const store=tx.objectStore('migrationMeta'),values={manifest:null,intent:null};let remaining=2;
       const finish=()=>{
         remaining--;if(remaining!==0)return;
@@ -2148,6 +2151,8 @@
       m.onsuccess=()=>{values.manifest=m.result||null;finish();};
       i.onsuccess=()=>{values.intent=i.result||null;finish();};
     });
+    if(result&&result.ok===true)entityRecoveryLockedOwners.add(owner);
+    return result;
   }
 
   async function readWorkspaceEntityRecovery(ownerId){
@@ -2332,6 +2337,7 @@
         try{await pruneWorkspaceEntityOutbox(owner);}
         catch(error){console.warn('Superseded Nexus entity outbox rows could not be pruned; the new active generation remains verified.',error);}
       }
+      entityRecoveryLockedOwners.delete(owner);
       return result;
     });
     serial=task.then(()=>revision);task.catch(reportFailure);return task;
@@ -2663,6 +2669,10 @@
          !normalized.some(entry => entry.key === FEATURE_KEY))) {
       throw new Error('Changing the active account requires the tracker and Study Hub workspaces in the same atomic transaction.');
     }
+    if(enabled&&committedOwnerId&&entityRecoveryLockedOwners.has(committedOwnerId)&&
+       normalized.some(entry=>isManagedKey(entry.key))){
+      throw new Error('Nexus is completing a verified cloud recovery. Workspace edits are temporarily paused so they cannot be lost while the recovery snapshot and local entity generation are committed.');
+    }
     if (!enabled) {
       const managedCount = normalized.filter(entry => isManagedKey(entry.key)).length;
       if (managedCount && managedCount !== normalized.length) throw new Error('This atomic operation mixed Nexus data with browser/auth storage; no values were written.');
@@ -2860,6 +2870,14 @@
       committedOwnerId = cache.has(OWNER_KEY) ? cache.get(OWNER_KEY) : null;
       revision = snapshot.revision;
       enabled = true;
+      const recoveryIntent=committedOwnerId?await transaction(['migrationMeta'],'readonly',(tx,set)=>{
+        const request=tx.objectStore('migrationMeta').get(entityDeltaRecoveryKey(committedOwnerId));
+        request.onsuccess=()=>set(request.result||null);
+      }):null;
+      if(recoveryIntent&&recoveryIntent.ownerId===committedOwnerId&&
+         ['prepared','staged','published'].includes(recoveryIntent.phase)){
+        entityRecoveryLockedOwners.add(committedOwnerId);
+      }else if(committedOwnerId){entityRecoveryLockedOwners.delete(committedOwnerId);}
       await seedWorkspaceProjection(snapshot.rows, snapshot.revision);
       if(options&&options.hydrateEntities===true)await hydrateWorkspaceCacheFromEntities();
       // Reflect a verified entity-first cache in the native compatibility mirror,
@@ -2942,7 +2960,8 @@
       entitySyncError,
       entitySyncLastSuccessAt,
       entityHydrationMode,
-      entityHydrationError
+      entityHydrationError,
+      entityRecoveryLocked:!!(committedOwnerId&&entityRecoveryLockedOwners.has(committedOwnerId))
     })
   };
 });
