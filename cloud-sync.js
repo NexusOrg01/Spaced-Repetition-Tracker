@@ -682,6 +682,77 @@ ready=true;const adoptedUpload=await upload();if(!adoptedUpload){lastUserId=newU
 }}}
 
 async function sameWorkspace(a,b){if(!a||!b)return false;const merger=window.NexusWorkspaceSyncMerge;if(!merger||typeof merger.sameAsync!=='function')throw new Error('Safe large-workspace comparison is unavailable.');return merger.sameAsync({state:a.state||{},featureState:a.featureState||{}},{state:b.state||{},featureState:b.featureState||{}});}
+async function runStagingEntityDeltaSync(ownerId,signal){
+ // This experimental path is deliberately unavailable on the production host
+ // and requires an explicit console/runtime opt-in on a deploy preview.
+ if(window.NEXUS_ENTITY_DELTA_SYNC_STAGING!==true||
+    !isPreviewDeploymentOrigin()||config().url!==STAGING_CONFIG.url){
+  return {skipped:true,reason:'staging_delta_gate_closed'};
+ }
+ const queue=window.NexusOfflineSyncQueue,storage=window.NexusStorage,
+  delta=window.NexusEntityDeltaSync,chunkStorage=window.NexusCloudChunkStorage;
+ if(!queue||!storage||!delta||typeof delta.createClient!=='function'||
+    !chunkStorage||typeof chunkStorage.writeDeltaSnapshot!=='function'||
+    typeof queue.commitVerifiedEntityDeltaSnapshot!=='function'){
+  throw new Error('Staging entity-delta recovery dependencies are incomplete. The existing local snapshot and outbox were left unchanged.');
+ }
+ const makeClient=delta.createClient({
+  enabled:true,client,storage,
+  getActiveOwner:()=>session&&session.user?session.user.id:'',
+  getLocalOwner:()=>localStorage.getItem(OWNER_KEY)||'',
+  getLocalBase:userId=>queue.getBase(localStorage,userId),
+  getLocalWorkspace:()=>snapshot(),
+  getPendingSnapshot:userId=>queue.getPending(localStorage,userId),
+  sameWorkspace,
+  applyWorkspace:async workspace=>{
+   if(!workspace||!workspace.state||!workspace.featureState||
+      !window.NexusNormalizeFeatureState||!window.NexusSetFeatureState){
+    throw new Error('The recovered workspace could not be normalized for the active view.');
+   }
+   const safeState=window.NexusRepairCurriculumState
+    ?window.NexusRepairCurriculumState(workspace.state):normalizeState(workspace.state);
+   const nextFeatures=window.NexusNormalizeFeatureState(workspace.featureState);
+   if(!nextFeatures.fsrsSettings||typeof nextFeatures.fsrsSettings!=='object'||
+      Array.isArray(nextFeatures.fsrsSettings)){
+    nextFeatures.fsrsSettings={request_retention:0.9,maximum_interval:120,enable_fuzz:false,w:null};
+   }
+   ready=false;
+   state=safeState;
+   if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function'){
+    window.NexusFSRS.setSettings(nextFeatures.fsrsSettings,{syncFeature:false,persist:false});
+   }
+   window.NexusSetFeatureState(nextFeatures,{persist:false,render:false,applyFsrs:false});
+   renderAll();
+   const activeView=typeof document!=='undefined'&&typeof document.querySelector==='function'
+    ?document.querySelector('.view.active'):null;
+   if(activeView&&activeView.id==='view-studyhub'&&window.NexusRenderHub)window.NexusRenderHub();
+   ready=true;
+  },
+  publishSnapshot:(userId,payload,expectedHead,expectedStamp,requestSignal)=>
+   chunkStorage.writeDeltaSnapshot(client,userId,payload,expectedHead,expectedStamp,requestSignal),
+  commitLocalRecovery:(userId,payload,publication,conflicts,metadata)=>
+   queue.commitVerifiedEntityDeltaSnapshot(localStorage,userId,payload,publication.updated_at,
+    conflicts,{baseServerVersion:metadata.baseServerVersion},
+    {intentId:metadata.intentId,candidateDigest:metadata.candidateDigest})
+ });
+ let result=await makeClient.synchronize(ownerId,{signal,maxRounds:20,maxGroups:20,maxBytes:1048576});
+ if(result&&result.skipped&&result.mode==='snapshot')return {skipped:true,reason:'legacy_snapshot_server'};
+ if(result&&result.ok===true)return result;
+ const needsRecovery=!!(result&&(result.conflict||result.snapshotRequired||
+   result.requiresSnapshotReconciliation||
+   result.reason==='compatibility_snapshot_still_pending'||
+   result.reason==='local_and_remote_changes_overlap'||
+   result.reason==='local_and_remote_changes_overlap_after_partial_publish'));
+ if(needsRecovery){
+  const recovered=await makeClient.publishConflictRecovery(ownerId,{
+   signal,maxGroups:100,maxBytes:8*1048576
+  });
+  if(recovered&&recovered.ok===true)return recovered;
+  return recovered||{ok:false,retryable:true,reason:'staging_conflict_recovery_failed'};
+ }
+ return result||{ok:false,retryable:true,reason:'staging_delta_sync_unavailable'};
+}
+
 async function upload(){
  if(deletingAccount||!localQueueHealthy||!client||!session||!ready)return false;
  if(syncing){pendingSync=true;return false;}
@@ -695,6 +766,18 @@ async function upload(){
    const {data:authData,error:authError}=await client.auth.getUser();
   if(authError)throw new Error('Supabase could not verify the active login before cloud write: '+authError.message);
   if(!authData.user||authData.user.id!==uploadUserId||!session||session.user.id!==uploadUserId)throw new Error('The active Google/account session changed or could not be verified. Cloud write paused to protect the other account. Sign in again and retry.');
+  const deltaResult=await runStagingEntityDeltaSync(uploadUserId,uploadScope.signal);
+  if(!deltaResult.skipped){
+   if(deltaResult.ok!==true)throw Object.assign(new Error(
+    'Staging entity-delta sync did not complete safely ('+String(deltaResult.reason||'unknown')+'). Your local workspace and recovery data were preserved; the legacy snapshot writer was not used.'
+   ),{code:'NEXUS_DELTA_STAGING_SYNC_BLOCKED'});
+   lastRemoteStamp=deltaResult.cursor&&deltaResult.cursor.snapshotUpdatedAt||
+    deltaResult.updated_at||lastRemoteStamp;
+   await flushDurableLocalWrites();
+   status('Synced');
+   uploaded=true;
+   return true;
+  }
   let pending=null;
   if(queue){
    try{pending=queue.getPending(localStorage,uploadUserId);}
