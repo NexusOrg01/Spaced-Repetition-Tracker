@@ -2301,7 +2301,7 @@
           }
           for(const entry of normalized)records.put({key:entry.key,value:entry.value,
             deleted:entry.value===null,revision:nextRevision,updatedAt:timestamp()});
-          workspaces.put(makeWorkspaceRow(owner,tracker,features,nextRevision,workspaceRevision));
+          workspaces.put(makeWorkspaceRow(owner,trackerEntry.value,featureEntry.value,nextRevision,workspaceRevision));
           meta.put({key:'lastCommittedRevision',value:nextRevision,updatedAt:timestamp()});
           const generation=manifest.pendingGeneration,snapshotRevision=Number(publication.snapshotRevision),
             headRevision=Number(publication.headRevision);
