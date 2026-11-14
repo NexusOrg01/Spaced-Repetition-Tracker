@@ -52,19 +52,19 @@ assert.match(identityHardening, /VALIDATE CONSTRAINT nexus_workspace_operations_
 assert.doesNotMatch(identityHardening, /GRANT EXECUTE ON FUNCTION/);
 
 assert.match(chunkManifestProtection, /CREATE SCHEMA IF NOT EXISTS nexus_private/);
-assert.match(chunkManifestProtection, /SECURITY DEFINER[\\s\\S]*SET search_path = ''/);
-assert.match(chunkManifestProtection, /FROM auth\\.users[\\s\\S]*RETURN OLD/);
-assert.match(chunkManifestProtection, /public\\.nexus_user_data AS workspace[\\s\\S]*FOR UPDATE/);
-assert.match(chunkManifestProtection, /OLD\\.revision_id::text/);
-assert.match(chunkManifestProtection, /BEFORE DELETE ON public\\.nexus_user_data_chunks/);
-assert.match(chunkManifestProtection, /REVOKE ALL ON FUNCTION nexus_private\\.guard_active_nexus_chunk_delete\\(\\)[\\s\\S]*FROM PUBLIC, anon, authenticated/);
+assert.match(chunkManifestProtection, /SECURITY DEFINER[\s\S]*SET search_path = ''/);
+assert.match(chunkManifestProtection, /FROM auth\.users[\s\S]*RETURN OLD/);
+assert.match(chunkManifestProtection, /public\.nexus_user_data AS workspace[\s\S]*FOR UPDATE/);
+assert.match(chunkManifestProtection, /OLD\.revision_id::text/);
+assert.match(chunkManifestProtection, /BEFORE DELETE ON public\.nexus_user_data_chunks/);
+assert.match(chunkManifestProtection, /REVOKE ALL ON FUNCTION nexus_private\.guard_active_nexus_chunk_delete\(\)[\s\S]*FROM PUBLIC, anon, authenticated/);
 assert.doesNotMatch(chunkManifestProtection, /GRANT (?:USAGE|EXECUTE)/);
 assert.ok(chunkManifestDeletionTest.includes('BEGIN;') &&
   chunkManifestDeletionTest.trimEnd().endsWith('ROLLBACK;'),
   'Active-manifest SQL fixtures must be rollback-only.');
 assert.match(chunkManifestDeletionTest, /SET LOCAL ROLE authenticated/);
 assert.match(chunkManifestDeletionTest, /Cannot delete chunks referenced by the active Nexus workspace manifest|55000/);
-assert.match(chunkManifestDeletionTest, /ON DELETE CASCADE|auth\\.users/);
+assert.match(chunkManifestDeletionTest, /ON DELETE CASCADE|auth\.users/);
 assert.match(chunkManifestDeletionTest, /A previous, now-inactive manifest could not be cleaned up/);
 
 
