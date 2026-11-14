@@ -190,3 +190,20 @@ Implement the **local recovery commit boundary** as an idempotent, crash-recover
 6. Keep `cloud-sync.js` on its current default snapshot path until the local commit, retry/replay, account-switch, restore/undo, and mixed-version tests pass.
 
 Do not re-grant the staging RPCs, enable a staging account, or change the normal cloud-sync runtime as part of this local-commit milestone. Revisit those gates only after the local commit is complete and independently reviewed.
+
+### 14 November 2026 — local recovery commit and preview-only integration
+
+The Phase 3.4 recovery path now includes the local publication boundary and a gated runtime integration on this PR branch:
+
+- A durable owner-scoped recovery journal records the recovery intent, the active entity generation, base snapshot timestamp, expected server head, candidate digest, merge conflicts, and non-workspace payload metadata. Its phases are prepared, staged, and published.
+- A replacement entity generation can be built and verified without replacing the currently active generation. The reader can validate either the active generation or the exact pending generation associated with the recovery intent.
+- After a recovery intent is journaled, managed workspace writes, ordinary entity projection writes, remote delta application, and outbox acknowledgement are paused for that account. The lock is restored from IndexedDB after restart. It is released only after the local commit or owner-scoped account cleanup.
+- The verified local commit writes the tracker and Study Hub compatibility snapshots, offline queue, last-synced base, remote timestamp, conflict archive, entity manifest/generation, and delta cursor in one IndexedDB transaction. The cursor records the published snapshot revision separately from a later observed remote head, so later operations remain pending for bounded pull.
+- The commit stores a completion receipt. A retry after either a lost server response or a lost local transaction response verifies the exact candidate and recovers the committed generation from the durable cursor rather than replaying the workspace mutation.
+- cloud-chunk-storage.js reconciles an ambiguous snapshot-publication response only when the active revision, timestamp, delta marker, and complete payload match the exact candidate. It does not issue a duplicate publication RPC for a verified replay.
+- cloud-sync.js has an explicit runtime opt-in, restricted to a Vercel/Netlify deploy preview that resolves to the staging Supabase configuration. It resumes a durable recovery intent before ordinary delta sync; a pending recovery with the gate closed blocks the legacy writer rather than overwriting the candidate. With the gate unset, existing snapshot sync remains the default. This does not enable delta mode for any account.
+- Added regression cases for staged-generation retention, atomic local commit and cursor rebind, queue/base/conflict rebase, idempotent local replay, and the lost-publication-response resume path.
+
+**Current verification state:** the first CI run reached the new client recovery test and failed on the staged candidate's missing protocol marker. That marker was restored before the next run. Further hardening then corrected the IndexedDB key-range delimiters, added direct entity-write/acknowledgement guards, and made a replayed local completion recover its generation from the cursor. The latest commit has a new CI run queued/in progress; this section does not claim that run has passed.
+
+**Still required before treating Phase 3.4 as rollout-ready:** a successful full PR CI run after the latest fixes; authenticated browser testing against the preview/staging project; controlled staging tests for two-device publish/pull, a lost publication response, restart at each journal phase, offline reconnect, account switching, compaction, large workspace pagination, and legacy snapshot clients. No staging or production Supabase RPC grant, account mode, data, schema, or production deployment was changed by this work. Do not enable the runtime flag for real users or merge/roll out until these checks are complete.
