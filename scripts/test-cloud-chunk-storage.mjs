@@ -80,6 +80,13 @@ class Query {
    if(this.operation==='delete'){
     if(this.filters.eq?.user_id!==this.cloud.activeUser)return {data:[],error:null};
     const ids=this.filters.in?.id||[];
+    const activePayload=this.cloud.rows.get(this.cloud.activeUser)?.payload;
+    const activeRevision=activePayload?.__nexusStorage==='chunked-v1'
+     ?activePayload.revisionId:null;
+    if(activeRevision&&this.cloud.chunks.some(row=>
+      row.user_id===this.cloud.activeUser&&ids.includes(row.id)&&row.revision_id===activeRevision)){
+     return {data:null,error:{code:'55000',message:'Cannot delete chunks referenced by the active manifest.'}};
+    }
     const before=this.cloud.chunks.length;
     this.cloud.chunks=this.cloud.chunks.filter(row=>!(row.user_id===this.cloud.activeUser&&ids.includes(row.id)));
     return {data:null,error:null,count:before-this.cloud.chunks.length};
@@ -238,6 +245,22 @@ const crossAccountRead=await chunks.readSnapshot(cloud,OWNER_A,second.manifest).
 assert.ok(crossAccountRead,'a different authenticated owner must not read another account’s chunk set');
 cloud.activeUser=OWNER_A;
 
+// Even a stale or incorrect client-side exclusion value must not let cleanup
+// delete chunks currently referenced by the server's active manifest.
+const protectedActiveChunk=cloud.chunks.find(row=>
+ row.user_id===OWNER_A&&row.revision_id===second.manifest.revisionId);
+assert.ok(protectedActiveChunk,'the active manifest must have a persisted chunk row');
+const protectedChunkCreatedAt=protectedActiveChunk.created_at;
+protectedActiveChunk.created_at=new Date(Date.now()-8*24*60*60*1000).toISOString();
+const activeManifestDelete=await chunks.cleanupOldChunks(
+ cloud,OWNER_A,'stale-client-active-revision'
+).then(()=>null,error=>error);
+assert.equal(activeManifestDelete.code,'55000',
+ 'database-side active-manifest protection must reject deletion even with a stale client exclusion');
+assert.ok(cloud.chunks.some(row=>row.id===protectedActiveChunk.id),
+ 'the active manifest chunk must remain present after a rejected cleanup attempt');
+protectedActiveChunk.created_at=protectedChunkCreatedAt;
+
 const interruptedCloud=new MemoryCloud();
 interruptedCloud.failChunkBatch=2;
 const interrupted=await chunks.writeSnapshot(interruptedCloud,OWNER_A,firstPayload,null,'2026-11-09T05:04:00.000Z',backup).then(()=>null,error=>error);
@@ -394,4 +417,4 @@ assert.equal(wrongOwnerDelta.code,'NEXUS_ENTITY_DELTA_OWNER_MISMATCH',
 assert.equal(wrongOwnerDeltaCloud.rpcCalls.length,0,'wrong-owner recovery must not call any RPC');
 
 
-console.log('Cloud chunk storage tests passed: 27 MB-scale UTF-8 chunking, paginated SHA-256 reconstruction, atomic manifest publication, legacy overwrite guard, compare-and-swap conflict, corruption rejection, owner isolation, and preservation of the previous snapshot after interrupted replacement.');
+console.log('Cloud chunk storage tests passed: 27 MB-scale UTF-8 chunking, paginated SHA-256 reconstruction, atomic manifest publication, active-manifest deletion protection, legacy overwrite guard, compare-and-swap conflict, corruption rejection, owner isolation, and preservation of the previous snapshot after interrupted replacement.');
