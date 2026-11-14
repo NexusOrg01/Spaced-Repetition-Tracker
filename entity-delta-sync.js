@@ -6,6 +6,7 @@
     'goals','studyLogs','trackerMeta','featureMeta'
   ]);
   const MAX_GROUPS=100,MAX_CHANGES=1000,MAX_BYTES=1048576;
+  const DEFAULT_SNAPSHOT_COMPACTION_THRESHOLD=250;
 
   function safeInteger(value,min=0){
     if(typeof value!=='number')return null;
@@ -317,6 +318,8 @@
     const mergeWorkspace=options.mergeWorkspace||null;
     const publishSnapshot=options.publishSnapshot||null;
     const commitLocalRecovery=options.commitLocalRecovery||null;
+    const compactSnapshot=typeof options.compactSnapshot==='function'
+      ?options.compactSnapshot:null;
 
     async function assertOwner(owner){
       if(!enabled)throw new Error('Entity-delta client is disabled.');
@@ -873,6 +876,88 @@
       }
     }
 
+    async function compactIdleSnapshot(ownerId,compactOptions={}){
+      const owner=String(ownerId||'').trim();
+      const rawThreshold=compactOptions.snapshotCompactionThreshold===undefined
+        ?DEFAULT_SNAPSHOT_COMPACTION_THRESHOLD:Number(compactOptions.snapshotCompactionThreshold);
+      const threshold=Number.isFinite(rawThreshold)&&Number.isInteger(rawThreshold)&&rawThreshold>=1
+        ?Math.min(10000,rawThreshold):DEFAULT_SNAPSHOT_COMPACTION_THRESHOLD;
+      if(!owner||!storage||typeof storage.readWorkspaceEntityDeltaCursor!=='function'||
+         typeof storage.readWorkspaceEntityOutboxGroups!=='function'||
+         typeof getPendingSnapshot!=='function'){
+        return {ok:false,pending:true,reason:'snapshot_compaction_dependencies_unavailable'};
+      }
+      try{
+        await assertOwner(owner);
+        const stateResult=await client.rpc('nexus_get_entity_sync_state');
+        if(stateResult.error)return {ok:false,pending:true,retryable:true,
+          reason:'snapshot_compaction_state_read_failed',
+          errorCode:String(stateResult.error.code||'unknown')};
+        await assertOwner(owner);
+        const state=stateResult.data;
+        if(!state||state.mode!=='delta'||Number(state.protocol_version)!==1){
+          return {skipped:true,reason:'snapshot_compaction_not_in_delta_mode'};
+        }
+        const head=safeInteger(state.head_revision),snapshot=safeInteger(state.snapshot_revision),
+          floor=safeInteger(state.compacted_through_revision);
+        if(head===null||snapshot===null||floor===null||floor>snapshot||snapshot>head||
+           typeof state.snapshot_updated_at!=='string'||!state.snapshot_updated_at){
+          return {ok:false,pending:true,reason:'snapshot_compaction_remote_state_invalid'};
+        }
+        if(head-snapshot<threshold){
+          return {skipped:true,reason:'snapshot_compaction_threshold_not_reached',
+            pendingRevisions:head-snapshot,threshold};
+        }
+        const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
+        if(!cursorResult||cursorResult.ok!==true||cursorResult.exists!==true||!cursorResult.cursor){
+          return {ok:false,pending:true,reason:'snapshot_compaction_cursor_unavailable'};
+        }
+        const cursor=cursorResult.cursor;
+        if(cursor.ownerId!==owner||cursor.generation!==cursorResult.generation||
+           cursor.snapshotUpdatedAt!==state.snapshot_updated_at||
+           Number(cursor.publishRevision)!==head||Number(cursor.remoteHeadRevision)!==head||
+           cursor.requiresPull!==false||
+           Number(cursor.workspaceRevision)!==Number(cursorResult.workspaceRevision)){
+          return {skipped:true,reason:'snapshot_compaction_requires_fully_reconciled_cursor'};
+        }
+        if(await getPendingSnapshot(owner)){
+          return {skipped:true,reason:'snapshot_compaction_local_snapshot_pending'};
+        }
+        const batch=await storage.readWorkspaceEntityOutboxGroups(owner,
+          Number(cursor.acknowledgedSequence),1,MAX_BYTES-65536);
+        if(!batch||batch.unavailable||batch.snapshotRequired){
+          return {ok:false,pending:true,reason:batch&&batch.reason||'snapshot_compaction_outbox_unavailable'};
+        }
+        if(batch.ownerId!==owner||batch.generation!==cursor.generation||
+           Number(batch.workspaceRevision)!==Number(cursor.workspaceRevision)){
+          return {skipped:true,reason:'snapshot_compaction_local_generation_changed'};
+        }
+        if(batch.groups.length||batch.hasMore===true){
+          return {skipped:true,reason:'snapshot_compaction_local_outbox_not_empty'};
+        }
+        await assertOwner(owner);
+        const recovery=await (compactSnapshot||publishConflictRecovery)(owner,{
+          signal:compactOptions.signal||null,
+          maxGroups:100,
+          maxBytes:Math.max(1024,Math.min(MAX_RECONCILIATION_BYTES,
+            Math.floor(Number(compactOptions.compactionMaxBytes)||8*1048576)))
+        });
+        if(!recovery||recovery.ok!==true){
+          return {ok:false,pending:true,retryable:true,
+            reason:recovery&&recovery.reason||'snapshot_compaction_recovery_failed',
+            recovery};
+        }
+        const cleanup=recovery.compaction||null;
+        return {ok:true,completed:true,snapshotPublished:true,
+          snapshotRevision:recovery.snapshotRevision,headRevision:recovery.headRevision,
+          cleanup,cleanupPending:!!(cleanup&&cleanup.pending),recovery};
+      }catch(error){
+        return {ok:false,pending:true,retryable:true,
+          reason:'snapshot_compaction_failed',
+          errorCode:String(error&&error.code||'unknown')};
+      }
+    }
+
     async function synchronize(ownerId,syncOptions={}){
       if(!enabled)return {ok:true,skipped:true,reason:'feature_disabled'};
       const owner=String(ownerId||'').trim();
@@ -929,8 +1014,10 @@
           }
           continue;
         }
+        const snapshotCompaction=await compactIdleSnapshot(owner,syncOptions);
         return {ok:true,appliedCount,publishedCount,acknowledgedCount,rounds:round+1,
-          throughSequence:push.throughSequence};
+          throughSequence:push.throughSequence,
+          snapshotCompaction:snapshotCompaction&&snapshotCompaction.skipped?null:snapshotCompaction};
       }
       return {ok:false,retryable:true,reason:'delta_sync_round_limit',
         appliedCount,publishedCount,acknowledgedCount,rounds:maxRounds};
