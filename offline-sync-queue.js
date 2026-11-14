@@ -141,7 +141,7 @@ function commitVerifiedEntityDeltaSnapshot(s,owner,payload,serverVersion,conflic
    throw fail('The committed recovery receipt is missing its durable entity cursor.');
   return storage.readWorkspaceEntityDeltaCursor(key).then(cursorResult=>{
    if(!cursorResult||cursorResult.ok!==true||!cursorResult.cursor||
-      cursorResult.cursor.generation!==prior.generation&&prior.generation){
+      typeof cursorResult.cursor.generation!=='string'||!cursorResult.cursor.generation){
     throw fail('The local recovery completion marker could not be reconciled with its entity cursor.');
    }
    return {ok:true,alreadyCommitted:true,archivedConflicts:0,
