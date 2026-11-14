@@ -3,9 +3,9 @@
   'use strict';
 
   const RUNTIME_ASSETS = [
+    'workspace-isolation-guard.js',
     'nexus-build-config.js',
     'nexus-analytics.js',
-    'workspace-isolation-guard.js',
     'backup-restore-utils.js',
     'offline-sync-queue.js',
     'curriculum-integrity.js',
