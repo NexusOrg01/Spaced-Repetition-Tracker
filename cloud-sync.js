@@ -736,7 +736,13 @@ async function runStagingEntityDeltaSync(ownerId,signal){
     conflicts,{baseServerVersion:metadata.baseServerVersion},
     {intentId:metadata.intentId,candidateDigest:metadata.candidateDigest})
  });
- let result=await makeClient.synchronize(ownerId,{signal,maxRounds:20,maxGroups:20,maxBytes:1048576});
+ if(recoveryPending){
+   const resumed=await makeClient.publishConflictRecovery(ownerId,{
+    signal,maxGroups:100,maxBytes:8*1048576
+   });
+   return resumed||{ok:false,retryable:true,reason:'staging_recovery_resume_failed'};
+  }
+  let result=await makeClient.synchronize(ownerId,{signal,maxRounds:20,maxGroups:20,maxBytes:1048576});
  if(result&&result.skipped&&result.mode==='snapshot')return {skipped:true,reason:'legacy_snapshot_server'};
  if(result&&result.ok===true){
    const cursor=storage&&typeof storage.readWorkspaceEntityDeltaCursor==='function'
