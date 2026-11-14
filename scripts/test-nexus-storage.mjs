@@ -1586,4 +1586,82 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'a failed remote transaction must leave the active entity generation unchanged');
 }
 
+{
+  const owner='entity-delta-recovery-atomic-owner';
+  const state={schema:3,streams:[{id:'recovery-stream',name:'Commerce'}],
+    subjects:[{id:'recovery-subject',streamId:'recovery-stream',name:'Accounting'}],
+    topics:[{id:'recovery-topic',subjectId:'recovery-subject',name:'Local baseline'}],
+    history:[],exams:[],settings:{theme:'light'}};
+  const features={version:1,journal:[],papers:[],goals:[],studyLogs:[]};
+  const candidateState={...state,topics:[{id:'recovery-topic',subjectId:'recovery-subject',name:'Merged recovery'}]};
+  const candidateFeatures={...features,journal:[{id:'recovery-journal',text:'Recovered note'}]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true,'recovery fixture must initialize durable storage');
+  await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+  await loaded.api.initializeWorkspaceEntityDeltaCursor(owner,0,'delta-baseline-stamp',true);
+  const intentId='nexus-recovery-storage-test';
+  const digest='a'.repeat(64);
+  const begun=await loaded.api.beginWorkspaceEntityRecovery(owner,{
+    intentId,candidateDigest:digest,baseUpdatedAt:'delta-baseline-stamp',
+    expectedHeadRevision:2,snapshotRevision:0,
+    conflicts:[{path:'state.topics[recovery-topic].name',local:'Merged recovery',remote:'Remote value'}],
+    payloadMetadata:{app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:'recovery-export'}
+  });
+  assert.equal(begun.ok,true,'the recovery intent should be durably recorded');
+  assert.equal(begun.intent.phase,'prepared');
+  const stagedResult=await loaded.api.migrateWorkspaceEntities(owner,candidateState,candidateFeatures,{
+    expectedRevision:loaded.api.getStatus().revision,
+    deferActivation:true,recoveryIntentId:intentId
+  });
+  assert.equal(stagedResult.staged,true,'the replacement generation should be staged without activation');
+  const activeBefore=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(activeBefore.state.topics[0].name,'Local baseline',
+    'the previous generation must remain active while the recovery candidate is staged');
+  const staged=await loaded.api.readWorkspaceEntities(owner,{pending:true,recoveryIntentId:intentId});
+  assert.equal(staged.pending,true);
+  assert.equal(staged.state.topics[0].name,'Merged recovery');
+  const journal=await loaded.api.readWorkspaceEntityRecovery(owner);
+  assert.equal(journal.intent.phase,'staged');
+  const publication={verified:true,updated_at:'recovered-snapshot-stamp',
+    snapshotRevision:2,headRevision:3,compactedThroughRevision:2,storageMode:'jsonb'};
+  const marked=await loaded.api.markWorkspaceEntityRecoveryPublished(owner,intentId,publication);
+  assert.equal(marked.ok,true);
+  const entries=[
+    {key:'recall.study.tracker.v1',value:JSON.stringify(candidateState)},
+    {key:'recall.study.features.v1',value:JSON.stringify(candidateFeatures)},
+    {key:'nexus.test.recovery.queue',value:JSON.stringify({pending:{},recoveryCommits:[{intentId,candidateDigest:digest}]})},
+    {key:'nexus.test.recovery.base',value:JSON.stringify({[owner]:{state:candidateState,featureState:candidateFeatures,serverVersion:publication.updated_at}})},
+    {key:'nexus.test.recovery.stamp',value:JSON.stringify({[owner]:publication.updated_at})},
+    {key:'nexus.test.recovery.conflicts',value:JSON.stringify({[owner]:[{conflicts:[{path:'topic'}]}]})}
+  ];
+  const committed=await loaded.api.commitWorkspaceEntityRecovery(owner,intentId,entries,digest);
+  assert.equal(committed.ok,true,'the durable recovery commit should succeed');
+  assert.equal(committed.alreadyCommitted,false);
+  const activeAfter=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(activeAfter.generation,staged.generation,'the staged entity generation should become active atomically');
+  assert.equal(activeAfter.state.topics[0].name,'Merged recovery');
+  assert.equal(JSON.parse(loaded.context.window.localStorage.getItem('recall.study.features.v1')).journal[0].id,
+    'recovery-journal','the compatibility Study Hub snapshot must be part of the same commit');
+  const cursor=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(cursor.ok,true);
+  assert.equal(cursor.cursor.generation,staged.generation);
+  assert.equal(cursor.cursor.publishRevision,2);
+  assert.equal(cursor.cursor.remoteHeadRevision,3);
+  assert.equal(cursor.cursor.snapshotUpdatedAt,'recovered-snapshot-stamp');
+  assert.equal(cursor.cursor.requiresPull,true,
+    'the cursor must retain the later remote head for the next bounded pull');
+  assert.equal(await loaded.api.readWorkspaceEntityRecovery(owner),null,
+    'the pending recovery intent must be removed only after the atomic local commit');
+  const replay=await loaded.api.commitWorkspaceEntityRecovery(owner,intentId,entries,digest);
+  assert.equal(replay.ok,true);
+  assert.equal(replay.alreadyCommitted,true,
+    'a retry after local commit must confirm the completion receipt without applying a second transaction');
+}
+
 console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, delta cursor receipt atomicity, clear scoping, failed-write recovery, and account-handoff isolation.');
