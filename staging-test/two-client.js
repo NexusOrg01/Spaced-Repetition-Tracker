@@ -35,7 +35,8 @@ function makeSession(email,password){
     body:JSON.stringify({email,password})
   }).then(async response=>{
     const body=await response.json().catch(()=>({}));
-    assert(response.ok&&body.access_token&&body.user,'Authentication failed for one disposable fixture account (HTTP '+response.status+').');
+    const authDetail=body.msg||body.message||body.error_description||body.error||'No error detail returned';
+    assert(response.ok&&body.access_token&&body.user,'Authentication failed for one disposable fixture account (HTTP '+response.status+'): '+String(authDetail).slice(0,180));
     return {email,token:body.access_token,user:body.user};
   });
 }
