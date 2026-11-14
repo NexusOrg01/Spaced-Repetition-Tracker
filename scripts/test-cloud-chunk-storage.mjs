@@ -96,6 +96,9 @@ class DeltaMemoryCloud extends MemoryCloud{
   this.syncStates=new Map();
   this.rpcCalls=[];
   this.failDeltaResponseAfterCommit=false;
+  this.compactionRemainingOperations=0;
+  this.compactionRemainingReceipts=0;
+  this.compactionError=null;
   this.auth={getUser:async()=>({data:{user:{id:this.activeUser}},error:null})};
  }
  async rpc(name,args){
@@ -104,6 +107,20 @@ class DeltaMemoryCloud extends MemoryCloud{
    if(this.activeUser!==OWNER_A&&this.activeUser!==OWNER_B)return {data:null,error:{code:'42501',message:'authentication required'}};
    const state=this.syncStates.get(this.activeUser);
    return state?{data:{...state},error:null}:{data:null,error:{code:'PGRST116',message:'sync state missing'}};
+  }
+  if(name==='nexus_compact_entity_operations'){
+   if(this.compactionError)return {data:null,error:this.compactionError};
+   const limit=Number(args&&args.p_limit),state=this.syncStates.get(this.activeUser);
+   if(!Number.isSafeInteger(limit)||limit<1||limit>5000)
+    return {data:null,error:{code:'22023',message:'invalid compaction bound'}};
+   if(!state||state.mode!=='delta')
+    return {data:{ok:false,code:'delta_not_enabled'},error:null};
+   const deletedOperations=Math.min(limit,this.compactionRemainingOperations);
+   const deletedReceipts=Math.min(limit,this.compactionRemainingReceipts);
+   this.compactionRemainingOperations-=deletedOperations;
+   this.compactionRemainingReceipts-=deletedReceipts;
+   return {data:{ok:true,deleted_operations:deletedOperations,deleted_receipts:deletedReceipts,
+    compacted_through_revision:state.compacted_through_revision},error:null};
   }
   if(name!=='nexus_publish_entity_snapshot')return {data:null,error:{code:'42883',message:'unknown RPC'}};
   const owner=this.activeUser,row=this.rows.get(owner),state=this.syncStates.get(owner);
@@ -252,14 +269,65 @@ assert.equal(deltaSmall.payload.__nexusDeltaSync,'entity-delta-v1','the delta pr
 assert.equal(deltaSmallCloud.rows.get(OWNER_A).payload.__nexusDeltaSync,'entity-delta-v1');
 assert.equal(deltaSmall.snapshotRevision,4);
 assert.equal(deltaSmall.compactedThroughRevision,4);
+assert.deepEqual(deltaSmall.compaction,{
+ ok:true,complete:true,pending:false,deletedOperations:0,deletedReceipts:0,
+ compactedThroughRevision:4,rounds:1
+},'verified snapshot publication must run one bounded cleanup confirmation when no old rows remain');
+assert.equal(deltaSmallCloud.rpcCalls.filter(call=>call.name==='nexus_compact_entity_operations').length,1,
+ 'physical delta cleanup must follow verified snapshot publication');
 const replayedDeltaSmall=await chunks.writeDeltaSnapshot(deltaSmallCloud,OWNER_A,deltaSmallPayload,4,'delta-baseline-stamp');
 assert.equal(replayedDeltaSmall.verified,true,'a restarted recovery must verify an already-published matching snapshot');
 assert.equal(replayedDeltaSmall.alreadyPublished,true,'replay must identify the prior publication without a duplicate RPC');
+assert.equal(replayedDeltaSmall.compaction.ok,true,
+ 'an already-published recovery replay must retry bounded cleanup after an earlier interruption');
+assert.equal(deltaSmallCloud.rpcCalls.filter(call=>call.name==='nexus_compact_entity_operations').length,2,
+ 'a verified replay must retry compaction without republishing the snapshot');
 assert.equal(deltaSmallCloud.rpcCalls.filter(call=>call.name==='nexus_publish_entity_snapshot').length,1,
  'idempotent recovery replay must not publish a second snapshot');
 assert.deepEqual(deltaSmall.payload.state,deltaSmallPayload.state,'the published snapshot must preserve the full tracker state');
 assert.equal(deltaSmallCloud.rpcCalls.filter(call=>call.name==='nexus_publish_entity_snapshot').length,1,
  'delta snapshots must use the dedicated compare-and-swap publication RPC');
+
+const batchedCompactionCloud=new DeltaMemoryCloud();
+seedDeltaCloud(batchedCompactionCloud);
+batchedCompactionCloud.compactionRemainingOperations=4500;
+batchedCompactionCloud.compactionRemainingReceipts=2200;
+const batchedCompaction=await chunks.writeDeltaSnapshot(batchedCompactionCloud,OWNER_A,
+ deltaSmallPayload,4,'delta-baseline-stamp');
+assert.equal(batchedCompaction.verified,true,
+ 'a bounded cleanup result must not undo an already-verified snapshot publication');
+assert.equal(batchedCompaction.compaction.ok,true);
+assert.equal(batchedCompaction.compaction.complete,true);
+assert.equal(batchedCompaction.compaction.deletedOperations,4500);
+assert.equal(batchedCompaction.compaction.deletedReceipts,2200);
+assert.equal(batchedCompaction.compaction.rounds,3,
+ 'large cleanup must progress in separate bounded RPC batches');
+assert.ok(batchedCompactionCloud.rpcCalls.filter(call=>call.name==='nexus_compact_entity_operations')
+ .every(call=>call.args.p_limit===2000),
+ 'each server compaction request must remain within the explicit 2,000-row client batch bound');
+
+const deferredCompactionCloud=new DeltaMemoryCloud();
+seedDeltaCloud(deferredCompactionCloud);
+deferredCompactionCloud.compactionError={code:'42501',message:'compaction permission is not enabled'};
+const deferredCompaction=await chunks.writeDeltaSnapshot(deferredCompactionCloud,OWNER_A,
+ deltaSmallPayload,4,'delta-baseline-stamp');
+assert.equal(deferredCompaction.verified,true,
+ 'a compaction permission failure must not invalidate an already-published and verified snapshot');
+assert.equal(deferredCompaction.compaction.ok,false);
+assert.equal(deferredCompaction.compaction.pending,true);
+assert.equal(deferredCompaction.compaction.reason,'entity_operation_compaction_unavailable');
+
+const boundedCompactionCloud=new DeltaMemoryCloud();
+seedDeltaCloud(boundedCompactionCloud);
+boundedCompactionCloud.compactionRemainingOperations=20000;
+const boundedCompaction=await chunks.writeDeltaSnapshot(boundedCompactionCloud,OWNER_A,
+ deltaSmallPayload,4,'delta-baseline-stamp');
+assert.equal(boundedCompaction.verified,true);
+assert.equal(boundedCompaction.compaction.ok,true);
+assert.equal(boundedCompaction.compaction.complete,false);
+assert.equal(boundedCompaction.compaction.pending,true);
+assert.equal(boundedCompaction.compaction.rounds,4,
+ 'a very large cleanup backlog must yield after the configured four bounded requests');
 
 const staleDeltaCloud=new DeltaMemoryCloud();
 seedDeltaCloud(staleDeltaCloud);
