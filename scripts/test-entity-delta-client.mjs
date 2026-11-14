@@ -3,12 +3,13 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
+import { webcrypto } from 'node:crypto';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const source=readFileSync(resolve(root,'entity-delta-sync.js'),'utf8');
 const mergeSource=readFileSync(resolve(root,'workspace-sync-merge.js'),'utf8');
-const window={};
-const sandbox={window,Promise,Number,Object,Array,String,JSON,Error,Set,Math,setTimeout};
+const window={crypto:webcrypto,TextEncoder};
+const sandbox={window,Promise,Number,Object,Array,String,JSON,Error,Set,Math,setTimeout,TextEncoder,crypto:webcrypto};
 vm.createContext(sandbox);
 vm.runInContext(mergeSource,sandbox,{filename:'workspace-sync-merge.js'});
 vm.runInContext(source,sandbox,{filename:'entity-delta-sync.js'});
@@ -609,6 +610,132 @@ function coordinatorHarness(options={}){
     'preparation must never publish or compact a snapshot');
   assert.equal(calls.some(call=>call.name==='nexus_publish_entity_operation'),false,
     'preparation must never publish or acknowledge local operations');
+}
+
+{
+  const baseSnapshot={
+    app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:'base-export',
+    state:{schema:3,streams:[],subjects:[{id:'subject-main',name:'Main'}],topics:[
+      {id:'topic-shared',name:'Shared',subjectId:'subject-main',notes:'Base notes'}
+    ],history:[],exams:[],settings:{}},
+    featureState:{settings:{dailyMinutes:90},journal:[],papers:[],goals:[],studyLogs:[]}
+  };
+  const localSnapshot=JSON.parse(JSON.stringify(baseSnapshot));
+  localSnapshot.exportedAt='local-export';
+  localSnapshot.state.topics[0].notes='Local recovery candidate';
+  const remoteGroup={revision:1,operation_id:'remote-op-recovery',changes:[{
+    ordinal:0,collection:'topics',id:'topic-shared',operation:'put',position:0,
+    value:{id:'topic-shared',name:'Shared',subjectId:'subject-main',notes:'Remote recovery candidate'}
+  }]};
+  const state={mode:'delta',protocol_version:1,head_revision:1,snapshot_revision:0,
+    compacted_through_revision:0,snapshot_updated_at:'snapshot-stamp'};
+  const pending={operationId:'local-queue-recovery',ownerUserId:'account-A',
+    baseServerVersion:'snapshot-stamp',localSequence:4,status:'pending'};
+  const calls=[];
+  const client={
+    auth:{async getUser(){return {data:{user:{id:'account-A'}},error:null};}},
+    async rpc(name,args){
+      calls.push({name,args:args||null});
+      if(name==='nexus_get_entity_sync_state')return {data:{...state},error:null};
+      if(name==='nexus_read_entity_operations')return {data:{
+        mode:'delta',snapshot_required:false,head_revision:state.head_revision,
+        snapshot_revision:state.snapshot_revision,compacted_through_revision:state.compacted_through_revision,
+        next_revision:1,bytes:1024,groups:args.p_after_revision===0?[remoteGroup]:[]
+      },error:null};
+      return {data:null,error:{code:'unexpected_rpc'}};
+    }
+  };
+  const base={...baseSnapshot,serverVersion:'snapshot-stamp'};
+  let intent=null,staged=null,active=null,cursor=null,migrations=0,publishCalls=0,
+    localCommits=0,applied=0;
+  const storage={
+    async readWorkspaceEntityRecovery(){return intent?{intent:{...intent}}:null;},
+    async beginWorkspaceEntityRecovery(owner,input){
+      assert.equal(owner,'account-A');
+      if(!intent)intent={...input,ownerId:owner,phase:'prepared',activeGeneration:'generation-old'};
+      return {ok:true,created:true,intent:{...intent}};
+    },
+    getStatus(){return {revision:10};},
+    async migrateWorkspaceEntities(owner,nextState,nextFeatures,options){
+      assert.equal(owner,'account-A');
+      assert.equal(options.deferActivation,true);
+      assert.equal(options.recoveryIntentId,intent.intentId);
+      migrations++;
+      if(!staged){
+        staged={ownerId:owner,generation:'generation-new',state:JSON.parse(JSON.stringify(nextState)),
+          featureState:JSON.parse(JSON.stringify(nextFeatures)),pending:true};
+        intent={...intent,phase:'staged',pendingGeneration:'generation-new'};
+      }
+      return {staged:true,generation:'generation-new'};
+    },
+    async readWorkspaceEntities(owner,options={}){
+      if(options.pending)return staged&&staged.ownerId===owner?{...staged}:null;
+      return active&&active.ownerId===owner?{...active}:null;
+    },
+    async markWorkspaceEntityRecoveryPublished(owner,id,publication){
+      assert.equal(id,intent.intentId);
+      intent={...intent,phase:'published',publication:{...publication}};
+      return {ok:true,intent:{...intent}};
+    },
+    async commitWorkspaceEntityRecovery(){return {ok:true};},
+    async readWorkspaceEntityDeltaCursor(owner){
+      return cursor?{ok:true,cursor:{...cursor}}:{ok:false,reason:'missing_cursor'};
+    }
+  };
+  const api=factory({
+    enabled:true,client,storage,
+    getActiveOwner:()=> 'account-A',getLocalOwner:()=> 'account-A',
+    getLocalBase:async()=>({...base}),
+    getLocalWorkspace:async()=>JSON.parse(JSON.stringify(localSnapshot)),
+    getPendingSnapshot:async()=>({...pending}),
+    sameWorkspace:async(left,right)=>JSON.stringify(left.state)===JSON.stringify(right.state)&&
+      JSON.stringify(left.featureState)===JSON.stringify(right.featureState),
+    publishSnapshot:async(owner,payload,expectedHead,stamp)=>{
+      publishCalls++;
+      assert.equal(owner,'account-A');
+      assert.equal(expectedHead,1);
+      assert.equal(stamp,'snapshot-stamp');
+      assert.equal(payload.__nexusDeltaSync,'entity-delta-v1');
+      if(publishCalls===1)throw Object.assign(new Error('lost response after publish'),{code:'network_lost'});
+      return {verified:true,snapshotRevision:1,headRevision:1,compactedThroughRevision:1,
+        updated_at:'recovered-stamp',storageMode:'jsonb'};
+    },
+    commitLocalRecovery:async(owner,payload,publication,conflicts,metadata)=>{
+      localCommits++;
+      assert.equal(owner,'account-A');
+      assert.equal(metadata.intentId,intent.intentId);
+      assert.equal(metadata.candidateDigest,intent.candidateDigest);
+      assert.equal(publication.updated_at,'recovered-stamp');
+      assert.ok(conflicts.length>0);
+      active={ownerId:owner,generation:'generation-new',state:payload.state,
+        featureState:payload.featureState,pending:false};
+      staged=null;
+      cursor={ownerId:owner,generation:'generation-new',publishRevision:1,
+        remoteHeadRevision:1,snapshotUpdatedAt:'recovered-stamp',requiresPull:false,
+        acknowledgedSequence:4,workspaceRevision:1};
+      return {ok:true,generation:'generation-new',cursor:{...cursor},archivedConflicts:conflicts.length};
+    },
+    applyWorkspace:async workspace=>{
+      applied++;
+      assert.equal(workspace.generation,'generation-new');
+    }
+  });
+  const first=await api.publishConflictRecovery('account-A');
+  assert.equal(first.ok,false,'a lost publication response must leave the local candidate staged');
+  assert.equal(intent.phase,'staged','the crash-recovery intent must survive a lost server response');
+  assert.equal(migrations,1,'the candidate generation should be staged exactly once');
+  assert.equal(localCommits,0,'an unverified/ambiguous write must not advance the local merge base');
+  const second=await api.publishConflictRecovery('account-A');
+  assert.equal(second.ok,true,'a retry should verify the exact already-published snapshot and finish locally');
+  assert.equal(second.recovered,true);
+  assert.equal(second.snapshotRevision,1);
+  assert.equal(migrations,1,'a staged generation must be reused rather than rebuilt on retry');
+  assert.equal(publishCalls,2,'the exact same candidate must be re-verified after the lost response');
+  assert.equal(localCommits,1,'the verified publication should cause one atomic local recovery commit');
+  assert.equal(applied,1,'the in-memory workspace must only switch after the local commit verifies');
+  assert.equal(cursor.publishRevision,1);
+  assert.equal(cursor.snapshotUpdatedAt,'recovered-stamp');
+  assert.equal(intent.phase,'published','the durable fake journal records the verified server publication');
 }
 
 
