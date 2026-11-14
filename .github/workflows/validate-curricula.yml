@@ -20,7 +20,7 @@ jobs:
         with:
           node-version: 22
       - name: Validate catalogue and inline JavaScript syntax
-        run: node scripts/test-entity-delta-migration.mjs && node scripts/test-entity-delta-client.mjs && node scripts/validate-curricula.mjs
+        run: node scripts/test-entity-delta-migration.mjs && node scripts/test-entity-delta-client.mjs && node scripts/test-staging-two-client-harness.mjs && node scripts/validate-curricula.mjs
       - name: Validate public privacy and account-deletion pages
         run: node scripts/test-privacy-pages.mjs
       - name: Set up Deno for Supabase Edge Function checks
