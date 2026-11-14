@@ -1480,4 +1480,110 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'permanent account cleanup must remove the owner-bound delta cursor');
 }
 
+// Remote entity groups and their inbound cursor advance in one owner/generation-bound transaction.
+{
+  const owner='entity-delta-apply-owner';
+  const state={
+    schema:3,streams:[{id:'apply-stream',name:'Commerce'}],
+    subjects:[{id:'apply-subject',streamId:'apply-stream',name:'Accounting'}],
+    topics:[{id:'apply-topic-old',subjectId:'apply-subject',name:'Old topic'}],
+    history:[],exams:[],settings:{theme:'light'}
+  };
+  const features={version:1,journal:[],papers:[],goals:[],studyLogs:[],selectedTopicIds:[]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true,'remote apply fixture must initialize durable storage');
+  await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+  const baseline=await loaded.api.initializeWorkspaceEntityDeltaCursor(
+    owner,0,'verified-remote-snapshot-2026-11-14',true);
+  assert.equal(baseline.ok,true);
+
+  const first=await loaded.api.applyWorkspaceEntityDeltaGroup(owner,{
+    revision:1,operation_id:'remote-operation-one',
+    changes:[
+      {collection:'topics',id:'apply-topic-old',operation:'delete'},
+      {collection:'topics',id:'apply-topic-new',operation:'put',position:1,
+        value:{id:'apply-topic-new',subjectId:'apply-subject',name:'Remote topic'}},
+      {collection:'journal',id:'apply-journal-new',operation:'put',position:0,
+        value:{id:'apply-journal-new',subjectId:'apply-subject',text:'Remote note'}},
+      {collection:'trackerMeta',id:'tracker',operation:'put',position:0,
+        value:{schema:3,settings:{theme:'dark'}}}
+    ]
+  },0,2);
+  assert.equal(first.ok,true,'a valid complete remote group must apply');
+  assert.equal(first.applied,4);
+  assert.equal(first.cursor.publishRevision,1);
+  assert.equal(first.cursor.remoteHeadRevision,2);
+  assert.equal(first.cursor.requiresPull,true);
+  assert.equal(first.cursor.acknowledgedSequence,0,
+    'remote application must not move the independent local outbox acknowledgement sequence');
+  assert.deepEqual(first.workspace.state.topics.map(row=>row.id),['apply-topic-new']);
+  assert.equal(first.workspace.state.settings.theme,'dark');
+  assert.deepEqual(first.workspace.featureState.journal.map(row=>row.id),['apply-journal-new']);
+  assert.equal(loaded.context.window.localStorage.getItem('recall.study.tracker.v1'),
+    JSON.stringify(first.workspace.state),'the compatibility tracker snapshot must refresh from the committed entity generation');
+  assert.equal(loaded.context.window.localStorage.getItem('recall.study.features.v1'),
+    JSON.stringify(first.workspace.featureState),'the compatibility Study Hub snapshot must refresh from the committed entity generation');
+  const outbox=await loaded.api.readWorkspaceEntityOutboxGroups(owner,0,1000,4096);
+  assert.equal(outbox.groups.length,0,'remote changes must not be re-enqueued as local outbound changes');
+
+  const second=await loaded.api.applyWorkspaceEntityDeltaGroup(owner,{
+    revision:2,operation_id:'remote-operation-two',
+    changes:[{collection:'topics',id:'apply-topic-new',operation:'delete'}]
+  },1,2);
+  assert.equal(second.ok,true);
+  assert.equal(second.cursor.publishRevision,2);
+  assert.equal(second.cursor.requiresPull,false);
+  assert.deepEqual(second.workspace.state.topics,[]);
+
+  const local=await loaded.api.writeWorkspaceEntityChanges(owner,[
+    {collection:'topics',id:'apply-local-pending',operation:'put',position:null,
+      value:{id:'apply-local-pending',subjectId:'apply-subject',name:'Local pending'}}
+  ],{operationId:'local-operation-pending'});
+  assert.equal(local.count,1);
+  const blocked=await loaded.api.applyWorkspaceEntityDeltaGroup(owner,{
+    revision:3,operation_id:'remote-operation-three',
+    changes:[{collection:'topics',id:'apply-topic-late',operation:'put',position:0,
+      value:{id:'apply-topic-late',subjectId:'apply-subject',name:'Late remote topic'}}]
+  },2,3);
+  assert.equal(blocked.ok,false);
+  assert.equal(blocked.reason,'local_outbox_pending',
+    'remote apply must pause rather than overwrite unacknowledged local entity operations');
+  const unchanged=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(unchanged.cursor.publishRevision,2,
+    'a blocked remote group must not advance the durable inbound cursor');
+}
+{
+  const owner='entity-delta-apply-rollback-owner';
+  const state={schema:3,streams:[],subjects:[],topics:[],history:[],exams:[],settings:{}};
+  const features={version:1,journal:[],papers:[],goals:[],studyLogs:[]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true);
+  await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+  await loaded.api.initializeWorkspaceEntityDeltaCursor(owner,0,'rollback-baseline',true);
+  idb.failNextWrite=true;
+  await assert.rejects(()=>loaded.api.applyWorkspaceEntityDeltaGroup(owner,{
+    revision:1,operation_id:'remote-operation-rollback',
+    changes:[{collection:'streams',id:'rollback-stream',operation:'put',position:0,
+      value:{id:'rollback-stream',name:'Rollback stream'}}]
+  },0,1),'an IndexedDB transaction failure must not be reported as an applied remote group');
+  const cursor=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(cursor.cursor.publishRevision,0,
+    'a failed remote transaction must leave the inbound cursor unchanged');
+  const workspace=await loaded.api.readWorkspaceEntities(owner);
+  assert.deepEqual(workspace.state.streams,[],
+    'a failed remote transaction must leave the active entity generation unchanged');
+}
+
 console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, delta cursor receipt atomicity, clear scoping, failed-write recovery, and account-handoff isolation.');

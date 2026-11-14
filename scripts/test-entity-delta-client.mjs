@@ -212,4 +212,83 @@ function harness(options={}){
   const result=await h.client.publishPending('account-A');
   assert.equal(result.requiresPull,true,'remote changes with no local retry group must block outbound publication');
 }
+{
+  const calls=[],applied=[];
+  let activeOwner='account-A';
+  const payload={state:{streams:[],subjects:[],topics:[],history:[],exams:[]},
+    featureState:{journal:[],papers:[],goals:[],studyLogs:[]}};
+  let cursor={ownerId:'account-A',generation:'generation-A',workspaceRevision:1,publishRevision:0,
+    acknowledgedSequence:0,remoteHeadRevision:0,snapshotUpdatedAt:'snapshot-stamp',requiresPull:false};
+  const storage={
+    async readWorkspaceEntityDeltaCursor(){
+      return {ok:true,exists:true,cursor:{...cursor},generation:'generation-A',workspaceRevision:1};
+    },
+    async initializeWorkspaceEntityDeltaCursor(owner,revision,stamp,verified){
+      assert.equal(verified,true);
+      cursor={ownerId:owner,generation:'generation-A',workspaceRevision:1,publishRevision:revision,
+        acknowledgedSequence:0,remoteHeadRevision:revision,snapshotUpdatedAt:stamp,requiresPull:false};
+      return {ok:true,created:true,cursor:{...cursor}};
+    },
+    async applyWorkspaceEntityDeltaGroup(owner,group,expected,head){
+      assert.equal(owner,'account-A');
+      assert.equal(expected,cursor.publishRevision);
+      assert.equal(group.revision,expected+1);
+      cursor={...cursor,publishRevision:group.revision,remoteHeadRevision:head,
+        requiresPull:head>group.revision};
+      const workspace={ownerId:owner,state:{...payload.state,topics:[{id:'remote-topic'}]},
+        featureState:payload.featureState};
+      applied.push({group,expected,head});
+      return {ok:true,cursor:{...cursor},workspace};
+    }
+  };
+  const client={
+    auth:{async getUser(){return {data:{user:{id:activeOwner}},error:null};}},
+    async rpc(name,args){
+      calls.push({name,args});
+      if(name==='nexus_get_entity_sync_state')return {data:{mode:'delta',protocol_version:1,
+        head_revision:2,snapshot_revision:0,compacted_through_revision:0,
+        snapshot_updated_at:'snapshot-stamp'},error:null};
+      if(name==='nexus_read_entity_operations')return {data:{
+        mode:'delta',snapshot_required:false,head_revision:2,snapshot_revision:0,
+        compacted_through_revision:0,next_revision:1,bytes:100,
+        groups:[{revision:1,operation_id:'remote-op-one',changes:[
+          {ordinal:0,collection:'topics',id:'remote-topic',operation:'put',position:0,
+            value:{id:'remote-topic',name:'Remote topic'}}
+        ]}]
+      },error:null};
+      return {data:null,error:{code:'unexpected_rpc'}};
+    }
+  };
+  const api=factory({
+    enabled:true,client,storage,
+    getActiveOwner:()=>activeOwner,getLocalOwner:()=>activeOwner,
+    getLocalBase:async()=>({serverVersion:'snapshot-stamp',...payload}),
+    getLocalWorkspace:async()=>payload,getPendingSnapshot:async()=>null,
+    sameWorkspace:async()=>true,
+    applyWorkspace:async workspace=>{applied.push({uiApplied:workspace.state.topics.length});}
+  });
+  const result=await api.applyRemotePage('account-A');
+  assert.equal(result.ok,true);
+  assert.equal(result.appliedCount,1);
+  assert.equal(result.cursor.publishRevision,1);
+  assert.equal(result.requiresPull,true);
+  assert.equal(result.workspace.state.topics[0].id,'remote-topic');
+  assert.ok(calls.some(call=>call.name==='nexus_read_entity_operations'&&call.args.p_limit_groups===1),
+    'the first client apply path must use one bounded operation group until larger-page apply is benchmarked');
+  assert.ok(applied.some(item=>item.uiApplied===1),'the optional in-memory workspace callback must run after durable application');
+}
+{
+  let activeOwner='account-A',readCalled=false;
+  const client={auth:{async getUser(){return {data:{user:{id:activeOwner}},error:null};}},
+    async rpc(name){if(name==='nexus_get_entity_sync_state')return {data:{mode:'snapshot'},error:null};readCalled=true;return {data:null,error:null};}};
+  const storage={async readWorkspaceEntityDeltaCursor(){return {ok:true,exists:false};},
+    async initializeWorkspaceEntityDeltaCursor(){return {ok:true};},
+    async applyWorkspaceEntityDeltaGroup(){throw new Error('snapshot mode must not apply deltas');}};
+  const api=factory({enabled:true,client,storage,getActiveOwner:()=>activeOwner,getLocalOwner:()=>activeOwner,
+    getLocalBase:async()=>null,getLocalWorkspace:async()=>null,getPendingSnapshot:async()=>null,sameWorkspace:async()=>true});
+  const result=await api.applyRemotePage('account-A');
+  assert.equal(result.skipped,true,'snapshot-mode accounts must remain on the legacy protocol');
+  assert.equal(readCalled,false,'snapshot-mode accounts must not call the delta read RPC');
+}
+
 console.log('Nexus entity-delta client tests passed: feature gate, baseline verification, stable receipt retry, owner checks, conflict safety, and strict remote-page validation.');

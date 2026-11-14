@@ -1671,6 +1671,243 @@
     });
   }
 
+  async function applyWorkspaceEntityDeltaGroup(ownerId,group,expectedServerRevision,remoteHeadRevision){
+    const owner=entityOwnerKey(ownerId),expected=Number(expectedServerRevision),
+      remoteHead=Number(remoteHeadRevision),revisionValue=Number(group&&group.revision),
+      operationId=String(group&&group.operation_id||'');
+    if(!Number.isSafeInteger(expected)||expected<0||
+       !Number.isSafeInteger(remoteHead)||remoteHead<1||
+       !Number.isSafeInteger(revisionValue)||revisionValue!==expected+1||
+       remoteHead<revisionValue||!operationId||operationId.length>160||
+       !Array.isArray(group&&group.changes)||!group.changes.length||group.changes.length>1000){
+      return {ok:false,snapshotRequired:true,reason:'invalid_remote_operation_group'};
+    }
+    const identities=new Set();
+    let normalized;
+    try{
+      normalized=group.changes.map(change=>{
+        if(!change||typeof change!=='object'||Array.isArray(change)||
+           !ALL_ENTITY_COLLECTIONS.has(change.collection)||
+           typeof change.id!=='string'||!change.id||change.id.length>512||
+           !['put','delete'].includes(change.operation)){
+          throw new Error('invalid_remote_change');
+        }
+        const isMeta=ENTITY_META_COLLECTIONS.includes(change.collection);
+        if(isMeta&&(change.operation!=='put'||
+           (change.collection==='trackerMeta'&&change.id!=='tracker')||
+           (change.collection==='featureMeta'&&change.id!=='features'))){
+          throw new Error('invalid_remote_metadata_change');
+        }
+        const identity=change.collection+'\u0000'+change.id;
+        if(identities.has(identity))throw new Error('duplicate_remote_entity_identity');
+        identities.add(identity);
+        const storageCollection=isMeta?'_meta':change.collection;
+        const storageId=change.collection==='trackerMeta'?'tracker':
+          change.collection==='featureMeta'?'features':change.id;
+        if(change.operation==='put'){
+          if(!change.value||typeof change.value!=='object'||Array.isArray(change.value)||
+             !Number.isSafeInteger(change.position)||change.position < -1000000000||
+             change.position > 1000000000||
+             (!isMeta&&String(change.value.id||'')!==change.id)||
+             (isMeta&&change.position!==0)){
+            throw new Error('invalid_remote_put');
+          }
+          return {collection:change.collection,id:change.id,storageCollection,storageId,
+            operation:'put',position:change.position,value:JSON.parse(JSON.stringify(change.value))};
+        }
+        if(change.value!==undefined&&change.value!==null||
+           change.position!==undefined&&change.position!==null){
+          throw new Error('invalid_remote_delete');
+        }
+        return {collection:change.collection,id:change.id,storageCollection,storageId,
+          operation:'delete',position:null,value:null};
+      });
+    }catch(error){
+      return {ok:false,snapshotRequired:true,reason:String(error&&error.message||'invalid_remote_changes')};
+    }
+    if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner){
+      return {ok:false,unavailable:true,reason:'active_entity_owner_unavailable'};
+    }
+    const task=entitySyncSerial.catch(()=>undefined).then(async()=>{
+      if(entityRemovalOwners.has(owner)||!enabled||committedOwnerId!==owner){
+        return {ok:false,unavailable:true,reason:'active_entity_owner_changed'};
+      }
+      const cursorKey=entityDeltaCursorKey(owner);
+      const committed=await transaction([WORKSPACES,'migrationMeta','outbox'],'readwrite',(tx,set)=>{
+        const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta'),
+          outbox=tx.objectStore('outbox');
+        const values={manifest:null,workspace:null,cursor:null};
+        let coreRemaining=3,started=false;
+        const fail=(reason)=>set({ok:false,snapshotRequired:true,reason});
+        const applyRows=existingRows=>{
+          const manifest=values.manifest,row=values.workspace,cursor=values.cursor;
+          const workspaceRevision=row&&Number.isSafeInteger(Number(row.workspaceRevision))
+            ?Number(row.workspaceRevision):(row&&Number.isSafeInteger(Number(row.revision))?Number(row.revision):null);
+          if(entityRemovalOwners.has(owner)||!enabled||committedOwnerId!==owner){
+            fail('active_entity_owner_changed');return;
+          }
+          if(!manifest||manifest.ownerId!==owner||manifest.status!=='ready'||
+             !manifest.activeGeneration||!validWorkspaceRow(row,owner)||
+             !Number.isSafeInteger(workspaceRevision)||
+             Number(manifest.sourceWorkspaceRevision)!==workspaceRevision){
+            fail('entity_projection_unavailable');return;
+          }
+          if(!cursor||cursor.key!==cursorKey||cursor.ownerId!==owner||
+             cursor.protocolVersion!==1||cursor.generation!==manifest.activeGeneration||
+             Number(cursor.workspaceRevision)!==workspaceRevision||
+             !Number.isSafeInteger(Number(cursor.publishRevision))||
+             !Number.isSafeInteger(Number(cursor.acknowledgedSequence))||
+             !Number.isSafeInteger(Number(cursor.remoteHeadRevision))||
+             Number(cursor.remoteHeadRevision)<Number(cursor.publishRevision)||
+             typeof cursor.snapshotUpdatedAt!=='string'||!cursor.snapshotUpdatedAt||
+             typeof cursor.requiresPull!=='boolean'||
+             cursor.requiresPull!==(Number(cursor.remoteHeadRevision)>Number(cursor.publishRevision))){
+            fail('local_delta_cursor_mismatch');return;
+          }
+          if(Number(cursor.publishRevision)===revisionValue&&
+             cursor.lastAppliedOperationId===operationId){
+            set({ok:true,alreadyApplied:true,applied:0,generation:manifest.activeGeneration,
+              workspaceRevision,cursor:{...cursor}});
+            return;
+          }
+          if(Number(cursor.publishRevision)!==expected||
+             Number(cursor.remoteHeadRevision)>remoteHead||
+             Number(cursor.acknowledgedSequence)<0){
+            fail('local_delta_cursor_changed');return;
+          }
+          if(!Array.isArray(existingRows)||existingRows.length!==normalized.length){
+            fail('remote_entity_rows_unavailable');return;
+          }
+          const rowCount=Number(manifest.rowCount);
+          if(!Number.isSafeInteger(rowCount)||rowCount<2){
+            fail('invalid_entity_manifest_count');return;
+          }
+          const counts={...(manifest.counts||{})};
+          const positionBounds={...(manifest.positionBounds||{})};
+          let rowDelta=0;
+          const countDeltas={};
+          for(let index=0;index<normalized.length;index++){
+            const change=normalized[index],existing=existingRows[index];
+            if(existing&&(!existing.entityRow||existing.ownerId!==owner||
+               existing.generation!==manifest.activeGeneration||
+               existing.collection!==change.storageCollection||
+               existing.entityId!==change.storageId)){
+              fail('remote_entity_row_owner_or_generation_mismatch');return;
+            }
+            if(ENTITY_META_COLLECTIONS.includes(change.collection)&&!existing){
+              fail('required_entity_metadata_root_missing');return;
+            }
+            const key=entityRecordKey(owner,manifest.activeGeneration,
+              change.storageCollection,change.storageId);
+            if(change.operation==='put'){
+              const position=change.position;
+              if(!existing){
+                rowDelta++;
+                if(!ENTITY_META_COLLECTIONS.includes(change.collection)){
+                  countDeltas[change.collection]=(countDeltas[change.collection]||0)+1;
+                }
+              }
+              if(!ENTITY_META_COLLECTIONS.includes(change.collection)){
+                const bounds=positionBounds[change.collection]||
+                  (positionBounds[change.collection]={min:position,max:position});
+                const oldMin=Number(bounds.min),oldMax=Number(bounds.max);
+                bounds.min=Number.isSafeInteger(oldMin)?Math.min(oldMin,position):position;
+                bounds.max=Number.isSafeInteger(oldMax)?Math.max(oldMax,position):position;
+              }
+              entities.put({key,ownerId:owner,generation:manifest.activeGeneration,entityRow:true,
+                collection:change.storageCollection,entityId:change.storageId,position,value:change.value});
+            }else if(existing){
+              entities.delete(key);rowDelta--;
+              countDeltas[change.collection]=(countDeltas[change.collection]||0)-1;
+            }
+          }
+          for(const [collection,delta] of Object.entries(countDeltas)){
+            const current=Number(counts[collection]||0);
+            if(!Number.isSafeInteger(current)||current+delta<0){
+              fail('invalid_entity_collection_count');return;
+            }
+            counts[collection]=current+delta;
+          }
+          const nextCursor={
+            ...cursor,publishRevision:revisionValue,
+            remoteHeadRevision:Math.max(Number(cursor.remoteHeadRevision),remoteHead),
+            requiresPull:Math.max(Number(cursor.remoteHeadRevision),remoteHead)>revisionValue,
+            lastAppliedOperationId:operationId,updatedAt:timestamp()
+          };
+          meta.put({...manifest,status:'ready',rowCount:Math.max(2,rowCount+rowDelta),
+            counts,positionBounds,lastRemoteDeltaAt:timestamp(),updatedAt:timestamp()});
+          meta.put(nextCursor);
+          set({ok:true,alreadyApplied:false,applied:normalized.length,
+            generation:manifest.activeGeneration,workspaceRevision,cursor:nextCursor});
+        };
+        const start=()=>{
+          if(started||coreRemaining!==0)return;
+          started=true;
+          const manifest=values.manifest,row=values.workspace,cursor=values.cursor;
+          const workspaceRevision=row&&Number.isSafeInteger(Number(row.workspaceRevision))
+            ?Number(row.workspaceRevision):(row&&Number.isSafeInteger(Number(row.revision))?Number(row.revision):null);
+          if(entityRemovalOwners.has(owner)||!enabled||committedOwnerId!==owner||
+             !manifest||manifest.ownerId!==owner||manifest.status!=='ready'||
+             !manifest.activeGeneration||!validWorkspaceRow(row,owner)||
+             !Number.isSafeInteger(workspaceRevision)||
+             Number(manifest.sourceWorkspaceRevision)!==workspaceRevision||
+             !cursor||cursor.key!==cursorKey||cursor.ownerId!==owner||
+             cursor.protocolVersion!==1||cursor.generation!==manifest.activeGeneration||
+             Number(cursor.workspaceRevision)!==workspaceRevision||
+             !Number.isSafeInteger(Number(cursor.acknowledgedSequence))||
+             Number(cursor.acknowledgedSequence)<0){
+            fail('entity_projection_or_cursor_unavailable');return;
+          }
+          const pendingRange=entityOutboxSequenceRange(owner,Number(cursor.acknowledgedSequence));
+          if(!pendingRange){fail('local_outbox_cursor_unavailable');return;}
+          const pendingRequest=outbox.getAll(pendingRange,1);
+          pendingRequest.onsuccess=()=>{
+            if((pendingRequest.result||[]).length){
+              fail('local_outbox_pending');return;
+            }
+            const existingRows=new Array(normalized.length);let remaining=normalized.length;
+            normalized.forEach((change,index)=>{
+              const key=entityRecordKey(owner,manifest.activeGeneration,
+                change.storageCollection,change.storageId);
+              const request=entities.get(key);
+              request.onsuccess=()=>{
+                existingRows[index]=request.result||null;
+                remaining--;
+                if(remaining===0)applyRows(existingRows);
+              };
+            });
+          };
+        };
+        const manifestRequest=meta.get(entityManifestKey(owner));
+        const workspaceRequest=entities.get(workspaceKey(owner));
+        const cursorRequest=meta.get(cursorKey);
+        manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;coreRemaining--;start();};
+        workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;coreRemaining--;start();};
+        cursorRequest.onsuccess=()=>{values.cursor=cursorRequest.result||null;coreRemaining--;start();};
+      });
+      if(!committed||committed.ok!==true)return committed||{ok:false,snapshotRequired:true,reason:'remote_apply_commit_failed'};
+      if(entityRemovalOwners.has(owner)||!enabled||committedOwnerId!==owner){
+        return {...committed,ok:false,snapshotRequired:true,applied:committed.applied>0,
+          reason:'active_entity_owner_changed_after_commit'};
+      }
+      const hydrated=await hydrateWorkspaceCacheFromEntities();
+      if(!hydrated){
+        return {...committed,ok:false,snapshotRequired:true,applied:committed.applied>0,
+          reason:'compatibility_snapshot_refresh_failed'};
+      }
+      const workspace=await readWorkspaceEntities(owner);
+      const cursorResult=await readWorkspaceEntityDeltaCursor(owner);
+      if(!workspace||!cursorResult||cursorResult.ok!==true){
+        return {...committed,ok:false,snapshotRequired:true,applied:committed.applied>0,
+          reason:'remote_apply_post_commit_verification_failed'};
+      }
+      return {...committed,ok:true,workspace,cursor:cursorResult.cursor};
+    });
+    entitySyncSerial=task;
+    task.catch(()=>undefined);
+    return task;
+  }
+
   async function readEntityManifest(ownerId){
     const owner=entityOwnerKey(ownerId),key=entityManifestKey(owner);
     return transaction(['migrationMeta'],'readonly',(tx,set)=>{
@@ -2420,6 +2657,7 @@
     readWorkspaceEntityDeltaCursor,
     initializeWorkspaceEntityDeltaCursor,
     acknowledgeWorkspaceEntityOutboxGroup,
+    applyWorkspaceEntityDeltaGroup,
     getStatus: () => ({
       enabled,
       database: DB_NAME,

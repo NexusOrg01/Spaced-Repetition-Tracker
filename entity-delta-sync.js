@@ -35,13 +35,16 @@
          !change.id||change.id.length>512||!['put','delete'].includes(change.operation))return null;
       if((change.collection==='trackerMeta'&&change.id!=='tracker')||
          (change.collection==='featureMeta'&&change.id!=='features'))return null;
+      const isMeta=change.collection==='trackerMeta'||change.collection==='featureMeta';
+      if(isMeta&&change.operation!=='put')return null;
       const identity=change.collection+'\u0000'+change.id;
       if(seen.has(identity))return null;
       seen.add(identity);
       if(change.operation==='put'){
         if(!change.value||typeof change.value!=='object'||Array.isArray(change.value)||
            typeof change.position!=='number'||!Number.isSafeInteger(change.position)||
-           change.position < -1000000000||change.position > 1000000000)return null;
+           change.position < -1000000000||change.position > 1000000000||
+           (isMeta&&change.position!==0)||(!isMeta&&String(change.value.id||'')!==change.id))return null;
         normalized.push({collection:change.collection,id:change.id,operation:'put',
           position:Number(change.position),value:change.value});
       }else{
@@ -70,13 +73,15 @@
     if(data.snapshot_required!==false||!Array.isArray(data.groups)){
       return {ok:false,snapshotRequired:true,reason:'invalid_remote_page_shape'};
     }
-    const groups=[];let expected=after,totalBytes=0;
+    if(data.groups.length>MAX_GROUPS)return {ok:false,snapshotRequired:true,reason:'remote_page_group_limit'};
+    const groups=[],operationIds=new Set();let expected=after,totalBytes=0;
     for(const sourceGroup of data.groups){
       if(!sourceGroup||typeof sourceGroup!=='object'||Array.isArray(sourceGroup))return {ok:false,snapshotRequired:true,reason:'invalid_remote_operation_group'};
       const revision=safeInteger(sourceGroup.revision,1);
       if(revision===null||revision!==expected+1||
          typeof sourceGroup.operation_id!=='string'||!sourceGroup.operation_id||
-         sourceGroup.operation_id.length>160)return {ok:false,snapshotRequired:true,reason:'remote_revision_gap'};
+         sourceGroup.operation_id.length>160||operationIds.has(sourceGroup.operation_id))return {ok:false,snapshotRequired:true,reason:'remote_revision_gap'};
+      operationIds.add(sourceGroup.operation_id);
       const changes=Array.isArray(sourceGroup.changes)?sourceGroup.changes:null;
       const normalized=validateChanges(changes);
       if(!normalized||normalized.length!==changes.length)return {ok:false,snapshotRequired:true,reason:'invalid_remote_changes'};
@@ -91,7 +96,7 @@
     if(next!==expected||(!groups.length&&head!==after)||next>head){
       return {ok:false,snapshotRequired:true,reason:'remote_cursor_mismatch'};
     }
-    if(data.bytes!==undefined&&safeInteger(data.bytes)!==null&&Number(data.bytes)>byteLimit){
+    if(data.bytes!==undefined&&(safeInteger(data.bytes)===null||Number(data.bytes)>byteLimit)){
       return {ok:false,snapshotRequired:true,reason:'remote_page_byte_limit'};
     }
     return {ok:true,mode:'delta',groups,nextRevision:next,headRevision:head,
@@ -104,6 +109,7 @@
     const getActiveOwner=options.getActiveOwner,getLocalOwner=options.getLocalOwner;
     const getLocalBase=options.getLocalBase,getLocalWorkspace=options.getLocalWorkspace;
     const getPendingSnapshot=options.getPendingSnapshot,sameWorkspace=options.sameWorkspace;
+    const applyWorkspace=options.applyWorkspace;
 
     async function assertOwner(owner){
       if(!enabled)throw new Error('Entity-delta client is disabled.');
@@ -290,7 +296,124 @@
       }
     }
 
-    return Object.freeze({readRemotePage,publishPending});
+    async function applyRemotePage(ownerId,readOptions={}){
+      if(!enabled)return {ok:true,skipped:true,reason:'feature_disabled'};
+      const owner=String(ownerId||'').trim();
+      if(!owner||!client||!storage||
+         typeof storage.readWorkspaceEntityDeltaCursor!=='function'||
+         typeof storage.initializeWorkspaceEntityDeltaCursor!=='function'||
+         typeof storage.applyWorkspaceEntityDeltaGroup!=='function'||
+         typeof getLocalBase!=='function'||typeof getLocalWorkspace!=='function'||
+         typeof getPendingSnapshot!=='function'||typeof sameWorkspace!=='function'){
+        return unavailable('remote_apply_dependencies_unavailable');
+      }
+      try{
+        await assertOwner(owner);
+        const stateResult=await client.rpc('nexus_get_entity_sync_state');
+        if(stateResult.error)return unavailable('remote_state_read_failed',{
+          retryable:true,errorCode:String(stateResult.error.code||'unknown')
+        });
+        await assertOwner(owner);
+        const state=stateResult.data;
+        if(!state||typeof state!=='object')return {ok:false,snapshotRequired:true,reason:'invalid_remote_sync_state'};
+        if(state.mode==='snapshot')return {ok:true,skipped:true,mode:'snapshot'};
+        const head=safeInteger(state.head_revision),snapshot=safeInteger(state.snapshot_revision),
+          floor=safeInteger(state.compacted_through_revision);
+        if(state.mode!=='delta'||Number(state.protocol_version)!==1||
+           head===null||snapshot===null||floor===null||floor>snapshot||snapshot>head||
+           typeof state.snapshot_updated_at!=='string'||!state.snapshot_updated_at){
+          return {ok:false,snapshotRequired:true,reason:'unsupported_remote_sync_state'};
+        }
+        const base=await getLocalBase(owner);
+        if(!base||base.serverVersion!==state.snapshot_updated_at){
+          return {ok:false,snapshotRequired:true,reason:'local_snapshot_baseline_mismatch'};
+        }
+        if(await getPendingSnapshot(owner)){
+          return {ok:false,snapshotRequired:true,reason:'compatibility_snapshot_still_pending'};
+        }
+        const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
+        if(!cursorResult||cursorResult.ok!==true){
+          return {ok:false,snapshotRequired:!!(cursorResult&&cursorResult.snapshotRequired),
+            reason:cursorResult&&cursorResult.reason||'local_delta_cursor_unavailable'};
+        }
+        let cursor;
+        if(!cursorResult.exists){
+          if(head!==snapshot||snapshot!==floor){
+            return {ok:false,snapshotRequired:true,reason:'remote_delta_history_precedes_local_baseline'};
+          }
+          const local=await getLocalWorkspace(owner);
+          if(!local||!(await sameWorkspace(local,base))){
+            return {ok:false,snapshotRequired:true,reason:'local_workspace_differs_from_verified_snapshot'};
+          }
+          const initialized=await storage.initializeWorkspaceEntityDeltaCursor(
+            owner,head,state.snapshot_updated_at,true);
+          if(!initialized||initialized.ok!==true){
+            return {ok:false,snapshotRequired:true,reason:initialized&&initialized.reason||'cursor_initialization_failed'};
+          }
+          cursor=initialized.cursor;
+        }else{
+          cursor=cursorResult.cursor;
+        }
+        if(!cursor||cursor.snapshotUpdatedAt!==state.snapshot_updated_at||
+           cursor.generation!==cursorResult.generation&&cursorResult.generation){
+          return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_generation_mismatch'};
+        }
+        if(Number(cursor.publishRevision)<floor||Number(cursor.publishRevision)>head){
+          return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_outside_retention'};
+        }
+        if(cursor.requiresPull!==true&&Number(cursor.publishRevision)===head){
+          return {ok:true,idle:true,appliedCount:0,cursor};
+        }
+        const page=await readRemotePage(owner,Number(cursor.publishRevision),{
+          limitGroups:Math.max(1,Math.min(100,Math.floor(Number(readOptions.limitGroups)||1))),
+          maxBytes:Math.max(1024,Math.min(MAX_BYTES,Math.floor(Number(readOptions.maxBytes)||MAX_BYTES)))
+        });
+        if(!page||page.ok!==true)return page||unavailable('remote_page_unavailable');
+        if(page.snapshotRequired||page.mode!=='delta'){
+          return {ok:false,snapshotRequired:true,reason:page.reason||'remote_snapshot_required'};
+        }
+        if(!page.groups.length){
+          if(page.headRevision!==Number(cursor.publishRevision)){
+            return {ok:false,snapshotRequired:true,reason:'empty_remote_page_before_server_head'};
+          }
+          return {ok:true,idle:true,appliedCount:0,cursor,headRevision:page.headRevision};
+        }
+        let appliedCount=0,lastWorkspace=null;
+        for(const group of page.groups){
+          await assertOwner(owner);
+          const applied=await storage.applyWorkspaceEntityDeltaGroup(
+            owner,group,Number(cursor.publishRevision),page.headRevision);
+          if(!applied||applied.ok!==true){
+            return {ok:false,snapshotRequired:!!(applied&&applied.snapshotRequired),
+              reason:applied&&applied.reason||'remote_entity_apply_failed',
+              appliedCount,cursor:applied&&applied.cursor||cursor};
+          }
+          await assertOwner(owner);
+          cursor=applied.cursor;
+          lastWorkspace=applied.workspace||lastWorkspace;
+          appliedCount++;
+          if(typeof applyWorkspace==='function'&&lastWorkspace){
+            try{await applyWorkspace(lastWorkspace);}
+            catch(error){
+              return {ok:false,snapshotRequired:true,appliedCount,cursor,
+                reason:'in_memory_workspace_apply_failed',
+                errorCode:String(error&&error.code||'unknown')};
+            }
+            await assertOwner(owner);
+          }
+          if(cursor.requiresPull!==true&&Number(cursor.publishRevision)===page.headRevision)break;
+        }
+        return {ok:true,appliedCount,cursor,workspace:lastWorkspace,
+          headRevision:page.headRevision,requiresPull:cursor.requiresPull===true,
+          morePending:cursor.requiresPull===true};
+      }catch(error){
+        return unavailable('account_or_remote_apply_verification_failed',{
+          retryable:true,errorCode:String(error&&error.code||'unknown')
+        });
+      }
+    }
+
+    return Object.freeze({readRemotePage,applyRemotePage,publishPending});
   }
 
   root.NexusEntityDeltaSync=Object.freeze({createClient,validateRemotePage});
