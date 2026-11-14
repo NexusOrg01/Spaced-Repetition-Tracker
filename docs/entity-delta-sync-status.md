@@ -125,7 +125,16 @@ Do not re-grant browser execution until the publisher, remote reader/cursor, dur
 - Supabase delta RPC execution remains revoked for PUBLIC, anon, and authenticated by the existing staging safety migration. No Supabase schema, grants, functions, data, or project settings were changed in this checkpoint.
 - No staging RPC was invoked. The new client path is verified with deterministic mocks and local IndexedDB harness tests; a live staging integration test remains blocked intentionally until the client reader/apply path and rollout contract are complete and RPC exposure is separately reviewed.
 - The remote reader now validates pages and applies one complete operation group at a time through an atomic IndexedDB transaction that advances the owner/generation-bound inbound cursor and refreshes compatibility snapshots. The default client pull size remains one group until larger-page application is benchmarked.
-- The bounded `synchronize` coordinator pulls remote groups before publishing local groups, limits work per run, and fails closed when local and remote pending changes overlap. It is still a dormant protocol primitive: `cloud-sync.js` does not call it, it does not perform three-way merge, and it does not publish a recovery/compaction snapshot.
+- The bounded `synchronize` coordinator pulls remote groups before publishing local groups and fails closed when local and remote pending changes overlap. The new `prepareConflictRecovery` path now builds a bounded three-way merge candidate for that overlap, but it is not yet invoked by `cloud-sync.js` and does not publish or locally commit the recovery snapshot.
+
+### 14 November 2026 bounded conflict-recovery preparation
+
+- Added `reconstructRemoteSnapshot` to rebuild an in-memory cloud workspace from a verified compatibility snapshot and a contiguous sequence of complete entity-operation groups. It applies record puts/deletes, tracker metadata roots, and Study Hub metadata roots while preserving collection arrays and deterministic ordering.
+- Reconstruction fails closed on revision gaps, repeated operation IDs, malformed identities, unsupported collections, ambiguous positions, malformed metadata roots, and aggregate limits. Default bounds are 10,000 groups, 250,000 entity changes, and 64 MiB of operation data.
+- Added `prepareSnapshotReconciliation`, which feeds the reconstructed remote view, the last verified base, and the current local workspace through the existing `NexusWorkspaceSyncMerge.mergeAsync` implementation. Conflict alternatives are returned in the merge result for the established offline conflict archive; no second merge policy was introduced.
+- Added the owner-verified client method `prepareConflictRecovery`. It reads from the remote `snapshot_revision` (not the device's potentially advanced cursor), pages only within the captured head revision, rechecks the snapshot timestamp/head and local workspace/pending-snapshot identity, and returns a merge candidate with `requiresSnapshotPublication` and `requiresLocalRebase` flags.
+- This is a **preparation-only** step. It does not publish the candidate, rewrite the local entity generation, acknowledge or discard local outbox operations, advance a cursor, compact operation history, grant RPC execution, or enable delta mode. A failed preparation leaves both sides unchanged.
+- Added regression coverage for independent local/remote insertions, a remote deletion, concurrent same-field edits and archived conflicts, tracker/Study Hub metadata roots, unchanged source snapshots, revision gaps, ordering collisions, total group bounds, and the account-verified preparation flow.
 
 ### Remaining Phase 3.4 inventory
 
@@ -135,7 +144,7 @@ Do not re-grant browser execution until the publisher, remote reader/cursor, dur
 | Remote page retrieval and strict validation | 10% | Implemented and covered by mocked client tests |
 | Atomic remote entity application and durable inbound cursor | 20% | Implemented as a gated local-apply primitive; not wired into normal cloud sync |
 | Bounded pull-before-publish coordinator | 15% | Implemented in this continuation; bounded, mocked, and fail-closed on overlapping local/remote work |
-| Three-way conflict reconciliation, snapshot fallback, compaction and retention integration | 15% | Pending |
+| Three-way conflict reconciliation, snapshot fallback, compaction and retention integration | 15% | Partial: bounded snapshot reconstruction and shared three-way merge preparation implemented; publication/rebase/fallback/compaction remain pending |
 | Snapshot/restore/undo/account deletion/legacy-client compatibility | 15% | Pending |
 | Normal cloud-sync integration and controlled staging/browser/Android-source rollout evidence | 10% | Pending |
 
@@ -154,6 +163,6 @@ Do not re-grant browser execution until the publisher, remote reader/cursor, dur
 ### Manual and integration checks still pending
 
 - Browser-authenticated preview smoke test and Android/Capacitor smoke test for the added shared asset and service-worker cache revision.
-- Connect the publisher to the normal cloud-sync orchestration only after inbound apply, durable inbound cursor, conflict handling, and snapshot-queue coordination are implemented.
+- Wire `prepareConflictRecovery` into `cloud-sync.js` behind a default-off staging gate; then publish with the dedicated snapshot RPC and atomically rebase/verify the local queue, entity generation, and delta cursor.
 - Staging end-to-end tests after the RPC permission/rollout gate is separately reviewed: two-device publish/pull, interrupted acknowledgement retry, offline reconnect, account switching, large workspace pagination, compaction, and snapshot recovery.
 - Verify backup/export/restore, undo, account deletion, and legacy snapshot-only clients against a mixed-version staging cohort before any rollout.
