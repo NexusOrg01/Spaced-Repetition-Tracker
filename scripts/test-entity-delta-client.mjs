@@ -656,6 +656,102 @@ function coordinatorHarness(options={}){
 }
 
 {
+  const oldBase={
+    app:'Nexus Spaced Repetition Tracker',schema:4,serverVersion:'old-snapshot-stamp',
+    state:{schema:3,streams:[],subjects:[{id:'subject-main',name:'Main'}],topics:[
+      {id:'topic-local-edit',name:'Local edit',subjectId:'subject-main',notes:'Old base notes'},
+      {id:'topic-remote-snapshot',name:'Remote snapshot',subjectId:'subject-main',notes:'Old remote value'}
+    ],history:[],exams:[],settings:{theme:'light'}},
+    featureState:{settings:{dailyMinutes:60},journal:[],papers:[],goals:[],studyLogs:[]}
+  };
+  const oldLocal=JSON.parse(JSON.stringify(oldBase));
+  oldLocal.state.topics[0].notes='Edited while device was offline';
+  oldLocal.featureState.settings.dailyMinutes=90;
+  const currentRemoteSnapshot={
+    app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:'current-snapshot',
+    __nexusDeltaSync:'entity-delta-v1',
+    state:{...oldBase.state,settings:{theme:'dark'},topics:[
+      oldBase.state.topics[0],
+      {...oldBase.state.topics[1],notes:'Updated by another device'},
+      {id:'topic-cloud-only',name:'Cloud only',subjectId:'subject-main',notes:'Added before compaction'}
+    ]},
+    featureState:{...oldBase.featureState,settings:{dailyMinutes:60,weeklyReviewGoal:120}}
+  };
+  const tailGroup={revision:6,operation_id:'post-compaction-tail',changes:[{
+    ordinal:0,collection:'topics',id:'topic-after-snapshot',operation:'put',position:3,
+    value:{id:'topic-after-snapshot',name:'After snapshot',subjectId:'subject-main',notes:'Delta after compaction'}
+  }]};
+  const remoteState={mode:'delta',protocol_version:1,head_revision:6,snapshot_revision:5,
+    compacted_through_revision:5,snapshot_updated_at:'new-snapshot-stamp'};
+  const calls=[];
+  const client={
+    auth:{async getUser(){return {data:{user:{id:'account-A'}},error:null};}},
+    async rpc(name,args){
+      calls.push({name,args:args||null});
+      if(name==='nexus_get_entity_sync_state')return {data:{...remoteState},error:null};
+      if(name==='nexus_read_entity_operations')return {data:{
+        mode:'delta',snapshot_required:false,head_revision:remoteState.head_revision,
+        snapshot_revision:remoteState.snapshot_revision,
+        compacted_through_revision:remoteState.compacted_through_revision,
+        next_revision:6,bytes:1024,groups:args.p_after_revision===5?[tailGroup]:[]
+      },error:null};
+      return {data:null,error:{code:'unexpected_rpc'}};
+    }
+  };
+  let snapshotReads=0;
+  const api=factory({
+    enabled:true,client,storage:{},
+    getActiveOwner:()=> 'account-A',getLocalOwner:()=> 'account-A',
+    getLocalBase:async()=>({...oldBase}),
+    getLocalWorkspace:async()=>JSON.parse(JSON.stringify(oldLocal)),
+    getPendingSnapshot:async()=>null,
+    readRemoteSnapshot:async owner=>{
+      assert.equal(owner,'account-A');
+      snapshotReads++;
+      return {payload:JSON.parse(JSON.stringify(currentRemoteSnapshot)),
+        updated_at:'new-snapshot-stamp',storageMode:'jsonb'};
+    },
+    sameWorkspace:async(left,right)=>JSON.stringify(left)===JSON.stringify(right)
+  });
+  const prepared=await api.prepareConflictRecovery('account-A',{maxGroups:20});
+  assert.equal(prepared.ok,true,
+    'a client with an older local base must recover by reading the current verified snapshot after compaction');
+  assert.equal(prepared.baselineAdvanced,true);
+  assert.equal(prepared.snapshotRevision,5);
+  assert.equal(prepared.expectedHeadRevision,6);
+  assert.equal(snapshotReads,1);
+  assert.equal(prepared.payload.state.topics.find(row=>row.id==='topic-local-edit').notes,
+    'Edited while device was offline','local edits made after the old base must survive snapshot advancement');
+  assert.equal(prepared.payload.state.topics.find(row=>row.id==='topic-remote-snapshot').notes,
+    'Updated by another device','changes in the newer compacted snapshot must be included');
+  assert.ok(prepared.payload.state.topics.some(row=>row.id==='topic-cloud-only'),
+    'remote records introduced before compaction must survive');
+  assert.ok(prepared.payload.state.topics.some(row=>row.id==='topic-after-snapshot'),
+    'deltas published after the compacted snapshot must be replayed');
+  assert.equal(prepared.payload.state.settings.theme,'dark');
+  assert.equal(prepared.payload.featureState.settings.weeklyReviewGoal,120);
+  assert.equal(prepared.payload.featureState.settings.dailyMinutes,90,
+    'independent offline Study Hub changes must survive the baseline rebase');
+  assert.equal(calls.filter(call=>call.name==='nexus_read_entity_operations').length,1);
+  assert.equal(calls.some(call=>call.name==='nexus_publish_entity_operation'),false,
+    'stale-device recovery preparation must not publish deltas before the verified snapshot merge');
+
+  const unverifiedApi=factory({
+    enabled:true,client,storage:{},
+    getActiveOwner:()=> 'account-A',getLocalOwner:()=> 'account-A',
+    getLocalBase:async()=>({...oldBase}),
+    getLocalWorkspace:async()=>JSON.parse(JSON.stringify(oldLocal)),
+    getPendingSnapshot:async()=>null,
+    readRemoteSnapshot:async()=>({payload:currentRemoteSnapshot,updated_at:'wrong-snapshot-stamp'}),
+    sameWorkspace:async(left,right)=>JSON.stringify(left)===JSON.stringify(right)
+  });
+  const rejected=await unverifiedApi.prepareConflictRecovery('account-A');
+  assert.equal(rejected.ok,false);
+  assert.equal(rejected.reason,'remote_snapshot_baseline_unverified',
+    'the old local workspace must not merge against a snapshot whose CAS timestamp does not match server sync state');
+}
+
+{
   const baseSnapshot={
     app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:'base-export',
     state:{schema:3,streams:[],subjects:[{id:'subject-main',name:'Main'}],topics:[
