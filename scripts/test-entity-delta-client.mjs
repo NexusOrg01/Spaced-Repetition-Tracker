@@ -421,7 +421,7 @@ function coordinatorHarness(options={}){
   const api=factory({enabled:true,client,storage,getActiveOwner:()=>activeOwner.value,
     getLocalOwner:()=>owner,getLocalBase:async()=>base,getLocalWorkspace:async()=>payload,
     getPendingSnapshot:async()=>options.pendingSnapshot||null,sameWorkspace:async()=>true,
-    compactSnapshot:options.compactSnapshot});
+    compactSnapshot:options.compactSnapshot,compactOperations:options.compactOperations});
   return {api,state,cursor:()=>({...cursor}),published,applied,acknowledgements,calls};
 }
 
@@ -489,6 +489,42 @@ function coordinatorHarness(options={}){
   assert.equal(result.snapshotCompaction.cleanupPending,true,
     'the checkpoint must disclose that physical log cleanup remains pending');
   assert.equal(result.snapshotCompaction.cleanup.reason,'compaction_permission_not_enabled');
+}
+
+{
+  let cleanupCalls=0;
+  const h=coordinatorHarness({
+    headRevision:250,snapshotRevision:250,compactedThroughRevision:250,initialPublishRevision:250,
+    compactOperations:async(owner,floor,signal)=>{
+      cleanupCalls++;
+      assert.equal(owner,'account-A');
+      assert.equal(floor,250);
+      assert.equal(signal,null);
+      return {ok:false,complete:false,pending:true,
+        reason:'entity_operation_compaction_unavailable',deletedOperations:0,deletedReceipts:0,rounds:1};
+    }
+  });
+  const result=await h.api.synchronize('account-A',{maxRounds:5,snapshotCompactionThreshold:250});
+  assert.equal(result.ok,true,'a deferred physical cleanup retry must not turn a completed sync into failure');
+  assert.equal(cleanupCalls,1,
+    'a fully idle account with an advanced snapshot floor must retry pending physical cleanup below the snapshot threshold');
+  assert.equal(result.snapshotCompaction.snapshotPublished,false,
+    'a cleanup-only retry must not create another full workspace snapshot');
+  assert.equal(result.snapshotCompaction.cleanupPending,true);
+  assert.equal(result.snapshotCompaction.cleanup.reason,'entity_operation_compaction_unavailable');
+}
+
+{
+  let cleanupCalls=0;
+  const h=coordinatorHarness({
+    headRevision:250,snapshotRevision:250,compactedThroughRevision:250,initialPublishRevision:250,
+    localGroups:[makeGroup('still-pending-local-change',1,[putChange('topics','pending-topic')])],
+    compactOperations:async()=>{cleanupCalls++;return {ok:true,complete:true,pending:false};}
+  });
+  const result=await h.api.synchronize('account-A',{maxRounds:5});
+  assert.equal(result.ok,false,
+    'a local outbox action must not be bypassed merely to run server cleanup');
+  assert.equal(cleanupCalls,0,'physical cleanup must wait until all local operation groups are reconciled');
 }
 
 {
