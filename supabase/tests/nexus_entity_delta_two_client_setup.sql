@@ -28,6 +28,23 @@ inserted_users AS (
   FROM credentials
   RETURNING id, email
 ),
+inserted_identities AS (
+  INSERT INTO auth.identities
+    (provider_id, user_id, identity_data, provider, last_sign_in_at, created_at, updated_at)
+  SELECT
+    id::text,
+    id,
+    jsonb_build_object(
+      'sub', id::text,
+      'email', email,
+      'email_verified', true,
+      'phone_verified', false
+    ),
+    'email',
+    clock_timestamp(), clock_timestamp(), clock_timestamp()
+  FROM inserted_users
+  RETURNING user_id
+),
 inserted_workspaces AS (
   INSERT INTO public.nexus_user_data (user_id, payload, updated_at)
   SELECT
@@ -61,5 +78,6 @@ SELECT
   'confirmed; empty disposable workspace created' AS status
 FROM credentials
 JOIN inserted_users USING (email)
+JOIN inserted_identities ON inserted_identities.user_id = inserted_users.id
 JOIN inserted_workspaces ON inserted_workspaces.user_id = inserted_users.id
 ORDER BY credentials.email;
