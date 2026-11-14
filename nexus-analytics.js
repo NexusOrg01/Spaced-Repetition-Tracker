@@ -45,6 +45,52 @@
       }, e.__SV = 1);
   }(document, window.posthog || []);
 
+  function safeUrl(value) {
+    try {
+      const parsed = new URL(String(value), window.location && window.location.origin);
+      return parsed.origin + parsed.pathname;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function safeException(item) {
+    if (!item || typeof item !== 'object') return item;
+    const clean = { ...item };
+    if (Object.prototype.hasOwnProperty.call(clean, 'value')) clean.value = 'Nexus exception';
+    if (clean.stacktrace && Array.isArray(clean.stacktrace.frames)) {
+      clean.stacktrace = {
+        ...clean.stacktrace,
+        frames: clean.stacktrace.frames.map(frame => {
+          if (!frame || typeof frame !== 'object') return frame;
+          const safeFrame = { ...frame };
+          for (const field of ['filename', 'abs_path', 'url']) {
+            if (safeFrame[field]) safeFrame[field] = safeUrl(safeFrame[field]);
+          }
+          return safeFrame;
+        })
+      };
+    }
+    return clean;
+  }
+
+  function sanitizeEvent(event) {
+    if (!event || !event.properties || typeof event.properties !== 'object') return event;
+    const properties = event.properties;
+    for (const key of Object.keys(properties)) {
+      if (['$current_url', '$referrer', '$initial_referrer'].includes(key)) {
+        properties[key] = safeUrl(properties[key]);
+      } else if (key === '$exception_message') {
+        properties[key] = 'Nexus exception';
+      } else if (key === '$exception_list' && Array.isArray(properties[key])) {
+        properties[key] = properties[key].map(safeException);
+      } else if (/(email|password|token|study|note|topic|subject|workspace|user_id)/i.test(key)) {
+        delete properties[key];
+      }
+    }
+    return event;
+  }
+
   window.posthog.init(config.key, {
     api_host: host,
     defaults: '2026-08-30',
@@ -54,7 +100,8 @@
     persistence: 'memory',
     person_profiles: 'identified_only',
     disable_session_recording: true,
-    disable_surveys: true
+    disable_surveys: true,
+    before_send: sanitizeEvent
   });
 
   const allowedAreas = new Set([
