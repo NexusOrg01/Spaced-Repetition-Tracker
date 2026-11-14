@@ -2279,8 +2279,8 @@
              values.featureRoot.generation!==manifest.pendingGeneration||values.trackerRoot.collection!=='_meta'||
              values.trackerRoot.entityId!=='tracker'||values.featureRoot.collection!=='_meta'||
              values.featureRoot.entityId!=='features'||
-             JSON.stringify(values.trackerRoot.value)!==JSON.stringify(tracker)||
-             JSON.stringify(values.featureRoot.value)!==JSON.stringify(features)||
+             JSON.stringify(values.trackerRoot.value)!==JSON.stringify(entityRootValue(tracker,TRACKER_ENTITY_COLLECTIONS))||
+             JSON.stringify(values.featureRoot.value)!==JSON.stringify(entityRootValue(features,FEATURE_ENTITY_COLLECTIONS))||
              !Number.isSafeInteger(Number(manifest.pendingRowCount))||Number(manifest.pendingRowCount)<2){
             set({ok:false,reason:'local_recovery_commit_precondition_failed'});return;
           }
