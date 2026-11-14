@@ -17,13 +17,15 @@ WITH credentials AS MATERIALIZED (
 inserted_users AS (
   INSERT INTO auth.users
     (instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
-     confirmation_token, raw_app_meta_data, raw_user_meta_data, created_at, updated_at)
+     confirmation_token, recovery_token, email_change_token_new, email_change,
+     email_change_token_current, phone_change, phone_change_token,
+     reauthentication_token, raw_app_meta_data, raw_user_meta_data, created_at, updated_at)
   SELECT
     '00000000-0000-0000-0000-000000000000'::uuid,
     id, 'authenticated', 'authenticated', email,
     extensions.crypt(password, extensions.gen_salt('bf')),
     clock_timestamp(),
-    '',
+    '', '', '', '', '', '', '', '',
     jsonb_build_object('provider', 'email', 'providers', jsonb_build_array('email')),
     '{}'::jsonb,
     clock_timestamp(), clock_timestamp()
