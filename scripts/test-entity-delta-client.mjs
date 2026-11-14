@@ -699,7 +699,8 @@ function coordinatorHarness(options={}){
       assert.equal(payload.__nexusDeltaSync,'entity-delta-v1');
       if(publishCalls===1)throw Object.assign(new Error('lost response after publish'),{code:'network_lost'});
       return {verified:true,snapshotRevision:1,headRevision:1,compactedThroughRevision:1,
-        updated_at:'recovered-stamp',storageMode:'jsonb'};
+        updated_at:'recovered-stamp',storageMode:'jsonb',
+        compaction:{ok:false,complete:false,pending:true,reason:'entity_operation_compaction_unavailable'}};
     },
     commitLocalRecovery:async(owner,payload,publication,conflicts,metadata)=>{
       localCommits++;
@@ -730,6 +731,9 @@ function coordinatorHarness(options={}){
   assert.equal(second.ok,true,'a retry should verify the exact already-published snapshot and finish locally: '+JSON.stringify(second));
   assert.equal(second.recovered,true);
   assert.equal(second.snapshotRevision,1);
+  assert.deepEqual(second.compaction,{
+    ok:false,complete:false,pending:true,reason:'entity_operation_compaction_unavailable'
+  },'the committed recovery result must surface non-fatal server compaction backlog for a safe retry');
   assert.equal(migrations,1,'a staged generation must be reused rather than rebuilt on retry');
   assert.equal(publishCalls,2,'the exact same candidate must be re-verified after the lost response');
   assert.equal(localCommits,1,'the verified publication should cause one atomic local recovery commit');
