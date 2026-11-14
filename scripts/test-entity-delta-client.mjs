@@ -291,4 +291,40 @@ function harness(options={}){
   assert.equal(readCalled,false,'snapshot-mode accounts must not call the delta read RPC');
 }
 
+{
+  const invalidIdentity=window.NexusEntityDeltaSync.validateRemotePage({
+    mode:'delta',snapshot_required:false,head_revision:1,snapshot_revision:0,
+    compacted_through_revision:0,next_revision:1,
+    groups:[{revision:1,operation_id:'identity-mismatch',changes:[
+      {ordinal:0,collection:'topics',id:'topic-key',operation:'put',position:0,
+        value:{id:'different-topic-id',name:'Mismatched identity'}}
+    ]}]
+  },0);
+  assert.equal(invalidIdentity.snapshotRequired,true,
+    'remote puts must reject payload IDs that differ from the entity key');
+  const metadataDelete=window.NexusEntityDeltaSync.validateRemotePage({
+    mode:'delta',snapshot_required:false,head_revision:1,snapshot_revision:0,
+    compacted_through_revision:0,next_revision:1,
+    groups:[{revision:1,operation_id:'metadata-delete',changes:[
+      {ordinal:0,collection:'trackerMeta',id:'tracker',operation:'delete'}
+    ]}]
+  },0);
+  assert.equal(metadataDelete.snapshotRequired,true,
+    'metadata roots must not be removed by a remote delta');
+  const duplicateOperation=window.NexusEntityDeltaSync.validateRemotePage({
+    mode:'delta',snapshot_required:false,head_revision:2,snapshot_revision:0,
+    compacted_through_revision:0,next_revision:2,
+    groups:[
+      {revision:1,operation_id:'duplicate-operation-id',changes:[
+        {ordinal:0,collection:'topics',id:'topic-one',operation:'put',position:0,value:{id:'topic-one'}}
+      ]},
+      {revision:2,operation_id:'duplicate-operation-id',changes:[
+        {ordinal:0,collection:'topics',id:'topic-two',operation:'put',position:1,value:{id:'topic-two'}}
+      ]}
+    ]
+  },0);
+  assert.equal(duplicateOperation.snapshotRequired,true,
+    'one server operation ID must not be reused for multiple revisions in a page');
+}
+
 console.log('Nexus entity-delta client tests passed: feature gate, baseline verification, stable receipt retry, owner checks, conflict safety, and strict remote-page validation.');

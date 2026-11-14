@@ -11,6 +11,7 @@ const hardening = read('supabase/migrations/20261113101625_harden_nexus_entity_d
 const integration = read('supabase/tests/nexus_entity_delta_sync.sql');
 const enablementGate = read('supabase/migrations/20261113215301_defer_entity_delta_enablement_until_client_ready.sql');
 const rpcExposureGate = read('supabase/migrations/20261113222129_revoke_unwired_entity_delta_rpc_execution.sql');
+const identityHardening = read('supabase/migrations/20261114093000_harden_nexus_entity_delta_record_identity.sql');
 
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_sync_state/);
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_operation_receipts/);
@@ -40,6 +41,14 @@ for (const signature of gatedRpcSignatures) {
 }
 assert.match(rpcExposureGate, /BEGIN;[\s\S]*COMMIT;/);
 assert.doesNotMatch(rpcExposureGate, /GRANT EXECUTE ON FUNCTION/);
+
+assert.match(identityHardening, /ADD CONSTRAINT nexus_workspace_operations_entity_identity_check/);
+assert.match(identityHardening, /collection = 'trackerMeta' AND entity_id = 'tracker' AND operation = 'put'/);
+assert.match(identityHardening, /collection = 'featureMeta' AND entity_id = 'features' AND operation = 'put'/);
+assert.match(identityHardening, /COALESCE\([\s\S]*jsonb_typeof\(value -> 'id'\) = 'string'[\s\S]*value ->> 'id' = entity_id/);
+assert.match(identityHardening, /VALIDATE CONSTRAINT nexus_workspace_operations_entity_identity_check/);
+assert.doesNotMatch(identityHardening, /GRANT EXECUTE ON FUNCTION/);
+
 
 assert.match(hardening, /v_revision <> v_next_revision \+ 1/);
 assert.match(hardening, /v_expected_count IS DISTINCT FROM v_count/);
