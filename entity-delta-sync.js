@@ -217,6 +217,22 @@
           if(change.operation==='delete')map.delete(change.id);
           else map.set(change.id,{position:change.position,value:jsonCopy(change.value)});
         }
+        // Positions in the next operation group are relative to the materialized
+        // workspace produced by this complete group. Compact gaps after deletes and
+        // moves before interpreting the next group's positions.
+        for(const map of recordMaps.values()){
+          const ordered=Array.from(map.entries()),positions=new Set();
+          for(const [,entry] of ordered){
+            if(!Number.isSafeInteger(entry.position)||positions.has(entry.position)){
+              throw new Error('remote_snapshot_position_collision');
+            }
+            positions.add(entry.position);
+          }
+          ordered.sort((left,right)=>left[1].position-right[1].position);
+          for(let index=0;index<ordered.length;index++){
+            map.set(ordered[index][0],{position:index,value:ordered[index][1].value});
+          }
+        }
         revision=groupRevision;
       }
       if(revision!==head){
