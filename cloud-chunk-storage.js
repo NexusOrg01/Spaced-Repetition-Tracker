@@ -255,8 +255,149 @@ async function writeSnapshot(client,userId,payload,expectedStamp,stamp,backupUti
  return {manifest,payload,updated_at:published.data.updated_at||stamp,verifiedChunks:true,storageMode:'chunked'};
 }
 
+
+async function assertDeltaSnapshotOwner(client,userId){
+ if(!client||!client.auth||typeof client.auth.getUser!=='function')
+  throw fail('Verified Supabase account access is required for delta snapshot publication.');
+ const result=await client.auth.getUser();
+ if(result&&result.error)throw result.error;
+ if(!result||!result.data||!result.data.user||result.data.user.id!==userId)
+  throw fail('The active Supabase account does not own this delta snapshot. No snapshot was published.','NEXUS_ENTITY_DELTA_OWNER_MISMATCH');
+}
+function stableJson(value){
+ if(Array.isArray(value))return '['+value.map(stableJson).join(',')+']';
+ if(value&&typeof value==='object')return '{'+Object.keys(value).sort().map(key=>JSON.stringify(key)+':'+stableJson(value[key])).join(',')+'}';
+ return JSON.stringify(value);
+}
+async function verifyDeltaSnapshotPublication(client,userId,expectedHead,manifest,candidateHash,candidatePayload,signal){
+ await assertDeltaSnapshotOwner(client,userId);
+ const stateResult=await client.rpc('nexus_get_entity_sync_state');
+ if(stateResult&&stateResult.error)throw stateResult.error;
+ const state=stateResult&&stateResult.data;
+ if(!state||state.mode!=='delta'||Number(state.head_revision)<expectedHead||
+    Number(state.snapshot_revision)!==expectedHead||
+    Number(state.compacted_through_revision)<expectedHead||
+    typeof state.snapshot_updated_at!=='string'||!state.snapshot_updated_at){
+  throw fail('The delta snapshot publication could not be confirmed against the server revision. The local recovery copy must be retained.','NEXUS_DELTA_SNAPSHOT_UNCONFIRMED');
+ }
+ let query=client.from('nexus_user_data').select('payload,updated_at').eq('user_id',userId);
+ query=attachAbortSignal(query,signal);
+ const rowResult=await query.maybeSingle();
+ if(rowResult&&rowResult.error)throw rowResult.error;
+ const row=rowResult&&rowResult.data;
+ if(!row||row.updated_at!==state.snapshot_updated_at){
+  throw fail('The delta snapshot manifest and server revision do not match. The local recovery copy must be retained.','NEXUS_DELTA_SNAPSHOT_UNCONFIRMED');
+ }
+ let verifiedPayload=candidatePayload;
+ if(manifest){
+  if(!sameManifest(row.payload,manifest)||row.payload.__nexusDeltaSync!=='entity-delta-v1'){
+   throw fail('The published delta snapshot does not reference the verified uploaded chunks.','NEXUS_DELTA_SNAPSHOT_UNCONFIRMED');
+  }
+  verifiedPayload=await readSnapshot(client,userId,manifest,signal);
+ }else{
+  if(!row.payload||row.payload.__nexusDeltaSync!=='entity-delta-v1'||
+     await sha256(stableJson(row.payload))!==candidateHash){
+   throw fail('The published delta snapshot does not match the recovery candidate.','NEXUS_DELTA_SNAPSHOT_UNCONFIRMED');
+  }
+ }
+ if(await sha256(stableJson(verifiedPayload))!==candidateHash){
+  throw fail('The published delta snapshot failed full-payload verification.','NEXUS_DELTA_SNAPSHOT_UNCONFIRMED');
+ }
+ return {payload:verifiedPayload,updated_at:row.updated_at,headRevision:Number(state.head_revision),
+  snapshotRevision:Number(state.snapshot_revision),compactedThroughRevision:Number(state.compacted_through_revision)};
+}
+async function writeDeltaSnapshot(client,userId,payload,expectedHeadRevision,expectedStamp,signal){
+ const expectedHead=Number(expectedHeadRevision);
+ if(!client||typeof userId!=='string'||!userId||
+    !Number.isSafeInteger(expectedHead)||expectedHead<0||
+    typeof expectedStamp!=='string'||!expectedStamp||
+    !payload||typeof payload!=='object'||Array.isArray(payload)||
+    !payload.state||!Array.isArray(payload.state.streams)||
+    !payload.featureState||typeof payload.featureState!=='object'||Array.isArray(payload.featureState)){
+  throw fail('A complete workspace, verified account, and exact delta snapshot revision are required.');
+ }
+ await assertDeltaSnapshotOwner(client,userId);
+ const candidatePayload={...payload,__nexusDeltaSync:'entity-delta-v1'};
+ const serialized=JSON.stringify(candidatePayload);
+ if(typeof serialized!=='string'||!serialized)throw fail('The recovery snapshot could not be serialized.');
+ const totalBytes=utf8ByteLength(serialized);
+ let manifest=null;
+ let publishedPayload=candidatePayload;
+ if(totalBytes>=CHUNK_THRESHOLD_BYTES){
+  const ranges=await splitUtf8RangesAsync(serialized);
+  if(ranges.length>MAX_CHUNKS)throw fail('The recovery snapshot exceeds the safe chunk-count limit. The existing server snapshot and local recovery copy remain unchanged.');
+  const revisionId=secureRevisionId();
+  manifest={
+   [MARKER_KEY]:FORMAT,
+   __nexusDeltaSync:'entity-delta-v1',
+   version:1,revisionId,chunkCount:ranges.length,totalBytes,
+   sha256:await sha256(serialized)
+  };
+  for(let offset=0;offset<ranges.length;offset+=INSERT_BATCH_SIZE){
+   await assertDeltaSnapshotOwner(client,userId);
+   const batch=ranges.slice(offset,offset+INSERT_BATCH_SIZE).map((range,index)=>({
+    user_id:userId,revision_id:revisionId,chunk_index:offset+index,
+    chunk_count:ranges.length,chunk_bytes:range.bytes,
+    chunk_data:serialized.slice(range.start,range.end)
+   }));
+   let insertion=client.from(TABLE).insert(batch);
+   insertion=attachAbortSignal(insertion,signal);
+   const inserted=await insertion.select('chunk_index');
+   if(inserted&&inserted.error)throw inserted.error;
+   if(!inserted||!Array.isArray(inserted.data)||inserted.data.length!==batch.length){
+    throw fail('The recovery snapshot chunks could not be confirmed. No manifest was published; the previous snapshot remains active.');
+   }
+  }
+  await verifySnapshotChunks(client,userId,manifest,serialized,ranges,signal);
+  publishedPayload=manifest;
+ }
+ await assertDeltaSnapshotOwner(client,userId);
+ let rpcResult=null,rpcFailure=null;
+ try{
+  rpcResult=await client.rpc('nexus_publish_entity_snapshot',{
+   p_expected_head_revision:expectedHead,
+   p_expected_updated_at:expectedStamp,
+   p_payload:publishedPayload
+  });
+  if(rpcResult&&rpcResult.error)rpcFailure=rpcResult.error;
+ }catch(error){rpcFailure=error;}
+ if(!rpcFailure){
+  const result=rpcResult&&rpcResult.data;
+  if(!result||result.ok!==true){
+   const code=result&&result.code==='revision_conflict'?'NEXUS_CLOUD_CONFLICT':'NEXUS_DELTA_SNAPSHOT_REJECTED';
+   throw fail(result&&result.code==='revision_conflict'
+    ?'Another device changed the delta workspace before snapshot publication. The local recovery copy remains preserved.'
+    :'The server rejected the delta recovery snapshot. The previous published snapshot remains active.',
+    code);
+  }
+  if(Number(result.head_revision)!==expectedHead||
+     Number(result.snapshot_revision)!==expectedHead||
+     Number(result.compacted_through_revision)!==expectedHead){
+   throw fail('The server returned an unexpected revision after delta snapshot publication. Keep the local recovery copy and retry verification.','NEXUS_DELTA_SNAPSHOT_UNCONFIRMED');
+  }
+ }
+ let verified;
+ try{
+  // A lost RPC response is ambiguous. Confirm the exact candidate and its revision
+  // from the server before treating publication as committed or allowing local rebase.
+  verified=await verifyDeltaSnapshotPublication(client,userId,expectedHead,manifest,
+   await sha256(stableJson(candidatePayload)),candidatePayload,signal);
+ }catch(verificationError){
+  if(rpcFailure)throw rpcFailure;
+  throw verificationError;
+ }
+ if(manifest){
+  try{await cleanupOldChunks(client,userId,manifest.revisionId,signal);}
+  catch(error){if(root&&root.console)root.console.warn('Old Nexus delta snapshot chunks could not be cleaned up; the newly published snapshot remains verified.',error);}
+ }
+ return {payload:verified.payload,manifest,updated_at:verified.updated_at,
+  headRevision:verified.headRevision,snapshotRevision:verified.snapshotRevision,
+  compactedThroughRevision:verified.compactedThroughRevision,
+  verifiedChunks:!!manifest,storageMode:manifest?'chunked':'jsonb',verified:true};
+}
+
 return {
  TABLE,FORMAT,CHUNK_BYTES,INSERT_BATCH_SIZE,READ_BATCH_SIZE,CHUNK_THRESHOLD_BYTES,
- isManifest,sameManifest,utf8ByteLength,splitUtf8,splitUtf8Ranges,readSnapshot,writeSnapshot,cleanupOldChunks
+ isManifest,sameManifest,utf8ByteLength,splitUtf8,splitUtf8Ranges,readSnapshot,writeSnapshot,writeDeltaSnapshot,cleanupOldChunks
 };
 });
