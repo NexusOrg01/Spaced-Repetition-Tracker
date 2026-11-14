@@ -2687,9 +2687,12 @@
          !normalized.some(entry => entry.key === FEATURE_KEY))) {
       throw new Error('Changing the active account requires the tracker and Study Hub workspaces in the same atomic transaction.');
     }
+    const recoveryAccountSwitch=!!(ownerEntry&&ownerEntry.value!==currentOwner&&
+      normalized.some(entry=>entry.key===TRACKER_KEY)&&
+      normalized.some(entry=>entry.key===FEATURE_KEY));
     if(enabled&&committedOwnerId&&entityRecoveryLockedOwners.has(committedOwnerId)&&
-       normalized.some(entry=>isManagedKey(entry.key))){
-      throw new Error('Nexus is completing a verified cloud recovery. Workspace edits are temporarily paused so they cannot be lost while the recovery snapshot and local entity generation are committed.');
+       normalized.some(entry=>isManagedKey(entry.key))&&!recoveryAccountSwitch){
+      throw new Error('Nexus is completing a verified cloud recovery. Workspace edits are temporarily paused so they cannot be lost while the recovery snapshot and local entity generation are committed. An atomic account switch with both workspace snapshots remains allowed.');
     }
     if (!enabled) {
       const managedCount = normalized.filter(entry => isManagedKey(entry.key)).length;
