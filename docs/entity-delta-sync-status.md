@@ -56,26 +56,28 @@ This is local publisher-preparation only. It does **not** publish to Supabase, r
 
 ## Important client-integration blocker
 
-**Phase 3.4 is not complete.** The server protocol is present in staging, but the browser/Android shared runtime does not yet use it.
+**Phase 3.4 is not complete.** The shared runtime now contains dormant client primitives, but normal cloud sync does not invoke them and no account is enabled for delta mode.
 
 Verified source boundary:
 
-- `app-core.js` continues to commit complete tracker and Study Hub compatibility snapshots.
-- `nexus-storage.js` maintains a local owner-scoped entity projection and local outbox. Its `syncWorkspaceEntities` path updates that projection; it is not a remote publisher.
-- `cloud-sync.js` still reads, reconciles, and publishes full snapshots/chunked snapshots. It does not call `nexus_publish_entity_operation`, `nexus_read_entity_operations`, or the snapshot/compaction RPCs.
-- Backup export/import, reset, undo, account handoff, and recovery therefore remain snapshot/replacement based.
-- The entity projection is not authoritative. Existing staging accounts remain in snapshot mode and the legacy snapshot fallback remains enabled.
+- `app-core.js` continues to commit complete tracker and Study Hub compatibility snapshots for the offline queue, recovery, and snapshot/chunk cloud path.
+- `nexus-storage.js` provides owner-scoped entity-first local hydration, a durable local outbox, owner/generation/revision-bound cursors, atomic receipt acknowledgement, and atomic application of one remote operation group into the active entity generation plus compatibility mirrors.
+- `entity-delta-sync.js` now provides a gated publisher, strict remote-page validation, one-group-at-a-time remote application, and a bounded pull-before-publish coordinator. It verifies the authenticated user and local owner around network operations.
+- The coordinator deliberately stops with `requiresSnapshotReconciliation` when remote operations and unacknowledged local changes overlap. It does not yet perform the required three-way merge or publish a recovery snapshot.
+- `cloud-sync.js` still reads, reconciles, and publishes full snapshots/chunked snapshots. It does not instantiate or call the delta coordinator.
+- Backup export/import, reset, undo, account handoff, and account deletion remain on the existing snapshot/replacement boundaries.
+- All four existing staging sync-state rows remain in snapshot mode. Delta RPC execution is revoked for `PUBLIC`, `anon`, and `authenticated`; the legacy snapshot fallback remains authoritative.
 
-Do not enable delta mode or change the authoritative local store until the client publisher, remote pull/apply cursor, local acknowledgement, conflict recovery, snapshot/compaction integration, backup/restore, deletion/undo, account-switch and offline tests pass together on a disposable staging account. The oldest supported snapshot-only client must also be verified to fail closed on the delta marker.
+Do not enable delta mode or re-grant browser RPC execution until runtime integration, concurrent-edit reconciliation, snapshot fallback/compaction, backup/restore, deletion/undo, account-switch, offline recovery, and mixed-version tests pass together on disposable staging accounts. The oldest supported snapshot-only client must also be verified to fail closed on the delta marker.
 
 ## Remaining Phase 3.4 work
 
-1. Integrate stable local outbox groups with the server publisher and durable receipt acknowledgements.
-2. Add owner/generation/revision-bound remote cursors and atomic local delta application; fail closed to a full snapshot on any gap, malformed group, stale cursor or unsupported protocol.
-3. Integrate stream/subject/topic ordering and cascades, reviews/FSRS-6 plus history, exams, journal, papers, goals and study logs.
-4. Route restore, import, reset, undo, account handoff and account deletion through safe snapshot-generation boundaries.
-5. Test interrupted network responses, concurrent devices, offline replay, account switching, full backups, deletion and compaction on staging.
-6. Only after these tests pass, enable delta mode for a controlled staging test account and verify the shared browser/Android source path. APK build and device testing remain a separate explicitly authorised task.
+1. Wire the bounded coordinator into `cloud-sync.js` behind an explicit staging-only feature gate; keep the gate off by default and preserve the current snapshot path for every existing account.
+2. Implement safe concurrent local/remote reconciliation: reconstruct the remote workspace from the verified snapshot plus contiguous delta groups, merge against the local workspace and baseline, preserve conflict alternatives, and stop safely when a complete merge cannot be proven.
+3. Integrate snapshot publication, chunk verification, compare-and-swap compaction, retention, and full-snapshot fallback for cursor gaps, expired history, malformed operations, or unsupported clients.
+4. Route restore, import, reset, undo, curriculum repair, account handoff, and account deletion through generation/cursor invalidation and verified snapshot boundaries.
+5. Run disposable staging tests for two-device publish/pull, concurrent edits, interrupted responses, offline replay, account switching, large workspaces, FSRS/history and Study Hub records, backup/restore, deletion, compaction, and legacy-client behavior.
+6. Only after those gates pass, enable one controlled staging account and validate the shared browser/Android source path. APK packaging and physical-device testing remain a separate explicitly authorised task.
 
 No Phase 3.5 work is included. This protocol does not establish unlimited dataset capacity or lag-free performance; that requires separate measured performance testing.
 
@@ -122,20 +124,22 @@ Do not re-grant browser execution until the publisher, remote reader/cursor, dur
 - **The normal cloud-sync runtime remains snapshot/chunk authoritative.** This checkpoint does not route ordinary sync through the delta adapter and does not enable delta mode for any account.
 - Supabase delta RPC execution remains revoked for PUBLIC, anon, and authenticated by the existing staging safety migration. No Supabase schema, grants, functions, data, or project settings were changed in this checkpoint.
 - No staging RPC was invoked. The new client path is verified with deterministic mocks and local IndexedDB harness tests; a live staging integration test remains blocked intentionally until the client reader/apply path and rollout contract are complete and RPC exposure is separately reviewed.
-- The remote reader currently validates and returns a complete page; it does not yet apply remote changes or advance an inbound cursor.
-- The publisher adapter is a transport primitive, not a production-ready cloud-sync integration. It is deliberately dormant until cloud-sync.js coordinates it with the snapshot queue, remote pull/apply, conflict recovery, and account rollout gates.
+- The remote reader now validates pages and applies one complete operation group at a time through an atomic IndexedDB transaction that advances the owner/generation-bound inbound cursor and refreshes compatibility snapshots. The default client pull size remains one group until larger-page application is benchmarked.
+- The bounded `synchronize` coordinator pulls remote groups before publishing local groups, limits work per run, and fails closed when local and remote pending changes overlap. It is still a dormant protocol primitive: `cloud-sync.js` does not call it, it does not perform three-way merge, and it does not publish a recovery/compaction snapshot.
 
 ### Remaining Phase 3.4 inventory
 
 | Workstream | Weight | Status |
 |---|---:|---|
-| Outbound publisher, stable retry, durable local receipt acknowledgement | 25% | Implemented as a gated transport/storage foundation; normal cloud sync not yet wired |
-| Remote page retrieval and strict validation | 10% | Implemented as a gated transport/validation primitive; no local apply |
-| Atomic remote entity application and durable inbound cursor | 25% | Pending |
-| Conflict reconciliation, snapshot fallback, compaction and retention integration | 20% | Pending |
-| Snapshot/restore/undo/account deletion/legacy-client compatibility and controlled rollout with staging end-to-end evidence | 20% | Pending |
+| Outbound publisher, stable retry, durable local receipt acknowledgement | 15% | Implemented as a gated transport/storage foundation; not wired into normal cloud sync |
+| Remote page retrieval and strict validation | 10% | Implemented and covered by mocked client tests |
+| Atomic remote entity application and durable inbound cursor | 20% | Implemented as a gated local-apply primitive; not wired into normal cloud sync |
+| Bounded pull-before-publish coordinator | 15% | Implemented in this continuation; bounded, mocked, and fail-closed on overlapping local/remote work |
+| Three-way conflict reconciliation, snapshot fallback, compaction and retention integration | 15% | Pending |
+| Snapshot/restore/undo/account deletion/legacy-client compatibility | 15% | Pending |
+| Normal cloud-sync integration and controlled staging/browser/Android-source rollout evidence | 10% | Pending |
 
-**Phase 3.4 assessment: 35% of the remaining client-protocol workstream implemented.** This is not a claim that incremental cloud sync is enabled or Phase 3.4 is complete. The main remaining work is inbound application, full runtime integration, recovery/compaction, and staged cross-device validation.
+**Phase 3.4 protocol-foundation assessment: 60% implemented as gated primitives; 40% remains.** At the start of this continuation, the verified foundation was 45%, leaving 55%. This run added the 15% bounded coordination workstream, equivalent to 27.3% of the work that remained at that baseline. This is not a claim that end-to-end incremental cloud sync is enabled or that Phase 3.4 is complete.
 
 
 ### Verification evidence for this checkpoint
