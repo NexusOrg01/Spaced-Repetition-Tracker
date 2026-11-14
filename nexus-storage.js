@@ -2129,6 +2129,10 @@
     const conflictsJson=JSON.stringify(input.conflicts),payloadMetadata=JSON.stringify(input.payloadMetadata||{});
     if(conflictsJson.length>5*1024*1024||payloadMetadata.length>64*1024)
       throw new Error('The recovery intent metadata exceeds the safe size limit.');
+    // Acquire the account write lock before yielding. Existing serialized
+    // entity tasks are drained below; all new compatibility/entity mutations
+    // are rejected until the staged generation is atomically committed.
+    entityRecoveryLockedOwners.add(owner);
     await entitySyncSerial.catch(()=>undefined);
     await serial.catch(()=>undefined);
     await persistPending();
@@ -2158,7 +2162,13 @@
       m.onsuccess=()=>{values.manifest=m.result||null;finish();};
       i.onsuccess=()=>{values.intent=i.result||null;finish();};
     });
-    if(result&&result.ok===true)entityRecoveryLockedOwners.add(owner);
+    if(!result||result.ok!==true){
+      const persisted=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
+        const request=tx.objectStore('migrationMeta').get(intentKey);
+        request.onsuccess=()=>set(request.result||null);
+      }).catch(()=>null);
+      if(!persisted||persisted.ownerId!==owner)entityRecoveryLockedOwners.delete(owner);
+    }
     return result;
   }
 
