@@ -1628,6 +1628,14 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(staged.state.topics[0].name,'Merged recovery');
   const journal=await loaded.api.readWorkspaceEntityRecovery(owner);
   assert.equal(journal.intent.phase,'staged');
+  assert.equal(loaded.api.getStatus().entityRecoveryLocked,true,
+    'the account write lock must remain active while recovery is staged');
+  await assert.rejects(loaded.api.syncWorkspaceEntities(owner,[]),/recovery is pending/,
+    'normal entity projection changes must be blocked while the candidate is staged');
+  const restarted=loadApi(makeWindow(native,idb));
+  assert.equal(await restarted.api.bootstrap(),true,'a new page context should restore the staged recovery lock');
+  assert.equal(restarted.api.getStatus().entityRecoveryLocked,true,
+    'the recovery lock must be reconstructed from the durable journal after restart');
   const publication={verified:true,updated_at:'recovered-snapshot-stamp',
     snapshotRevision:2,headRevision:3,compactedThroughRevision:2,storageMode:'jsonb'};
   const marked=await loaded.api.markWorkspaceEntityRecoveryPublished(owner,intentId,publication);
@@ -1643,6 +1651,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const committed=await loaded.api.commitWorkspaceEntityRecovery(owner,intentId,entries,digest);
   assert.equal(committed.ok,true,'the durable recovery commit should succeed');
   assert.equal(committed.alreadyCommitted,false);
+  assert.equal(loaded.api.getStatus().entityRecoveryLocked,false,
+    'the local recovery lock must only release after the atomic commit');
   const activeAfter=await loaded.api.readWorkspaceEntities(owner);
   assert.equal(activeAfter.generation,staged.generation,'the staged entity generation should become active atomically');
   assert.equal(activeAfter.state.topics[0].name,'Merged recovery');
