@@ -671,6 +671,8 @@
     if(entityRemovalOwners.has(owner))throw new Error('This account workspace is being permanently deleted.');
     if(!enabled||!database)throw new Error('IndexedDB must be enabled before the per-entity migration can run.');
     if(committedOwnerId!==owner)throw new Error('The active account does not match the requested entity migration owner.');
+    if(entityRecoveryLockedOwners.has(owner)&&options.deferActivation!==true)
+      throw new Error('An entity-delta recovery is pending for this account; normal entity projection rebuilds are paused.');
     if(!stateSnapshot||typeof stateSnapshot!=='object'||Array.isArray(stateSnapshot)||
        !featureSnapshot||typeof featureSnapshot!=='object'||Array.isArray(featureSnapshot)){
       throw new Error('Complete tracker and Study Hub snapshots are required for entity migration.');
@@ -931,6 +933,7 @@
     if(entityRemovalOwners.has(owner))throw new Error('This account workspace is being permanently deleted.');
     if(!enabled||!database)throw new Error('IndexedDB must be enabled before incremental entity writes can run.');
     if(committedOwnerId!==owner)throw new Error('The active account does not match the requested entity write owner.');
+    if(entityRecoveryLockedOwners.has(owner))throw new Error('An entity-delta recovery is pending; new entity writes are paused.');
     if(!Array.isArray(changes)||!changes.length||changes.length>1000)throw new Error('Provide between 1 and 1,000 entity changes.');
     const changeIdentitySet=new Set();
     const normalized=changes.map(change=>{
@@ -1299,6 +1302,7 @@
     const owner=entityOwnerKey(ownerId),
       through=Math.min(Number.MAX_SAFE_INTEGER,Math.max(0,Math.floor(Number(throughSequence)||0)));
     if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner||through===0)return 0;
+    if(entityRecoveryLockedOwners.has(owner))return 0;
     let removed=0,afterSequence=0;
     // Acknowledgement is a destructive queue operation, so every bounded page
     // revalidates the owner, active generation and compatibility workspace revision
@@ -1589,6 +1593,7 @@
 
   async function acknowledgeWorkspaceEntityOutboxGroup(ownerId,batch,group,expectedServerRevision,receipt){
     const owner=entityOwnerKey(ownerId),expected=Number(expectedServerRevision);
+    if(entityRecoveryLockedOwners.has(owner))return {ok:false,unavailable:true,reason:'recovery_commit_pending'};
     if(!batch||batch.ownerId!==owner||!group||typeof group.operationId!=='string'||
        !group.operationId||!Number.isSafeInteger(Number(group.firstSequence))||
        !Number.isSafeInteger(Number(group.lastSequence))||
@@ -1703,6 +1708,7 @@
     const owner=entityOwnerKey(ownerId),expected=Number(expectedServerRevision),
       remoteHead=Number(remoteHeadRevision),revisionValue=Number(group&&group.revision),
       operationId=String(group&&group.operation_id||'');
+    if(entityRecoveryLockedOwners.has(owner))return {ok:false,snapshotRequired:true,reason:'recovery_commit_pending'};
     if(!Number.isSafeInteger(expected)||expected<0||
        !Number.isSafeInteger(remoteHead)||remoteHead<1||
        !Number.isSafeInteger(revisionValue)||revisionValue!==expected+1||
@@ -1980,6 +1986,7 @@
     if(entityRemovalOwners.has(owner))throw new Error('This account workspace is being permanently deleted.');
     if(!enabled||!database)return {skipped:true,reason:'indexeddb-unavailable'};
     if(committedOwnerId!==owner)throw new Error('The active account does not match the requested entity synchronization owner.');
+    if(entityRecoveryLockedOwners.has(owner))throw new Error('An entity-delta recovery is pending; entity projection synchronization is paused.');
     const capturedChanges=cloneEntityChanges(changes);
     const trackerRoot=options.trackerRoot?JSON.parse(JSON.stringify(options.trackerRoot)):null;
     const featureRoot=options.featureRoot?JSON.parse(JSON.stringify(options.featureRoot)):null;
