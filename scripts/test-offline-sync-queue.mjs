@@ -311,4 +311,55 @@ function withFacadeAtomic(storage,callback){
   'a fresh queue built from the current local workspace must remain readable');
 }
 
+{
+ const previousWindow=globalThis.window,calls=[];
+ const s=new MemoryStorage({[queue.OWNER]:'account-A'});
+ const base=payload('recovery-base'),local=payload('recovery-pending'),candidate=payload('recovery-candidate');
+ queue.rememberStamp(s,'account-A','rev-base');
+ queue.rememberBase(s,'account-A',base,'rev-base');
+ const pending=queue.commitWorkspace(s,[
+  {key:stateKey,value:JSON.stringify(local.state)},
+  {key:'recall.study.features.v1',value:JSON.stringify(local.featureState)}
+ ],local,{baseServerVersion:'rev-base'});
+ assert.equal(pending.queued,true);
+ const conflicts=[{path:'state.topics[recovery-candidate].name',local:'Candidate',remote:'Other device'}];
+ globalThis.window={NexusStorage:{
+  commitWorkspaceEntityRecovery(owner,intentId,entries,digest){
+   calls.push({owner,intentId,entries,digest});
+   for(const entry of entries)s.setItem(entry.key,entry.value);
+   return Promise.resolve({ok:true,alreadyCommitted:false,generation:'generation-recovered',
+    cursor:{publishRevision:7,snapshotUpdatedAt:'rev-recovered'}});
+  }
+ }};
+ try{
+  const result=await queue.commitVerifiedEntityDeltaSnapshot(s,'account-A',candidate,
+   'rev-recovered',conflicts,{baseServerVersion:'rev-base'},
+   {intentId:'recovery-queue-test',candidateDigest:'b'.repeat(64)});
+  assert.equal(result.ok,true);
+  assert.equal(result.generation,'generation-recovered');
+  assert.equal(calls.length,1,'queue and base state should use one durable storage transaction');
+  assert.equal(calls[0].owner,'account-A');
+  assert.equal(calls[0].entries.length,6,'workspace, queue, base, stamp and conflict history belong in one transaction');
+  assert.equal(queue.getPending(s,'account-A'),null,
+   'the pre-recovery outbox snapshot must be archived, not left pending against the new base');
+  const storedQueue=JSON.parse(s.getItem(queue.KEY));
+  assert.equal(storedQueue.pending['account-A'].status,'archived');
+  assert.equal(storedQueue.recoveryCommits[0].candidateDigest,'b'.repeat(64));
+  assert.deepEqual(queue.getBase(s,'account-A'),{
+   state:candidate.state,featureState:candidate.featureState,serverVersion:'rev-recovered'
+  });
+  assert.equal(queue.getStamp(s,'account-A'),'rev-recovered');
+  assert.equal(queue.getConflictHistory(s,'account-A').length,1,
+   'the losing alternatives must remain downloadable after the new base is committed');
+  const replay=await queue.commitVerifiedEntityDeltaSnapshot(s,'account-A',candidate,
+   'rev-recovered',conflicts,{baseServerVersion:'rev-base'},
+   {intentId:'recovery-queue-test',candidateDigest:'b'.repeat(64)});
+  assert.equal(replay.alreadyCommitted,true,
+   'a replayed recovery completion marker must not repeat the underlying transaction');
+  assert.equal(calls.length,1);
+ }finally{
+  if(previousWindow===undefined)delete globalThis.window;else globalThis.window=previousWindow;
+ }
+}
+
 console.log('Account-bound offline sync queue tests passed.');
