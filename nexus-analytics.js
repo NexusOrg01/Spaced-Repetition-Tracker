@@ -101,6 +101,11 @@
     person_profiles: 'identified_only',
     disable_session_recording: true,
     disable_surveys: true,
+    capture_exceptions: {
+      capture_unhandled_errors: true,
+      capture_unhandled_rejections: true,
+      capture_console_errors: false
+    },
     before_send: sanitizeEvent
   });
 
