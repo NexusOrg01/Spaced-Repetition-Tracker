@@ -317,13 +317,28 @@ async function writeDeltaSnapshot(client,userId,payload,expectedHeadRevision,exp
   throw fail('A complete workspace, verified account, and exact delta snapshot revision are required.');
  }
  await assertDeltaSnapshotOwner(client,userId);
+ let baselineQuery=client.from('nexus_user_data').select('payload,updated_at').eq('user_id',userId);
+ baselineQuery=attachAbortSignal(baselineQuery,signal);
+ const baselineResult=await baselineQuery.maybeSingle();
+ if(baselineResult&&baselineResult.error)throw baselineResult.error;
+ const baseline=baselineResult&&baselineResult.data;
+ if(!baseline||baseline.updated_at!==expectedStamp){
+  throw fail('The recovery snapshot baseline changed before upload. The local recovery copy remains preserved.','NEXUS_CLOUD_CONFLICT');
+ }
+ if(!baseline.payload||baseline.payload.__nexusDeltaSync!=='entity-delta-v1'){
+  throw fail('The existing cloud snapshot is not marked as an entity-delta workspace. Snapshot recovery was paused.','NEXUS_DELTA_SNAPSHOT_BASELINE_INVALID');
+ }
+ const preserveChunked=baseline.payload.__nexusStorage===FORMAT;
+ if(preserveChunked)assertManifest(baseline.payload);
  const candidatePayload={...payload,__nexusDeltaSync:'entity-delta-v1'};
  const serialized=JSON.stringify(candidatePayload);
  if(typeof serialized!=='string'||!serialized)throw fail('The recovery snapshot could not be serialized.');
  const totalBytes=utf8ByteLength(serialized);
  let manifest=null;
  let publishedPayload=candidatePayload;
- if(totalBytes>=CHUNK_THRESHOLD_BYTES){
+ // The database guard deliberately prevents chunked workspaces reverting to JSONB.
+ // Retain their storage format even if a later recovery candidate becomes small.
+ if(totalBytes>=CHUNK_THRESHOLD_BYTES||preserveChunked){
   const ranges=await splitUtf8RangesAsync(serialized);
   if(ranges.length>MAX_CHUNKS)throw fail('The recovery snapshot exceeds the safe chunk-count limit. The existing server snapshot and local recovery copy remain unchanged.');
   const revisionId=secureRevisionId();
