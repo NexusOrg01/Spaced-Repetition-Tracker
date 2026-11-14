@@ -1430,8 +1430,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const page=await loaded.api.readWorkspaceEntityOutboxGroups(owner,0,1000,4096);
   assert.equal(page.snapshotRequired,false);
   assert.equal(page.groups.length,2);
-  const outbox=idb.databases.get('nexus-workspace-v1').stores.get('outbox');
-  const pendingCount=()=>[...outbox.values()].filter(row=>row&&row.ownerId===owner&&row.kind==='change').length;
+  const pendingCount=()=>[...idb.databases.get('nexus-workspace-v1').stores.get('outbox').values()]
+    .filter(row=>row&&row.ownerId===owner&&row.kind==='change').length;
   const invalidReceipt=await loaded.api.acknowledgeWorkspaceEntityOutboxGroup(owner,page,page.groups[0],0,{
     ok:true,operation_id:'delta-operation-one',revision:1,head_revision:1,change_count:1
   });
