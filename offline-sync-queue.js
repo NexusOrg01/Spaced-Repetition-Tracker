@@ -137,7 +137,16 @@ function commitVerifiedEntityDeltaSnapshot(s,owner,payload,serverVersion,conflic
  if(prior){
   if(prior.candidateDigest!==recovery.candidateDigest||prior.serverVersion!==serverVersion)
    throw fail('A recovery intent ID was reused for a different candidate or server revision.');
-  return {ok:true,alreadyCommitted:true,archivedConflicts:0};
+  if(typeof storage.readWorkspaceEntityDeltaCursor!=='function')
+   throw fail('The committed recovery receipt is missing its durable entity cursor.');
+  return storage.readWorkspaceEntityDeltaCursor(key).then(cursorResult=>{
+   if(!cursorResult||cursorResult.ok!==true||!cursorResult.cursor||
+      cursorResult.cursor.generation!==prior.generation&&prior.generation){
+    throw fail('The local recovery completion marker could not be reconciled with its entity cursor.');
+   }
+   return {ok:true,alreadyCommitted:true,archivedConflicts:0,
+    generation:cursorResult.cursor.generation,cursor:cursorResult.cursor};
+  });
  }
  const sm=stamps(s),bases=readOwnerMap(s,BASE,'The last-synced workspace base'),
   conflictMap=readOwnerMap(s,CONFLICTS,'The sync conflict recovery archive');
