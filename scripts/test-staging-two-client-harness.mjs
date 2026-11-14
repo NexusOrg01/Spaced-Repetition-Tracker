@@ -28,7 +28,7 @@ assert.match(source,/revision_conflict/);
 assert.match(source,/idempotency_conflict/);
 assert.match(source,/const retryRequest=\{\.\.\.loser\.request,p_expected_revision:2\}/,
   'the retry request must be captured as the canonical idempotency payload');
-assert.match(source,/rpc\(loser\.session,'nexus_publish_entity_operation',retryRequest\);[\\s\\S]*?rpc\(loser\.session,'nexus_publish_entity_operation',retryRequest\)/,
+assert.match(source,/rpc\(loser\.session,'nexus_publish_entity_operation',retryRequest\);[\s\S]*?rpc\(loser\.session,'nexus_publish_entity_operation',retryRequest\)/,
   'idempotent replay must resend the exact same request object as the successful retry');
 assert.doesNotMatch(source,/localStorage|sessionStorage/,'credentials must not be persisted in browser storage');
 assert.doesNotMatch(source,/service_role|service-role/i,
