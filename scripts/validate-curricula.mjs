@@ -316,7 +316,7 @@ const runtimeAssets = [...runtimeBody.matchAll(/'([^']+)'/g)].map(match => match
 const expectedRuntimeAssets = [
   'workspace-isolation-guard.js', 'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
   'explore-curriculum.js', 'app-core.js', 'fsrs-bundle.js', 'study-hub.js', 'nexus-build-config.js',
-  'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-chunk-storage.js', 'cloud-sync.js', 'nexus-app-inline.js'
+  'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-chunk-storage.js', 'entity-delta-sync.js', 'cloud-sync.js', 'nexus-app-inline.js'
 ];
 assert(JSON.stringify(runtimeAssets) === JSON.stringify(expectedRuntimeAssets),
   'bootstrap must initialize storage before loading the runtime in dependency-safe order.');
@@ -327,7 +327,7 @@ assert(storageSource.includes("const DB_NAME = 'nexus-workspace-v1'") &&
 for (const asset of [
   'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
   'explore-curriculum.js', 'app-core.js', 'study-hub.js', 'nexus-build-config.js',
-  'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-chunk-storage.js', 'cloud-sync.js', 'workspace-isolation-guard.js', 'fsrs-bundle.js'
+  'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-chunk-storage.js', 'entity-delta-sync.js', 'cloud-sync.js', 'workspace-isolation-guard.js', 'fsrs-bundle.js'
 ]) {
   assert(!html.includes('<script src="./' + asset + '"></script>'),
     asset + ' must not run directly from index.html before storage initialization.');
