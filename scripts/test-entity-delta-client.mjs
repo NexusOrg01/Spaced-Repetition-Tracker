@@ -327,4 +327,134 @@ function harness(options={}){
     'one server operation ID must not be reused for multiple revisions in a page');
 }
 
+
+function remoteOperation(revision,id){
+  return {revision,operation_id:'remote-'+id,changes:[
+    {ordinal:0,collection:'topics',id,operation:'put',position:revision,value:{id,name:id}}
+  ]};
+}
+function coordinatorHarness(options={}){
+  const owner='account-A',activeOwner={value:owner};
+  const state={mode:options.mode||'delta',protocol_version:1,head_revision:(options.remoteGroups||[]).length,
+    snapshot_revision:0,compacted_through_revision:0,snapshot_updated_at:'snapshot-stamp'};
+  const remoteGroups=(options.remoteGroups||[]).map(group=>({...group,changes:group.changes.map(change=>({...change}))}));
+  const outbox=(options.localGroups||[]).map(group=>({...group,changes:group.changes.map(change=>({...change}))}));
+  let cursor={ownerId:owner,generation:'generation-A',workspaceRevision:1,publishRevision:0,
+    acknowledgedSequence:0,remoteHeadRevision:0,snapshotUpdatedAt:'snapshot-stamp',requiresPull:false};
+  const published=[],applied=[],acknowledgements=[],calls=[];
+  const storage={
+    async readWorkspaceEntityDeltaCursor(){
+      return {ok:true,exists:true,cursor:{...cursor},generation:cursor.generation,workspaceRevision:cursor.workspaceRevision};
+    },
+    async initializeWorkspaceEntityDeltaCursor(){throw new Error('the coordinator fixture starts from a verified cursor');},
+    async readWorkspaceEntityOutboxGroups(requestedOwner,afterSequence){
+      assert.equal(requestedOwner,owner);
+      const groups=outbox.filter(group=>group.lastSequence>afterSequence);
+      return {ownerId:owner,generation:cursor.generation,workspaceRevision:2,groups,
+        throughSequence:groups.length?groups[groups.length-1].lastSequence:afterSequence,
+        hasMore:false,snapshotRequired:false};
+    },
+    async acknowledgeWorkspaceEntityOutboxGroup(requestedOwner,batch,group,expectedRevision,receipt){
+      if(requestedOwner!==owner||cursor.publishRevision!==expectedRevision||
+         cursor.acknowledgedSequence!==group.firstSequence-1){
+        return {ok:false,snapshotRequired:true,reason:'coordinator_fixture_cursor_mismatch'};
+      }
+      const index=outbox.findIndex(item=>item.operationId===group.operationId);
+      if(index<0)return {ok:false,snapshotRequired:true,reason:'coordinator_fixture_group_missing'};
+      outbox.splice(index,1);
+      cursor={...cursor,workspaceRevision:batch.workspaceRevision,publishRevision:receipt.revision,
+        acknowledgedSequence:group.lastSequence,remoteHeadRevision:receipt.head_revision,
+        requiresPull:receipt.head_revision>receipt.revision};
+      acknowledgements.push(group.operationId);
+      return {ok:true,removed:group.changeCount,cursor:{...cursor}};
+    },
+    async applyWorkspaceEntityDeltaGroup(requestedOwner,group,expectedRevision,remoteHead){
+      if(requestedOwner!==owner)return {ok:false,snapshotRequired:true,reason:'wrong_owner'};
+      if(outbox.some(item=>item.lastSequence>cursor.acknowledgedSequence)){
+        return {ok:false,reason:'local_outbox_pending'};
+      }
+      if(cursor.publishRevision!==expectedRevision||group.revision!==expectedRevision+1){
+        return {ok:false,snapshotRequired:true,reason:'cursor_mismatch'};
+      }
+      cursor={...cursor,publishRevision:group.revision,
+        remoteHeadRevision:Math.max(cursor.remoteHeadRevision,remoteHead),
+        requiresPull:Math.max(cursor.remoteHeadRevision,remoteHead)>group.revision,
+        lastAppliedOperationId:group.operation_id};
+      applied.push(group.operation_id);
+      return {ok:true,cursor:{...cursor},workspace:payload};
+    }
+  };
+  const client={
+    auth:{async getUser(){return {data:{user:{id:activeOwner.value}},error:null};}},
+    async rpc(name,args){
+      calls.push({name,args:args?JSON.parse(JSON.stringify(args)):null});
+      if(name==='nexus_get_entity_sync_state')return {data:{...state},error:null};
+      if(name==='nexus_read_entity_operations'){
+        const page=remoteGroups.filter(group=>group.revision>args.p_after_revision).slice(0,args.p_limit_groups);
+        return {data:{mode:'delta',snapshot_required:false,head_revision:state.head_revision,
+          snapshot_revision:state.snapshot_revision,compacted_through_revision:state.compacted_through_revision,
+          next_revision:page.length?page[page.length-1].revision:args.p_after_revision,
+          bytes:100,groups:page},error:null};
+      }
+      if(name==='nexus_publish_entity_operation'){
+        if(state.head_revision!==args.p_expected_revision){
+          return {data:{ok:false,code:'revision_conflict',head_revision:state.head_revision},error:null};
+        }
+        const revision=state.head_revision+1;
+        state.head_revision=revision;
+        published.push(args.p_operation_id);
+        return {data:{ok:true,replayed:false,operation_id:args.p_operation_id,revision,
+          change_count:args.p_changes.length,head_revision:revision},error:null};
+      }
+      return {data:null,error:{code:'unexpected_rpc'}};
+    }
+  };
+  const api=factory({enabled:true,client,storage,getActiveOwner:()=>activeOwner.value,
+    getLocalOwner:()=>owner,getLocalBase:async()=>base,getLocalWorkspace:async()=>payload,
+    getPendingSnapshot:async()=>null,sameWorkspace:async()=>true});
+  return {api,state,cursor:()=>({...cursor}),published,applied,acknowledgements,calls};
+}
+
+{
+  const h=coordinatorHarness({remoteGroups:[remoteOperation(1,'remote-one'),remoteOperation(2,'remote-two')]});
+  const result=await h.api.synchronize('account-A',{maxRounds:5});
+  assert.equal(result.ok,true,'the coordinator must pull every bounded remote page before completing');
+  assert.equal(result.appliedCount,2);
+  assert.equal(result.publishedCount,0);
+  assert.deepEqual(h.applied,['remote-remote-one','remote-remote-two']);
+  assert.equal(h.cursor().publishRevision,2,'the inbound cursor must advance only after each atomic group apply');
+}
+{
+  const h=coordinatorHarness({localGroups:[makeGroup('local-op-one',1,[putChange('topics','local-topic')])]});
+  const result=await h.api.synchronize('account-A',{maxRounds:5});
+  assert.equal(result.ok,true,'the coordinator must publish local-only work after confirming no remote page is pending');
+  assert.equal(result.publishedCount,1);
+  assert.equal(result.acknowledgedCount,1);
+  assert.deepEqual(h.published,['local-op-one']);
+  assert.deepEqual(h.acknowledgements,['local-op-one']);
+  assert.equal(h.cursor().publishRevision,1);
+}
+{
+  const h=coordinatorHarness({
+    remoteGroups:[remoteOperation(1,'remote-concurrent')],
+    localGroups:[makeGroup('local-concurrent',1,[putChange('topics','local-concurrent-topic')])]
+  });
+  const result=await h.api.synchronize('account-A',{maxRounds:5});
+  assert.equal(result.ok,false);
+  assert.equal(result.conflict,true);
+  assert.equal(result.requiresSnapshotReconciliation,true,
+    'simultaneous local and remote work must stop for three-way reconciliation instead of overwriting either side');
+  assert.equal(result.reason,'local_and_remote_changes_overlap');
+  assert.equal(h.published.length,0,'the coordinator must not publish local edits before resolving the remote conflict');
+  assert.equal(h.acknowledgements.length,0,'the coordinator must preserve unacknowledged local changes');
+  assert.equal(h.cursor().publishRevision,0,'the inbound cursor must not advance when local work blocks remote apply');
+}
+{
+  const h=coordinatorHarness({mode:'snapshot'});
+  const result=await h.api.synchronize('account-A');
+  assert.equal(result.skipped,true);
+  assert.equal(result.mode,'snapshot','snapshot-mode accounts must stay on the legacy snapshot protocol');
+  assert.equal(h.calls.some(call=>call.name==='nexus_publish_entity_operation'),false);
+}
+
 console.log('Nexus entity-delta client tests passed: feature gate, baseline verification, stable receipt retry, owner checks, conflict safety, and strict remote-page validation.');
