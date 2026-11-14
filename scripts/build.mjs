@@ -64,10 +64,10 @@ export function resolveStagingEntityDeltaEnabled(env, config) {
 export function renderConfigScript(config, enableStagingEntityDelta = false) {
   const enabled = enableStagingEntityDelta === true && !!config &&
     config.url === 'https://xuwfzibxhxzxxupprxsq.supabase.co';
-  return "/* Generated at build time; do not edit or commit project credentials. */\\n" +
+  return "/* Generated at build time; do not edit or commit project credentials. */\n" +
     "(function(){'use strict';window.NEXUS_ENTITY_DELTA_SYNC_STAGING=" + String(enabled) +
     ";const config=" + JSON.stringify(config) +
-    ";if(!config)return;try{localStorage.setItem('nexus.cloud.config.v1',JSON.stringify(config));}catch(_){}})();\\n";
+    ";if(!config)return;try{localStorage.setItem('nexus.cloud.config.v1',JSON.stringify(config));}catch(_){}})();\n";
 }
 
 
