@@ -252,6 +252,11 @@ assert.equal(deltaSmall.payload.__nexusDeltaSync,'entity-delta-v1','the delta pr
 assert.equal(deltaSmallCloud.rows.get(OWNER_A).payload.__nexusDeltaSync,'entity-delta-v1');
 assert.equal(deltaSmall.snapshotRevision,4);
 assert.equal(deltaSmall.compactedThroughRevision,4);
+const replayedDeltaSmall=await chunks.writeDeltaSnapshot(deltaSmallCloud,OWNER_A,deltaSmallPayload,4,'delta-baseline-stamp');
+assert.equal(replayedDeltaSmall.verified,true,'a restarted recovery must verify an already-published matching snapshot');
+assert.equal(replayedDeltaSmall.alreadyPublished,true,'replay must identify the prior publication without a duplicate RPC');
+assert.equal(deltaSmallCloud.rpcCalls.filter(call=>call.name==='nexus_publish_entity_snapshot').length,1,
+ 'idempotent recovery replay must not publish a second snapshot');
 assert.deepEqual(deltaSmall.payload.state,deltaSmallPayload.state,'the published snapshot must preserve the full tracker state');
 assert.equal(deltaSmallCloud.rpcCalls.filter(call=>call.name==='nexus_publish_entity_snapshot').length,1,
  'delta snapshots must use the dedicated compare-and-swap publication RPC');
