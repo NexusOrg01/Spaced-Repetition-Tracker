@@ -314,7 +314,7 @@ assert(runtimeStart >= 0 && runtimeEnd > runtimeStart, 'bootstrap must define an
 const runtimeBody = runtimeStart >= 0 && runtimeEnd > runtimeStart ? bootstrapSource.slice(runtimeStart, runtimeEnd) : '';
 const runtimeAssets = [...runtimeBody.matchAll(/'([^']+)'/g)].map(match => match[1]);
 const expectedRuntimeAssets = [
-  'nexus-build-config.js', 'nexus-analytics.js', 'workspace-isolation-guard.js',
+  'workspace-isolation-guard.js', 'nexus-build-config.js', 'nexus-analytics.js',
   'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
   'explore-curriculum.js', 'app-core.js', 'fsrs-bundle.js', 'study-hub.js',
   'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-chunk-storage.js',
