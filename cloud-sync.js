@@ -683,14 +683,15 @@ ready=true;const adoptedUpload=await upload();if(!adoptedUpload){lastUserId=newU
 
 async function sameWorkspace(a,b){if(!a||!b)return false;const merger=window.NexusWorkspaceSyncMerge;if(!merger||typeof merger.sameAsync!=='function')throw new Error('Safe large-workspace comparison is unavailable.');return merger.sameAsync({state:a.state||{},featureState:a.featureState||{}},{state:b.state||{},featureState:b.featureState||{}});}
 async function runStagingEntityDeltaSync(ownerId,signal){
- // This experimental path is deliberately unavailable on the production host
- // and requires an explicit console/runtime opt-in on a deploy preview.
- if(window.NEXUS_ENTITY_DELTA_SYNC_STAGING!==true||
-    !isPreviewDeploymentOrigin()||config().url!==STAGING_CONFIG.url){
-  return {skipped:true,reason:'staging_delta_gate_closed'};
- }
- const queue=window.NexusOfflineSyncQueue,storage=window.NexusStorage,
-  delta=window.NexusEntityDeltaSync,chunkStorage=window.NexusCloudChunkStorage;
+ const queue=window.NexusOfflineSyncQueue,storage=window.NexusStorage;
+ const recovery=storage&&typeof storage.readWorkspaceEntityRecovery==='function'
+  ?await storage.readWorkspaceEntityRecovery(ownerId):null;
+ const recoveryPending=!!(recovery&&recovery.intent);
+ const gateOpen=window.NEXUS_ENTITY_DELTA_SYNC_STAGING===true&&
+  isPreviewDeploymentOrigin()&&config().url===STAGING_CONFIG.url;
+ if(recoveryPending&&!gateOpen)return {blockedRecovery:true,reason:'staging_recovery_journal_pending'};
+ if(!gateOpen)return {skipped:true,reason:'staging_delta_gate_closed'};
+ const delta=window.NexusEntityDeltaSync,chunkStorage=window.NexusCloudChunkStorage;
  if(!queue||!storage||!delta||typeof delta.createClient!=='function'||
     !chunkStorage||typeof chunkStorage.writeDeltaSnapshot!=='function'||
     typeof queue.commitVerifiedEntityDeltaSnapshot!=='function'){
@@ -737,7 +738,11 @@ async function runStagingEntityDeltaSync(ownerId,signal){
  });
  let result=await makeClient.synchronize(ownerId,{signal,maxRounds:20,maxGroups:20,maxBytes:1048576});
  if(result&&result.skipped&&result.mode==='snapshot')return {skipped:true,reason:'legacy_snapshot_server'};
- if(result&&result.ok===true)return result;
+ if(result&&result.ok===true){
+   const cursor=storage&&typeof storage.readWorkspaceEntityDeltaCursor==='function'
+    ?await storage.readWorkspaceEntityDeltaCursor(ownerId):null;
+   return {...result,cursor:cursor&&cursor.ok?cursor.cursor:null};
+  }
  const needsRecovery=!!(result&&(result.conflict||result.snapshotRequired||
    result.requiresSnapshotReconciliation||
    result.reason==='compatibility_snapshot_still_pending'||
@@ -767,6 +772,11 @@ async function upload(){
   if(authError)throw new Error('Supabase could not verify the active login before cloud write: '+authError.message);
   if(!authData.user||authData.user.id!==uploadUserId||!session||session.user.id!==uploadUserId)throw new Error('The active Google/account session changed or could not be verified. Cloud write paused to protect the other account. Sign in again and retry.');
   const deltaResult=await runStagingEntityDeltaSync(uploadUserId,uploadScope.signal);
+  if(deltaResult.blockedRecovery){
+   status('Recovery paused');
+   say('A previous staging entity-delta recovery is still pending. The legacy snapshot writer has been paused to protect the candidate and local data. Resume it only on this Vercel/Netlify preview with the staging Supabase project and the explicit staging opt-in.');
+   return false;
+  }
   if(!deltaResult.skipped){
    if(deltaResult.ok!==true)throw Object.assign(new Error(
     'Staging entity-delta sync did not complete safely ('+String(deltaResult.reason||'unknown')+'). Your local workspace and recovery data were preserved; the legacy snapshot writer was not used.'
@@ -869,6 +879,10 @@ async function upload(){
     if(localStorage.getItem(OWNER_KEY)===uploadUserId&&session&&session.user.id===uploadUserId)retryReconcileAfterConflict=true;
    }
    if(!alreadyCommitted){ready=false;status('Cloud conflict');say(retryReconcileAfterConflict?'Another device changed this account’s cloud backup at the same time. Your local snapshot is preserved. Nexus is reopening the latest revision to merge both workspaces automatically.':'The cloud conflict could not be verified automatically. Your local data and pending snapshot are preserved. Reconnect before retrying.');}
+  }
+  else if(e&&e.code==='NEXUS_DELTA_STAGING_SYNC_BLOCKED'){
+   status('Staging delta sync paused');
+   say('Staging entity-delta sync could not complete safely. Your local workspace and recovery journal were preserved. The legacy snapshot writer was not used. Review the preview diagnostics before retrying.');
   }
   else{ready=false;status('Sync error');say('Cloud upload failed or could not be verified. Local data and the pending snapshot are preserved. Nexus will retry automatically when the connection is available.');scheduleRetry();}
   console.error('Nexus cloud sync failed',e);
