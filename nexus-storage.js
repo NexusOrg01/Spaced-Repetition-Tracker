@@ -2424,9 +2424,10 @@
 
     const entityRowsRemoved=await removeOwnerPrefix('workspaces',entityOwnerRecordPrefix(owner));
     const outboxRowsRemoved=await removeOwnerPrefix('outbox',entityOutboxPrefix(owner));
+    entityRecoveryLockedOwners.delete(owner);
     return {ownerId:owner,entityRowsRemoved,outboxRowsRemoved,
       manifestRemoved:removedMetadata.manifestRemoved,sequenceRemoved:removedMetadata.sequenceRemoved,
-      cursorRemoved:removedMetadata.cursorRemoved};
+      cursorRemoved:removedMetadata.cursorRemoved,recoveryRemoved:removedMetadata.recoveryRemoved};
   }
 
   function restoreNativeProperty() {
