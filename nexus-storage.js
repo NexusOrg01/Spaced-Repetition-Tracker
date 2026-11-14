@@ -844,7 +844,7 @@
        (pending&&(!recoveryIntentId||manifest.pendingRecoveryIntentId!==recoveryIntentId)))return null;
     const workspaceRevision=await readWorkspaceRevision(owner);
     if(!Number.isSafeInteger(workspaceRevision)||Number(sourceWorkspaceRevision)!==workspaceRevision)return null;
-    const prefix=entityRecordPrefix(owner,generation),upper=prefix+'\\uffff';
+    const prefix=entityRecordPrefix(owner,generation),upper=prefix+'\uffff';
     const keyRangeFactory=root&&root.IDBKeyRange;
     if(!keyRangeFactory||typeof keyRangeFactory.bound!=='function')return null;
     const collections=TRACKER_ENTITY_COLLECTIONS.concat(FEATURE_ENTITY_COLLECTIONS);
@@ -852,7 +852,7 @@
     let rowCountRead=0,trackerRoot=null,featureRoot=null,afterKey=null;
     while(true){
       if(!enabled||committedOwnerId!==owner)return null;
-      const range=keyRangeFactory.bound(afterKey?afterKey+'\\u0000':prefix,upper);
+      const range=keyRangeFactory.bound(afterKey?afterKey+'\u0000':prefix,upper);
       const page=await transaction([WORKSPACES],'readonly',(tx,set)=>{
         const request=tx.objectStore(WORKSPACES).getAll(range,ENTITY_BATCH_SIZE);
         request.onsuccess=()=>set(request.result||[]);
