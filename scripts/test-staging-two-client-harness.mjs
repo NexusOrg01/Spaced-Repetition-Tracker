@@ -4,9 +4,8 @@ import { resolve } from 'node:path';
 import vm from 'node:vm';
 
 const html=readFileSync(resolve('staging-test/two-client.html'),'utf8');
-const scripts=[...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(match=>match[1]);
-assert.equal(scripts.length,1,'the staging harness must contain exactly one inline script');
-const source=scripts[0];
+assert.match(html,/<script src="\.\/two-client\.js" defer><\/script>/,'the harness must load its external same-origin script');
+const source=readFileSync(resolve('staging-test/two-client.js'),'utf8');
 new vm.Script(source,{filename:'staging-test/two-client.html'});
 
 assert.match(source,/spaced-repetition-tracker-delta\.vercel\.app/,
