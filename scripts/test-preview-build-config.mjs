@@ -194,13 +194,13 @@ assert.doesNotMatch(cloudSyncSource, /(?:redirectTo|emailRedirectTo):\s*['"]http
    'the exact Netlify deploy preview may use the same explicit isolated-staging opt-in');
  assert.equal(resolveStagingEntityDeltaEnabled({ ...netlifyDeltaPreviewEnv, CONTEXT: 'production' }, deltaPreviewConfig), false,
    'Netlify production must never open the staging delta runtime');
- assert.match(renderConfigScript(deltaPreviewConfig, true), /window\\.NEXUS_ENTITY_DELTA_SYNC_STAGING=true/,
+ assert.match(renderConfigScript(deltaPreviewConfig, true), /window\.NEXUS_ENTITY_DELTA_SYNC_STAGING=true/,
    'the generated preview bootstrap must inject the enabled runtime gate');
- assert.match(renderConfigScript(deltaPreviewConfig, false), /window\\.NEXUS_ENTITY_DELTA_SYNC_STAGING=false/,
+ assert.match(renderConfigScript(deltaPreviewConfig, false), /window\.NEXUS_ENTITY_DELTA_SYNC_STAGING=false/,
    'the generated bootstrap must default the runtime gate to false');
- assert.match(renderConfigScript(deltaPreviewConfig), /window\\.NEXUS_ENTITY_DELTA_SYNC_STAGING=false/,
+ assert.match(renderConfigScript(deltaPreviewConfig), /window\.NEXUS_ENTITY_DELTA_SYNC_STAGING=false/,
    'omitting the runtime opt-in must preserve the default-off gate');
- assert.match(renderConfigScript(null, true), /window\\.NEXUS_ENTITY_DELTA_SYNC_STAGING=false/,
+ assert.match(renderConfigScript(null, true), /window\.NEXUS_ENTITY_DELTA_SYNC_STAGING=false/,
    'a missing Supabase config must prevent the runtime gate from opening');
 
 console.log('Preview-only Supabase configuration guard tests passed.');
