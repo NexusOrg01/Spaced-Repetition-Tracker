@@ -8,6 +8,7 @@ import { webcrypto } from 'node:crypto';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const source=readFileSync(resolve(root,'entity-delta-sync.js'),'utf8');
 const mergeSource=readFileSync(resolve(root,'workspace-sync-merge.js'),'utf8');
+const cloudSyncSource=readFileSync(resolve(root,'cloud-sync.js'),'utf8');
 const window={crypto:webcrypto,TextEncoder};
 const sandbox={window,Promise,Number,Object,Array,String,JSON,Error,Set,Math,setTimeout,TextEncoder,crypto:webcrypto};
 vm.createContext(sandbox);
@@ -739,4 +740,235 @@ function coordinatorHarness(options={}){
 }
 
 
-console.log('Nexus entity-delta client tests passed: feature gate, baseline verification, stable receipt retry, owner checks, conflict safety, and strict remote-page validation and bounded three-way recovery preparation.');
+
+const stagingSupabaseUrl='https://xuwfzibxhxzxxupprxsq.supabase.co';
+const stagingFunctionStart=cloudSyncSource.indexOf('async function runStagingEntityDeltaSync(');
+const stagingFunctionEnd=cloudSyncSource.indexOf('\nasync function upload(){',stagingFunctionStart);
+assert.ok(stagingFunctionStart>=0&&stagingFunctionEnd>stagingFunctionStart,
+  'cloud sync must expose an extractable staging-delta coordinator boundary for focused runtime tests');
+const stagingFunctionSource=cloudSyncSource.slice(stagingFunctionStart,stagingFunctionEnd);
+
+function makeStagingRuntimeHarness({
+  gate=false,preview=true,stagingUrl=stagingSupabaseUrl,recoveryIntent=null,
+  syncResult={ok:true,publishedCount:1},recoveryResult={ok:true,recovered:true},
+  missingChunkStorage=false
+}={}){
+  const calls={createClient:0,synchronize:null,recovery:null,cursorOwner:null,
+    localBaseOwner:null,pendingOwner:null,chunkWrite:null,localCommit:null,
+    renderCount:0,hubRenderCount:0,featureUpdate:null,fsrsSettings:null};
+  const client={name:'staging-test-client'};
+  const localStorage={getItem:key=>key==='owner-key'?'account-A':null};
+  const payload={state:{streams:[],subjects:[],topics:[],history:[],exams:[]},
+    featureState:{journal:[],papers:[],goals:[],studyLogs:[]}};
+  const cursor={snapshotUpdatedAt:'verified-snapshot-stamp',snapshotRevision:3};
+  const queue={
+    getBase(_local,owner){calls.localBaseOwner=owner;return {baseServerVersion:'base-stamp'};},
+    getPending(_local,owner){calls.pendingOwner=owner;return {pending:true};},
+    commitVerifiedEntityDeltaSnapshot(...args){calls.localCommit=args;return {ok:true};}
+  };
+  const storage={
+    async readWorkspaceEntityRecovery(owner){
+      assert.equal(owner,'account-A');
+      return recoveryIntent?{intent:recoveryIntent}:null;
+    },
+    async readWorkspaceEntityDeltaCursor(owner){
+      calls.cursorOwner=owner;
+      return {ok:true,cursor};
+    }
+  };
+  const window={
+    NEXUS_ENTITY_DELTA_SYNC_STAGING:gate,
+    NexusOfflineSyncQueue:queue,
+    NexusStorage:storage,
+    NexusEntityDeltaSync:{
+      createClient(options){
+        calls.createClient++;
+        calls.clientOptions=options;
+        return {
+          async synchronize(owner,syncOptions){
+            calls.synchronize={owner,options:syncOptions};
+            return syncResult;
+          },
+          async publishConflictRecovery(owner,recoveryOptions){
+            calls.recovery={owner,options:recoveryOptions};
+            return recoveryResult;
+          }
+        };
+      }
+    },
+    NexusNormalizeFeatureState:value=>({...value}),
+    NexusRepairCurriculumState:value=>({...value,repairedForTest:true}),
+    NexusSetFeatureState:(value,options)=>{calls.featureUpdate={value,options};},
+    NexusFSRS:{setSettings:(value,options)=>{calls.fsrsSettings={value,options};}},
+    NexusRenderHub:()=>{calls.hubRenderCount++;}
+  };
+  if(!missingChunkStorage){
+    window.NexusCloudChunkStorage={
+      async writeDeltaSnapshot(...args){
+        calls.chunkWrite=args;
+        return {verified:true,updated_at:'published-snapshot-stamp'};
+      }
+    };
+  }
+  const context={
+    window,client,session:{user:{id:'account-A'}},localStorage,OWNER_KEY:'owner-key',
+    STAGING_CONFIG:{url:stagingSupabaseUrl,key:'staging-test-key'},
+    config:()=>({url:stagingUrl}),
+    isPreviewDeploymentOrigin:()=>preview,
+    snapshot:()=>payload,
+    sameWorkspace:()=>true,
+    normalizeState:value=>({...value}),
+    state:null,ready:true,
+    renderAll:()=>{calls.renderCount++;},
+    document:{querySelector:()=>({id:'view-studyhub'})}
+  };
+  vm.createContext(context);
+  vm.runInContext(stagingFunctionSource,context,{filename:'cloud-sync-staging-delta-runtime.js'});
+  return {context,calls,client,localStorage,payload,run:context.runStagingEntityDeltaSync};
+}
+
+const stagingSignal={name:'controlled-preview-abort-signal'};
+const closedGate=makeStagingRuntimeHarness();
+const closedGateResult=await closedGate.run('account-A',stagingSignal);
+assert.equal(closedGateResult.skipped,true,'the cloud-sync integration must retain snapshot sync when its explicit opt-in is absent');
+assert.equal(closedGate.calls.createClient,0,'a closed feature gate must not instantiate the delta client');
+
+const pendingClosedGate=makeStagingRuntimeHarness({
+  gate:false,recoveryIntent:{intentId:'pending-recovery'}
+});
+const pendingClosedResult=await pendingClosedGate.run('account-A',stagingSignal);
+assert.equal(pendingClosedResult.blockedRecovery,true,
+  'a pending recovery journal must block the legacy writer when the staging gate is closed');
+assert.equal(pendingClosedResult.reason,'staging_recovery_journal_pending');
+assert.equal(pendingClosedGate.calls.createClient,0);
+
+const nonPreviewGate=makeStagingRuntimeHarness({gate:true,preview:false});
+assert.equal((await nonPreviewGate.run('account-A',stagingSignal)).skipped,true,
+  'the runtime gate must reject a production origin even when the build flag is true');
+assert.equal(nonPreviewGate.calls.createClient,0);
+
+const wrongProjectGate=makeStagingRuntimeHarness({
+  gate:true,stagingUrl:'https://unrelated-staging.supabase.co'
+});
+assert.equal((await wrongProjectGate.run('account-A',stagingSignal)).skipped,true,
+  'the runtime gate must reject any Supabase project other than the isolated staging project');
+assert.equal(wrongProjectGate.calls.createClient,0);
+
+const incompleteDependencies=makeStagingRuntimeHarness({gate:true,missingChunkStorage:true});
+await assert.rejects(
+  ()=>incompleteDependencies.run('account-A',stagingSignal),
+  /Staging entity-delta recovery dependencies are incomplete/,
+  'an opted-in but incomplete runtime must fail closed rather than falling through to snapshot upload'
+);
+
+const activeStaging=makeStagingRuntimeHarness({gate:true});
+const activeResult=await activeStaging.run('account-A',stagingSignal);
+assert.equal(activeResult.ok,true,'the preview gate should route an explicitly enabled staging account through the coordinator');
+assert.equal(activeResult.cursor,activeResult.cursor,'the result must include the persisted inbound/outbound cursor');
+assert.equal(activeResult.cursor.snapshotUpdatedAt,'verified-snapshot-stamp');
+assert.equal(activeStaging.calls.synchronize.owner,'account-A');
+assert.equal(activeStaging.calls.synchronize.options.maxRounds,20);
+assert.equal(activeStaging.calls.synchronize.options.maxGroups,20);
+assert.equal(activeStaging.calls.synchronize.options.maxBytes,1048576);
+assert.equal(activeStaging.calls.cursorOwner,'account-A');
+const wired=activeStaging.calls.clientOptions;
+assert.equal(wired.enabled,true);
+assert.equal(wired.client,activeStaging.client);
+assert.equal(wired.getActiveOwner(),'account-A');
+assert.equal(wired.getLocalOwner(),'account-A');
+assert.equal(wired.getLocalBase('account-A').baseServerVersion,'base-stamp');
+assert.equal(wired.getPendingSnapshot('account-A').pending,true);
+assert.equal(wired.getLocalWorkspace(),activeStaging.payload,
+  'the coordinator must read the active local compatibility workspace through the supplied accessor');
+
+const replacementWorkspace={
+  state:{streams:[{id:'stream-recovered'}]},
+  featureState:{fsrsSettings:{request_retention:0.91,maximum_interval:120}}
+};
+await wired.applyWorkspace(replacementWorkspace);
+assert.equal(activeStaging.context.state.repairedForTest,true,
+  'a published recovery candidate must be normalized before it is applied to the active view');
+assert.equal(activeStaging.context.ready,true);
+assert.equal(activeStaging.calls.renderCount,1);
+assert.equal(activeStaging.calls.hubRenderCount,1,
+  'a recovered Study Hub workspace must refresh its active view');
+assert.equal(activeStaging.calls.featureUpdate.options.persist,false);
+assert.equal(activeStaging.calls.featureUpdate.options.render,false);
+assert.equal(activeStaging.calls.fsrsSettings.value.request_retention,0.91);
+
+const snapshotCandidate={state:{streams:[]},featureState:{journal:[]}};
+const publicationSignal={name:'snapshot-publication-signal'};
+const publicationResult=await wired.publishSnapshot(
+  'account-A',snapshotCandidate,3,'base-stamp',publicationSignal
+);
+assert.equal(publicationResult.verified,true);
+assert.equal(activeStaging.calls.chunkWrite[0],activeStaging.client);
+assert.equal(activeStaging.calls.chunkWrite[1],'account-A');
+assert.equal(activeStaging.calls.chunkWrite[2],snapshotCandidate);
+assert.equal(activeStaging.calls.chunkWrite[3],3);
+assert.equal(activeStaging.calls.chunkWrite[4],'base-stamp');
+assert.equal(activeStaging.calls.chunkWrite[5],publicationSignal);
+
+const conflicts=[{entityId:'topic-1',reason:'same-field-edit'}];
+const recoveryMetadata={
+  baseServerVersion:'base-stamp',intentId:'recovery-intent-1',candidateDigest:'sha256-candidate'
+};
+const localCommitResult=await wired.commitLocalRecovery(
+  'account-A',snapshotCandidate,{updated_at:'published-snapshot-stamp'},conflicts,recoveryMetadata
+);
+assert.equal(localCommitResult.ok,true);
+assert.equal(activeStaging.calls.localCommit[0],activeStaging.localStorage);
+assert.equal(activeStaging.calls.localCommit[1],'account-A');
+assert.equal(activeStaging.calls.localCommit[2],snapshotCandidate);
+assert.equal(activeStaging.calls.localCommit[3],'published-snapshot-stamp');
+assert.equal(activeStaging.calls.localCommit[4],conflicts);
+assert.equal(activeStaging.calls.localCommit[5].baseServerVersion,'base-stamp');
+assert.equal(activeStaging.calls.localCommit[6].intentId,'recovery-intent-1');
+assert.equal(activeStaging.calls.localCommit[6].candidateDigest,'sha256-candidate');
+
+const pendingRecovery=makeStagingRuntimeHarness({
+  gate:true,recoveryIntent:{intentId:'recovery-intent-2',phase:'staged'}
+});
+const resumedRecovery=await pendingRecovery.run('account-A',stagingSignal);
+assert.equal(resumedRecovery.recovered,true,
+  'an existing journal must resume publication before any ordinary delta sync attempt');
+assert.equal(pendingRecovery.calls.synchronize,null);
+assert.equal(pendingRecovery.calls.recovery.owner,'account-A');
+assert.equal(pendingRecovery.calls.recovery.options.maxGroups,100);
+assert.equal(pendingRecovery.calls.recovery.options.maxBytes,8*1048576);
+
+const overlapRecovery=makeStagingRuntimeHarness({
+  gate:true,
+  syncResult:{ok:false,conflict:true,requiresSnapshotReconciliation:true,
+    reason:'local_and_remote_changes_overlap'}
+});
+const overlapResult=await overlapRecovery.run('account-A',stagingSignal);
+assert.equal(overlapResult.recovered,true,
+  'an overlap requiring three-way reconciliation must use the verified recovery publication path');
+assert.equal(overlapRecovery.calls.synchronize.owner,'account-A');
+assert.equal(overlapRecovery.calls.recovery.owner,'account-A');
+
+const snapshotOnlyServer=makeStagingRuntimeHarness({
+  gate:true,syncResult:{ok:true,skipped:true,mode:'snapshot'}
+});
+const snapshotFallbackResult=await snapshotOnlyServer.run('account-A',stagingSignal);
+assert.equal(snapshotFallbackResult.skipped,true);
+assert.equal(snapshotFallbackResult.reason,'legacy_snapshot_server',
+  'a snapshot-only server must return to the established compatibility snapshot path');
+
+const uploadStart=cloudSyncSource.indexOf('async function upload(){');
+const uploadDeltaCall=cloudSyncSource.indexOf(
+  'const deltaResult=await runStagingEntityDeltaSync(uploadUserId,uploadScope.signal);',uploadStart
+);
+const legacyQueueStart=cloudSyncSource.indexOf('let pending=null;',uploadDeltaCall);
+assert.ok(uploadStart>=0&&uploadDeltaCall>uploadStart&&legacyQueueStart>uploadDeltaCall,
+  'the ordinary upload path must invoke the staging coordinator before legacy snapshot queue processing');
+const uploadGateBlock=cloudSyncSource.slice(uploadDeltaCall,legacyQueueStart);
+assert.match(uploadGateBlock,/if\(deltaResult\.blockedRecovery\)\{[\s\S]*?return false;/,
+  'a pending recovery with the feature gate closed must stop the legacy snapshot writer');
+assert.match(uploadGateBlock,/if\(!deltaResult\.skipped\)\{[\s\S]*?return true;/,
+  'a completed delta sync must return before legacy snapshot upload can run');
+assert.ok(cloudSyncSource.indexOf('writeRemoteSnapshot(',legacyQueueStart)>legacyQueueStart,
+  'the unchanged compatibility snapshot writer must remain available after a skipped delta gate');
+
+console.log('Nexus entity-delta client and cloud-sync integration tests passed: feature gate, baseline verification, stable receipt retry, owner checks, conflict safety, and strict remote-page validation and bounded three-way recovery preparation.');
