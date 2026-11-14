@@ -1615,8 +1615,19 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   });
   assert.equal(begun.ok,true,'the recovery intent should be durably recorded');
   assert.equal(begun.intent.phase,'prepared');
-  const stagedResult=await loaded.api.migrateWorkspaceEntities(owner,candidateState,candidateFeatures,{
-    expectedRevision:loaded.api.getStatus().revision,
+  const preparedRestarted=loadApi(makeWindow(native,idb));
+  assert.equal(await preparedRestarted.api.bootstrap(),true,
+    'a restart after writing the prepared intent must restore storage safely');
+  assert.equal(preparedRestarted.api.getStatus().entityRecoveryLocked,true,
+    'a prepared recovery intent must restore the account write lock after restart');
+  await assert.rejects(preparedRestarted.api.syncWorkspaceEntities(owner,[]),/recovery is pending/,
+    'normal entity writes must remain blocked after restarting from the prepared phase');
+  assert.throws(()=>preparedRestarted.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(state)}
+  ]),/verified cloud recovery/,
+    'backup/restore-style managed writes must remain blocked while recovery is prepared');
+  const stagedResult=await preparedRestarted.api.migrateWorkspaceEntities(owner,candidateState,candidateFeatures,{
+    expectedRevision:preparedRestarted.api.getStatus().revision,
     deferActivation:true,recoveryIntentId:intentId
   });
   assert.equal(stagedResult.staged,true,'the replacement generation should be staged without activation');
@@ -1635,11 +1646,20 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const restarted=loadApi(makeWindow(native,idb));
   assert.equal(await restarted.api.bootstrap(),true,'a new page context should restore the staged recovery lock');
   assert.equal(restarted.api.getStatus().entityRecoveryLocked,true,
-    'the recovery lock must be reconstructed from the durable journal after restart');
+    'the recovery lock must be reconstructed from the durable staged journal after restart');
+  await assert.rejects(restarted.api.syncWorkspaceEntities(owner,[]),/recovery is pending/,
+    'the staged recovery lock must continue blocking entity writes after restart');
   const publication={verified:true,updated_at:'recovered-snapshot-stamp',
     snapshotRevision:2,headRevision:3,compactedThroughRevision:2,storageMode:'jsonb'};
-  const marked=await loaded.api.markWorkspaceEntityRecoveryPublished(owner,intentId,publication);
+  const marked=await restarted.api.markWorkspaceEntityRecoveryPublished(owner,intentId,publication);
   assert.equal(marked.ok,true);
+  const publishedRestarted=loadApi(makeWindow(native,idb));
+  assert.equal(await publishedRestarted.api.bootstrap(),true,
+    'a restart after verified publication must restore storage safely');
+  assert.equal(publishedRestarted.api.getStatus().entityRecoveryLocked,true,
+    'a published recovery journal must keep the account locked until the atomic local commit');
+  await assert.rejects(publishedRestarted.api.syncWorkspaceEntities(owner,[]),/recovery is pending/,
+    'published-but-uncommitted recovery must continue blocking ordinary entity writes');
   const entries=[
     {key:'recall.study.tracker.v1',value:JSON.stringify(candidateState)},
     {key:'recall.study.features.v1',value:JSON.stringify(candidateFeatures)},
@@ -1648,17 +1668,17 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     {key:'nexus.test.recovery.stamp',value:JSON.stringify({[owner]:publication.updated_at})},
     {key:'nexus.test.recovery.conflicts',value:JSON.stringify({[owner]:[{conflicts:[{path:'topic'}]}]})}
   ];
-  const committed=await loaded.api.commitWorkspaceEntityRecovery(owner,intentId,entries,digest);
-  assert.equal(committed.ok,true,'the durable recovery commit should succeed');
+  const committed=await publishedRestarted.api.commitWorkspaceEntityRecovery(owner,intentId,entries,digest);
+  assert.equal(committed.ok,true,'the durable recovery commit should succeed after the published-phase restart');
   assert.equal(committed.alreadyCommitted,false);
-  assert.equal(loaded.api.getStatus().entityRecoveryLocked,false,
+  assert.equal(publishedRestarted.api.getStatus().entityRecoveryLocked,false,
     'the local recovery lock must only release after the atomic commit');
-  const activeAfter=await loaded.api.readWorkspaceEntities(owner);
+  const activeAfter=await publishedRestarted.api.readWorkspaceEntities(owner);
   assert.equal(activeAfter.generation,staged.generation,'the staged entity generation should become active atomically');
   assert.equal(activeAfter.state.topics[0].name,'Merged recovery');
-  assert.equal(JSON.parse(loaded.context.window.localStorage.getItem('recall.study.features.v1')).journal[0].id,
+  assert.equal(JSON.parse(publishedRestarted.context.window.localStorage.getItem('recall.study.features.v1')).journal[0].id,
     'recovery-journal','the compatibility Study Hub snapshot must be part of the same commit');
-  const cursor=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  const cursor=await publishedRestarted.api.readWorkspaceEntityDeltaCursor(owner);
   assert.equal(cursor.ok,true);
   assert.equal(cursor.cursor.generation,staged.generation);
   assert.equal(cursor.cursor.publishRevision,2);
@@ -1666,12 +1686,12 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(cursor.cursor.snapshotUpdatedAt,'recovered-snapshot-stamp');
   assert.equal(cursor.cursor.requiresPull,true,
     'the cursor must retain the later remote head for the next bounded pull');
-  assert.equal(await loaded.api.readWorkspaceEntityRecovery(owner),null,
+  assert.equal(await publishedRestarted.api.readWorkspaceEntityRecovery(owner),null,
     'the pending recovery intent must be removed only after the atomic local commit');
-  const replay=await loaded.api.commitWorkspaceEntityRecovery(owner,intentId,entries,digest);
+  const replay=await publishedRestarted.api.commitWorkspaceEntityRecovery(owner,intentId,entries,digest);
   assert.equal(replay.ok,true);
   assert.equal(replay.alreadyCommitted,true,
     'a retry after local commit must confirm the completion receipt without applying a second transaction');
 }
 
-console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, delta cursor receipt atomicity, clear scoping, failed-write recovery, and account-handoff isolation.');
+console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, delta cursor receipt atomicity, recovery journal restart at prepared/staged/published phases, recovery write locks, failed-write recovery, and account-handoff isolation.');
