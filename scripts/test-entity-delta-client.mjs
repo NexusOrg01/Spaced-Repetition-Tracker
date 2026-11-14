@@ -726,7 +726,7 @@ function coordinatorHarness(options={}){
   assert.equal(migrations,1,'the candidate generation should be staged exactly once');
   assert.equal(localCommits,0,'an unverified/ambiguous write must not advance the local merge base');
   const second=await api.publishConflictRecovery('account-A');
-  assert.equal(second.ok,true,'a retry should verify the exact already-published snapshot and finish locally');
+  assert.equal(second.ok,true,'a retry should verify the exact already-published snapshot and finish locally: '+JSON.stringify(second));
   assert.equal(second.recovered,true);
   assert.equal(second.snapshotRevision,1);
   assert.equal(migrations,1,'a staged generation must be reused rather than rebuilt on retry');
