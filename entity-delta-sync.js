@@ -413,7 +413,70 @@
       }
     }
 
-    return Object.freeze({readRemotePage,applyRemotePage,publishPending});
+    async function synchronize(ownerId,syncOptions={}){
+      if(!enabled)return {ok:true,skipped:true,reason:'feature_disabled'};
+      const owner=String(ownerId||'').trim();
+      if(!owner)return {ok:false,reason:'invalid_owner'};
+      const maxRounds=Math.max(1,Math.min(50,Math.floor(Number(syncOptions.maxRounds)||20)));
+      const maxGroups=Math.max(1,Math.min(100,Math.floor(Number(syncOptions.maxGroups)||20)));
+      const maxBytes=Math.max(1024,Math.min(MAX_BYTES,Math.floor(Number(syncOptions.maxBytes)||MAX_BYTES)));
+      let appliedCount=0,publishedCount=0,acknowledgedCount=0;
+      for(let round=0;round<maxRounds;round++){
+        const pull=await applyRemotePage(owner,{limitGroups:1,maxBytes});
+        if(pull&&pull.skipped)return {...pull,rounds:round+1};
+        if(!pull||pull.ok!==true){
+          if(pull&&pull.reason==='local_outbox_pending'){
+            return {ok:false,conflict:true,requiresSnapshotReconciliation:true,
+              reason:'local_and_remote_changes_overlap',appliedCount,publishedCount,
+              acknowledgedCount,rounds:round+1};
+          }
+          return {...(pull||unavailable('remote_pull_unavailable')),appliedCount,
+            publishedCount,acknowledgedCount,rounds:round+1};
+        }
+        const applied=Number(pull.appliedCount)||0;
+        appliedCount+=applied;
+        if(pull.requiresPull===true||pull.morePending===true){
+          if(applied<1)return {ok:false,retryable:true,reason:'remote_pull_made_no_progress',
+            appliedCount,publishedCount,acknowledgedCount,rounds:round+1};
+          continue;
+        }
+        const push=await publishPending(owner,{maxGroups,maxBytes});
+        if(!push||push.ok!==true){
+          if(push&&push.conflict){
+            return {...push,requiresSnapshotReconciliation:true,appliedCount,
+              publishedCount:publishedCount+(Number(push.publishedCount)||0),
+              acknowledgedCount:acknowledgedCount+(Number(push.acknowledgedCount)||0),
+              rounds:round+1};
+          }
+          if(push&&push.requiresPull&&!push.morePending){
+            continue;
+          }
+          return {...(push||unavailable('local_publish_unavailable')),appliedCount,
+            publishedCount,acknowledgedCount,rounds:round+1};
+        }
+        const published=Number(push.publishedCount)||0;
+        publishedCount+=published;
+        acknowledgedCount+=Number(push.acknowledgedCount)||0;
+        if(push.requiresPull===true&&push.morePending===true){
+          return {ok:false,conflict:true,requiresSnapshotReconciliation:true,
+            reason:'local_and_remote_changes_overlap_after_partial_publish',
+            appliedCount,publishedCount,acknowledgedCount,rounds:round+1};
+        }
+        if(push.requiresPull===true||push.morePending===true){
+          if(published<1&&!push.requiresPull){
+            return {ok:false,retryable:true,reason:'local_publish_made_no_progress',
+              appliedCount,publishedCount,acknowledgedCount,rounds:round+1};
+          }
+          continue;
+        }
+        return {ok:true,appliedCount,publishedCount,acknowledgedCount,rounds:round+1,
+          throughSequence:push.throughSequence};
+      }
+      return {ok:false,retryable:true,reason:'delta_sync_round_limit',
+        appliedCount,publishedCount,acknowledgedCount,rounds:maxRounds};
+    }
+
+    return Object.freeze({readRemotePage,applyRemotePage,publishPending ,synchronize});
   }
 
   root.NexusEntityDeltaSync=Object.freeze({createClient,validateRemotePage});
