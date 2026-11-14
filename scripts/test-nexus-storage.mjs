@@ -1522,9 +1522,9 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(first.cursor.requiresPull,true);
   assert.equal(first.cursor.acknowledgedSequence,0,
     'remote application must not move the independent local outbox acknowledgement sequence');
-  assert.deepEqual(first.workspace.state.topics.map(row=>row.id),['apply-topic-new']);
+  assert.equal(JSON.stringify(first.workspace.state.topics.map(row=>row.id)),JSON.stringify(['apply-topic-new']));
   assert.equal(first.workspace.state.settings.theme,'dark');
-  assert.deepEqual(first.workspace.featureState.journal.map(row=>row.id),['apply-journal-new']);
+  assert.equal(JSON.stringify(first.workspace.featureState.journal.map(row=>row.id)),JSON.stringify(['apply-journal-new']));
   assert.equal(loaded.context.window.localStorage.getItem('recall.study.tracker.v1'),
     JSON.stringify(first.workspace.state),'the compatibility tracker snapshot must refresh from the committed entity generation');
   assert.equal(loaded.context.window.localStorage.getItem('recall.study.features.v1'),
@@ -1539,7 +1539,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(second.ok,true);
   assert.equal(second.cursor.publishRevision,2);
   assert.equal(second.cursor.requiresPull,false);
-  assert.deepEqual(second.workspace.state.topics,[]);
+  assert.equal(JSON.stringify(second.workspace.state.topics),'[]');
 
   const local=await loaded.api.writeWorkspaceEntityChanges(owner,[
     {collection:'topics',id:'apply-local-pending',operation:'put',position:null,
@@ -1582,7 +1582,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(cursor.cursor.publishRevision,0,
     'a failed remote transaction must leave the inbound cursor unchanged');
   const workspace=await loaded.api.readWorkspaceEntities(owner);
-  assert.deepEqual(workspace.state.streams,[],
+  assert.equal(JSON.stringify(workspace.state.streams),'[]',
     'a failed remote transaction must leave the active entity generation unchanged');
 }
 
