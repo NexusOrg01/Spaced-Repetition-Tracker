@@ -339,12 +339,17 @@ function remoteOperation(revision,id){
 }
 function coordinatorHarness(options={}){
   const owner='account-A',activeOwner={value:owner};
-  const state={mode:options.mode||'delta',protocol_version:1,head_revision:(options.remoteGroups||[]).length,
-    snapshot_revision:0,compacted_through_revision:0,snapshot_updated_at:'snapshot-stamp'};
+  const state={mode:options.mode||'delta',protocol_version:1,
+    head_revision:Number(options.headRevision??(options.remoteGroups||[]).length),
+    snapshot_revision:Number(options.snapshotRevision??0),
+    compacted_through_revision:Number(options.compactedThroughRevision??0),
+    snapshot_updated_at:'snapshot-stamp'};
   const remoteGroups=(options.remoteGroups||[]).map(group=>({...group,changes:group.changes.map(change=>({...change}))}));
   const outbox=(options.localGroups||[]).map(group=>({...group,changes:group.changes.map(change=>({...change}))}));
-  let cursor={ownerId:owner,generation:'generation-A',workspaceRevision:1,publishRevision:0,
-    acknowledgedSequence:0,remoteHeadRevision:0,snapshotUpdatedAt:'snapshot-stamp',requiresPull:false};
+  const initialPublishRevision=Number(options.initialPublishRevision??0);
+  let cursor={ownerId:owner,generation:'generation-A',workspaceRevision:2,publishRevision:initialPublishRevision,
+    acknowledgedSequence:0,remoteHeadRevision:initialPublishRevision,
+    snapshotUpdatedAt:'snapshot-stamp',requiresPull:false};
   const published=[],applied=[],acknowledgements=[],calls=[];
   const storage={
     async readWorkspaceEntityDeltaCursor(){
@@ -415,7 +420,8 @@ function coordinatorHarness(options={}){
   };
   const api=factory({enabled:true,client,storage,getActiveOwner:()=>activeOwner.value,
     getLocalOwner:()=>owner,getLocalBase:async()=>base,getLocalWorkspace:async()=>payload,
-    getPendingSnapshot:async()=>null,sameWorkspace:async()=>true});
+    getPendingSnapshot:async()=>options.pendingSnapshot||null,sameWorkspace:async()=>true,
+    compactSnapshot:options.compactSnapshot});
   return {api,state,cursor:()=>({...cursor}),published,applied,acknowledgements,calls};
 }
 
@@ -459,6 +465,42 @@ function coordinatorHarness(options={}){
   assert.equal(result.skipped,true);
   assert.equal(result.mode,'snapshot','snapshot-mode accounts must stay on the legacy snapshot protocol');
   assert.equal(h.calls.some(call=>call.name==='nexus_publish_entity_operation'),false);
+}
+
+{
+  let compactCalls=0;
+  const h=coordinatorHarness({
+    headRevision:250,snapshotRevision:0,compactedThroughRevision:0,initialPublishRevision:250,
+    compactSnapshot:async(owner,options)=>{
+      compactCalls++;
+      assert.equal(owner,'account-A');
+      assert.equal(options.maxGroups,100);
+      assert.equal(options.maxBytes,8*1048576);
+      return {ok:true,recovered:true,snapshotRevision:250,headRevision:250,
+        compaction:{ok:false,pending:true,reason:'compaction_permission_not_enabled'}};
+    }
+  });
+  const result=await h.api.synchronize('account-A',{maxRounds:5,snapshotCompactionThreshold:250});
+  assert.equal(result.ok,true,'idle sync should remain successful when checkpointing is deferred');
+  assert.equal(compactCalls,1,'a fully reconciled delta history at the threshold should request one snapshot checkpoint');
+  assert.equal(result.snapshotCompaction.completed,true,
+    'successful checkpoint publication should be surfaced to the sync caller');
+  assert.equal(result.snapshotCompaction.snapshotPublished,true);
+  assert.equal(result.snapshotCompaction.cleanupPending,true,
+    'the checkpoint must disclose that physical log cleanup remains pending');
+  assert.equal(result.snapshotCompaction.cleanup.reason,'compaction_permission_not_enabled');
+}
+
+{
+  let compactCalls=0;
+  const h=coordinatorHarness({
+    headRevision:249,snapshotRevision:0,initialPublishRevision:249,
+    compactSnapshot:async()=>{compactCalls++;return {ok:true};}
+  });
+  const result=await h.api.synchronize('account-A',{maxRounds:5,snapshotCompactionThreshold:250});
+  assert.equal(result.ok,true);
+  assert.equal(compactCalls,0,'the client must not checkpoint before the configured operation-history threshold');
+  assert.equal(result.snapshotCompaction,null);
 }
 
 
