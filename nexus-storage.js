@@ -692,7 +692,9 @@
       const request=tx.objectStore('migrationMeta').get(manifestKey);
       request.onsuccess=()=>set(request.result||null);
     });
-    if(deferActivation&&(!recoveryIntentId||!previous||previous.status!=='ready'||!previous.activeGeneration||previous.pendingGeneration||previous.pendingRecoveryIntentId)){
+    if(deferActivation&&(!recoveryIntentId||!previous||previous.status!=='ready'||!previous.activeGeneration||
+       (previous.pendingGeneration&&previous.pendingRecoveryIntentId!==recoveryIntentId)||
+       (!previous.pendingGeneration&&previous.pendingRecoveryIntentId&&previous.pendingRecoveryIntentId!==recoveryIntentId))){
       throw new Error('A verified active entity generation and recovery intent are required before staging snapshot recovery.');
     }
     await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
@@ -2113,10 +2115,12 @@
     if(!intentId||intentId.length>160||!/^[a-f0-9]{64}$/i.test(candidateDigest)||!baseUpdatedAt||
        !Number.isSafeInteger(expectedHeadRevision)||expectedHeadRevision<0||
        !Number.isSafeInteger(snapshotRevision)||snapshotRevision<0||snapshotRevision>expectedHeadRevision||
-       !Array.isArray(input.conflicts)||input.conflicts.length>10000)
+       !Array.isArray(input.conflicts)||input.conflicts.length>10000||
+       (input.payloadMetadata!==undefined&&(!input.payloadMetadata||typeof input.payloadMetadata!=='object'||Array.isArray(input.payloadMetadata))))
       throw new Error('The entity-delta recovery intent is invalid.');
-    const conflictsJson=JSON.stringify(input.conflicts);
-    if(conflictsJson.length>5*1024*1024)throw new Error('The recovery conflict archive exceeds the safe size limit.');
+    const conflictsJson=JSON.stringify(input.conflicts),payloadMetadata=JSON.stringify(input.payloadMetadata||{});
+    if(conflictsJson.length>5*1024*1024||payloadMetadata.length>64*1024)
+      throw new Error('The recovery intent metadata exceeds the safe size limit.');
     await entitySyncSerial.catch(()=>undefined);
     const manifestKey=entityManifestKey(owner),intentKey=entityDeltaRecoveryKey(owner);
     return transaction(['migrationMeta'],'readwrite',(tx,set)=>{
@@ -2136,7 +2140,8 @@
         }
         const intent={key:intentKey,ownerId:owner,intentId,phase:'prepared',activeGeneration:manifest.activeGeneration,
           baseUpdatedAt,expectedHeadRevision,snapshotRevision,candidateDigest,
-          conflicts:JSON.parse(conflictsJson),createdAt:timestamp(),updatedAt:timestamp()};
+          conflicts:JSON.parse(conflictsJson),payloadMetadata:JSON.parse(payloadMetadata),
+          createdAt:timestamp(),updatedAt:timestamp()};
         store.put(intent);set({ok:true,created:true,intent});
       };
       const m=store.get(manifestKey),i=store.get(intentKey);
