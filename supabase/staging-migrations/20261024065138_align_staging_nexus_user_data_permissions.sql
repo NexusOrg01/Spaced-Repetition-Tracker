@@ -18,7 +18,7 @@ GRANT ALL PRIVILEGES ON TABLE public.nexus_user_data TO service_role;
 -- initPlan form for auth.uid() to avoid per-row re-evaluation.
 ALTER POLICY "Users can read own Nexus backup"
   ON public.nexus_user_data TO authenticated
-  USING ((select auth.uid()));
+  USING ((select auth.uid()) = user_id);
 
 ALTER POLICY "Users can insert own Nexus backup"
   ON public.nexus_user_data TO authenticated
