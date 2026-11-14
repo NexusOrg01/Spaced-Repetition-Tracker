@@ -12,7 +12,7 @@ This is an operator-run integration test for the isolated Supabase project **nex
 
 ## 1. Create disposable accounts
 
-Run **supabase/tests/nexus_entity_delta_two_client_setup.sql** once in the staging SQL editor. It creates two confirmed users with empty version-4 compatibility snapshots and outputs the two emails/passwords. Use only those credentials in the preview harness. The reserved prefix is **nexus-3-4-two-client-**.
+Run **supabase/tests/nexus_entity_delta_two_client_setup.sql** once in the staging SQL editor. It creates two confirmed email/password users, their matching `auth.identities` email-provider rows, empty version-4 compatibility snapshots, and outputs the two emails/passwords. Use only those credentials in the preview harness. The reserved prefix is **nexus-3-4-two-client-**.
 
 Do not use personal accounts, real email addresses, or an existing staging account.
 
