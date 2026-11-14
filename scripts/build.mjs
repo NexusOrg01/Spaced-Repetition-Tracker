@@ -51,10 +51,23 @@ export function resolvePreviewConfig(env) {
   return { url: url.origin, key };
 }
 
-export function renderConfigScript(config) {
-  return "/* Generated at build time; do not edit or commit project credentials. */\n" +
-    "(function(){'use strict';const config=" + JSON.stringify(config) +
-    ";if(!config)return;try{localStorage.setItem('nexus.cloud.config.v1',JSON.stringify(config));}catch(_){}})();\n";
+export function resolveStagingEntityDeltaEnabled(env, config) {
+  const vercelPreview = env.VERCEL_ENV === 'preview' &&
+    String(env.VERCEL_GIT_COMMIT_REF || '') === 'android/capacitor-multistore-foundation';
+  const netlifyDeployPreview = env.CONTEXT === 'deploy-preview' &&
+    String(env.BRANCH || '') === 'android/capacitor-multistore-foundation';
+  return (vercelPreview || netlifyDeployPreview) &&
+    env.NEXUS_ENTITY_DELTA_SYNC_STAGING === 'true' &&
+    !!config && config.url === 'https://xuwfzibxhxzxxupprxsq.supabase.co';
+}
+
+export function renderConfigScript(config, enableStagingEntityDelta = false) {
+  const enabled = enableStagingEntityDelta === true && !!config &&
+    config.url === 'https://xuwfzibxhxzxxupprxsq.supabase.co';
+  return "/* Generated at build time; do not edit or commit project credentials. */\\n" +
+    "(function(){'use strict';window.NEXUS_ENTITY_DELTA_SYNC_STAGING=" + String(enabled) +
+    ";const config=" + JSON.stringify(config) +
+    ";if(!config)return;try{localStorage.setItem('nexus.cloud.config.v1',JSON.stringify(config));}catch(_){}})();\\n";
 }
 
 
@@ -131,10 +144,15 @@ async function copySiteFiles() {
     await cp(join(root, entry.name), join(output, entry.name), { recursive: true });
   }
   const config = resolvePreviewConfig(process.env);
-  await writeFile(join(output, 'nexus-build-config.js'), renderConfigScript(config), 'utf8');
+  const stagingEntityDeltaEnabled = resolveStagingEntityDeltaEnabled(process.env, config);
+  await writeFile(join(output, 'nexus-build-config.js'),
+    renderConfigScript(config, stagingEntityDeltaEnabled), 'utf8');
   assert.ok(await readdir(output).then(items => items.includes('index.html')), 'static build must include index.html');
   if (config) {
     console.log('Built isolated Supabase staging config for the designated Preview branch.');
+    if (stagingEntityDeltaEnabled) {
+      console.log('Explicit Phase 3.4 entity-delta opt-in is enabled for the isolated staging preview.');
+    }
   } else {
     console.log('Built static Nexus output without injecting staging credentials.');
     if (PREVIEW_BRANCHES.has(String(process.env.CF_PAGES_BRANCH || '').trim())) {
