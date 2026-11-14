@@ -37,6 +37,9 @@ function withFacadeAtomic(storage,callback){
  const s=new MemoryStorage({[queue.OWNER]:'account-A'});queue.rememberStamp(s,'account-A','rev-1');
  const first=queue.commitWorkspace(s,[{key:stateKey,value:JSON.stringify(payload('first').state)}],payload('first'));
  assert.equal(first.queued,true);assert.equal(first.operation.ownerUserId,'account-A');assert.equal(first.operation.entityType,'workspace');assert.equal(first.operation.operationType,'snapshot');assert.equal(first.operation.schemaVersion,1);assert.equal(first.operation.baseServerVersion,'rev-1');assert.match(first.operation.operationId,/^nexus-op-[0-9a-f-]{36}$/,'operation IDs must be generated from cryptographically secure UUIDs');assert.equal(queue.getPending(s,'account-A').operationId,first.operation.operationId);assert.equal(queue.getPending(s,'account-B'),null);
+ const pendingRead=queue.getPending(s,'account-A');
+ pendingRead.payload.state.topics[0].id='mutated-read-result';
+ assert.equal(queue.getPending(s,'account-A').payload.state.topics[0].id,'first','a returned pending snapshot must be detached from persisted queue bytes even without a second deep clone');
 }
 {
  const s=new MemoryStorage({[queue.OWNER]:'account-A'});queue.rememberStamp(s,'account-A','rev-1');
@@ -86,6 +89,9 @@ function withFacadeAtomic(storage,callback){
  queue.rememberBase(s,'account-A',payload('baseline'),'revision-base-1');
  assert.equal(queue.getBase(s,'account-A').state.topics[0].id,'baseline','each account needs its last confirmed workspace base');
  assert.equal(queue.getBase(s,'account-A').serverVersion,'revision-base-1','a base must retain the cloud revision it represents');
+ const baseRead=queue.getBase(s,'account-A');
+ baseRead.state.topics[0].id='mutated-base-read';
+ assert.equal(queue.getBase(s,'account-A').state.topics[0].id,'baseline','a returned merge base must be detached from persisted bytes even without a second deep clone');
  assert.equal(queue.getBase(s,'account-B'),null,'merge bases must never cross account boundaries');
  queue.rememberBase(s,'account-B',payload('other'));
  assert.equal(queue.getBase(s,'account-A').state.topics[0].id,'baseline');
@@ -116,6 +122,8 @@ function withFacadeAtomic(storage,callback){
  assert.equal(queue.getBase(s,'account-A').serverVersion,'rev-2');
  assert.equal(queue.getConflictHistory(s,'account-A')[0].conflicts[0].remote,'cloud','conflict alternatives must commit in the same transaction as the merge');
  assert.equal(result.archivedConflicts,1);
+ result.operation.payload.state.topics[0].id='mutated-returned-operation';
+ assert.equal(queue.getPending(s,'account-A').payload.state.topics[0].id,'merged','mutating the returned rebase operation must not alter committed storage bytes');
 }
 {
  const s=new MemoryStorage({[queue.OWNER]:'account-A',[stateKey]:'pre-merge-state',['recall.study.features.v1']:'pre-merge-features'});
@@ -264,4 +272,100 @@ function withFacadeAtomic(storage,callback){
  assert.throws(()=>queue.forgetAccount(s,'account-A',[{key:stateKey,value:null}]),/Both tracker and Study Hub/,'account cleanup must require both workspace parts before committing');
  assert.equal(s.getItem(stateKey),null,'incomplete account cleanup must not partially delete tracker data');
 }
+{
+ const s=new MemoryStorage({[queue.OWNER]:'oversized-account'});
+ const large=payload('oversized');
+ const largeCharacters=25*1024*1024+1024;
+ large.featureState.largeTestFixture='x'.repeat(largeCharacters);
+ queue.commitWorkspace(s,[
+  {key:stateKey,value:JSON.stringify(large.state)},
+  {key:'recall.study.features.v1',value:JSON.stringify(large.featureState)}
+ ],large,{returnOperationPayload:false});
+ const savedQueue=s.getItem(queue.KEY);
+ assert.ok(savedQueue.length>25*1024*1024,'the regression fixture must exceed the compact decoder safety limit');
+ assert.ok(!savedQueue.startsWith('NEXUS_LZW_UTF8_V1:'),
+  'oversized queue snapshots must remain plain JSON instead of creating an unreadable compact stream');
+ const restored=queue.getPending(s,'oversized-account');
+ assert.equal(restored.payload.featureState.largeTestFixture.length,largeCharacters,
+  'the full oversized queue must remain readable and preserve its payload');
+}
+
+{
+ // Simulate an older compact queue whose expansion exceeds the decoder limit.
+ // Sequential LZW dictionary references grow the decoded byte count without
+ // requiring a 25 MiB compressed test fixture.
+ const packed= 'NEXUS_LZW_UTF8_V1:' + String.fromCharCode(97,...Array.from({length:8000},(_,i)=>256+i));
+ const s=new MemoryStorage({[queue.OWNER]:'legacy-large-account',[queue.KEY]:packed});
+ assert.throws(
+  ()=>queue.getPending(s,'legacy-large-account'),
+  error=>error&&error.code==='NEXUS_OFFLINE_QUEUE_TOO_LARGE',
+  'a legacy over-limit compact queue must be classified distinctly from corruption'
+ );
+ queue.commitWorkspace(s,[
+  {key:stateKey,value:JSON.stringify(payload('rebuilt').state)},
+  {key:'recall.study.features.v1',value:JSON.stringify(payload('rebuilt').featureState)}
+ ],payload('rebuilt'),{returnOperationPayload:false});
+ assert.equal(s.getItem(queue.QUARANTINE),packed,
+  'the unreadable old queue must be retained in the local recovery slot');
+ assert.equal(queue.getPending(s,'legacy-large-account').payload.state.topics[0].id,'rebuilt',
+  'a fresh queue built from the current local workspace must remain readable');
+}
+
+{
+ const previousWindow=globalThis.window,calls=[];
+ const s=new MemoryStorage({[queue.OWNER]:'account-A'});
+ const base=payload('recovery-base'),local=payload('recovery-pending'),candidate=payload('recovery-candidate');
+ queue.rememberStamp(s,'account-A','rev-base');
+ queue.rememberBase(s,'account-A',base,'rev-base');
+ const pending=queue.commitWorkspace(s,[
+  {key:stateKey,value:JSON.stringify(local.state)},
+  {key:'recall.study.features.v1',value:JSON.stringify(local.featureState)}
+ ],local,{baseServerVersion:'rev-base'});
+ assert.equal(pending.queued,true);
+ const conflicts=[{path:'state.topics[recovery-candidate].name',local:'Candidate',remote:'Other device'}];
+ globalThis.window={NexusStorage:{
+  commitWorkspaceEntityRecovery(owner,intentId,entries,digest){
+   calls.push({owner,intentId,entries,digest});
+   for(const entry of entries)s.setItem(entry.key,entry.value);
+   return Promise.resolve({ok:true,alreadyCommitted:false,generation:'generation-recovered',
+    cursor:{publishRevision:7,snapshotUpdatedAt:'rev-recovered'}});
+  },
+  readWorkspaceEntityDeltaCursor(owner){
+   return Promise.resolve({ok:true,cursor:{generation:'generation-recovered',
+    publishRevision:7,snapshotUpdatedAt:'rev-recovered'}});
+  }
+ }};
+ try{
+  const result=await queue.commitVerifiedEntityDeltaSnapshot(s,'account-A',candidate,
+   'rev-recovered',conflicts,{baseServerVersion:'rev-base'},
+   {intentId:'recovery-queue-test',candidateDigest:'b'.repeat(64)});
+  assert.equal(result.ok,true);
+  assert.equal(result.generation,'generation-recovered');
+  assert.equal(calls.length,1,'queue and base state should use one durable storage transaction');
+  assert.equal(calls[0].owner,'account-A');
+  assert.equal(calls[0].entries.length,6,'workspace, queue, base, stamp and conflict history belong in one transaction');
+  assert.equal(queue.getPending(s,'account-A'),null,
+   'the pre-recovery outbox snapshot must be archived, not left pending against the new base');
+  const storedQueue=JSON.parse(s.getItem(queue.KEY));
+  assert.equal(storedQueue.pending['account-A'].status,'archived');
+  assert.equal(storedQueue.recoveryCommits[0].candidateDigest,'b'.repeat(64));
+  assert.deepEqual(queue.getBase(s,'account-A'),{
+   state:candidate.state,featureState:candidate.featureState,serverVersion:'rev-recovered'
+  });
+  assert.equal(queue.getStamp(s,'account-A'),'rev-recovered');
+  assert.equal(queue.getConflictHistory(s,'account-A').length,1,
+   'the losing alternatives must remain downloadable after the new base is committed');
+  const replay=await queue.commitVerifiedEntityDeltaSnapshot(s,'account-A',candidate,
+   'rev-recovered',conflicts,{baseServerVersion:'rev-base'},
+   {intentId:'recovery-queue-test',candidateDigest:'b'.repeat(64)});
+  assert.equal(replay.alreadyCommitted,true,
+   'a replayed recovery completion marker must not repeat the underlying transaction');
+  assert.equal(replay.generation,'generation-recovered',
+   'the replayed completion result must recover its generation from the durable cursor');
+  assert.equal(calls.length,1);
+ }finally{
+  if(previousWindow===undefined)delete globalThis.window;else globalThis.window=previousWindow;
+ }
+}
+
 console.log('Account-bound offline sync queue tests passed.');

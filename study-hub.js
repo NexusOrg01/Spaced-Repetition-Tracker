@@ -5,7 +5,7 @@
   const hubEl=id=>document.getElementById(id);
   const freshFeatureState=()=>({version:1,fsrsSettings:window.NexusFSRS&&typeof window.NexusFSRS.settings==='function'?window.NexusFSRS.settings():{request_retention:0.9,maximum_interval:120,enable_fuzz:false,w:null},settings:{dailyMinutes:90,sessionMinutes:25,scheduler:'classic',weeklyReviewGoal:100,backlogDays:7,reminders:false,reminderTime:'08:00',maxInterval:120,finalRevision:false,workloadDays:7},syllabusTargets:{},taskChecks:{},journal:[],papers:[],goals:[],studyLogs:[],selectedTopicIds:[],lastBackupAt:'',lastReminderAt:'',focusStartedAt:null,focusActualStartedAt:null,focusPausedAt:null,focusTopicId:'',focusSubjectId:''});
   function loadFeatureState(){try{const x=JSON.parse(localStorage.getItem(FEATURE_KEY)||'null');if(!x||typeof x!=='object'||Array.isArray(x))return freshFeatureState();const d=freshFeatureState(),focus=window.NexusBackupRestoreUtils.sanitizeFocusState(x);return {...d,...x,settings:{...d.settings,...(x.settings&&typeof x.settings==='object'&&!Array.isArray(x.settings)?x.settings:{})},syllabusTargets:x.syllabusTargets&&typeof x.syllabusTargets==='object'&&!Array.isArray(x.syllabusTargets)?x.syllabusTargets:{},taskChecks:x.taskChecks&&typeof x.taskChecks==='object'&&!Array.isArray(x.taskChecks)?x.taskChecks:{},journal:Array.isArray(x.journal)?x.journal:[],papers:Array.isArray(x.papers)?x.papers:[],goals:Array.isArray(x.goals)?x.goals:[],studyLogs:Array.isArray(x.studyLogs)?x.studyLogs:[],selectedTopicIds:Array.isArray(x.selectedTopicIds)?x.selectedTopicIds:[],...focus};}catch(e){console.warn('Study Hub data could not be read',e);return freshFeatureState();}}
-  let fsState=loadFeatureState();if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function'&&fsState.fsrsSettings)window.NexusFSRS.setSettings(fsState.fsrsSettings,{syncFeature:false,persist:true});let hubTab='planner';let focusTimer=null;let focusStart=fsState.focusStartedAt?new Date(fsState.focusStartedAt).getTime():null;let focusPausedAt=fsState.focusPausedAt?new Date(fsState.focusPausedAt).getTime():null;let focusTopicId=fsState.focusTopicId||'';let focusSubjectId=fsState.focusSubjectId||'';
+  let fsState=loadFeatureState();if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function'&&fsState.fsrsSettings)window.NexusFSRS.setSettings(fsState.fsrsSettings,{syncFeature:false,persist:true});let hubTab='planner';let focusTimer=null,studyLogHistoryLimit=100;let focusStart=fsState.focusStartedAt?new Date(fsState.focusStartedAt).getTime():null;let focusPausedAt=fsState.focusPausedAt?new Date(fsState.focusPausedAt).getTime():null;let focusTopicId=fsState.focusTopicId||'';let focusSubjectId=fsState.focusSubjectId||'';
   const fid=()=>`hub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,9)}`;
   const dateShift=(d,n)=>{const x=new Date((d||today())+'T12:00:00');x.setDate(x.getDate()+n);return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`;};
   const safeDate=d=>{if(!/^\d{4}-\d{2}-\d{2}$/.test(String(d||'')))return false;const [y,m,day]=String(d).split('-').map(Number);const x=new Date(y,m-1,day);return x.getFullYear()===y&&x.getMonth()===m-1&&x.getDate()===day;};
@@ -13,50 +13,373 @@
   const fNum=x=>Number.isFinite(Number(x))?Number(x):0;
   // Cache daily focus-goal totals between minute boundaries; the visible clock still ticks every second.
   let focusGoalCacheKey='',focusGoalLoggedMinutes=0;
-  function saveFs(){focusGoalCacheKey='';try{if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[{key:FEATURE_KEY,value:JSON.stringify(fsState)}],{state,featureState:fsState},{returnOperationPayload:false});if(window.NexusCloudSync)window.NexusCloudSync.schedule();return true;}catch(e){console.error(e);try{notify('Study Hub data could not be saved. Export a backup now.');}catch(_){}return false;}}
-  window.NexusFeatureStorageKey=FEATURE_KEY;window.NexusNormalizeFeatureState=value=>window.NexusBackupRestoreUtils.normalizeFeatureState(value,freshFeatureState());window.NexusMergeFeatureState=(current,imported,rawImported)=>window.NexusBackupRestoreUtils.mergeFeatureState(current,imported,freshFeatureState(),rawImported);window.NexusGetFeatureState=()=>clone(fsState);window.NexusSetFeatureState=(value,options={})=>{focusGoalCacheKey='';fsState=window.NexusNormalizeFeatureState(value);if(options.applyFsrs!==false&&window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(fsState.fsrsSettings,{syncFeature:false,persist:options.persist!==false});focusStart=fsState.focusStartedAt?new Date(fsState.focusStartedAt).getTime():null;focusPausedAt=fsState.focusPausedAt?new Date(fsState.focusPausedAt).getTime():null;focusTopicId=fsState.focusTopicId||'';focusSubjectId=fsState.focusSubjectId||'';if(focusTimer){clearInterval(focusTimer);focusTimer=null;}if(focusStart)focusTimer=setInterval(refreshLiveFocusUi,1000);if(options.persist!==false)saveFs();if(options.render!==false)renderHub();if(focusStart&&options.render!==false)refreshLiveFocusUi();return true;};
-  let cascadeUndoState=null;window.NexusCascadeDeleteSubject=(subjectId,topicIds)=>{cascadeUndoState=clone(fsState);fsState.journal=fsState.journal.filter(x=>x.subjectId!==subjectId&&!topicIds.includes(x.topicId));fsState.papers=fsState.papers.filter(x=>x.subjectId!==subjectId);delete fsState.syllabusTargets[subjectId];fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIds.includes(id));saveFs();renderHub();};window.NexusCascadeDeleteStream=(streamId,subjectIds,topicIds)=>{cascadeUndoState=clone(fsState);fsState.journal=fsState.journal.filter(x=>!subjectIds.includes(x.subjectId)&&!topicIds.includes(x.topicId));fsState.papers=fsState.papers.filter(x=>!subjectIds.includes(x.subjectId));subjectIds.forEach(id=>delete fsState.syllabusTargets[id]);fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIds.includes(id));saveFs();renderHub();};window.NexusUndoCascadeDelete=()=>{if(cascadeUndoState){fsState=clone(cascadeUndoState);cascadeUndoState=null;saveFs();renderHub();}};window.NexusClearCascadeUndo=()=>{cascadeUndoState=null;};window.NexusRenderHub=()=>renderHub();
-  let topicHistoryStatsCache={source:null,length:-1,byTopic:new Map()};
+  function featureEntityPutChange(collection,row,order='prepend'){
+    const position=order==='prepend'?'prepend':null;
+    return {collection,id:String(row&&row.id||''),operation:'put',position,value:row};
+  }
+  function featureEntityDeleteChange(collection,id){return {collection,id:String(id),operation:'delete'};}
+  function saveTopicEntityChanges(topics){
+    const rows=Array.isArray(topics)?topics:[];
+    // Bound temporary change-set memory. Large scheduling/bulk operations use the
+    // generation replacement path, which streams rows into IndexedDB in bounded batches.
+    if(rows.length>1000)return save({replaceEntities:true});
+    return save({entityChanges:rows.map(topic=>window.NexusTrackerEntityPutChange('topics',topic,'keep'))});
+  }
+  function featureEntityRoot(){
+    const value={...fsState};
+    for(const collection of ['journal','papers','goals','studyLogs'])delete value[collection];
+    return value;
+  }
+  function saveFs(entityChanges=[]){
+    focusGoalCacheKey='';
+    // Do not evict the large topic/history aggregate for journal, paper, goal or other
+    // unrelated Study Hub saves. Relevant inputs are tracked by the aggregate cache key:
+    // studyLogs reference/count, active tracker arrays, date range, heatmap period and goal.
+    try{
+      if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');
+      window.NexusDeleteDiagnosticPhase?.('hub:save:serialize-feature-state');
+      const featureSnapshot=JSON.stringify(fsState);
+      const frozenEntityChanges=Array.isArray(entityChanges)?JSON.parse(JSON.stringify(entityChanges)):null;
+      const featureRoot=JSON.parse(JSON.stringify(featureEntityRoot()));
+      const owner=localStorage.getItem('nexus.cloud.last-user-id')||'';
+      const workspaceEntries=[{key:FEATURE_KEY,value:featureSnapshot}];
+      if(owner&&(frozenEntityChanges===null||frozenEntityChanges.length)){
+        const entityRevisionKey=window.NexusStorage?.getWorkspaceEntityRevisionKey?.(owner);
+        if(entityRevisionKey)workspaceEntries.push({
+          key:entityRevisionKey,value:Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)
+        });
+      }
+      window.NexusDeleteDiagnosticPhase?.('hub:save:offline-queue-commit');
+      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,workspaceEntries,{state,featureState:fsState},{returnOperationPayload:false});
+      const storage=window.NexusStorage;
+      if(owner&&storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&
+         typeof storage.flush==='function'&&typeof storage.syncWorkspaceEntities==='function'){
+        const durableFlush=storage.flush();
+        storage.syncWorkspaceEntities(owner,frozenEntityChanges,{
+          featureRoot,featureSnapshotJson:featureSnapshot,replace:frozenEntityChanges===null,
+          durablePromise:durableFlush
+        }).catch(error=>{
+          // Snapshot/offline-queue storage remains authoritative; stale entity projections
+          // are rebuilt from the durable compatibility workspace.
+          console.warn('Nexus Study Hub entity projection update failed; snapshot storage remains active.',error);
+        });
+      }
+      window.NexusDeleteDiagnosticPhase?.('hub:save:cloud-sync-schedule');
+      if(window.NexusCloudSync)window.NexusCloudSync.schedule();
+      return true;
+    }catch(e){
+      window.NexusDeleteDiagnosticNoteError?.('hub:save-caught',e);
+      console.error(e);
+      try{notify('Study Hub data could not be saved. Export a backup now.');}catch(_){}
+      return false;
+    }
+  }
+  window.NexusFeatureStorageKey=FEATURE_KEY;window.NexusNormalizeFeatureState=value=>window.NexusBackupRestoreUtils.normalizeFeatureState(value,freshFeatureState());window.NexusMergeFeatureState=(current,imported,rawImported)=>window.NexusBackupRestoreUtils.mergeFeatureState(current,imported,freshFeatureState(),rawImported);window.NexusGetFeatureState=()=>{window.NexusDeleteDiagnosticPhase?.('save:feature-state-clone');return clone(fsState);};
+  // Used only by the synchronous offline-queue commit, which serializes the payload
+  // before returning. Other consumers should continue using the defensive clone above.
+  window.NexusGetFeatureStateForCommit=()=>fsState;
+  window.NexusSetFeatureState=(value,options={})=>{focusGoalCacheKey='';fsState=window.NexusNormalizeFeatureState(value);if(options.applyFsrs!==false&&window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(fsState.fsrsSettings,{syncFeature:false,persist:options.persist!==false});focusStart=fsState.focusStartedAt?new Date(fsState.focusStartedAt).getTime():null;focusPausedAt=fsState.focusPausedAt?new Date(fsState.focusPausedAt).getTime():null;focusTopicId=fsState.focusTopicId||'';focusSubjectId=fsState.focusSubjectId||'';if(focusTimer){clearInterval(focusTimer);focusTimer=null;}if(focusStart)focusTimer=setInterval(refreshLiveFocusUi,1000);if(options.persist!==false)saveFs(null);if(options.render!==false)renderHub();if(focusStart&&options.render!==false)refreshLiveFocusUi();return true;};
+  let cascadeUndoState=null;
+  function captureCascadeUndo(){
+    // Cascade deletes replace these arrays and mutate only the target map. Keep the
+    // original arrays by reference; cloning all Study Hub logs is unnecessary.
+    return {journal:fsState.journal,papers:fsState.papers,syllabusTargets:{...(fsState.syllabusTargets||{})},selectedTopicIds:fsState.selectedTopicIds};
+  }
+  window.NexusCascadeDeleteSubject=(subjectId,topicIds,options={})=>{
+    window.NexusDeleteDiagnosticPhase?.('cascade:subject:build-topic-set');
+    const topicIdSet=new Set(topicIds);
+    window.NexusDeleteDiagnosticPhase?.('cascade:subject:capture-undo');
+    cascadeUndoState=captureCascadeUndo();
+    window.NexusDeleteDiagnosticPhase?.('cascade:subject:filter-journal');
+    fsState.journal=fsState.journal.filter(item=>item.subjectId!==subjectId&&!topicIdSet.has(item.topicId));
+    window.NexusDeleteDiagnosticPhase?.('cascade:subject:filter-papers');
+    fsState.papers=fsState.papers.filter(item=>item.subjectId!==subjectId);
+    window.NexusDeleteDiagnosticPhase?.('cascade:subject:remove-syllabus-target');
+    delete fsState.syllabusTargets[subjectId];
+    window.NexusDeleteDiagnosticPhase?.('cascade:subject:filter-selected-topics');
+    fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIdSet.has(id));
+    // Core subject deletion commits tracker and Study Hub data together after all
+    // related arrays have been pruned. Avoid serializing the full pre-delete
+    // workspace (and rendering the hub) a second time for large workspaces.
+    if(options.persist!==false&&!saveFs(null)){if(cascadeUndoState){Object.assign(fsState,cascadeUndoState);cascadeUndoState=null;}if(options.render!==false)renderHub();return false;}
+    if(options.render!==false)renderHub();return true;
+  };
+  window.NexusCascadeDeleteStream=(streamId,subjectIds,topicIds,options={})=>{
+    window.NexusDeleteDiagnosticPhase?.('cascade:stream:build-id-sets');
+    const subjectIdSet=new Set(subjectIds),topicIdSet=new Set(topicIds);
+    window.NexusDeleteDiagnosticPhase?.('cascade:stream:capture-undo');
+    cascadeUndoState=captureCascadeUndo();
+    window.NexusDeleteDiagnosticPhase?.('cascade:stream:filter-journal');
+    const removedJournalIds=[],removedPaperIds=[],seenFeatureIds=new Set();
+    let removedFeatureCount=0,addressable=true;
+    const retainedJournal=[];
+    for(const item of fsState.journal){
+      if(subjectIdSet.has(item.subjectId)||topicIdSet.has(item.topicId)){
+        removedFeatureCount++;
+        if(removedFeatureCount<=1000){
+          const id=item&&item.id!==undefined&&item.id!==null?String(item.id):'';
+          const identity='journal'+String.fromCharCode(0)+id;
+          if(!id||seenFeatureIds.has(identity))addressable=false;
+          else{seenFeatureIds.add(identity);removedJournalIds.push(id);}
+        }else addressable=false;
+      }else retainedJournal.push(item);
+    }
+    fsState.journal=retainedJournal;
+    window.NexusDeleteDiagnosticPhase?.('cascade:stream:filter-papers');
+    const retainedPapers=[];
+    for(const item of fsState.papers){
+      if(subjectIdSet.has(item.subjectId)){
+        removedFeatureCount++;
+        if(removedFeatureCount<=1000){
+          const id=item&&item.id!==undefined&&item.id!==null?String(item.id):'';
+          const identity='papers'+String.fromCharCode(0)+id;
+          if(!id||seenFeatureIds.has(identity))addressable=false;
+          else{seenFeatureIds.add(identity);removedPaperIds.push(id);}
+        }else addressable=false;
+      }else retainedPapers.push(item);
+    }
+    fsState.papers=retainedPapers;
+    window.NexusDeleteDiagnosticPhase?.('cascade:stream:remove-syllabus-targets');
+    for(const id of subjectIds)delete fsState.syllabusTargets[id];
+    window.NexusDeleteDiagnosticPhase?.('cascade:stream:filter-selected-topics');
+    fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!topicIdSet.has(id));
+    // Retain at most 1,000 deleted IDs. Larger or malformed sets rebuild from the
+    // compatibility snapshot without materialising another full deleted-record array.
+    let featureEntityChanges=null;
+    if(removedFeatureCount<=1000&&addressable){
+      featureEntityChanges=[
+        ...removedJournalIds.map(id=>featureEntityDeleteChange('journal',id)),
+        ...removedPaperIds.map(id=>featureEntityDeleteChange('papers',id))
+      ];
+    }
+    if(options.persist!==false&&!saveFs(featureEntityChanges)){if(cascadeUndoState){Object.assign(fsState,cascadeUndoState);cascadeUndoState=null;}if(options.render!==false)renderHub();return false;}
+    if(options.render!==false)renderHub();return true;
+  };
+  window.NexusUndoCascadeDelete=(options={})=>{
+    if(!cascadeUndoState)return false;
+    window.NexusDeleteDiagnosticPhase?.('cascade:undo:restore-state');
+    Object.assign(fsState,cascadeUndoState);cascadeUndoState=null;
+    if(options.persist!==false)saveFs(null);
+    if(options.render!==false)renderHub();
+    return true;
+  };
+  window.NexusClearCascadeUndo=()=>{cascadeUndoState=null;};
+  window.NexusRenderHub=()=>renderHub();
+  window.NexusRestoreFeatureArray=(collection,previous)=>{
+    if(!['studyLogs','papers','journal','goals'].includes(collection)||!Array.isArray(previous))return false;
+    fsState[collection]=previous;focusGoalCacheKey='';return true;
+  };
+  let topicHistoryStatsFallback={source:null,length:-1,byTopic:new Map()};
   function getTopicHistoryStats(){
-    const history=state.history,cache=topicHistoryStatsCache;
+    const shared=window.NexusGetHistoryActivityIndex?.();
+    if(shared&&shared.byTopic&&typeof shared.byTopic.get==='function')return shared.byTopic;
+    const history=state.history,cache=topicHistoryStatsFallback;
     if(cache.source===history&&cache.length===history.length)return cache.byTopic;
     const byTopic=new Map();
     for(const record of history){
       const id=String(record&&record.topicId||'');if(!id)continue;
-      let item=byTopic.get(id);if(!item){item={hs:[],sum:0};byTopic.set(id,item);}
-      item.hs.push(record);item.sum+=fNum(record.rating);
+      let item=byTopic.get(id);if(!item){item={recent:[],count:0,sum:0};byTopic.set(id,item);}
+      item.count++;item.sum+=fNum(record.rating);
+      const date=record.reviewedAt||'',recent=item.recent;let index=0;
+      while(index<recent.length&&(recent[index].reviewedAt||'')>=date)index++;
+      if(index<5){recent.splice(index,0,record);if(recent.length>5)recent.pop();}
     }
     for(const item of byTopic.values()){
-      item.hs.sort((a,b)=>(b.reviewedAt||'').localeCompare(a.reviewedAt||''));
-      const recent=item.hs.slice(0,5);
-      item.avg=recent.length?recent.reduce((sum,record)=>sum+fNum(record.rating),0)/recent.length:0;
-      item.allAvg=item.hs.length?item.sum/item.hs.length:0;
+      item.avg=item.recent.length?item.recent.reduce((sum,record)=>sum+fNum(record.rating),0)/item.recent.length:0;
+      item.allAvg=item.count?item.sum/item.count:0;
     }
-    topicHistoryStatsCache={source:history,length:history.length,byTopic};return byTopic;
+    topicHistoryStatsFallback={source:history,length:history.length,byTopic};return byTopic;
   }
-  function featureMeta(t){
-    const stats=getTopicHistoryStats().get(String(t.id)),hs=stats?.hs||[],avg=hs.length?stats.avg:(t.lastRating||0),allAvg=hs.length?stats.allAvg:(t.lastRating||0);
-    const weak=Boolean(t.lapses||avg&&avg<3||status(t)==='overdue'&&dayDiff(t.dueDate,today())>5);let score=0;
+  function featureMeta(t,topicStatus=status(t)){
+    const stats=getTopicHistoryStats().get(String(t.id)),hs=stats?.recent||[],avg=hs.length?stats.avg:(t.lastRating||0),allAvg=hs.length?stats.allAvg:(t.lastRating||0);
+    const weak=Boolean(t.lapses||avg&&avg<3||topicStatus==='overdue'&&dayDiff(t.dueDate,today())>5);let score=0;
     if(t.reviewCount>0){score=Math.round(Math.max(0,Math.min(100,(avg/5)*65+Math.min(t.reviewCount,6)/6*20+Math.min(t.intervalDays,30)/30*15)));if(t.lastRating===1)score=Math.max(5,score-15);}
     return {hs,avg,allAvg,score,weak};
   }
-  function estimateMinutes(t){const m=featureMeta(t);return Math.max(6,Math.min(30,Math.round(10+(m.weak?7:0)+(m.avg&&m.avg<3?5:0)+(status(t)==='overdue'?Math.min(5,Math.ceil(Math.max(0,dayDiff(t.dueDate,today()))/5)):0))));}
-  function weeklyReviewCount(){const start=dateShift(today(),-6);return state.history.filter(h=>h.reviewedAt>=start&&h.reviewedAt<=today()).length;}
+  function estimateMinutes(t,meta=featureMeta(t),topicStatus=status(t)){return Math.max(6,Math.min(30,Math.round(10+(meta.weak?7:0)+(meta.avg&&meta.avg<3?5:0)+(topicStatus==='overdue'?Math.min(5,Math.ceil(Math.max(0,dayDiff(t.dueDate,today()))/5)):0))));}
+  function weeklyReviewCount(){const end=today(),start=dateShift(end,-6);let count=0;for(const entry of state.history)if(entry&&entry.reviewedAt>=start&&entry.reviewedAt<=end)count++;return count;}
   function isMastered(t){const m=featureMeta(t);return t.reviewCount>=2&&m.avg>=3.5&&t.intervalDays>=4&&status(t)!=='overdue';}
   function streakCount(){return currentStudyStreak();}
   function studyLogMinutes(entry){const seconds=entry&&entry.durationSeconds;if(seconds!==undefined&&seconds!==null&&Number.isFinite(Number(seconds)))return Math.max(0,Number(seconds))/60;return Math.max(0,fNum(entry&&entry.minutes));}function formatStudyDuration(seconds){const total=Math.max(0,Math.round(Number(seconds)||0)),minutes=Math.floor(total/60),remainder=total%60;return minutes?`${minutes} min${remainder?' '+remainder+' sec':''}`:`${remainder} sec`;}function totalStudyMinutes(){return fsState.studyLogs.reduce((n,x)=>n+studyLogMinutes(x),0);}
   function reviewActivity(days){
-    const end=today(),start=dateShift(end,-(days-1)),counts=new Map();
-    for(const record of state.history){const date=record&&record.reviewedAt;if(typeof date==='string'&&date.length===10&&date>=start&&date<=end)counts.set(date,(counts.get(date)||0)+1);}
-    const out=[];for(let i=days-1;i>=0;i--){const date=dateShift(end,-i);out.push({date,count:counts.get(date)||0});}
+    const end=today(),start=dateShift(end,-(days-1));
+    const shared=window.NexusGetHistoryActivityIndex?.(),counts=shared&&shared.byDate;
+    if(counts&&typeof counts.get==='function'){
+      const out=[];for(let i=days-1;i>=0;i--){const date=dateShift(end,-i);out.push({date,count:counts.get(date)||0});}
+      return out;
+    }
+    const fallback=new Map();
+    for(const record of state.history){const date=record&&record.reviewedAt;if(typeof date==='string'&&date.length===10&&date>=start&&date<=end)fallback.set(date,(fallback.get(date)||0)+1);}
+    const out=[];for(let i=days-1;i>=0;i--){const date=dateShift(end,-i);out.push({date,count:fallback.get(date)||0});}
     return out;
   }
   function nearestFutureExam(){return state.exams.filter(e=>safeDate(e.date)&&e.date>=today()).sort((a,b)=>a.date.localeCompare(b.date))[0]||null;}
-  function updateKpis(){const ts=activeTopics(),due=ts.filter(t=>['overdue','due'].includes(status(t))).length,weak=ts.filter(t=>featureMeta(t).weak).length,mastered=ts.filter(isMastered).length;const todayDone=loggedMinutesToday()+liveFocusMinutesToday();const taskPlan=buildPlan(false);const planned=taskPlan.reduce((n,t)=>n+t.minutes,0);hubEl('hubKpis').innerHTML=`<div class="hub-kpi"><strong>${due}</strong><span>Due or overdue</span></div><div class="hub-kpi"><strong>${weak}</strong><span>Topics needing attention</span></div><div class="hub-kpi"><strong>${mastered}/${ts.length}</strong><span>Mastered topics</span></div><div class="hub-kpi"><strong>${formatStudyDuration(todayDone*60)}</strong><span>Study time today${planned?` · ${planned} min suggested`:''}</span></div>`;}
-  function topicPriority(t){const m=featureMeta(t),st=status(t);const revisionBoost=fsState.settings.finalRevision&&!isMastered(t)?45:0;return revisionBoost+(st==='overdue'?100+Math.min(30,Math.max(0,dayDiff(t.dueDate,today()))):st==='due'?80:st==='new'?60:st==='upcoming'?10:0)+(m.weak?30:0)+(m.avg&&m.avg<2.5?20:0)+(t.lapses||0)*3-(m.score/20);}
-  function buildPlan(limitBudget=true){const ts=activeTopics().filter(t=>!t.archived).slice().sort((a,b)=>topicPriority(b)-topicPriority(a));const daily=Math.max(10,Math.min(720,fNum(fsState.settings.dailyMinutes)||90));const backlog=fsState.settings.backlogDays||7;const cap=limitBudget?daily:Math.max(720,ts.length*30);const selected=[];let sum=0;const done=new Set(fsState.taskChecks[today()]||[]);
-    for(const t of ts){const st=status(t);if(!['overdue','due','new'].includes(st))continue;let mins=estimateMinutes(t);if(st==='overdue'&&backlog===0)continue;if(sum+mins>cap&&selected.length>0)continue;if(sum+mins>cap&&selected.length===0&&limitBudget)continue;selected.push({topic:t,minutes:mins,priority:topicPriority(t),status:st});sum+=mins;if(sum>=cap)break;}
-    return selected;}
+  let hubKpiCache=null;
+  function updateKpis(){
+    const target=hubEl('hubKpis');if(!target)return;
+    const todayKey=today(),topics=state.topics,history=state.history;
+    let metrics=hubKpiCache;
+    if(!metrics||metrics.topics!==topics||metrics.history!==history||metrics.historyLength!==history.length||metrics.today!==todayKey){
+      const shared=window.NexusGetOverviewTopicMetrics?.();
+      if(shared){
+        metrics=hubKpiCache={topics,history,historyLength:history.length,today:todayKey,
+          activeCount:shared.activeCount,due:shared.dueCount,weak:shared.weakCount,mastered:shared.mastered};
+      }else if(typeof window.NexusPrepareHomeConsistencyMetrics==='function'){
+        target.innerHTML='<div class="hub-kpi"><strong>…</strong><span>Preparing workspace metrics</span></div>';
+        window.NexusPrepareHomeConsistencyMetrics().catch(error=>{
+          console.error('Study Hub KPI preparation failed',error);
+          target.innerHTML='<div class="hub-kpi"><strong>Unavailable</strong><span>Reopen Study Hub to retry metrics</span></div>';
+        });
+        return;
+      }else{
+        // Compatibility fallback for old embeddings that do not include the shared
+        // preparation module. The normal app always uses cooperative preparation.
+        let activeCount=0,due=0,weak=0,mastered=0;
+        for(const topic of topics){
+          if(topic.archived)continue;activeCount++;
+          const st=status(topic),meta=featureMeta(topic);
+          if(st==='overdue'||st==='due')due++;
+          if(meta.weak)weak++;
+          if(topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&st!=='overdue')mastered++;
+        }
+        metrics=hubKpiCache={topics,history,historyLength:history.length,today:todayKey,activeCount,due,weak,mastered};
+      }
+    }
+    const todayDone=loggedMinutesToday()+liveFocusMinutesToday();
+    target.innerHTML='<div class="hub-kpi"><strong>'+metrics.due+'</strong><span>Due or overdue</span></div><div class="hub-kpi"><strong>'+metrics.weak+'</strong><span>Topics needing attention</span></div><div class="hub-kpi"><strong>'+metrics.mastered+'/'+metrics.activeCount+'</strong><span>Mastered topics</span></div><div class="hub-kpi"><strong>'+formatStudyDuration(todayDone*60)+'</strong><span>Study time today</span></div>';
+  }
+  function topicPriority(t,meta=featureMeta(t),topicStatus=status(t)){
+    const mastered=t.reviewCount>=2&&meta.avg>=3.5&&t.intervalDays>=4&&topicStatus!=='overdue';
+    const revisionBoost=fsState.settings.finalRevision&&!mastered?45:0;
+    return revisionBoost+(topicStatus==='overdue'?100+Math.min(30,Math.max(0,dayDiff(t.dueDate,today()))):topicStatus==='due'?80:topicStatus==='new'?60:topicStatus==='upcoming'?10:0)+(meta.weak?30:0)+(meta.avg&&meta.avg<2.5?20:0)+(t.lapses||0)*3-(meta.score/20);
+  }
+  let plannerMetricsCache=null,plannerBuildGeneration=0,plannerBuildPromise=null,plannerBuildContext=null,plannerUiBuildPromise=null;
+  function plannerContext(limitBudget=true){
+    const topics=state.topics,daily=Math.max(10,Math.min(720,fNum(fsState.settings.dailyMinutes)||90));
+    const backlog=fsState.settings.backlogDays||7,now=today(),calendarWindow=Math.max(1,Math.min(90,Number(fsState.calendarWindow)||14));
+    return {topics,topicCount:topics.length,history:state.history,historyLength:state.history.length,today:now,
+      limitBudget,daily,backlog,finalRevision:Boolean(fsState.settings.finalRevision),calendarWindow,
+      cap:limitBudget?daily:Math.max(720,topics.length*30)};
+  }
+  function plannerCacheMatches(cache,context){
+    return !!cache&&cache.topics===context.topics&&cache.topicCount===context.topicCount&&cache.history===context.history&&
+      cache.historyLength===context.historyLength&&cache.today===context.today&&
+      cache.limitBudget===context.limitBudget&&cache.daily===context.daily&&cache.backlog===context.backlog&&
+      cache.finalRevision===context.finalRevision&&cache.calendarWindow===context.calendarWindow;
+  }
+  function samePlannerContext(a,b){
+    return !!a&&!!b&&a.topics===b.topics&&a.topicCount===b.topicCount&&a.history===b.history&&
+      a.historyLength===b.historyLength&&a.today===b.today&&a.limitBudget===b.limitBudget&&
+      a.daily===b.daily&&a.backlog===b.backlog&&a.finalRevision===b.finalRevision&&
+      a.calendarWindow===b.calendarWindow;
+  }
+  window.NexusInvalidatePlannerCache=()=>{
+    plannerMetricsCache=null;plannerBuildGeneration++;plannerBuildPromise=null;plannerBuildContext=null;
+  };
+  function buildPlan(limitBudget=true){
+    const context=plannerContext(limitBudget),ts=context.topics,backlog=context.backlog,cap=context.cap,now=context.today,calendarWindow=context.calendarWindow;
+    const cache=plannerMetricsCache;
+    if(plannerCacheMatches(cache,context))return cache.value;
+    const buckets=new Map(),selected=[];let sum=0,remainingMins=0;
+    const scheduledByDate=new Map(),calendarEnd=dateShift(now,calendarWindow-1);
+    // Compatibility/synchronous helper for non-UI callers. The planner screen uses
+    // preparePlannerMetrics so cold 77k-topic work never blocks its render.
+    for(const topic of ts){
+      if(topic.archived)continue;
+      const topicStatus=status(topic),meta=featureMeta(topic,topicStatus);
+      const mastered=topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&topicStatus!=='overdue';
+      if(!mastered)remainingMins+=estimateMinutes(topic,meta,topicStatus);
+      const date=topic.dueDate||topic.createdAt||'';
+      if(date&&date>=now&&date<=calendarEnd)scheduledByDate.set(date,(scheduledByDate.get(date)||0)+1);
+      if(!['overdue','due','new'].includes(topicStatus)||(topicStatus==='overdue'&&backlog===0))continue;
+      const key=topicPriority(topic,meta,topicStatus);
+      let bucket=buckets.get(key);if(!bucket){bucket=[];buckets.set(key,bucket);}
+      bucket.push({topic,meta,status:topicStatus});
+    }
+    const priorityKeys=Array.from(buckets.keys()).sort((a,b)=>b-a);
+    for(const key of priorityKeys){
+      for(const item of buckets.get(key)){
+        const minutes=estimateMinutes(item.topic,item.meta,item.status);
+        if(sum+minutes>cap&&selected.length>0)continue;
+        if(sum+minutes>cap&&selected.length===0&&limitBudget)continue;
+        selected.push({topic:item.topic,minutes,priority:key,status:item.status});sum+=minutes;
+        if(sum>=cap)break;
+      }
+      if(sum>=cap)break;
+    }
+    const value={plan:selected,remainingMins,scheduledByDate,calendarWindow};
+    plannerMetricsCache={...context,value};
+    return value;
+  }
+  function preparePlannerMetrics(limitBudget=true){
+    const context=plannerContext(limitBudget);
+    if(plannerCacheMatches(plannerMetricsCache,context))return Promise.resolve(plannerMetricsCache.value);
+    if(plannerBuildPromise&&samePlannerContext(plannerBuildContext,context))return plannerBuildPromise;
+    const generation=++plannerBuildGeneration;
+    plannerBuildContext=context;
+    const isCurrent=()=>generation===plannerBuildGeneration&&samePlannerContext(plannerContext(limitBudget),context);
+    const task=(async()=>{
+      const ts=context.topics,backlog=context.backlog,cap=context.cap,now=context.today,calendarWindow=context.calendarWindow;
+      const buckets=new Map(),scheduledByDate=new Map();
+      let remainingMins=0;
+      const calendarEnd=dateShift(now,calendarWindow-1),batchSize=400;
+      for(let start=0;start<ts.length;start+=batchSize){
+        const end=Math.min(ts.length,start+batchSize);
+        for(let index=start;index<end;index++){
+          const topic=ts[index];
+          if(topic.archived)continue;
+          const topicStatus=status(topic),meta=featureMeta(topic,topicStatus);
+          const mastered=topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&topicStatus!=='overdue';
+          if(!mastered)remainingMins+=estimateMinutes(topic,meta,topicStatus);
+          const date=topic.dueDate||topic.createdAt||'';
+          if(date&&date>=now&&date<=calendarEnd)scheduledByDate.set(date,(scheduledByDate.get(date)||0)+1);
+          if(!['overdue','due','new'].includes(topicStatus)||(topicStatus==='overdue'&&backlog===0))continue;
+          const key=topicPriority(topic,meta,topicStatus);
+          let bucket=buckets.get(key);if(!bucket){bucket=[];buckets.set(key,bucket);}
+          bucket.push({topic,meta,status:topicStatus});
+        }
+        if(end<ts.length){
+          if(!isCurrent())return null;
+          await new Promise(resolve=>setTimeout(resolve,0));
+          if(!isCurrent())return null;
+        }
+      }
+      if(!isCurrent())return null;
+      // Priority keys are numeric and typically far fewer than source records.
+      // Keep the sort isolated after the yielding catalogue pass.
+      const priorityKeys=Array.from(buckets.keys()).sort((a,b)=>b-a);
+      const selected=[];let sum=0,processed=0;
+      for(const key of priorityKeys){
+        for(const item of buckets.get(key)){
+          processed++;
+          const minutes=estimateMinutes(item.topic,item.meta,item.status);
+          if(!(sum+minutes>cap&&selected.length>0)&&
+             !(sum+minutes>cap&&selected.length===0&&limitBudget)){
+            selected.push({topic:item.topic,minutes,priority:key,status:item.status});
+            sum+=minutes;
+          }
+          if(sum>=cap)break;
+          if(processed%batchSize===0){
+            if(!isCurrent())return null;
+            await new Promise(resolve=>setTimeout(resolve,0));
+            if(!isCurrent())return null;
+          }
+        }
+        if(sum>=cap)break;
+      }
+      if(!isCurrent())return null;
+      const value={plan:selected,remainingMins,scheduledByDate,calendarWindow};
+      plannerMetricsCache={...context,value};
+      return value;
+    })();
+    const wrapped=task.finally(()=>{if(plannerBuildPromise===wrapped){plannerBuildPromise=null;plannerBuildContext=null;}});
+    plannerBuildPromise=wrapped;
+    return wrapped;
+  }
+  window.NexusPreparePlannerMetrics=preparePlannerMetrics;
+  window.NexusGetCachedPlannerMetrics=()=>plannerCacheMatches(plannerMetricsCache,plannerContext(true))
+    ?plannerMetricsCache.value:null;
+  window.NexusGetPlannerMetrics=()=>buildPlan(true);
   function hubCard(title,desc,body,wide=false){
     const inAnalytics=hubTab==='analytics',collapsible=inAnalytics&&!/(summary|trend|graph|chart|heatmap|consistency|daily review|daily study|review difficulty)/i.test(String(title||''));
     if(!inAnalytics)return `<section class="hub-card${wide?' wide':''}"><div class="hub-card-head"><div><h3>${title}</h3>${desc?`<p>${desc}</p>`:''}</div></div>${body}</section>`;
@@ -67,91 +390,327 @@
   function inputField(label,id,value,type='text',extra=''){return `<div class="hub-field"><label for="${id}">${label}</label><input id="${id}" type="${type}" value="${localEsc(value)}" ${extra}></div>`;}
   function selectOptions(items,current){return items.map(([v,l])=>`<option value="${localEsc(v)}" ${String(v)===String(current)?'selected':''}>${localEsc(l)}</option>`).join('');}
   function subjectOptions(current, includeAll=false){let s=state.subjects.map(x=>[x.id,x.name]);if(includeAll)s=[['','All subjects'],...s];return selectOptions(s,current||'');}
-  function topicOptions(current, includeNone=true){let s=activeTopics().map(t=>[t.id,t.name]);if(includeNone)s=[['','No linked topic'],...s];return selectOptions(s,current||'');}
+  function studyTopicOptionsMarkup(query='',current='',limit=150){
+    const q=String(query||'').trim().toLocaleLowerCase(),items=[],subjectById=new Map(state.subjects.map(subject=>[String(subject.id),subject]));
+    let total=0;
+    for(const topic of state.topics){
+      if(topic.archived)continue;
+      const subject=subjectById.get(String(topic.subjectId));
+      if(q&&![topic.name,topic.notes,subject?.name].some(value=>String(value||'').toLocaleLowerCase().includes(q)))continue;
+      total++;
+      if(items.length<limit)items.push([topic.id,(subject?.name?subject.name+' · ':'')+topic.name]);
+    }
+    if(current&&!items.some(item=>String(item[0])===String(current))){
+      const selected=state.topics.find(topic=>String(topic.id)===String(current)&&!topic.archived);
+      if(selected){const subject=subjectById.get(String(selected.subjectId));items.unshift([selected.id,(subject?.name?subject.name+' · ':'')+selected.name+' (selected)']);if(items.length>limit)items.pop();}
+    }
+    const html=selectOptions(items,current||'');
+    return html+(total>limit?'<option disabled>Showing '+limit+' matches. Refine the search to see more.</option>':'');
+  }
+  function topicOptions(current, includeNone=true){
+    const items=[];
+    if(includeNone)items.push(['','No linked topic']);
+    return selectOptions(items,current||'')+studyTopicOptionsMarkup('',current,200);
+  }
   function liveFocusMinutesToday(){if(!focusStart)return 0;const now=focusPausedAt?focusPausedAt:Date.now();const dayStart=new Date();dayStart.setHours(0,0,0,0);return Math.max(0,(now-Math.max(focusStart,dayStart.getTime()))/60000);}
-  function loggedMinutesToday(){return fsState.studyLogs.filter(x=>x.date===today()).reduce((n,x)=>n+studyLogMinutes(x),0);}
-  function ensureStudyLogIds(){const ids=new Set();let changed=false;for(const entry of fsState.studyLogs){if(!entry||typeof entry!=='object')continue;let id=String(entry.id||'');if(!id||ids.has(id)){do{entry.id=fid();id=String(entry.id);}while(ids.has(id));changed=true;}ids.add(id);}if(changed)saveFs();}
+  function loggedMinutesToday(){let total=0;const date=today();for(const entry of fsState.studyLogs)if(entry&&entry.date===date)total+=studyLogMinutes(entry);return total;}
+  function ensureStudyLogIds(){const ids=new Set();let changed=false;for(const entry of fsState.studyLogs){if(!entry||typeof entry!=='object')continue;let id=String(entry.id||'');if(!id||ids.has(id)){do{entry.id=fid();id=String(entry.id);}while(ids.has(id));changed=true;}ids.add(id);}if(changed)saveFs(null);}
   function studyLogTimeInfo(entry){const match=String(entry&&entry.note||'').match(/Started (.*?) · ended (.*?) · Duration:/);const parse=value=>{const ms=Date.parse(value||'');return Number.isFinite(ms)?new Date(ms):null;};const start=parse(entry&&entry.startedAt)||parse(match&&match[1]),end=parse(entry&&entry.endedAt)||parse(match&&match[2]),fallback=parse((entry&&entry.date||'')+'T12:00:00');const time=date=>date.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}),full=date=>date.toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});const label=start&&end?(start.toDateString()===end.toDateString()?time(start)+'–'+time(end):full(start)+' – '+full(end)):start?'Started '+full(start):'';return {start,end,label,sortStamp:(end||start||fallback||new Date(0)).getTime()};}
-  function renderStudyLogHistory(){ensureStudyLogIds();const entries=fsState.studyLogs.map((entry,index)=>({entry,index,timing:studyLogTimeInfo(entry)})).filter(item=>item.entry&&typeof item.entry==='object').sort((a,b)=>b.timing.sortStamp-a.timing.sortStamp||a.index-b.index);const totalSeconds=entries.reduce((sum,item)=>sum+Math.max(0,Math.round(studyLogMinutes(item.entry)*60)),0);const rows=entries.map(({entry,timing})=>{const subject=state.subjects.find(s=>s.id===entry.subjectId)?.name||entry.subjectName||'Unassigned subject',topic=getTopic(entry.topicId)?.name||entry.topicName||'',title=topic?subject+' · '+topic:subject,type=String(entry.type||'Study session'),date=safeDate(entry.date)?fmtDate(entry.date):String(entry.date||'Date unavailable'),note=entry.note&&type.toLowerCase()!=='focus session'?String(entry.note).slice(0,240):'';return `<article class="nexus-study-log-row"><div class="nexus-study-log-main"><div class="nexus-study-log-title">${localEsc(title)}</div><div class="nexus-study-log-meta">${localEsc(date)}${timing.label?' · '+localEsc(timing.label):''} · ${localEsc(type)}</div>${note?`<div class="nexus-study-log-note">${localEsc(note)}</div>`:''}</div><div class="nexus-study-log-actions"><strong class="nexus-study-log-duration">${formatStudyDuration(studyLogMinutes(entry)*60)}</strong><button type="button" class="btn btn-sm btn-danger" data-hub-action="delete-study-log" data-id="${localEsc(entry.id)}" aria-label="Delete this study-time entry">Delete</button></div></article>`;}).join('');return `<div class="nexus-study-log-history-toolbar"><div><strong>${entries.length} entr${entries.length===1?'y':'ies'}</strong><span class="nexus-study-log-total">${formatStudyDuration(totalSeconds)} total recorded</span></div><button type="button" class="btn btn-sm btn-soft" data-hub-action="study-history-toggle" data-target="hubStudyLogHistory" aria-controls="hubStudyLogHistory" aria-expanded="true">Collapse</button></div><div id="hubStudyLogHistory" role="region" aria-label="Study-time history" tabindex="0">${rows||'<div class="nexus-study-log-empty">No study-time entries yet. Completed focus sessions will appear here.</div>'}</div>`;}
-  function deleteStudyLog(id){const entry=fsState.studyLogs.find(item=>item&&String(item.id)===String(id));if(!entry){notify('That study-time entry could not be found. Refresh the history and try again.');return;}const subject=state.subjects.find(s=>s.id===entry.subjectId)?.name||entry.subjectName||'Unassigned subject',topic=getTopic(entry.topicId)?.name||entry.topicName||'',time=studyLogTimeInfo(entry).label,duration=formatStudyDuration(studyLogMinutes(entry)*60),description=(topic?subject+' · '+topic:subject)+'\n'+(safeDate(entry.date)?fmtDate(entry.date):String(entry.date||'Date unavailable'))+(time?' · '+time:'')+'\n'+String(entry.type||'Study session')+' · '+duration;if(!confirm(`Delete this study-time entry?\n\n${description}\n\nIt will be removed from study-time history, totals, charts, and future exports. Related review, journal, and paper records will be kept. This cannot be undone.`))return;fsState.studyLogs=fsState.studyLogs.filter(item=>!item||String(item.id)!==String(id));saveFs();renderHub();notify('Study-time entry deleted. Study-time totals and exports updated.');}
-  function renderPlanner(){const plan=buildPlan(true),done=new Set(fsState.taskChecks[today()]||[]),allPlan=plan.length?plan.reduce((n,x)=>n+x.minutes,0):0,doneMins=loggedMinutesToday()+liveFocusMinutesToday();const daily=fNum(fsState.settings.dailyMinutes)||90,session=fNum(fsState.settings.sessionMinutes)||25,week=weeklyReviewCount(),goal=fNum(fsState.settings.weeklyReviewGoal)||100;const nearest=nearestFutureExam();const left=nearest?Math.max(0,dayDiff(today(),nearest.date)):null;const remainingMins=activeTopics().filter(t=>!isMastered(t)).reduce((n,t)=>n+estimateMinutes(t),0);const perDay=left!==null&&left>0?Math.ceil(remainingMins/left):remainingMins;
+  function renderStudyLogHistory(){
+    ensureStudyLogIds();
+    const subjectById=new Map(state.subjects.map(subject=>[String(subject.id),subject]));
+    const topicById=new Map(state.topics.map(topic=>[String(topic.id),topic]));
+    const compare=(a,b)=>b.timing.sortStamp-a.timing.sortStamp||a.index-b.index;
+    const collector=window.NexusCreateTopKCollector(studyLogHistoryLimit,compare);
+    let count=0,totalSeconds=0,index=0;
+    // Only the newest page is kept for rendering; all records still contribute to totals.
+    for(const entry of fsState.studyLogs){
+      if(entry&&typeof entry==='object'){
+        const timing=studyLogTimeInfo(entry);
+        count++;
+        totalSeconds+=Math.max(0,Math.round(studyLogMinutes(entry)*60));
+        collector.add({entry,index,timing});
+      }
+      index++;
+    }
+    const visible=collector.finish().items;
+    const rows=visible.map(({entry,timing})=>{
+      const subject=subjectById.get(String(entry.subjectId||''))?.name||entry.subjectName||'Unassigned subject';
+      const topic=topicById.get(String(entry.topicId||''))?.name||entry.topicName||'';
+      const title=topic?subject+' · '+topic:subject,type=String(entry.type||'Study session');
+      const date=safeDate(entry.date)?fmtDate(entry.date):String(entry.date||'Date unavailable');
+      const note=entry.note&&type.toLowerCase()!=='focus session'?String(entry.note).slice(0,240):'';
+      return `<article class="nexus-study-log-row"><div class="nexus-study-log-main"><div class="nexus-study-log-title">${localEsc(title)}</div><div class="nexus-study-log-meta">${localEsc(date)}${timing.label?' · '+localEsc(timing.label):''} · ${localEsc(type)}</div>${note?`<div class="nexus-study-log-note">${localEsc(note)}</div>`:''}</div><div class="nexus-study-log-actions"><strong class="nexus-study-log-duration">${formatStudyDuration(studyLogMinutes(entry)*60)}</strong><button type="button" class="btn btn-sm btn-danger" data-hub-action="delete-study-log" data-id="${localEsc(entry.id)}" aria-label="Delete this study-time entry">Delete</button></div></article>`;
+    }).join('');
+    const more=count>visible.length?`<div class="hub-actions"><button type="button" class="btn btn-sm btn-soft" data-hub-action="study-history-more">Show 100 older entries (${count-visible.length} remaining)</button></div>`:'';
+    return `<div class="nexus-study-log-history-toolbar"><div><strong>${count} entr${count===1?'y':'ies'}</strong><span class="nexus-study-log-total">${formatStudyDuration(totalSeconds)} total recorded</span></div><button type="button" class="btn btn-sm btn-soft" data-hub-action="study-history-toggle" data-target="hubStudyLogHistory" aria-controls="hubStudyLogHistory" aria-expanded="true">Collapse</button></div><div id="hubStudyLogHistory" role="region" aria-label="Study-time history" tabindex="0">${rows||'<div class="nexus-study-log-empty">No study-time entries yet. Completed focus sessions will appear here.</div>'}</div>${more}`;
+  }
+  function deleteStudyHubRecord(collection,id,options={}){
+    const previous=fsState[collection];
+    if(!Array.isArray(previous)){notify('This Study Hub record type is unavailable.');return false;}
+    const index=previous.findIndex(item=>item&&String(item.id)===String(id));
+    if(index<0){notify(options.missingMessage||'That record could not be found. Refresh the list and try again.');return false;}
+    if(!confirm(options.confirmMessage||'Delete this record?'))return false;
+    if(!window.NexusStartUndoFeatureArrayDelete||!window.NexusStartUndoFeatureArrayDelete(collection,previous)){
+      notify('Undo could not be prepared. Nothing was deleted.');return false;
+    }
+    fsState[collection]=previous.filter((_item,itemIndex)=>itemIndex!==index);
+    if(!saveFs([featureEntityDeleteChange(collection,id)])){
+      fsState[collection]=previous;window.NexusCancelUndoAction?.();renderHub();
+      notify(options.failureMessage||'Deletion was not saved. The previous record has been restored.');
+      return false;
+    }
+    renderHub();window.NexusRefreshUndoTimeout?.();return true;
+  }
+  function deleteStudyLog(id){
+    const entry=fsState.studyLogs.find(item=>item&&String(item.id)===String(id));
+    if(!entry){notify('That study-time entry could not be found. Refresh the history and try again.');return;}
+    const subject=state.subjects.find(s=>s.id===entry.subjectId)?.name||entry.subjectName||'Unassigned subject';
+    const topic=getTopic(entry.topicId)?.name||entry.topicName||'';
+    const time=studyLogTimeInfo(entry).label,duration=formatStudyDuration(studyLogMinutes(entry)*60);
+    const description=(topic?subject+' · '+topic:subject)+'\\n'+
+      (safeDate(entry.date)?fmtDate(entry.date):String(entry.date||'Date unavailable'))+
+      (time?' · '+time:'')+'\\n'+String(entry.type||'Study session')+' · '+duration;
+    deleteStudyHubRecord('studyLogs',id,{
+      confirmMessage:`Delete this study-time entry?\\n\\n${description}\\n\\nIt will be removed from study-time history, totals, charts, and future exports. Related review, journal, and paper records will be kept. Undo is available for 15 seconds after deletion.`,
+      missingMessage:'That study-time entry could not be found. Refresh the history and try again.',
+      failureMessage:'Study-time deletion was not saved. The previous entry has been restored.'
+    });
+  }
+  function renderPlanner(){
+    const planner=window.NexusGetCachedPlannerMetrics?.();
+    if(!planner){
+      const preparing=window.NexusPreparePlannerMetrics?.(true);
+      if(preparing&&plannerUiBuildPromise!==preparing){
+        plannerUiBuildPromise=preparing;
+        preparing.then(value=>{
+          if(plannerUiBuildPromise===preparing)plannerUiBuildPromise=null;
+          const view=hubEl('view-studyhub');
+          if(value&&hubTab==='planner'&&view?.classList.contains('active'))renderHub();
+        }).catch(error=>{
+          if(plannerUiBuildPromise===preparing)plannerUiBuildPromise=null;
+          console.error('Nexus planner metrics could not be prepared',error);
+          notify('The study plan could not be prepared. Reopen Planner to retry.');
+        });
+      }
+      return '<div class="hub-empty"><strong>Preparing your study plan…</strong><p>Nexus is calculating topic priorities and calendar totals in small batches. Your saved data is unchanged.</p></div>';
+    }
+    const plan=planner.plan,done=new Set(fsState.taskChecks[today()]||[]);
+    const allPlan=plan.length?plan.reduce((n,x)=>n+x.minutes,0):0,doneMins=loggedMinutesToday()+liveFocusMinutesToday();
+    const daily=fNum(fsState.settings.dailyMinutes)||90,session=fNum(fsState.settings.sessionMinutes)||25;
+    const week=weeklyReviewCount(),goal=fNum(fsState.settings.weeklyReviewGoal)||100;
+    const nearest=nearestFutureExam(),left=nearest?Math.max(0,dayDiff(today(),nearest.date)):null;
+    const remainingMins=planner.remainingMins,perDay=left!==null&&left>0?Math.ceil(remainingMins/left):remainingMins;
     const tasks=plan.length?plan.map(x=>`<div class="hub-task"><div><div class="hub-task-name">${localEsc(x.topic.name)}</div><div class="hub-task-meta">${localEsc(subjectFor(x.topic)?.name||'')} · estimated ${x.minutes} min · ${localEsc(statusText(x.status))}</div></div><button class="btn btn-sm btn-primary" data-hub-action="review-topic" data-id="${localEsc(x.topic.id)}">Review</button></div>`).join(''):`<div class="hub-empty">No due or new topics fit the current budget. You can still choose any topic for a longer focus session.</div>`;
-    const calWindow=Number(fsState.calendarWindow)||14;const nextDays=Array.from({length:calWindow},(_,i)=>{const d=dateShift(today(),i);const count=activeTopics().filter(t=>t.dueDate===d||(!t.dueDate&&t.createdAt===d)).length;const exams=state.exams.filter(e=>e.date===d);return {d,count,exams};});
+    const calWindow=planner.calendarWindow,calendarStart=today(),scheduledByDate=planner.scheduledByDate;const nextDays=Array.from({length:calWindow},(_,i)=>{const d=dateShift(calendarStart,i),count=scheduledByDate.get(d)||0,exams=state.exams.filter(e=>e.date===d);return {d,count,exams};});
     const cal=nextDays.map(x=>`<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(new Date(x.d+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'}))}${x.d===today()?' · Today':''}</div><div class="hub-row-meta">${x.count} scheduled topic(s)${x.exams.length?' · '+x.exams.map(e=>localEsc(e.name)).join(', '):''}</div></div><span class="hub-badge ${x.count?'warn':''}">${x.count}</span></div>`).join('');
     const focus=focusStart?`<div class="hub-note">⏱ Focus session running · <strong id="hubFocusClock">${formatElapsed(Date.now()-focusStart)}</strong><br>Timer is saved locally and calculates elapsed time from its start timestamp when you return, even after closing the tab. It cannot verify that you were studying while away. <button class="btn btn-sm btn-primary" data-hub-action="focus-stop" style="margin-top:8px">Stop & log session</button> <button class="btn btn-sm btn-danger" data-hub-action="focus-discard" style="margin-top:8px">Discard without logging</button></div>`:'';
     const planBody=`<div class="hub-inline" style="justify-content:space-between;margin-bottom:10px"><div><div class="hub-score"><span id="hubDoneMinutes">${formatStudyDuration(doneMins*60)}</span>/${daily} min</div><div class="hub-muted">Completed planned time today · Daily budget ${daily} min · Weekly reviews ${week}/${goal}</div></div><span id="hubGoalBadge" class="hub-badge ${doneMins>=daily?'good':'warn'}">${Math.round(doneMins/Math.max(1,daily)*100)}% of daily goal</span></div><div class="hub-meter"><span id="hubGoalMeter" style="width:${Math.min(100,doneMins/Math.max(1,daily)*100)}%"></span></div><div class="hub-workload-summary"><div><strong>${plan.length} suggested topics</strong><span>${allPlan} estimated minutes · not a fixed 10-minute allocation</span></div><button class="btn btn-sm" data-hub-action="refresh-plan">Refresh estimates</button><button class="btn btn-sm btn-soft" data-hub-action="backlog-plan">Spread overdue backlog</button></div><div class="hub-list" style="margin-top:12px">${tasks}</div><div class="hub-note">The daily budget is a planning target, not a per-topic limit. Choose a topic and set a session length that matches the work.</div>`;
-    const setupBody=`<div class="hub-form">${inputField('Available study time per day (minutes)','hubDailyMinutes',daily,'number','min="10" max="720" step="5"')}${inputField('Focus session length (minutes)','hubSessionMinutes',session,'number','min="5" max="180" step="5"')}${inputField('Weekly review target','hubWeeklyGoal',goal,'number','min="1" max="2000" step="5"')}<div class="hub-field"><label for="hubScheduler">Scheduling algorithm</label><select id="hubScheduler">${selectOptions([['classic','Classic intervals (existing)'],['fsrs-lite','FSRS-inspired adaptive heuristic']],fsState.settings.scheduler)}</select></div></div><div class="hub-actions"><button class="btn btn-primary" data-hub-action="save-planner-settings">Save planning settings</button><button class="btn" data-hub-action="focus-start">Start focus session (${session} min)</button><button class="btn" data-hub-action="focus-stop">Stop & log focus time</button></div>${focus}<div class="hub-note">The adaptive option is a transparent FSRS-inspired heuristic, not the official FSRS algorithm. Existing saved schedules are preserved; the selected method influences future review intervals only.</div>`;
+    const setupBody=`<div class="hub-form">${inputField('Available study time per day (minutes)','hubDailyMinutes',daily,'number','min="10" max="720" step="5"')}${inputField('Focus session length (minutes)','hubSessionMinutes',session,'number','min="5" max="180" step="5"')}${inputField('Weekly review target','hubWeeklyGoal',goal,'number','min="1" max="2000" step="5"')}<div class="hub-field"><label for="hubScheduler">Scheduling algorithm</label><select id="hubScheduler">${selectOptions([['classic','Classic intervals (existing)'],['fsrs-lite','FSRS-inspired adaptive heuristic']],fsState.settings.scheduler)}</select></div></div><div class="hub-actions"><button class="btn btn-primary" data-hub-action="save-planner-settings">Save planning settings</button><button class="btn" data-hub-action="focus-start">Start focus session (${session} min)</button><button class="btn" data-hub-action="focus-stop">Stop & log focus time</button></div>${focus}<div class="hub-note">The adaptive option is a transparent FSRS-inspired heuristic, not the official FSRS algorithm. Existing saved schedules are preserved. The selected method influences future review intervals only.</div>`;
     const examBody=nearest?`<div class="hub-score">${left===0?'Exam day':left+' days left'}</div><div class="hub-row-meta">${localEsc(nearest.name)} · ${localEsc(fmtDate(nearest.date))}</div><div class="hub-meter"><span style="width:${Math.min(100,left===0?100:Math.max(2,100/(left+1)))}%"></span></div><div class="hub-row-meta" style="margin-top:10px">Estimated non-mastered topic workload: ${remainingMins} min. To cover it before this exam, aim for about ${perDay} min/day across ${Math.max(1,left)} day(s). This estimate excludes past-paper time.</div>`:`<div class="hub-empty">Add an exam or deadline in Setup & data to calculate a countdown-based workload plan.</div>`;
-    return `<div class="hub-grid">${hubCard('Topic study timer','Search and choose any topic, whether it is due today or not. The timer logs time against the selected topic and subject.',`<div class="hub-form"><div class="hub-field full"><label for="hubStudySearch">Search any topic</label><input class="hub-input" id="hubStudySearch" type="search" ${focusStart?'disabled':''} placeholder="Topic, subject, or notes…" value="${localEsc(fsState.studyTopicQuery||'')}"></div><div class="hub-field full"><label for="hubStudyTopic">Selected topic</label><select class="hub-input" id="hubStudyTopic" ${focusStart?'disabled':''}>${selectOptions(state.topics.filter(t=>!t.archived&&(!fsState.studyTopicQuery||[t.name,t.notes,subjectFor(t)?.name].some(v=>String(v||'').toLowerCase().includes(String(fsState.studyTopicQuery).toLowerCase())))).map(t=>[t.id,(subjectFor(t)?.name?subjectFor(t).name+' · ':'')+t.name]),focusTopicId)}</select></div><div class="hub-field"><label for="hubStudySubject">Subject if no topic is selected</label><select class="hub-input" id="hubStudySubject">${subjectOptions(focusSubjectId,true)}</select></div><div class="hub-field"><label for="hubTimerMinutes">Target minutes</label><input class="hub-input" id="hubTimerMinutes" type="number" min="5" max="240" step="5" value="${localEsc(fsState.settings.sessionMinutes||25)}"></div><div class="hub-actions full"><button class="btn btn-primary" data-hub-action="focus-start" ${focusStart?'disabled':''}>Start focus session</button>${focusStart?'<button class="btn btn-danger" data-hub-action="focus-stop">Stop & log session</button><button class="btn btn-danger" data-hub-action="focus-discard">Discard without logging</button>':''}</div><div class="hub-note">Daily budget: ${daily} min · logged today: ${doneMins} min. Active focus time is included in the daily budget.</div></div>`,true)}${hubCard('Study-time history','Review sessions recorded by the focus timer and other Study Hub tools. Delete mistaken entries to correct totals and exports.',renderStudyLogHistory())}${hubCard('Today’s study plan','A practical workload based on due dates, recent recall, and difficulty.',planBody,true)}${hubCard('Planning controls','Set the daily budget, focus block, weekly review target, and scheduler.',setupBody)}${hubCard('Exam countdown planner','Estimated study workload against your nearest upcoming exam.',examBody)}${hubCard('Final-revision mode & workload balancing','Temporarily prioritise non-mastered topics, then spread revision workload over a chosen window. Dates change; review history is never fabricated.',`<div class="hub-inline"><span class="hub-badge ${fsState.settings.finalRevision?'good':'warn'}">${fsState.settings.finalRevision?'Final revision ON':'Final revision OFF'}</span><span class="hub-muted">${fsState.settings.finalRevision?'Non-mastered topics receive higher priority.':'Normal due-date and weakness priority.'}</span></div><div class="hub-actions"><button class="btn btn-sm ${fsState.settings.finalRevision?'':'btn-primary'}" data-hub-action="toggle-final-revision">${fsState.settings.finalRevision?'Turn final revision off':'Turn final revision on'}</button></div><div class="hub-form" style="margin-top:12px">${inputField('Balance topics across how many days','hubWorkloadDays',fsState.settings.workloadDays||7,'number','min="1" max="90" step="1"')}</div><div class="hub-actions"><button class="btn btn-sm btn-primary" data-hub-action="balance-workload">Balance active topics</button></div><div class="hub-note">Workload balancing distributes due, overdue, and new topics across the selected number of days using estimated effort and priority. It changes due dates only. Export a backup first if you want a rollback outside the app.</div>`,true)}${hubCard('Subject-neutral theory recall log','Use your own syllabus and method: blank-page recall, verbal explanation, written outline, formula derivation, or timed response. This is a practice log, not a quiz or flashcard system.',`<form id="hubRecallForm" class="hub-form"><div class="hub-field"><label for="hubRecallSubject">Subject</label><select id="hubRecallSubject">${subjectOptions('',true)}</select></div><div class="hub-field"><label for="hubRecallTopic">Topic (optional)</label><select id="hubRecallTopic">${topicOptions('',true)}</select></div><div class="hub-field"><label for="hubRecallMethod">Recall method</label><select id="hubRecallMethod">${selectOptions([['Blank-page recall','Blank-page recall'],['Verbal explanation','Verbal explanation'],['Written outline','Written outline'],['Formula / calculation derivation','Formula / calculation derivation'],['Timed exam response','Timed exam response'],['Diagram / process reconstruction','Diagram / process reconstruction'],['Other','Other']],'Blank-page recall')}</select></div><div class="hub-field"><label for="hubRecallConfidence">Recall quality</label><select id="hubRecallConfidence">${selectOptions([['1','1 · Could not recall'],['2','2 · Major gaps'],['3','3 · Partial'],['4','4 · Mostly complete'],['5','5 · Accurate and complete']],'3')}</select></div><div class="hub-field full"><label for="hubRecallRecalled">What did you reconstruct from memory?</label><textarea id="hubRecallRecalled" maxlength="3000" placeholder="Briefly record the key points, steps, formulas, or structure you recalled."></textarea></div><div class="hub-field full"><label for="hubRecallGaps">Gaps to fix next</label><textarea id="hubRecallGaps" maxlength="2000" placeholder="What was missing or inaccurate? What will you review?"></textarea></div><div class="hub-actions full"><button class="btn btn-primary" type="submit">Save recall session</button></div></form>`,true)}</div>`;}
-  function renderMastery(){const topics=activeTopics();const rows=state.subjects.map(sub=>{const ts=topics.filter(t=>t.subjectId===sub.id),rev=ts.filter(t=>t.reviewCount>0),mast=ts.filter(isMastered),weak=ts.filter(t=>featureMeta(t).weak),avg=rev.length?rev.reduce((n,t)=>n+featureMeta(t).avg,0)/rev.length:0;const target=fNum(fsState.syllabusTargets[sub.id])||0;const coverage=target>0?Math.min(100,Math.round(ts.length/target*100)):ts.length?Math.round(rev.length/ts.length*100):0;return {sub,ts,rev,mast,weak,avg,target,coverage};});
-    const subjectRows=rows.length?rows.map(r=>`<tr><td>${localEsc(r.sub.name)}<div class="hub-row-meta">${localEsc(streamFor(r.sub)?.name||'')}</div></td><td>${r.ts.length}${r.target?` / ${r.target}`:''}</td><td>${r.ts.length?Math.round(r.rev.length/r.ts.length*100):0}%</td><td>${r.ts.length?Math.round(r.mast.length/r.ts.length*100):0}%</td><td>${r.avg?r.avg.toFixed(1)+'/5':'—'}</td><td>${r.weak.length}</td><td><div class="hub-meter"><span style="width:${r.coverage}%"></span></div><div class="hub-row-meta">${r.target?`${r.coverage}% of expected count`:'reviewed-topic coverage'}</div></td></tr>`).join(''):`<tr><td colspan="7">Create a subject to start tracking coverage.</td></tr>`;
-    const targetInputs=rows.map(r=>`<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(r.sub.name)}</div><div class="hub-row-meta">${r.ts.length} topics in the tracker · ${r.rev.length} reviewed · ${r.mast.length} mastered</div></div><div style="width:120px"><input class="hub-input" type="number" min="0" max="10000" step="1" data-target-subject="${localEsc(r.sub.id)}" value="${r.target||''}" placeholder="Expected count" aria-label="Expected lesson count for ${localEsc(r.sub.name)}"></div></div>`).join('');
-    const detailed=topics.slice().sort((a,b)=>featureMeta(a).score-featureMeta(b).score||topicPriority(b)-topicPriority(a)).slice(0,40).map(t=>{const m=featureMeta(t),pct=m.score;return `<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(t.name)}</div><div class="hub-row-meta">${localEsc(subjectFor(t)?.name||'')} · ${t.reviewCount} reviews · Avg ${m.avg?m.avg.toFixed(1)+'/5':'not rated'} · ${localEsc(statusText(status(t)))}</div><div class="hub-meter"><span style="width:${pct}%;background:${m.weak?'var(--amber)':'var(--accent)'}"></span></div></div><div class="hub-row-actions"><span class="hub-badge ${m.weak?'warn':isMastered(t)?'good':''}">${m.weak?'Needs work':isMastered(t)?'Mastered':pct+'%'}</span><button class="btn btn-sm" data-hub-action="edit-topic" data-id="${localEsc(t.id)}">Edit</button></div></div>`;}).join('');
-    return `<div class="hub-grid">${hubCard('Syllabus coverage map','Metrics are based on topics represented in this tracker. Set an expected topic count to estimate coverage against a full syllabus.',`<div class="hub-table-wrap"><table class="hub-table"><thead><tr><th>Subject</th><th>Topics</th><th>Reviewed</th><th>Mastered</th><th>Avg rating</th><th>Weak</th><th>Coverage</th></tr></thead><tbody>${subjectRows}</tbody></table></div>`,true)}${hubCard('Expected syllabus size','Optional estimated denominator by subject; leave blank to show progress only among currently entered topics.',`${targetInputs}<div class="hub-actions"><button class="btn btn-primary" data-hub-action="save-targets">Save syllabus targets</button></div>`)}${hubCard('Weakness detector & topic mastery','Top 40 topics ordered by estimated mastery, with repeated lapses, low recent ratings and overdue status flagged.',`<div class="hub-list">${detailed||'<div class="hub-empty">No topics yet.</div>'}</div>`,true)}</div>`;}
-  function paperRows(){return fsState.papers.slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'')).map(p=>{const pct=p.score!==null&&p.score!==undefined&&p.maxScore>0?Math.round(p.score/p.maxScore*100):null;return `<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(p.name)} ${p.kind?`<span class="hub-pill">${localEsc(p.kind)}</span>`:''}</div><div class="hub-row-meta">${localEsc(state.subjects.find(s=>s.id===p.subjectId)?.name||'No subject')} · ${localEsc(fmtDate(p.date))}${p.duration?` · ${p.duration} min`:''}${p.errorCount?` · ${p.errorCount} error(s)`:''}</div>${pct!==null?`<div class="hub-meter"><span style="width:${Math.max(0,Math.min(100,pct))}%;background:${pct<50?'var(--red)':pct<75?'var(--amber)':'var(--accent)'}"></span></div><div class="hub-row-meta">${p.score}/${p.maxScore} · ${pct}%</div>`:''}${p.weakAreas?`<div class="hub-row-meta">Weak areas: ${localEsc(p.weakAreas)}</div>`:''}${p.notes?`<div class="hub-note">${localEsc(p.notes)}</div>`:''}</div><div class="hub-row-actions"><button class="btn btn-sm btn-danger" data-hub-action="delete-paper" data-id="${localEsc(p.id)}">Delete</button></div></div>`;}).join('');}
+    return `<div class="hub-grid">${hubCard('Topic study timer','Search and choose any topic, whether it is due today or not. The timer logs time against the selected topic and subject.',`<div class="hub-form"><div class="hub-field full"><label for="hubStudySearch">Search any topic</label><input class="hub-input" id="hubStudySearch" type="search" ${focusStart?'disabled':''} placeholder="Topic, subject, or notes…" value="${localEsc(fsState.studyTopicQuery||'')}"></div><div class="hub-field full"><label for="hubStudyTopic">Selected topic</label><select class="hub-input" id="hubStudyTopic" ${focusStart?'disabled':''}>${studyTopicOptionsMarkup(fsState.studyTopicQuery,focusTopicId,150)}</select></div><div class="hub-field"><label for="hubStudySubject">Subject if no topic is selected</label><select class="hub-input" id="hubStudySubject">${subjectOptions(focusSubjectId,true)}</select></div><div class="hub-field"><label for="hubTimerMinutes">Target minutes</label><input class="hub-input" id="hubTimerMinutes" type="number" min="5" max="240" step="5" value="${localEsc(fsState.settings.sessionMinutes||25)}"></div><div class="hub-actions full"><button class="btn btn-primary" data-hub-action="focus-start" ${focusStart?'disabled':''}>Start focus session</button>${focusStart?'<button class="btn btn-danger" data-hub-action="focus-stop">Stop & log session</button><button class="btn btn-danger" data-hub-action="focus-discard">Discard without logging</button>':''}</div><div class="hub-note">Daily budget: ${daily} min · logged today: ${doneMins} min. Active focus time is included in the daily budget.</div></div>`,true)}${hubCard('Study-time history','Review sessions recorded by the focus timer and other Study Hub tools. Delete mistaken entries to correct totals and exports.',renderStudyLogHistory())}${hubCard('Today’s study plan','A practical workload based on due dates, recent recall, and difficulty.',planBody,true)}${hubCard('Planning controls','Set the daily budget, focus block, weekly review target, and scheduler.',setupBody)}${hubCard('Exam countdown planner','Estimated study workload against your nearest upcoming exam.',examBody)}${hubCard('Final-revision mode & workload balancing','Temporarily prioritise non-mastered topics, then spread revision workload over a chosen window. Dates change. Review history is never fabricated.',`<div class="hub-inline"><span class="hub-badge ${fsState.settings.finalRevision?'good':'warn'}">${fsState.settings.finalRevision?'Final revision ON':'Final revision OFF'}</span><span class="hub-muted">${fsState.settings.finalRevision?'Non-mastered topics receive higher priority.':'Normal due-date and weakness priority.'}</span></div><div class="hub-actions"><button class="btn btn-sm ${fsState.settings.finalRevision?'':'btn-primary'}" data-hub-action="toggle-final-revision">${fsState.settings.finalRevision?'Turn final revision off':'Turn final revision on'}</button></div><div class="hub-form" style="margin-top:12px">${inputField('Balance topics across how many days','hubWorkloadDays',fsState.settings.workloadDays||7,'number','min="1" max="90" step="1"')}</div><div class="hub-actions"><button class="btn btn-sm btn-primary" data-hub-action="balance-workload">Balance active topics</button></div><div class="hub-note">Workload balancing distributes due, overdue, and new topics across the selected number of days using estimated effort and priority. It changes due dates only. Export a backup first if you want a rollback outside the app.</div>`,true)}${hubCard('Subject-neutral theory recall log','Use your own syllabus and method: blank-page recall, verbal explanation, written outline, formula derivation, or timed response. This is a practice log, not a quiz or flashcard system.',`<form id="hubRecallForm" class="hub-form"><div class="hub-field"><label for="hubRecallSubject">Subject</label><select id="hubRecallSubject">${subjectOptions('',true)}</select></div><div class="hub-field"><label for="hubRecallTopic">Topic (optional)</label><select id="hubRecallTopic">${topicOptions('',true)}</select></div><div class="hub-field"><label for="hubRecallMethod">Recall method</label><select id="hubRecallMethod">${selectOptions([['Blank-page recall','Blank-page recall'],['Verbal explanation','Verbal explanation'],['Written outline','Written outline'],['Formula / calculation derivation','Formula / calculation derivation'],['Timed exam response','Timed exam response'],['Diagram / process reconstruction','Diagram / process reconstruction'],['Other','Other']],'Blank-page recall')}</select></div><div class="hub-field"><label for="hubRecallConfidence">Recall quality</label><select id="hubRecallConfidence">${selectOptions([['1','1 · Could not recall'],['2','2 · Major gaps'],['3','3 · Partial'],['4','4 · Mostly complete'],['5','5 · Accurate and complete']],'3')}</select></div><div class="hub-field full"><label for="hubRecallRecalled">What did you reconstruct from memory?</label><textarea id="hubRecallRecalled" maxlength="3000" placeholder="Briefly record the key points, steps, formulas, or structure you recalled."></textarea></div><div class="hub-field full"><label for="hubRecallGaps">Gaps to fix next</label><textarea id="hubRecallGaps" maxlength="2000" placeholder="What was missing or inaccurate? What will you review?"></textarea></div><div class="hub-actions full"><button class="btn btn-primary" type="submit">Save recall session</button></div></form>`,true)}</div>`;}
+  function renderMastery(){
+    const subjectStats=new Map(state.subjects.map(sub=>[String(sub.id),{
+      sub,total:0,reviewed:0,mastered:0,weak:0,averageSum:0,target:fNum(fsState.syllabusTargets[sub.id])||0
+    }]));
+    const compareDetailed=(a,b)=>a.meta.score-b.meta.score||b.priority-a.priority||a.order-b.order;
+    const detailedCollector=window.NexusCreateTopKCollector(40,compareDetailed);
+    // Aggregate all subject metrics and mastery candidates in a single topic pass.
+    // Only the best 40 detail rows are retained; the complete topic array is not copied or sorted.
+    let topicOrder=0;
+    for(const topic of state.topics){
+      const order=topicOrder++;
+      if(topic.archived)continue;
+      const row=subjectStats.get(String(topic.subjectId));
+      const meta=featureMeta(topic),topicStatus=status(topic);
+      if(row){
+        row.total++;
+        if(topic.reviewCount>0){row.reviewed++;row.averageSum+=meta.avg;}
+        if(topic.reviewCount>=2&&meta.avg>=3.5&&topic.intervalDays>=4&&topicStatus!=='overdue')row.mastered++;
+        if(meta.weak)row.weak++;
+      }
+      detailedCollector.add({topic,meta,priority:topicPriority(topic,meta),status:topicStatus,order});
+    }
+    const rows=Array.from(subjectStats.values()).map(row=>{
+      const coverage=row.target>0?Math.min(100,Math.round(row.total/row.target*100)):row.total?Math.round(row.reviewed/row.total*100):0;
+      return {...row,avg:row.reviewed?row.averageSum/row.reviewed:0,coverage};
+    });
+    const subjectRows=rows.length?rows.map(r=>`<tr><td>${localEsc(r.sub.name)}<div class="hub-row-meta">${localEsc(streamFor(r.sub)?.name||'')}</div></td><td>${r.total}${r.target?` / ${r.target}`:''}</td><td>${r.total?Math.round(r.reviewed/r.total*100):0}%</td><td>${r.total?Math.round(r.mastered/r.total*100):0}%</td><td>${r.avg?r.avg.toFixed(1)+'/5':'—'}</td><td>${r.weak}</td><td><div class="hub-meter"><span style="width:${r.coverage}%"></span></div><div class="hub-row-meta">${r.target?`${r.coverage}% of expected count`:'reviewed-topic coverage'}</div></td></tr>`).join(''):`<tr><td colspan="7">Create a subject to start tracking coverage.</td></tr>`;
+    const targetInputs=rows.map(r=>`<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(r.sub.name)}</div><div class="hub-row-meta">${r.total} topics in the tracker · ${r.reviewed} reviewed · ${r.mastered} mastered</div></div><div style="width:120px"><input class="hub-input" type="number" min="0" max="10000" step="1" data-target-subject="${localEsc(r.sub.id)}" value="${r.target||''}" placeholder="Expected count" aria-label="Expected lesson count for ${localEsc(r.sub.name)}"></div></div>`).join('');
+    const detailed=detailedCollector.finish().items.map(({topic:t,meta:m,status:st})=>{
+      const pct=m.score,mastered=t.reviewCount>=2&&m.avg>=3.5&&t.intervalDays>=4&&st!=='overdue';
+      return `<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(t.name)}</div><div class="hub-row-meta">${localEsc(subjectFor(t)?.name||'')} · ${t.reviewCount} reviews · Avg ${m.avg?m.avg.toFixed(1)+'/5':'not rated'} · ${localEsc(statusText(st))}</div><div class="hub-meter"><span style="width:${pct}%;background:${m.weak?'var(--amber)':'var(--accent)'}"></span></div></div><div class="hub-row-actions"><span class="hub-badge ${m.weak?'warn':mastered?'good':''}">${m.weak?'Needs work':mastered?'Mastered':pct+'%'}</span><button class="btn btn-sm" data-hub-action="edit-topic" data-id="${localEsc(t.id)}">Edit</button></div></div>`;
+    }).join('');
+    return `<div class="hub-grid">${hubCard('Syllabus coverage map','Metrics are based on topics represented in this tracker. Set an expected topic count to estimate coverage against a full syllabus.',`<div class="hub-table-wrap"><table class="hub-table"><thead><tr><th>Subject</th><th>Topics</th><th>Reviewed</th><th>Mastered</th><th>Avg rating</th><th>Weak</th><th>Coverage</th></tr></thead><tbody>${subjectRows}</tbody></table></div>`,true)}${hubCard('Expected syllabus size','Optional estimated denominator by subject; leave blank to show progress only among currently entered topics.',`${targetInputs}<div class="hub-actions"><button class="btn btn-primary" data-hub-action="save-targets">Save syllabus targets</button></div>`)}${hubCard('Weakness detector & topic mastery','Top 40 topics ordered by estimated mastery, with repeated lapses, low recent ratings and overdue status flagged.',`<div class="hub-list">${detailed||'<div class="hub-empty">No topics yet.</div>'}</div>`,true)}</div>`;
+  }
+  function paperRows(){return fsState.papers.slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'')).map(p=>{const pct=p.score!==null&&p.score!==undefined&&p.maxScore>0?Math.round(p.score/p.maxScore*100):null;return `<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(p.name)} ${p.kind?`<span class="hub-pill">${localEsc(p.kind)}</span>`:''}</div><div class="hub-row-meta">${localEsc(state.subjects.find(s=>s.id===p.subjectId)?.name||'No subject')} · ${localEsc(fmtDate(p.date))}${p.duration?` · ${p.duration} min`:''}${p.errorCount?` · ${p.errorCount} error(s)`:''}</div>${pct!==null?`<div class="hub-meter"><span style="width:${Math.max(0,Math.min(100,pct))}%;background:${pct<50?'var(--red)':pct<75?'var(--amber)':'var(--accent)'}"></span></div><div class="hub-row-meta">${p.score}/${p.maxScore} · ${pct}%</div>`:''}${p.weakAreas?`<div class="hub-row-meta">Weak areas: ${localEsc(p.weakAreas)}</div>`:''}${p.notes?`<div class="hub-note">${localEsc(p.notes)}</div>`:''}</div><div class="hub-row-actions"><button type="button" class="btn btn-sm btn-danger" data-hub-action="delete-paper" data-id="${localEsc(p.id)}">Delete</button></div></div>`;}).join('');}
   function renderPapers(){const n=fsState.papers.length,scored=fsState.papers.filter(p=>p.score!==null&&p.score!==undefined&&p.maxScore>0),avg=scored.length?Math.round(scored.reduce((s,p)=>s+p.score/p.maxScore*100,0)/scored.length):0,minutes=fsState.papers.reduce((s,p)=>s+fNum(p.duration),0),err=fsState.papers.reduce((s,p)=>s+fNum(p.errorCount),0);const exam=nearestFutureExam();const form=`<form id="hubPaperForm" class="hub-form">${inputField('Paper / practice name','hubPaperName','','text','required maxlength="160" placeholder="e.g. Economics 2022 Paper II"')}<div class="hub-field"><label for="hubPaperSubject">Subject</label><select id="hubPaperSubject">${subjectOptions('',true)}</select></div><div class="hub-field"><label for="hubPaperKind">Practice type</label><select id="hubPaperKind">${selectOptions([['Past paper','Past paper'],['Timed section','Timed section'],['Calculation drill','Calculation drill'],['Theory recall','Theory recall'],['Mock exam','Mock exam'],['Other','Other']],'Past paper')}</select></div>${inputField('Date','hubPaperDate',today(),'date','required')}${inputField('Score achieved','hubPaperScore','','number','min="0" step="any" placeholder="Optional"')}${inputField('Maximum score','hubPaperMax','','number','min="0.01" step="any" placeholder="Optional"')}${inputField('Duration (minutes)','hubPaperDuration','','number','min="0" max="10000" step="1"')}${inputField('Errors / questions missed','hubPaperErrors','0','number','min="0" max="10000" step="1"')}<div class="hub-field full"><label for="hubPaperWeak">Weak areas / missed concepts</label><input id="hubPaperWeak" maxlength="1000" placeholder="e.g. elasticity calculations, company accounts"></div><div class="hub-field full"><label for="hubPaperNotes">Notes and next actions</label><textarea id="hubPaperNotes" maxlength="2000" placeholder="Why marks were lost, what to practise next"></textarea></div><div class="hub-actions full"><button class="btn btn-primary" type="submit">Save paper / practice log</button></div></form>`;
     const stats=`<div class="hub-kpis" style="margin-bottom:0"><div class="hub-kpi"><strong>${n}</strong><span>Practices logged</span></div><div class="hub-kpi"><strong>${avg}%</strong><span>Average scored result</span></div><div class="hub-kpi"><strong>${minutes}</strong><span>Paper minutes logged</span></div><div class="hub-kpi"><strong>${err}</strong><span>Missed items recorded</span></div></div>`;
     const examCard=exam?`<div class="hub-note"><strong>${localEsc(exam.name)}</strong>: ${dayDiff(today(),exam.date)} day(s) left. Plan subject-specific paper attempts alongside spaced reviews; this tracker does not assume that a completed review equals exam readiness.</div>`:`<div class="hub-note">Add your exam date in Setup & data to enable countdown planning.</div>`;
     return `<div class="hub-grid">${hubCard('Paper and calculation practice log','Record full past papers, timed sections, theory recall, calculation drills and mock exams.',form)}${hubCard('Exam readiness snapshot','Compare practice results, errors, and logged paper time over time.',`${stats}${examCard}<div class="hub-actions"><button class="btn" data-hub-action="export-papers">Export practice CSV</button></div>`)}${hubCard('Paper history','Scores and weak areas are stored locally and included in full backups.',`<div class="hub-list">${paperRows()||'<div class="hub-empty">No papers logged yet. Add your first timed section, calculation drill, or past paper above.</div>'}</div>`,true)}</div>`;}
   function renderJournal(){const form=`<form id="hubJournalForm" class="hub-form"><div class="hub-field"><label for="hubJournalCategory">Entry type</label><select id="hubJournalCategory">${selectOptions([['Mistake','Mistake / lost marks'],['Concept gap','Concept gap'],['Calculation','Calculation error'],['Theory recall','Theory recall'],['Repeated error','Repeated error'],['Next action','Next action'],['Study note','Study note']],'Mistake')}</select></div><div class="hub-field"><label for="hubJournalSubject">Subject</label><select id="hubJournalSubject">${subjectOptions('',true)}</select></div><div class="hub-field"><label for="hubJournalTopic">Related topic (optional)</label><select id="hubJournalTopic">${topicOptions('',true)}</select></div><div class="hub-field"><label for="hubJournalSeverity">Severity</label><select id="hubJournalSeverity">${selectOptions([['1','Low'],['2','Moderate'],['3','High'],['4','Repeated / critical']], '2')}</select></div><div class="hub-field full"><label for="hubJournalIssue">What went wrong / what should be remembered?</label><textarea id="hubJournalIssue" maxlength="3000" required placeholder="Describe the exact mistake, missed step, or unclear idea."></textarea></div><div class="hub-field full"><label for="hubJournalFix">Correction / next action</label><textarea id="hubJournalFix" maxlength="3000" placeholder="Write the correct reasoning or the practice task needed."></textarea></div><div class="hub-actions full"><button class="btn btn-primary" type="submit">Save journal entry</button></div></form>`;
-    const items=fsState.journal.slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'')).map(j=>`<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(j.category)} <span class="hub-badge ${j.solved?'good':Number(j.severity)>=3?'warn':''}">${j.solved?'Resolved':'Open'} · Severity ${localEsc(j.severity)}</span></div><div class="hub-row-meta">${localEsc(fmtDate(j.date))} · ${localEsc(state.subjects.find(s=>s.id===j.subjectId)?.name||'General')}${j.topicId?` · ${localEsc(getTopic(j.topicId)?.name||'Deleted topic')}`:''}</div><div style="margin-top:7px;white-space:pre-wrap;overflow-wrap:anywhere">${localEsc(j.issue)}</div>${j.fix?`<div class="hub-note"><strong>Correction / action:</strong><br>${localEsc(j.fix)}</div>`:''}</div><div class="hub-row-actions"><button class="btn btn-sm" data-hub-action="toggle-journal" data-id="${localEsc(j.id)}">${j.solved?'Reopen':'Resolve'}</button><button class="btn btn-sm btn-danger" data-hub-action="delete-journal" data-id="${localEsc(j.id)}">Delete</button></div></div>`).join('');
+    const items=fsState.journal.slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'')).map(j=>`<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(j.category)} <span class="hub-badge ${j.solved?'good':Number(j.severity)>=3?'warn':''}">${j.solved?'Resolved':'Open'} · Severity ${localEsc(j.severity)}</span></div><div class="hub-row-meta">${localEsc(fmtDate(j.date))} · ${localEsc(state.subjects.find(s=>s.id===j.subjectId)?.name||'General')}${j.topicId?` · ${localEsc(getTopic(j.topicId)?.name||'Deleted topic')}`:''}</div><div style="margin-top:7px;white-space:pre-wrap;overflow-wrap:anywhere">${localEsc(j.issue)}</div>${j.fix?`<div class="hub-note"><strong>Correction / action:</strong><br>${localEsc(j.fix)}</div>`:''}</div><div class="hub-row-actions"><button class="btn btn-sm" data-hub-action="toggle-journal" data-id="${localEsc(j.id)}">${j.solved?'Reopen':'Resolve'}</button><button type="button" class="btn btn-sm btn-danger" data-hub-action="delete-journal" data-id="${localEsc(j.id)}">Delete</button></div></div>`).join('');
     return `<div class="hub-grid">${hubCard('Mistake journal and lesson notes','Subject-neutral entries work across Accounting, Economics, Business Studies, languages, science, and any other course.',form)}${hubCard('How to use the journal','Keep each entry specific: identify the error, write the correct method, and define a follow-up action.',`<div class="hub-note">Recommended after every paper: record repeated errors and calculation mistakes, then tag the related topic. Use the mastery page to find low-rated topics and revisit the error log before another attempt.</div><div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">Open entries</div><div class="hub-row-meta">Entries not yet marked resolved</div></div><strong class="hub-score">${fsState.journal.filter(j=>!j.solved).length}</strong></div><div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">High severity</div><div class="hub-row-meta">Severity 3–4 entries still open</div></div><strong class="hub-score">${fsState.journal.filter(j=>!j.solved&&Number(j.severity)>=3).length}</strong></div>`)}${hubCard('Journal history',`Saved entries: ${fsState.journal.length}`,`<div class="hub-list">${items||'<div class="hub-empty">No journal entries yet. Add a mistake or lesson note after your next practice session.</div>'}</div>`,true)}</div>`;}
   function analyticsAccessPolicy(){return {tier:'free',maxRangeDays:730,unlimitedRange:false};}
 
   const RATING_ANALYTICS_COLORS={1:'#ef4444',2:'#f97316',3:'#eab308',4:'#84cc16',5:'#059669'};
 
+  let ratingAnalyticsSelectionCache=null;
   function getRatingAnalyticsSelection(){
     const allowed=['week','month','year','custom'],period=allowed.includes(String(fsState.analyticsPeriod||'week'))?String(fsState.analyticsPeriod||'week'):'week',now=today();let from=now,to=now;
     if(period==='week'){const offset=(new Date(now+'T12:00:00').getDay()+6)%7;from=dateShift(now,-offset);to=dateShift(from,6);}
     else if(period==='month'){from=now.slice(0,7)+'-01';const p=now.split('-'),last=new Date(Number(p[0]),Number(p[1]),0).getDate();to=now.slice(0,7)+'-'+String(last).padStart(2,'0');}
     else if(period==='year'){from=now.slice(0,4)+'-01-01';to=now.slice(0,4)+'-12-31';}
     else{from=safeDate(fsState.analyticsCustomStart)?fsState.analyticsCustomStart:dateShift(now,-29);to=safeDate(fsState.analyticsCustomEnd)?fsState.analyticsCustomEnd:now;}
-    const valid=safeDate(from)&&safeDate(to)&&from<=to,records=valid?state.history.filter(h=>safeDate(h.reviewedAt)&&h.reviewedAt>=from&&h.reviewedAt<=to):[];
-    return {range:period,from,to,records,label:({week:'This week',month:'This month',year:'This year',custom:'Custom date range'})[period],valid};
+    const source=state.history,historyLength=source.length,cache=ratingAnalyticsSelectionCache;
+    if(cache&&cache.source===source&&cache.historyLength===historyLength&&cache.period===period&&cache.from===from&&cache.to===to)return cache.selection;
+    const valid=safeDate(from)&&safeDate(to)&&from<=to,records=valid?source.filter(h=>safeDate(h.reviewedAt)&&h.reviewedAt>=from&&h.reviewedAt<=to):[];
+    const selection={range:period,from,to,records,label:({week:'This week',month:'This month',year:'This year',custom:'Custom date range'})[period],valid};
+    ratingAnalyticsSelectionCache={source,historyLength,period,from,to,selection};
+    return selection;
   }
-  function getRatingAnalyticsEntityOptions(level){
-    const map=new Map();
+  const RATING_ANALYTICS_ENTITY_OPTION_LIMIT=150;
+  function getRatingAnalyticsEntityOptions(level,search='',limit=RATING_ANALYTICS_ENTITY_OPTION_LIMIT,currentValue=String(fsState.analyticsRatingEntity||'ALL')){
+    const query=String(search||'').trim().toLocaleLowerCase();
+    const max=Math.max(1,Math.min(RATING_ANALYTICS_ENTITY_OPTION_LIMIT,Math.floor(Number(limit)||RATING_ANALYTICS_ENTITY_OPTION_LIMIT)));
+    const compare=(a,b)=>a.label.localeCompare(b.label)||a.subtitle.localeCompare(b.subtitle)||a.value.localeCompare(b.value);
+    const collector=window.NexusCreateTopKCollector(max,compare),seen=new Set();
+    const subjectById=new Map(state.subjects.map(subject=>[String(subject.id),subject]));
+    const streamById=new Map(state.streams.map(stream=>[String(stream.id),stream]));
+    const topicById=level==='topic'?new Map(state.topics.map(topic=>[String(topic.id),topic])):null;
+    const selected=String(currentValue||'');
+    let currentOption=null,matchCount=0;
+    const add=(value,label,subtitle)=>{
+      value=String(value);
+      const option={value,label:String(label||'Untitled'),subtitle:String(subtitle||'')};
+      if(value===selected&&!currentOption)currentOption=option;
+      const matches=!query||(option.label+' '+option.subtitle).toLocaleLowerCase().includes(query);
+      if(!matches||seen.has(value))return;
+      seen.add(value);matchCount++;collector.add(option);
+    };
     if(level==='topic'){
-      state.topics.forEach(t=>{const sub=subjectFor(t);map.set(String(t.id),{value:String(t.id),label:String(t.name||'Untitled topic'),subtitle:String(sub?.name||'Unassigned subject')});});
-      state.history.forEach(h=>{const name=String(h.topicName||getTopic(h.topicId)?.name||'Untitled topic'),sub=String(h.subjectName||'Unassigned subject'),value=h.topicId?String(h.topicId):'legacy-topic:'+sub+'::'+name;if(!map.has(value))map.set(value,{value,label:name,subtitle:sub});});
+      state.topics.forEach(topic=>{
+        const subject=subjectById.get(String(topic.subjectId));
+        add(topic.id,topic.name||'Untitled topic',subject?.name||'Unassigned subject');
+      });
+      state.history.forEach(record=>{
+        const topic=topicById.get(String(record.topicId));
+        const name=String(record.topicName||topic?.name||'Untitled topic');
+        const subject=String(record.subjectName||'Unassigned subject');
+        const value=record.topicId?String(record.topicId):'legacy-topic:'+subject+'::'+name;
+        add(value,name,subject);
+      });
     }else if(level==='subject'){
-      state.subjects.forEach(sub=>{const st=streamFor(sub);map.set(String(sub.id),{value:String(sub.id),label:String(sub.name||'Untitled subject'),subtitle:String(st?.name||'Unassigned syllabus')});});
-      state.history.forEach(h=>{const name=String(h.subjectName||'Unassigned subject'),subtitle=String(h.streamName||'Unassigned syllabus'),value=h.subjectId?String(h.subjectId):'legacy-subject:'+name;if(!map.has(value))map.set(value,{value,label:name,subtitle});});
+      state.subjects.forEach(subject=>{
+        const stream=streamById.get(String(subject.streamId));
+        add(subject.id,subject.name||'Untitled subject',stream?.name||'Unassigned syllabus');
+      });
+      state.history.forEach(record=>{
+        const name=String(record.subjectName||'Unassigned subject');
+        const subtitle=String(record.streamName||'Unassigned syllabus');
+        const value=record.subjectId?String(record.subjectId):'legacy-subject:'+name;
+        add(value,name,subtitle);
+      });
     }else{
-      state.streams.forEach(st=>map.set(String(st.id),{value:String(st.id),label:String(st.name||'Untitled syllabus'),subtitle:'Syllabus / stream'}));
-      state.history.forEach(h=>{const name=String(h.streamName||'Unassigned syllabus'),value=h.streamId?String(h.streamId):'legacy-syllabus:'+name;if(!map.has(value))map.set(value,{value,label:name,subtitle:'Syllabus / stream'});});
+      state.streams.forEach(stream=>add(stream.id,stream.name||'Untitled syllabus','Syllabus / stream'));
+      state.history.forEach(record=>{
+        const name=String(record.streamName||'Unassigned syllabus');
+        const value=record.streamId?String(record.streamId):'legacy-syllabus:'+name;
+        add(value,name,'Syllabus / stream');
+      });
     }
+    const result=collector.finish().items;
+    if(currentOption&&!result.some(option=>option.value===currentOption.value))result.push(currentOption);
     const allLabel=level==='topic'?'All topics':level==='subject'?'All subjects':'All syllabuses';
-    map.set('ALL',{value:'ALL',label:allLabel,subtitle:'Combined rating history for this timeframe'});
-    return Array.from(map.values()).sort((a,b)=>a.label.localeCompare(b.label)||a.subtitle.localeCompare(b.subtitle));
+    if(!result.some(option=>option.value==='ALL'))result.push({value:'ALL',label:allLabel,subtitle:'Combined rating history for this timeframe'});
+    result.sort(compare);
+    result.matchCount=matchCount;result.limit=max;
+    return result;
   }
-  function getRatingAnalyticsEntityId(level){const options=getRatingAnalyticsEntityOptions(level),prior=String(fsState.analyticsRatingEntity||'');return options.some(x=>x.value===prior)?prior:(options[0]?.value||'');}
-  function getRatingAnalyticsEntityLabel(level,entityId){const o=getRatingAnalyticsEntityOptions(level).find(x=>x.value===String(entityId));return o?.label||'No '+(level==='topic'?'topic':level==='subject'?'subject':'syllabus')+' selected';}
+  function getRatingAnalyticsEntityId(level,options){
+    const choices=Array.isArray(options)?options:getRatingAnalyticsEntityOptions(level);
+    const prior=String(fsState.analyticsRatingEntity||'');
+    if(choices.some(option=>option.value===prior))return prior;
+    return choices.some(option=>option.value==='ALL')?'ALL':choices[0]?.value||'';
+  }
+  function getRatingAnalyticsEntityLabel(level,entityId,options){
+    const choices=Array.isArray(options)?options:getRatingAnalyticsEntityOptions(level),option=choices.find(item=>item.value===String(entityId));
+    return option?.label||'No '+(level==='topic'?'topic':level==='subject'?'subject':'syllabus')+' selected';
+  }
+  function createRatingAnalyticsRecordMatcher(level,entityId){
+    const id=String(entityId||'');
+    if(level==='topic'){
+      if(id.startsWith('legacy-topic:'))return record=>!record?.topicId&&id==='legacy-topic:'+String(record?.subjectName||'Unassigned subject')+'::'+String(record?.topicName||'Untitled topic');
+      const topic=getTopic(id),topicName=String(topic?.name||'Untitled topic'),topicSubjectName=topic?(subjectFor(topic)?.name||'Unassigned subject'):'';
+      return record=>{
+        if(String(record?.topicId||'')===id)return true;
+        if(record?.topicId||!topic)return false;
+        return String(record?.topicName||'Untitled topic')===topicName&&String(record?.subjectName||'Unassigned subject')===topicSubjectName;
+      };
+    }
+    if(level==='subject'){
+      if(id.startsWith('legacy-subject:'))return record=>!record?.subjectId&&id==='legacy-subject:'+String(record?.subjectName||'Unassigned subject');
+      const subject=state.subjects.find(item=>String(item.id)===id),subjectName=String(subject?.name||'');
+      return record=>{
+        if(String(record?.subjectId||'')===id)return true;
+        if(record?.subjectId||!subject)return false;
+        return String(record?.subjectName||'Unassigned subject')===subjectName;
+      };
+    }
+    if(id.startsWith('legacy-syllabus:'))return record=>!record?.streamId&&id==='legacy-syllabus:'+String(record?.streamName||'Unassigned syllabus');
+    const stream=state.streams.find(item=>String(item.id)===id),streamName=String(stream?.name||'');
+    return record=>{
+      if(String(record?.streamId||'')===id)return true;
+      if(record?.streamId||!stream)return false;
+      return String(record?.streamName||'Unassigned syllabus')===streamName;
+    };
+  }
   function getRatingAnalyticsScopedRecords(records,level,entityId){
-    if(!entityId)return [];if(String(entityId)==='ALL')return records||[];
-    return records.filter(h=>{
-      const name=String(h.topicName||getTopic(h.topicId)?.name||'Untitled topic'),subject=String(h.subjectName||'Unassigned subject'),stream=String(h.streamName||'Unassigned syllabus');
-      if(level==='topic'){if(String(entityId).startsWith('legacy-topic:'))return !h.topicId&&String(entityId)==='legacy-topic:'+subject+'::'+name;const t=getTopic(entityId);return String(h.topicId||'')===String(entityId)||(!h.topicId&&t&&name===t.name&&subject===(subjectFor(t)?.name||'Unassigned subject'));}
-      if(level==='subject'){if(String(entityId).startsWith('legacy-subject:'))return !h.subjectId&&String(entityId)==='legacy-subject:'+subject;const sub=state.subjects.find(x=>String(x.id)===String(entityId));return String(h.subjectId||'')===String(entityId)||(!h.subjectId&&sub&&subject===sub.name);}
-      if(String(entityId).startsWith('legacy-syllabus:'))return !h.streamId&&String(entityId)==='legacy-syllabus:'+stream;
-      const st=state.streams.find(x=>String(x.id)===String(entityId));return String(h.streamId||'')===String(entityId)||(!h.streamId&&st&&stream===st.name);
-    });
+    if(!entityId)return [];
+    if(String(entityId)==='ALL')return records||[];
+    const matches=createRatingAnalyticsRecordMatcher(level,entityId);
+    return (records||[]).filter(matches);
+  }
+  function hasRatingAnalyticsScopedRecord(records,level,entityId){
+    if(!entityId)return false;
+    if(String(entityId)==='ALL')return Boolean(records&&records.length);
+    const matches=createRatingAnalyticsRecordMatcher(level,entityId);
+    for(const record of records||[])if(matches(record))return true;
+    return false;
   }
   function getRatingAnalyticsGroups(records,level){
-    const map=new Map();
-    records.forEach(h=>{
-      const topicName=String(h.topicName||getTopic(h.topicId)?.name||'Untitled topic');
-      const subjectName=String(h.subjectName||state.subjects.find(s=>s.id===h.subjectId)?.name||'Unassigned subject');
-      const streamName=String(h.streamName||state.streams.find(s=>s.id===h.streamId)?.name||'Unassigned syllabus');
+    const map=new Map(),topicById=new Map(state.topics.map(topic=>[String(topic.id),topic]));
+    const subjectById=new Map(state.subjects.map(subject=>[String(subject.id),subject]));
+    const streamById=new Map(state.streams.map(stream=>[String(stream.id),stream]));
+    for(const record of records||[]){
+      const topicName=String(record.topicName||topicById.get(String(record.topicId))?.name||'Untitled topic');
+      const subjectName=String(record.subjectName||subjectById.get(String(record.subjectId))?.name||'Unassigned subject');
+      const streamName=String(record.streamName||streamById.get(String(record.streamId))?.name||'Unassigned syllabus');
       let key,label,subtitle;
-      if(level==='subject'){key=String(h.subjectId||('subject:'+subjectName));label=subjectName;subtitle=streamName;}
-      else if(level==='syllabus'){key=String(h.streamId||('syllabus:'+streamName));label=streamName;subtitle='Syllabus / stream';}
-      else{key=String(h.topicId||('topic:'+subjectName+'::'+topicName));label=topicName;subtitle=subjectName+' · '+streamName;}
+      if(level==='subject'){key=String(record.subjectId||('subject:'+subjectName));label=subjectName;subtitle=streamName;}
+      else if(level==='syllabus'){key=String(record.streamId||('syllabus:'+streamName));label=streamName;subtitle='Syllabus / stream';}
+      else{key=String(record.topicId||('topic:'+subjectName+'::'+topicName));label=topicName;subtitle=subjectName+' · '+streamName;}
       if(!map.has(key))map.set(key,{key,label,subtitle,counts:[0,0,0,0,0],total:0});
-      const item=map.get(key),rating=Number(h.rating);
+      const item=map.get(key),rating=Number(record.rating);
       if(rating>=1&&rating<=5&&Number.isInteger(rating)){item.counts[rating-1]++;item.total++;}
-    });
-    return Array.from(map.values()).filter(x=>x.total>0).sort((a,b)=>b.total-a.total||a.label.localeCompare(b.label));
+    }
+    return Array.from(map.values()).filter(item=>item.total>0).sort((a,b)=>b.total-a.total||a.label.localeCompare(b.label));
+  }
+  function countRatingAnalyticsGroups(records,level){
+    const keys=new Set(),topicById=new Map(state.topics.map(topic=>[String(topic.id),topic]));
+    const subjectById=new Map(state.subjects.map(subject=>[String(subject.id),subject]));
+    const streamById=new Map(state.streams.map(stream=>[String(stream.id),stream]));
+    for(const record of records||[]){
+      const rating=Number(record.rating);
+      if(!Number.isInteger(rating)||rating<1||rating>5)continue;
+      const topicName=String(record.topicName||topicById.get(String(record.topicId))?.name||'Untitled topic');
+      const subjectName=String(record.subjectName||subjectById.get(String(record.subjectId))?.name||'Unassigned subject');
+      const streamName=String(record.streamName||streamById.get(String(record.streamId))?.name||'Unassigned syllabus');
+      if(level==='subject')keys.add(String(record.subjectId||('subject:'+subjectName)));
+      else if(level==='syllabus')keys.add(String(record.streamId||('syllabus:'+streamName)));
+      else keys.add(String(record.topicId||('topic:'+subjectName+'::'+topicName)));
+    }
+    return keys.size;
   }
 
   function getRatingAnalyticsTimeline(selection,level,entityId){
@@ -179,10 +738,10 @@
     const saved=Array.isArray(fsState.analyticsVisibleRatings)?fsState.analyticsVisibleRatings.map(Number).filter(r=>Number.isInteger(r)&&r>=1&&r<=5):[1,2,3,4,5];
     return saved.length?saved:[1,2,3,4,5];
   }
-  function ratingAnalyticsSvgMarkup(selection,level,entityId){
-    const result=getRatingAnalyticsTimeline(selection,level,entityId),bins=result.bins,visibleRatings=getVisibleAnalyticsRatings(),dense=bins.length>12,left=50,right=20,top=22,bottom=51,minCellWidth=bins.length>24?28:bins.length>12?35:56,W=Math.max(720,left+right+bins.length*minCellWidth),H=300,plotW=W-left-right,plotH=H-top-bottom,cellW=bins.length?plotW/bins.length:plotW,baseline=top+plotH;
+  function ratingAnalyticsSvgMarkup(selection,level,entityId,timelineResult){
+    const result=timelineResult||getRatingAnalyticsTimeline(selection,level,entityId),bins=result.bins,visibleRatings=getVisibleAnalyticsRatings(),dense=bins.length>12,left=50,right=20,top=22,bottom=51,minCellWidth=bins.length>24?28:bins.length>12?35:56,W=Math.max(720,left+right+bins.length*minCellWidth),H=300,plotW=W-left-right,plotH=H-top-bottom,cellW=bins.length?plotW/bins.length:plotW,baseline=top+plotH;
     const maxCount=Math.max(1,...bins.map(bin=>visibleRatings.reduce((max,rating)=>Math.max(max,Number(bin.counts[rating-1])||0),0))),magnitude=Math.pow(10,Math.floor(Math.log10(maxCount)))||1,norm=maxCount/magnitude,mult=norm<=1?1:norm<=2?2:norm<=5?5:10,yMax=maxCount<=5?5:mult*magnitude,yAt=count=>top+plotH-(count/yMax)*plotH,xAt=i=>left+(i+.5)*cellW;
-    let svg='<svg class="ra-svg'+(dense?' ra-svg-dense':' ra-svg-single')+'" '+(dense?'style="--ra-chart-width:'+W+'px" ':'')+'viewBox="0 0 '+W+' '+H+'" role="img" aria-label="Line chart of review difficulty ratings over time. Each rating uses the same count scale; filter difficulty lines with the colored buttons."><defs>';
+    let svg='<svg class="ra-svg'+(dense?' ra-svg-dense':' ra-svg-single')+'" '+(dense?'style="--ra-chart-width:'+W+'px" ':'')+'viewBox="0 0 '+W+' '+H+'" role="img" aria-label="Line chart of review difficulty ratings over time. Each rating uses the same count scale. Filter difficulty lines with the colored buttons."><defs>';
     visibleRatings.forEach(rating=>{const color=RATING_ANALYTICS_COLORS[rating];svg+='<linearGradient id="rating-'+rating+'" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="'+color+'" stop-opacity=".18"/><stop offset="62%" stop-color="'+color+'" stop-opacity=".06"/><stop offset="100%" stop-color="'+color+'" stop-opacity="0"/></linearGradient>';});
     svg+='</defs>';
     const tickStep=Math.max(1,Math.ceil(yMax/4)),ticks=[0,tickStep,Math.min(yMax,tickStep*2),Math.min(yMax,tickStep*3),yMax].filter((v,i,a)=>a.indexOf(v)===i);
@@ -203,8 +762,8 @@
     svg+='<text class="ra-axis-title" x="'+(left+plotW/2)+'" y="'+(H-5)+'" text-anchor="middle">Selected timeframe</text><text class="ra-axis-title" transform="translate(15 '+(top+plotH/2)+') rotate(-90)" text-anchor="middle">Review difficulty ratings per interval</text></svg>';
     return svg;
   }
-  function ratingAnalyticsTimelineTableMarkup(selection,level,entityId){
-    const bins=getRatingAnalyticsTimeline(selection,level,entityId).bins;
+  function ratingAnalyticsTimelineTableMarkup(selection,level,entityId,timelineResult){
+    const bins=(timelineResult||getRatingAnalyticsTimeline(selection,level,entityId)).bins;
     const rows=bins.map(bin=>'<tr'+(bin.isFuture?' class="ra-future-row"':'')+'><td>'+esc(bin.title)+(bin.isFuture?' · Future':'')+'</td>'+bin.counts.map((count,i)=>'<td class="num">'+(count===null?'—':'<span class="ra-table-rating" data-rating="'+(i+1)+'">'+count+'</span>')+'</td>').join('')+'<td class="num"><strong>'+(bin.total===null?'—':bin.total)+'</strong></td></tr>').join('');
     return '<div class="ra-count-table-wrap"><table class="ra-count-table"><thead><tr><th>Date / interval</th><th class="num">1 Again</th><th class="num">2 Hard</th><th class="num">3 Good</th><th class="num">4 Very good</th><th class="num">5 Easy</th><th class="num">Total</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
   }
@@ -212,12 +771,12 @@
     return '<div class="ra-legend">'+[1,2,3,4,5].map(r=>'<span class="ra-legend-item"><i class="ra-swatch" data-rating="'+r+'"></i>'+r+' · '+esc(RATING_LABELS[r])+'</span>').join('')+'</div>';
   }
 
-  function ratingAnalyticsChartMarkup(selection,level,entityId){
-    const options=getRatingAnalyticsEntityOptions(level),selected=options.find(x=>x.value===entityId),timeline=getRatingAnalyticsTimeline(selection,level,entityId),scopeLabel=selected?.label||'No '+level+' selected',subtitle=selected?.subtitle||'',visibleRatings=getVisibleAnalyticsRatings();
+  function ratingAnalyticsChartMarkup(selection,level,entityId,entityOptions){
+    const options=Array.isArray(entityOptions)?entityOptions:getRatingAnalyticsEntityOptions(level),selected=options.find(x=>x.value===entityId),timeline=getRatingAnalyticsTimeline(selection,level,entityId),scopeLabel=selected?.label||'No '+level+' selected',subtitle=selected?.subtitle||'',visibleRatings=getVisibleAnalyticsRatings();
     const legend=[1,2,3,4,5].map(rating=>'<button type="button" class="ra-legend-item" data-hub-action="analytics-toggle-rating" data-rating-toggle="'+rating+'" aria-pressed="'+visibleRatings.includes(rating)+'" title="'+(visibleRatings.includes(rating)?'Hide ':'Show ')+esc(RATING_LABELS[rating])+' difficulty in the graph"><i class="ra-swatch" data-rating="'+rating+'"></i>'+rating+' · '+esc(RATING_LABELS[rating])+' <strong>'+timeline.totals[rating-1]+'</strong></button>').join('');
     const selectedCount=visibleRatings.reduce((sum,rating)=>sum+timeline.totals[rating-1],0);
     const summary='<div class="ra-chart-summary"><div><strong>'+esc(scopeLabel)+'</strong><small>'+esc(subtitle)+' · '+esc(selection.label)+' · '+esc(fmtDate(selection.from))+' – '+esc(fmtDate(selection.to))+'</small></div><div><strong>'+selectedCount+' selected review ratings</strong><small>Toggle difficulty labels to show or hide each curve. All difficulties use the same count scale.</small></div></div>';
-    return summary+'<div class="ra-legend">'+legend+'</div><div class="ra-svg-wrap">'+ratingAnalyticsSvgMarkup(selection,level,entityId)+'</div><details class="ra-count-details"><summary>View exact counts by date / interval</summary>'+ratingAnalyticsTimelineTableMarkup(selection,level,entityId)+'</details><div class="ra-foot">Each colored curve tracks one review-button difficulty on a shared count scale. The shaded area fades toward the baseline; tap a difficulty label to filter its curve. Hover or tap a point for the exact count. Future intervals remain blank, and the table marks them unavailable rather than treating them as zero.</div>';
+    return summary+'<div class="ra-legend">'+legend+'</div><div class="ra-svg-wrap">'+ratingAnalyticsSvgMarkup(selection,level,entityId,timeline)+'</div><details class="ra-count-details"><summary>View exact counts by date / interval</summary>'+ratingAnalyticsTimelineTableMarkup(selection,level,entityId,timeline)+'</details><div class="ra-foot">Each colored curve tracks one review-button difficulty on a shared count scale. The shaded area fades toward the baseline. Tap a difficulty label to filter its curve. Hover or tap a point for the exact count. Future intervals remain blank, and the table marks them unavailable rather than treating them as zero.</div>';
   }
   function analyticsReportStackedRows(groups,limit){
     const visible=groups.slice(0,limit||20),max=Math.max(1,...groups.map(g=>g.total));
@@ -269,60 +828,407 @@
       notify('Analytics CSV exported for '+from+' to '+to+'.');
     }catch(error){console.error('Nexus analytics CSV export failed',error);notify('Could not export analytics CSV. Please try again.');}
   }
-  function exportAnalyticsPdf(){
+
+  const PDF_EXPORT_GRAPH_OPTIONS = [
+    ['ratingDistribution','Review difficulty distribution'],
+    ['ratingTimeline','Review ratings over time'],
+    ['reviewActivity','Review activity over time'],
+    ['studyTime','Study time over time'],
+    ['subjectTime','Study time by subject'],
+    ['paperTrends','Paper score trends']
+  ];
+  function pdfExportLimits(){
+    const native=Boolean(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp);
+    const memory=Number(navigator.deviceMemory)||0;
+    if(native)return {maxPages:80,maxChars:1500000,warnPages:30,warnChars:600000,label:'Android app'};
+    if(memory>0&&memory<=2)return {maxPages:80,maxChars:1500000,warnPages:30,warnChars:600000,label:'low-memory browser'};
+    if(memory>0&&memory<=4)return {maxPages:120,maxChars:2500000,warnPages:40,warnChars:800000,label:'mobile browser'};
+    if(memory>=8)return {maxPages:240,maxChars:5000000,warnPages:70,warnChars:1300000,label:'higher-memory browser'};
+    return {maxPages:120,maxChars:2500000,warnPages:40,warnChars:800000,label:'browser'};
+  }
+  function pdfTableConfigMarkup(key,label,defaultLimit){
+    return '<div class="nexus-pdf-table-option"><label class="nexus-pdf-check"><input type="checkbox" data-pdf-table="'+key+'" checked><span>'+label+'</span></label><div><select class="field" data-pdf-limit="'+key+'" aria-label="'+label+' record limit"><option value="50">Last 50</option><option value="100" '+(defaultLimit==='100'?'selected':'')+'>Last 100</option><option value="300">Last 300</option><option value="all">All records</option><option value="custom">Custom count</option></select><input class="field nexus-pdf-custom-count" type="number" min="1" max="100000" step="1" value="500" data-pdf-custom="'+key+'" aria-label="'+label+' custom record count" hidden></div><small data-pdf-count="'+key+'">Checking records…</small></div>';
+  }
+  function pdfScopeOptionsMarkup(){
+    const streams=Array.isArray(state.streams)?state.streams:[],subjects=Array.isArray(state.subjects)?state.subjects:[];
+    const streamRows=streams.map(stream=>'<label class="nexus-pdf-check nexus-pdf-scope-stream"><input type="checkbox" data-pdf-stream="'+esc(stream.id)+'" checked><span>'+esc(stream.name||'Untitled stream')+'</span></label>').join('');
+    const subjectRows=subjects.map(subject=>{
+      const stream=streams.find(item=>String(item.id)===String(subject.streamId));
+      return '<label class="nexus-pdf-check nexus-pdf-scope-subject" data-pdf-subject-row="'+esc(subject.id)+'" data-pdf-subject-stream="'+esc(subject.streamId||'')+'"><input type="checkbox" data-pdf-subject="'+esc(subject.id)+'" checked><span>'+esc(subject.name||'Untitled subject')+' <small>· '+esc(stream?.name||'Unassigned stream')+'</small></span></label>';
+    }).join('');
+    return '<fieldset class="nexus-pdf-fieldset"><legend>Streams</legend><p class="nexus-pdf-hint">Choose which streams belong in this report. All are selected by default.</p>'+
+      (streamRows||'<p class="nexus-pdf-hint">No streams are configured.</p>')+
+      '</fieldset><fieldset class="nexus-pdf-fieldset"><legend>Subjects</legend><p class="nexus-pdf-hint">Choose subjects from the selected streams. Unmatched or unassigned records are excluded when using a restricted scope.</p>'+
+      (subjectRows||'<p class="nexus-pdf-hint">No subjects are configured.</p>')+'</fieldset>';
+  }
+  function pdfExportDialogMarkup(){
+    return '<dialog id="nexusPdfExportDialog" class="nexus-pdf-export-dialog" aria-labelledby="nexusPdfExportTitle">'+
+      '<div class="nexus-pdf-export-shell"><div class="nexus-pdf-export-head"><div><span class="eyebrow">REPORT CONFIGURATION</span><h2 id="nexusPdfExportTitle">Export analytics PDF</h2><p>Choose one timeframe for the report, then decide which graphs and detailed records to include.</p></div><button type="button" class="btn btn-icon" data-pdf-action="close" aria-label="Close export settings">×</button></div>'+
+      '<div class="nexus-pdf-export-body">'+
+      '<label class="nexus-pdf-field"><span>Common timeframe</span><select id="nexusPdfTimeframe" class="field"><option value="selected">Current Analytics timeframe</option><option value="all">All time</option><option value="last30">Last 30 days</option><option value="last90">Last 90 days</option><option value="year">This year</option><option value="custom">Custom date range</option></select></label>'+
+      '<div class="nexus-pdf-date-range" id="nexusPdfCustomDates" hidden><label class="nexus-pdf-field"><span>From</span><input id="nexusPdfDateFrom" class="field" type="date"></label><label class="nexus-pdf-field"><span>To</span><input id="nexusPdfDateTo" class="field" type="date"></label></div>'+
+      pdfScopeOptionsMarkup()+
+      '<fieldset class="nexus-pdf-fieldset"><legend>Analytics graphs</legend><p class="nexus-pdf-hint">All graphs are included by default. Deselect only the ones you do not need.</p>'+
+      PDF_EXPORT_GRAPH_OPTIONS.map(([key,label])=>'<label class="nexus-pdf-check"><input type="checkbox" data-pdf-graph="'+key+'" checked><span>'+label+'</span></label>').join('')+
+      '</fieldset>'+
+      '<fieldset class="nexus-pdf-fieldset"><legend>Detailed tables</legend><p class="nexus-pdf-hint">Limits apply to the newest records inside the common timeframe. Summary statistics and graphs still use all matching records.</p>'+
+      pdfTableConfigMarkup('reviews','Review history','100')+
+      pdfTableConfigMarkup('sessions','Study sessions','100')+
+      pdfTableConfigMarkup('papers','Paper / practice records','100')+
+      pdfTableConfigMarkup('journal','Mistakes journal','50')+
+      '</fieldset>'+
+      '<div class="nexus-pdf-estimate" id="nexusPdfEstimate" aria-live="polite"><strong>Estimating report size…</strong></div>'+
+      '<label class="nexus-pdf-confirm" id="nexusPdfLargeConfirm" hidden><input id="nexusPdfConfirmLarge" type="checkbox"><span>I understand this report is large and may take longer to prepare and print.</span></label>'+
+      '<p class="nexus-pdf-progress" id="nexusPdfBuildStatus" role="status" hidden></p>'+
+      '</div><div class="nexus-pdf-export-actions"><button type="button" class="btn btn-soft" data-pdf-action="close">Cancel</button><button type="button" class="btn btn-primary" id="nexusPdfGenerate" data-pdf-action="generate">Generate PDF</button></div></div></dialog>';
+  }
+  function ensurePdfExportDialog(){
+    let dialog=document.getElementById('nexusPdfExportDialog');
+    if(dialog)return dialog;
+    if(!document.getElementById('nexus-pdf-export-style')){
+      const style=document.createElement('style');
+      style.id='nexus-pdf-export-style';
+      style.textContent='.nexus-pdf-export-dialog{width:min(680px,calc(100vw - 24px));max-height:calc(100dvh - 28px);padding:0;border:1px solid var(--border);border-radius:20px;background:var(--surface);color:var(--text);box-shadow:0 24px 80px #0004}.nexus-pdf-export-shell{display:flex;flex-direction:column;max-height:calc(100dvh - 30px)}.nexus-pdf-export-head{display:flex;justify-content:space-between;gap:14px;padding:20px 20px 12px;border-bottom:1px solid var(--border)}.nexus-pdf-export-head h2{margin:5px 0;font-size:22px}.nexus-pdf-export-head p,.nexus-pdf-hint{margin:4px 0;color:var(--muted);font-size:13px}.nexus-pdf-export-body{padding:15px 20px;overflow:auto;overscroll-behavior:contain}.nexus-pdf-field{display:grid;gap:6px;font-weight:700;font-size:13px}.nexus-pdf-field .field,.nexus-pdf-table-option .field{width:100%;min-width:0}.nexus-pdf-date-range{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.nexus-pdf-fieldset{border:1px solid var(--border);border-radius:13px;padding:12px;margin:16px 0 0;min-width:0}.nexus-pdf-fieldset legend{font-size:14px;font-weight:800;padding:0 5px}.nexus-pdf-check{display:flex;align-items:center;gap:9px;font-size:13px;font-weight:600;min-width:0}.nexus-pdf-check input,.nexus-pdf-confirm input{width:17px;height:17px;flex:0 0 17px;accent-color:var(--accent)}.nexus-pdf-fieldset>.nexus-pdf-check{padding:6px 0}.nexus-pdf-table-option{display:grid;grid-template-columns:minmax(0,1fr) minmax(130px,180px);gap:4px 12px;align-items:center;padding:9px 0;border-top:1px solid var(--border)}.nexus-pdf-table-option:first-of-type{border-top:0}.nexus-pdf-table-option>div{display:grid;gap:5px}.nexus-pdf-table-option small{grid-column:1/-1;color:var(--muted);font-size:11px}.nexus-pdf-custom-count{max-width:180px}.nexus-pdf-estimate{border:1px solid var(--border);border-radius:13px;padding:13px;margin-top:15px;font-size:13px}.nexus-pdf-estimate strong{display:block;font-size:17px;margin-bottom:5px}.nexus-pdf-estimate p{margin:4px 0;color:var(--muted)}.nexus-pdf-estimate .is-warning{color:#a16207}.nexus-pdf-estimate .is-blocked{color:#b42318}.nexus-pdf-confirm{display:flex;gap:9px;align-items:flex-start;margin-top:12px;font-size:12px}.nexus-pdf-progress{margin:10px 0 0;color:var(--muted);font-size:12px}.nexus-pdf-export-actions{display:flex;justify-content:flex-end;gap:9px;padding:12px 20px 18px;border-top:1px solid var(--border)}.nexus-pdf-export-actions button{min-width:110px}@media(max-width:520px){.nexus-pdf-export-head,.nexus-pdf-export-body{padding-left:14px;padding-right:14px}.nexus-pdf-table-option{grid-template-columns:minmax(0,1fr) minmax(118px,145px);gap:4px 8px}.nexus-pdf-export-actions{padding-left:14px;padding-right:14px}.nexus-pdf-export-actions button{min-width:0;flex:1}}';
+      document.head.appendChild(style);
+    }
+    const holder=document.createElement('div');
+    holder.innerHTML=pdfExportDialogMarkup();
+    document.body.appendChild(holder.firstElementChild);
+    dialog=document.getElementById('nexusPdfExportDialog');
+    dialog.addEventListener('change',event=>{if(event.target?.id!=='nexusPdfConfirmLarge')dialog.querySelector('#nexusPdfConfirmLarge').checked=false;updatePdfExportEstimate(dialog);});
+    dialog.addEventListener('click',async event=>{
+      const action=event.target.closest('[data-pdf-action]')?.dataset.pdfAction;
+      if(action==='close'){dialog.close();return;}
+      if(action!=='generate')return;
+      const model=dialog._pdfExportModel;
+      if(!model||model.estimate.blocked){updatePdfExportEstimate(dialog);return;}
+      if(model.estimate.large&&!dialog.querySelector('#nexusPdfConfirmLarge')?.checked){
+        dialog.querySelector('#nexusPdfLargeConfirm').hidden=false;
+        dialog.querySelector('#nexusPdfConfirmLarge').focus();
+        return;
+      }
+      const button=dialog.querySelector('#nexusPdfGenerate');
+      button.disabled=true;
+      button.textContent='Preparing report…';
+      dialog.querySelector('#nexusPdfBuildStatus').hidden=false;
+      try{await exportAnalyticsPdf(model.options);}
+      catch(error){
+        console.error('Nexus PDF export failed.',error);
+        notify(error&&error.message?error.message:'Could not prepare the PDF report. Reduce the selected detail or try again.');
+        button.disabled=false;button.textContent='Try again';dialog.querySelector('#nexusPdfBuildStatus').hidden=true;
+      }
+    });
+    return dialog;
+  }
+  function resolvePdfExportSelection(dialog){
+    const preset=dialog.querySelector('#nexusPdfTimeframe').value,current=dialog._pdfInitialSelection||getRatingAnalyticsSelection();
+    let from=current.from,to=current.to,label=current.label,range=current.range;
+    if(preset==='all'){
+      let allRange=dialog._pdfAllTimeRange;
+      if(!allRange){
+        let firstDate='',lastDate='';
+        const includeDate=value=>{if(!safeDate(value))return;if(!firstDate||value<firstDate)firstDate=value;if(!lastDate||value>lastDate)lastDate=value;};
+        state.history.forEach(x=>includeDate(x.reviewedAt));
+        fsState.studyLogs.forEach(x=>includeDate(x.date));
+        fsState.papers.forEach(x=>includeDate(x.date));
+        fsState.journal.forEach(x=>includeDate(x.date));
+        allRange={from:firstDate||dateShift(today(),-29),to:lastDate&&lastDate>today()?lastDate:today()};
+        dialog._pdfAllTimeRange=allRange;
+      }
+      from=allRange.from;to=allRange.to;label='All time';range='custom';
+    }else if(preset==='last30'){from=dateShift(today(),-29);to=today();label='Last 30 days';range='custom';}
+    else if(preset==='last90'){from=dateShift(today(),-89);to=today();label='Last 90 days';range='custom';}
+    else if(preset==='year'){from=today().slice(0,4)+'-01-01';to=today().slice(0,4)+'-12-31';label='This year';range='year';}
+    else if(preset==='custom'){from=dialog.querySelector('#nexusPdfDateFrom').value||'';to=dialog.querySelector('#nexusPdfDateTo').value||'';label='Custom date range';range='custom';}
+    const valid=safeDate(from)&&safeDate(to)&&from<=to;
+    const cache=dialog._pdfRangeSelectionCache||(dialog._pdfRangeSelectionCache=new Map()),key=from+'|'+to;
+    let records=[];
+    if(valid){
+      if(cache.has(key))records=cache.get(key);
+      else{records=state.history.filter(h=>safeDate(h.reviewedAt)&&h.reviewedAt>=from&&h.reviewedAt<=to);cache.set(key,records);}
+    }
+    return {range,from,to,records,label,valid};
+  }
+  function getPdfExportScope(dialog){
+    const streamIds=Array.from(dialog.querySelectorAll('[data-pdf-stream]:checked')).map(input=>String(input.dataset.pdfStream));
+    const subjectIds=Array.from(dialog.querySelectorAll('[data-pdf-subject]:checked')).map(input=>String(input.dataset.pdfSubject));
+    const allStreams=streamIds.length===(state.streams||[]).length,allSubjects=subjectIds.length===(state.subjects||[]).length;
+    return {streamIds,subjectIds,all:allStreams&&allSubjects};
+  }
+  function pdfRecordMatchesScope(record,scope){
+    if(!scope||scope.all)return true;
+    const subjectId=String(record?.subjectId||'');
+    let subject=subjectId?state.subjects.find(item=>String(item.id)===subjectId):null;
+    if(!subject&&record?.topicId){const topic=getTopic(record.topicId);if(topic)subject=state.subjects.find(item=>String(item.id)===String(topic.subjectId))||null;}
+    if(!subject&&record?.subjectName){
+      const name=String(record.subjectName),streamName=String(record.streamName||'');
+      const matches=state.subjects.filter(item=>String(item.name||'')===name&&(!streamName||String(streamFor(item)?.name||'')===streamName));
+      if(matches.length===1)subject=matches[0];
+    }
+    if(!subject)return false;
+    return scope.streamIds.includes(String(subject.streamId||''))&&scope.subjectIds.includes(String(subject.id));
+  }
+  function collectPdfExportOptions(dialog,selection){
+    const scope=getPdfExportScope(dialog),scopedSelection={...selection,records:selection.records.filter(record=>pdfRecordMatchesScope(record,scope))};
+    const graphs={};
+    PDF_EXPORT_GRAPH_OPTIONS.forEach(([key])=>{graphs[key]=Boolean(dialog.querySelector('[data-pdf-graph="'+key+'"]')?.checked);});
+    const tables={};
+    ['reviews','sessions','papers','journal'].forEach(key=>{tables[key]={include:Boolean(dialog.querySelector('[data-pdf-table="'+key+'"]')?.checked),limit:dialog.querySelector('[data-pdf-limit="'+key+'"]')?.value||'100',custom:Math.max(1,Math.min(100000,Math.floor(Number(dialog.querySelector('[data-pdf-custom="'+key+'"]')?.value)||500)))};});
+    return {selection:scopedSelection,graphs,tables,scope};
+  }
+  function getPdfExportDatasets(selection,scope){
+    const inRange=date=>safeDate(date)&&date>=selection.from&&date<=selection.to,sort=(a,b)=>String(b.date||b.reviewedAt||'').localeCompare(String(a.date||a.reviewedAt||''));
+    return {
+      reviews:selection.records.filter(x=>pdfRecordMatchesScope(x,scope)).slice().sort((a,b)=>String(b.reviewedAt||'').localeCompare(String(a.reviewedAt||''))),
+      sessions:fsState.studyLogs.filter(x=>inRange(x.date)&&pdfRecordMatchesScope(x,scope)).slice().sort(sort),
+      papers:fsState.papers.filter(x=>inRange(x.date)&&pdfRecordMatchesScope(x,scope)).slice().sort(sort),
+      journal:fsState.journal.filter(x=>inRange(x.date)&&pdfRecordMatchesScope(x,scope)).slice().sort(sort)
+    };
+  }
+  function pdfLimitedRecords(records,config){
+    if(!config.include)return [];
+    const limit=config.limit==='all'?records.length:config.limit==='custom'?config.custom:Math.max(1,Number(config.limit)||100);
+    return records.slice(0,limit);
+  }
+  function pdfRecordText(record,kind){
+    if(kind==='reviews')return [record.reviewedAt,record.streamName,record.subjectName,record.topicName,record.rating,record.intervalDays,record.dueDate,record.note].map(x=>String(x??'')).join(' ');
+    if(kind==='sessions')return [record.date,record.subjectName,record.topicName,record.type,record.note,record.durationSeconds,record.minutes].map(x=>String(x??'')).join(' ');
+    if(kind==='papers')return [record.date,record.name,record.subjectId,record.score,record.maxScore,record.notes,record.weakAreas].map(x=>String(x??'')).join(' ');
+    return [record.date,record.category,record.subjectId,record.topicId,record.issue,record.fix,record.solved].map(x=>String(x??'')).join(' ');
+  }
+  function estimatePdfExport(options,dialog){
+    const scopeKey=options.scope?options.scope.streamIds.join(',')+'|'+options.scope.subjectIds.join(','):'all';
+    const cacheKey=options.selection.from+'|'+options.selection.to+'|'+scopeKey;
+    let datasets,groupCount;
+    if(dialog&&dialog._pdfDatasetCache&&dialog._pdfDatasetCache.key===cacheKey){
+      datasets=dialog._pdfDatasetCache.datasets;groupCount=dialog._pdfDatasetCache.groupCount;
+    }else{
+      datasets=getPdfExportDatasets(options.selection,options.scope);
+      groupCount=countRatingAnalyticsGroups(datasets.reviews,fsState.analyticsRatingGrouping||'topic');
+      if(dialog)dialog._pdfDatasetCache={key:cacheKey,datasets,groupCount};
+    }
+    const selected={
+      reviews:pdfLimitedRecords(datasets.reviews,options.tables.reviews),
+      sessions:pdfLimitedRecords(datasets.sessions,options.tables.sessions),
+      papers:pdfLimitedRecords(datasets.papers,options.tables.papers),
+      journal:pdfLimitedRecords(datasets.journal,options.tables.journal)
+    };
+    let estimatedChars=52000,tablePages=0;
+    const density={reviews:29,sessions:32,papers:31,journal:25};
+    for(const kind of Object.keys(selected)){
+      let rowUnits=0;
+      for(const row of selected[kind]){
+        const text=pdfRecordText(row,kind);
+        rowUnits+=Math.max(1,Math.ceil(text.length/180));
+        estimatedChars+=360+Math.ceil(text.length*6);
+      }
+      if(selected[kind].length)tablePages+=Math.ceil(rowUnits/density[kind]);
+    }
+    const graphCount=Object.values(options.graphs).filter(Boolean).length;
+    const graphPages=graphCount+(options.graphs.ratingTimeline?1:0)+Math.ceil(groupCount/24);
+    estimatedChars+=groupCount*400;
+    const estimatedPages=Math.ceil((2+graphPages+tablePages)*1.12),limits=pdfExportLimits();
+    const blocked=estimatedPages>limits.maxPages||estimatedChars>limits.maxChars;
+    const large=!blocked&&(estimatedPages>limits.warnPages||estimatedChars>limits.warnChars);
+    return {datasets,selected,estimatedPages,estimatedChars,limits,blocked,large};
+  }
+  function updatePdfExportEstimate(dialog){
+    const preset=dialog.querySelector('#nexusPdfTimeframe').value;
+    dialog.querySelector('#nexusPdfCustomDates').hidden=preset!=='custom';
+    const selectedStreams=new Set(Array.from(dialog.querySelectorAll('[data-pdf-stream]:checked')).map(input=>String(input.dataset.pdfStream)));
+    dialog.querySelectorAll('[data-pdf-subject-row]').forEach(row=>{row.hidden=!selectedStreams.has(String(row.dataset.pdfSubjectStream||''));});
+    ['reviews','sessions','papers','journal'].forEach(key=>{
+      const limit=dialog.querySelector('[data-pdf-limit="'+key+'"]'),custom=dialog.querySelector('[data-pdf-custom="'+key+'"]'),included=dialog.querySelector('[data-pdf-table="'+key+'"]').checked;
+      custom.hidden=limit.value!=='custom';limit.disabled=!included;custom.disabled=!included||limit.value!=='custom';
+    });
+    const selection=resolvePdfExportSelection(dialog),estimateBox=dialog.querySelector('#nexusPdfEstimate'),button=dialog.querySelector('#nexusPdfGenerate');
+    if(!selection.valid){estimateBox.innerHTML='<strong class="is-block">Choose a valid date range</strong><p>The start date must be on or before the end date.</p>';button.disabled=true;dialog._pdfExportModel=null;return;}
+    const options=collectPdfExportOptions(dialog,selection),estimate=estimatePdfExport(options,dialog),fmt=n=>Number(n).toLocaleString(),mb=(estimate.estimatedChars/1048576).toFixed(2);
+    Object.keys(estimate.datasets).forEach(key=>{
+      const label=dialog.querySelector('[data-pdf-count="'+key+'"]'),total=estimate.datasets[key].length,chosen=estimate.selected[key].length;
+      label.textContent=options.tables[key].include?('Including '+fmt(chosen)+' of '+fmt(total)+' records'):('Excluded · '+fmt(total)+' available');
+    });
+    if(estimate.blocked){
+      estimateBox.innerHTML='<strong class="is-block">This report exceeds the safe export limit</strong><p>Estimated '+fmt(estimate.estimatedPages)+' pages and '+mb+' MiB of report data. This '+estimate.limits.label+' is limited to about '+fmt(estimate.limits.maxPages)+' pages or '+(estimate.limits.maxChars/1048576).toFixed(1)+' MiB. Reduce table limits, narrow the timeframe, or export complete raw data as CSV / JSON.</p>';
+      dialog.querySelector('#nexusPdfLargeConfirm').hidden=true;button.disabled=true;
+    }else{
+      estimateBox.innerHTML='<strong>Approximately '+fmt(estimate.estimatedPages)+' pages</strong><p>Estimated report data: '+mb+' MiB · '+fmt(selection.records.length)+' reviews, '+fmt(estimate.datasets.sessions.length)+' study sessions, '+fmt(estimate.datasets.papers.length)+' papers and '+fmt(estimate.datasets.journal.length)+' journal entries in this timeframe.</p>'+
+        (estimate.large?'<p class="is-warning">Large report: preparation or printing may take longer on this device. Confirm below before continuing.</p>':'<p>Within the estimated safe range for this device.</p>');
+      dialog.querySelector('#nexusPdfLargeConfirm').hidden=!estimate.large;
+      if(!estimate.large)dialog.querySelector('#nexusPdfConfirmLarge').checked=false;
+      button.disabled=false;
+    }
+    dialog._pdfExportModel={options,estimate};
+  }
+  function openAnalyticsPdfDialog(){
+    const dialog=ensurePdfExportDialog(),selection=getRatingAnalyticsSelection();
+    dialog._pdfInitialSelection=selection;
+    dialog._pdfRangeSelectionCache=new Map([[selection.from+'|'+selection.to,selection.records]]);
+    dialog.querySelectorAll('[data-pdf-stream],[data-pdf-subject]').forEach(input=>{input.checked=true;});
+    dialog.querySelectorAll('[data-pdf-subject-row]').forEach(row=>{row.hidden=false;});
+    dialog._pdfDatasetCache=null;dialog._pdfAllTimeRange=null;
+    dialog.querySelector('#nexusPdfTimeframe').value='selected';
+    dialog.querySelector('#nexusPdfDateFrom').value=selection.from;
+    dialog.querySelector('#nexusPdfDateTo').value=selection.to;
+    dialog.querySelectorAll('[data-pdf-graph]').forEach(input=>{input.checked=true;});
+    const defaults={reviews:'100',sessions:'100',papers:'100',journal:'50'};
+    Object.keys(defaults).forEach(key=>{
+      dialog.querySelector('[data-pdf-table="'+key+'"]').checked=true;
+      dialog.querySelector('[data-pdf-limit="'+key+'"]').value=defaults[key];
+      dialog.querySelector('[data-pdf-custom="'+key+'"]').value='500';
+    });
+    dialog.querySelector('#nexusPdfConfirmLarge').checked=false;
+    dialog.querySelector('#nexusPdfBuildStatus').hidden=true;
+    dialog.querySelector('#nexusPdfGenerate').disabled=false;
+    dialog.querySelector('#nexusPdfGenerate').textContent='Generate PDF';
+    updatePdfExportEstimate(dialog);
+    if(!dialog.open)dialog.showModal();
+  }
+  function setPdfExportProgress(message,reportWindow,dialog){
+    const line=dialog?.querySelector('#nexusPdfBuildStatus');
+    if(line){line.hidden=false;line.textContent=message;}
+    try{const target=reportWindow?.document?.getElementById('nexusPdfBuildProgress');if(target)target.textContent=message;}catch(_){}
+  }
+  async function buildPdfTableRows(items,renderRow,emptyRow,label,reportWindow,dialog){
+    if(!items.length)return emptyRow;
+    let html='';
+    for(let index=0;index<items.length;index++){
+      html+=renderRow(items[index]);
+      if((index+1)%200===0){
+        setPdfExportProgress('Preparing '+label+': '+(index+1).toLocaleString()+' of '+items.length.toLocaleString()+' records…',reportWindow,dialog);
+        await new Promise(resolve=>setTimeout(resolve,0));
+      }
+    }
+    return html||emptyRow;
+  }
+
+  async function exportAnalyticsPdf(options={}){
+    const isNative=Boolean(window.NexusAndroidBridge&&window.NexusAndroidBridge.isNativeApp);
+    const reportWindow=isNative?null:window.open('','_blank');
+    if(!isNative&&!reportWindow){notify('Allow pop-ups for Nexus to open the print-ready report, then try again.');return;}
+    const dialog=document.getElementById('nexusPdfExportDialog');
+    if(reportWindow){reportWindow.document.open();reportWindow.document.write('<!doctype html><html><head><title>Preparing Nexus PDF</title></head><body style="font:15px Arial;padding:28px;color:#273047"><h2>Preparing your Nexus report…</h2><p id="nexusPdfBuildProgress">Preparing report data…</p></body></html>');reportWindow.document.close();}
+    setPdfExportProgress('Preparing report data…',reportWindow,dialog);
+    try{
     const logoUrl=new URL('icon-192.png',window.location.href).href;
-    const selection=getRatingAnalyticsSelection(),level=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic',entityId=getRatingAnalyticsEntityId(level);
-    const records=selection.records.slice().sort((a,b)=>String(b.reviewedAt||'').localeCompare(String(a.reviewedAt||'')));
-    const rangeText=selection.label+' · '+fmtDate(selection.from)+' – '+fmtDate(selection.to),timelineSvg=ratingAnalyticsSvgMarkup(selection,level,entityId),timelineTable=ratingAnalyticsTimelineTableMarkup(selection,level,entityId),entityLabel=getRatingAnalyticsEntityLabel(level,entityId);
-    const inRange=d=>safeDate(d)&&d<=selection.to&&(!selection.from||d>=selection.from);
+    const initialSelection=options.selection||getRatingAnalyticsSelection();
+    const graphs=options.graphs||Object.fromEntries(PDF_EXPORT_GRAPH_OPTIONS.map(([key])=>[key,true]));
+    const tables=options.tables||{reviews:{include:true,limit:'100'},sessions:{include:true,limit:'100'},papers:{include:true,limit:'100'},journal:{include:true,limit:'50'}};
+    const scope=options.scope||{streamIds:(state.streams||[]).map(item=>String(item.id)),subjectIds:(state.subjects||[]).map(item=>String(item.id)),all:true};
+    const selection={...initialSelection,records:(initialSelection.records||[]).filter(record=>pdfRecordMatchesScope(record,scope))};
+    const preflight=estimatePdfExport({selection,graphs,tables,scope});
+    if(preflight.blocked)throw new Error('This report now exceeds the safe PDF export limit for this device. Reduce the selected table limits or narrow the timeframe. Complete raw data remains available through JSON / CSV backup exports.');
+    const datasets=preflight.datasets,records=datasets.reviews;
+    const level=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic';
+    const entityOptions=getRatingAnalyticsEntityOptions(level),entityId='ALL';
+    const timeline=graphs.ratingTimeline?getRatingAnalyticsTimeline(selection,level,entityId):{bins:[],records:[],totals:[0,0,0,0,0]};
+    const scopeStreams=(options.scope?.streamIds||[]).map(id=>state.streams.find(item=>String(item.id)===String(id))?.name).filter(Boolean);
+    const scopeSubjects=(options.scope?.subjectIds||[]).map(id=>state.subjects.find(item=>String(item.id)===String(id))).filter(item=>item&&options.scope?.streamIds.includes(String(item.streamId||''))).map(item=>item.name).filter(Boolean);
+    const scopeText='Streams: '+(options.scope?.all?'All':scopeStreams.join(', ')||'None')+' · Subjects: '+(options.scope?.all?'All':scopeSubjects.join(', ')||'None');
+    const rangeText=selection.label+' · '+fmtDate(selection.from)+' – '+fmtDate(selection.to)+' · '+scopeText;
+    const timelineSvg=graphs.ratingTimeline?ratingAnalyticsSvgMarkup(selection,level,entityId,timeline):'';
+    const timelineTable=graphs.ratingTimeline?ratingAnalyticsTimelineTableMarkup(selection,level,entityId,timeline):'';
+    const entityLabel=getRatingAnalyticsEntityLabel(level,entityId,entityOptions);
+    const inRange=d=>safeDate(d)&&d>=selection.from&&d<=selection.to;
     const average=records.length?records.reduce((n,h)=>n+fNum(h.rating),0)/records.length:0;
     const successful=records.length?Math.round(records.filter(h=>Number(h.rating)>=3).length/records.length*100):0;
-    const ratingCounts=[1,2,3,4,5].map(r=>records.filter(h=>Number(h.rating)===r).length),maxRating=Math.max(1,...ratingCounts);
-    const ratingDistribution=ratingCounts.map((count,i)=>'<div class="pdf-dist-row"><span class="pdf-dist-label"><b>'+ (i+1)+' · '+esc(RATING_LABELS[i+1])+'</b></span><div class="pdf-dist-track"><span data-rating="'+(i+1)+'" style="width:'+(count/maxRating*100)+'%"></span></div><strong>'+count+'</strong></div>').join('');
-    const groups=getRatingAnalyticsGroups(records,level);
-        const groupTable=groups.length?groups.map(g=>'<tr><td>'+esc(g.label)+'</td>'+g.counts.map(n=>'<td class="num">'+n+'</td>').join('')+'<td class="num"><b>'+g.total+'</b></td></tr>').join(''):'<tr><td colspan="7">No rating groups in this period.</td></tr>';
-    // Reuse the Activity renderer's own graph markup so the print report stays aligned with the on-screen graphs.
-    // Keep the nexus-activity-graph-wrap class stable; it is the export boundary for the two chart elements.
-    const activityMarkupForPdf=renderActivityAnalytics(selection);
-    const activityGraphsForPdf=String(activityMarkupForPdf||'').match(/<div class="nexus-activity-graph-wrap">[\s\S]*?<\/div>/g)||[];
-    const activityChart=activityGraphsForPdf[0]||'<p class="pdf-empty">No saved review activity in this timeframe.</p>';
-    const studyTimeChart=activityGraphsForPdf[1]||'<p class="pdf-empty">No saved study time in this timeframe.</p>';
-    const studyLogs=fsState.studyLogs.filter(l=>inRange(l.date)).slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
+    const studyLogs=datasets.sessions;
     const studyMinutes=studyLogs.reduce((n,l)=>n+studyLogMinutes(l),0);
     const subjectTimeMap=new Map();
     studyLogs.forEach(l=>{const subject=state.subjects.find(s=>s.id===l.subjectId),name=String(subject?.name||l.subjectName||'Unassigned subject');subjectTimeMap.set(name,(subjectTimeMap.get(name)||0)+studyLogMinutes(l));});
     const subjectTime=Array.from(subjectTimeMap.entries()).sort((a,b)=>b[1]-a[1]);
-    const maxSubjectTime=Math.max(1,...subjectTime.map(x=>x[1]));
-    const subjectTimeChart=subjectTime.length?subjectTime.map(x=>'<div class="pdf-time-row"><span>'+esc(x[0])+'</span><div class="pdf-time-track"><i style="width:'+(x[1]/maxSubjectTime*100)+'%"></i></div><b>'+formatStudyDuration(x[1]*60)+'</b></div>').join(''):'<p class="pdf-empty">No logged focus sessions in this period.</p>';
-    const studyRows=studyLogs.length?studyLogs.map(l=>{const subject=state.subjects.find(s=>s.id===l.subjectId),topic=getTopic(l.topicId);return '<tr><td>'+esc(fmtDate(l.date))+'</td><td>'+esc(subject?.name||l.subjectName||'—')+'</td><td>'+esc(topic?.name||l.topicName||'—')+'</td><td class="num">'+formatStudyDuration(studyLogMinutes(l)*60)+'</td><td>'+esc(l.type||'Focus session')+'</td><td>'+esc(l.note||'')+'</td></tr>';}).join(''):'<tr><td colspan="6">No logged focus sessions in this period.</td></tr>';
-    const paperList=fsState.papers.filter(p=>inRange(p.date)).slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
+    const subjectTimeChart=graphs.subjectTime?(subjectTime.length?subjectTime.map(x=>'<div class="pdf-time-row"><span>'+esc(x[0])+'</span><div class="pdf-time-track"><i style="width:'+(x[1]/Math.max(1,...subjectTime.map(y=>y[1]))*100)+'%"></i></div><b>'+formatStudyDuration(x[1]*60)+'</b></div>').join(''):'<p class="pdf-empty">No logged focus sessions in this period.</p>'):'';
+    const paperList=datasets.papers;
     const scoredPapers=paperList.filter(p=>p.score!==null&&p.score!==undefined&&Number.isFinite(Number(p.score))&&Number(p.maxScore)>0);
-    const paperTrendChart=paperScoreTrendsMarkup(scoredPapers);
-    const paperRows=paperList.length?paperList.map(p=>'<tr><td>'+esc(fmtDate(p.date))+'</td><td>'+esc(p.name||'Untitled paper')+'</td><td>'+esc(state.subjects.find(s=>s.id===p.subjectId)?.name||'—')+'</td><td class="num">'+(p.score===null||p.maxScore===null?'—':esc(p.score)+' / '+esc(p.maxScore))+'</td><td class="num">'+(p.maxScore>0?Math.round(p.score/p.maxScore*100)+'%':'—')+'</td><td>'+esc(p.notes||p.weakAreas||'')+'</td></tr>').join(''):'<tr><td colspan="6">No saved paper results in this period.</td></tr>';
-    const journals=fsState.journal.filter(j=>inRange(j.date)).slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
-    const journalRows=journals.length?journals.map(j=>'<tr><td>'+esc(fmtDate(j.date))+'</td><td>'+esc(j.category||'Other')+'</td><td>'+esc(state.subjects.find(s=>s.id===j.subjectId)?.name||'—')+'</td><td>'+esc(getTopic(j.topicId)?.name||'—')+'</td><td>'+esc(j.issue||'')+'</td><td>'+esc(j.fix||'')+'</td><td>'+(j.solved?'Resolved':'Open')+'</td></tr>').join(''):'<tr><td colspan="7">No journal entries in this period.</td></tr>';
-    const historyRows=records.length?records.map(h=>'<tr><td>'+esc(fmtDate(h.reviewedAt))+'</td><td>'+esc(h.streamName||'—')+'</td><td>'+esc(h.subjectName||'—')+'</td><td>'+esc(h.topicName||'—')+'</td><td><span class="pdf-grade" data-rating="'+Number(h.rating)+'">'+Number(h.rating)+' · '+esc(RATING_LABELS[Number(h.rating)]||'Unknown')+'</span></td><td class="num">'+fNum(h.intervalDays)+'</td><td>'+esc(fmtDate(h.dueDate))+'</td><td class="note-cell">'+esc(h.note||'')+'</td></tr>').join(''):'<tr><td colspan="8">No saved review history in this period.</td></tr>';
+    const paperTrendChart=graphs.paperTrends?paperScoreTrendsMarkup(scoredPapers):'';
+    const journals=datasets.journal;
+    const groups=getRatingAnalyticsGroups(records,level);
+    const groupTable=groups.length?groups.map(g=>'<tr><td>'+esc(g.label)+'</td>'+g.counts.map(n=>'<td class="num">'+n+'</td>').join('')+'<td class="num"><b>'+g.total+'</b></td></tr>').join(''):'<tr><td colspan="7">No rating groups in this period.</td></tr>';
+    const ratingCounts=[1,2,3,4,5].map(r=>records.filter(h=>Number(h.rating)===r).length),maxRating=Math.max(1,...ratingCounts);
+    const ratingDistribution=graphs.ratingDistribution?ratingCounts.map((count,i)=>'<div class="pdf-dist-row"><span class="pdf-dist-label"><b>'+(i+1)+' · '+esc(RATING_LABELS[i+1])+'</b></span><div class="pdf-dist-track"><span data-rating="'+(i+1)+'" style="width:'+(count/maxRating*100)+'%"></span></div><strong>'+count+'</strong></div>').join(''):'';
+    const activityMarkupForPdf=(graphs.reviewActivity||graphs.studyTime)?renderActivityAnalytics({...selection,pdfScope:scope,pdfDatasets:datasets}):'';
+    const activityGraphsForPdf=String(activityMarkupForPdf||'').match(/<div class="nexus-activity-graph-wrap">[\s\S]*?<\/div>/g)||[];
+    const activityChart=graphs.reviewActivity?(activityGraphsForPdf[0]||'<p class="pdf-empty">No saved review activity in this timeframe.</p>'):'';
+    const studyTimeChart=graphs.studyTime?(activityGraphsForPdf[1]||'<p class="pdf-empty">No saved study time in this timeframe.</p>'):'';
+    const tableRecords={
+      reviews:pdfLimitedRecords(records,tables.reviews),
+      sessions:pdfLimitedRecords(studyLogs,tables.sessions),
+      papers:pdfLimitedRecords(paperList,tables.papers),
+      journal:pdfLimitedRecords(journals,tables.journal)
+    };
+    const tableEmpty=(cols,message)=>'<tr><td colspan="'+cols+'">'+message+'</td></tr>';
+    const studyRows=tables.sessions.include?await buildPdfTableRows(tableRecords.sessions,l=>{
+      const subject=state.subjects.find(s=>s.id===l.subjectId),topic=getTopic(l.topicId);
+      return '<tr><td>'+esc(fmtDate(l.date))+'</td><td>'+esc(subject?.name||l.subjectName||'—')+'</td><td>'+esc(topic?.name||l.topicName||'—')+'</td><td class="num">'+formatStudyDuration(studyLogMinutes(l)*60)+'</td><td>'+esc(l.type||'Focus session')+'</td><td>'+esc(l.note||'')+'</td></tr>';
+    },tableEmpty(6,'No logged focus sessions in this period.'),'study sessions',reportWindow,dialog):'';
+    const paperRows=tables.papers.include?await buildPdfTableRows(tableRecords.papers,p=>{
+      return '<tr><td>'+esc(fmtDate(p.date))+'</td><td>'+esc(p.name||'Untitled paper')+'</td><td>'+esc(state.subjects.find(s=>s.id===p.subjectId)?.name||'—')+'</td><td class="num">'+(p.score===null||p.maxScore===null?'—':esc(p.score)+' / '+esc(p.maxScore))+'</td><td class="num">'+(p.maxScore>0?Math.round(p.score/p.maxScore*100)+'%':'—')+'</td><td>'+esc(p.notes||p.weakAreas||'')+'</td></tr>';
+    },tableEmpty(6,'No saved paper results in this period.'),'paper records',reportWindow,dialog):'';
+    const journalRows=tables.journal.include?await buildPdfTableRows(tableRecords.journal,j=>{
+      return '<tr><td>'+esc(fmtDate(j.date))+'</td><td>'+esc(j.category||'Other')+'</td><td>'+esc(state.subjects.find(s=>s.id===j.subjectId)?.name||'—')+'</td><td>'+esc(getTopic(j.topicId)?.name||'—')+'</td><td>'+esc(j.issue||'')+'</td><td>'+esc(j.fix||'')+'</td><td>'+(j.solved?'Resolved':'Open')+'</td></tr>';
+    },tableEmpty(7,'No journal entries in this period.'),'mistakes journal',reportWindow,dialog):'';
+    const historyRows=tables.reviews.include?await buildPdfTableRows(tableRecords.reviews,h=>{
+      return '<tr><td>'+esc(fmtDate(h.reviewedAt))+'</td><td>'+esc(h.streamName||'—')+'</td><td>'+esc(h.subjectName||'—')+'</td><td>'+esc(h.topicName||'—')+'</td><td><span class="pdf-grade" data-rating="'+Number(h.rating)+'">'+Number(h.rating)+' · '+esc(RATING_LABELS[Number(h.rating)]||'Unknown')+'</span></td><td class="num">'+fNum(h.intervalDays)+'</td><td>'+esc(fmtDate(h.dueDate))+'</td><td class="note-cell">'+esc(h.note||'')+'</td></tr>';
+    },tableEmpty(8,'No saved review history in this period.'),'review history',reportWindow,dialog):'';
+    setPdfExportProgress('Finalising report layout…',reportWindow,dialog);
     const titleGroup=level==='syllabus'?'Syllabus / stream':level==='subject'?'Subject':'Topic';
+    const reportSections=[];
+    const addPdfSection=(id,title,body)=>reportSections.push({id,title,body});
+    if(graphs.ratingDistribution)addPdfSection('report-rating-distribution','Review Difficulty distribution','<p class="section-note">Each record contributes once to its saved Review Difficulty rating. This graph includes all reviews in the selected timeframe.</p><div class="panel"><div class="legend">'+[1,2,3,4,5].map(r=>'<span><i class="dot" data-rating="'+r+'"></i>'+r+' · '+esc(RATING_LABELS[r])+'</span>').join('')+'</div>'+ratingDistribution+'</div>');
+    if(graphs.ratingTimeline)addPdfSection('report-rating-timeline','Review Difficulty Record over time · '+entityLabel,'<p class="section-note">Saved review counts by Review Difficulty rating across the selected timeframe.</p><div class="panel pdf-time-series">'+timelineSvg+'</div>'+timelineTable+'<div class="section-note">Table: exact count for each plotted day, week or month.</div>');
+    addPdfSection('report-rating-groups','Review Difficulty counts by '+titleGroup.toLowerCase(),'<p class="section-note">Exact Review Difficulty counts for each topic, subject or syllabus in the selected date range. This summary includes all matching records.</p><div class="table-wrap"><table><thead><tr><th>'+esc(titleGroup)+'</th><th class="num">1 Again</th><th class="num">2 Hard</th><th class="num">3 Good</th><th class="num">4 Very good</th><th class="num">5 Easy</th><th class="num">Total</th></tr></thead><tbody>'+groupTable+'</tbody></table></div>');
+    if(graphs.reviewActivity)addPdfSection('report-total-reviews','Total review activity','<p class="section-note">Total saved review count across the selected timeframe, grouped by day or aggregated intervals. All matching records are included.</p><div class="panel pdf-line-panel">'+activityChart+'</div>');
+    if(graphs.studyTime)addPdfSection('report-total-study-time','Total study time over time','<p class="section-note">Total logged focus-session minutes across the selected timeframe. All matching sessions are included.</p><div class="panel pdf-line-panel">'+studyTimeChart+'</div>');
+    if(graphs.subjectTime)addPdfSection('report-study-by-subject','Study time by subject','<p class="section-note">Subject totals from all saved focus sessions in the selected timeframe.</p><div class="panel">'+subjectTimeChart+'</div>');
+    if(graphs.paperTrends)addPdfSection('report-paper-trends','Paper marks and score trends','<p class="section-note">Subject-wise percentage trends for scored papers and practice attempts, using the same 0–100% scale and trend points as Paper analytics.</p><div class="panel pdf-paper-trends">'+(paperTrendChart||'<p class="pdf-empty">No scored papers or practice attempts in this timeframe.</p>')+'</div>');
+    const tableDescription=(key,allCount)=>'Newest records first. Showing '+tableRecords[key].length+' of '+allCount+' records that match this timeframe; all summary calculations remain based on the full matching dataset.';
+    if(tables.reviews.include)addPdfSection('report-review-records','Detailed Review Difficulty Record ('+tableRecords.reviews.length+' of '+records.length+')','<p class="section-note">'+tableDescription('reviews',records.length)+'</p><div class="table-wrap"><table><thead><tr><th>Date</th><th>Syllabus</th><th>Subject</th><th>Topic</th><th>Review difficulty</th><th class="num">Interval d</th><th>Next due</th><th>Review note</th></tr></thead><tbody>'+historyRows+'</tbody></table></div>');
+    if(tables.sessions.include)addPdfSection('report-study-sessions','Logged focus sessions ('+tableRecords.sessions.length+' of '+studyLogs.length+')','<p class="section-note">'+tableDescription('sessions',studyLogs.length)+'</p><div class="table-wrap"><table><thead><tr><th>Date</th><th>Subject</th><th>Topic</th><th class="num">Duration</th><th>Session type</th><th>Note</th></tr></thead><tbody>'+studyRows+'</tbody></table></div>');
+    if(tables.papers.include)addPdfSection('report-paper-records','Paper / practice results ('+tableRecords.papers.length+' of '+paperList.length+')','<p class="section-note">'+tableDescription('papers',paperList.length)+'</p><div class="table-wrap"><table><thead><tr><th>Date</th><th>Paper / practice</th><th>Subject</th><th class="num">Score</th><th class="num">Percent</th><th>Notes / weak areas</th></tr></thead><tbody>'+paperRows+'</tbody></table></div>');
+    if(tables.journal.include)addPdfSection('report-journal','Mistakes and lesson journal ('+tableRecords.journal.length+' of '+journals.length+')','<p class="section-note">'+tableDescription('journal',journals.length)+'</p><div class="table-wrap"><table><thead><tr><th>Date</th><th>Category</th><th>Subject</th><th>Topic</th><th>Issue</th><th>Correction / fix</th><th>Status</th></tr></thead><tbody>'+journalRows+'</tbody></table></div>');
+    const tocHtml=reportSections.map((section,index)=>'<a href="#'+section.id+'">'+(index+1)+'. '+esc(section.title)+'</a>').join('');
+    const sectionsHtml=reportSections.map((section,index)=>'<section class="pdf-report-section"><h2 id="'+section.id+'">'+(index+1)+'. '+esc(section.title)+'</h2>'+section.body+'</section>').join('');
     const report='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Nexus · Study &amp; Review Difficulty Report</title><style>'+
-      '@page{size:A4;margin:13mm}:root{--accent:#7769e8}*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;color:#18212e;font-size:10px;line-height:1.45;margin:0;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}h1{font-size:27px;letter-spacing:-.7px;line-height:1.1;margin:6px 0 8px;color:#121a2a}h2{font-size:16px;letter-spacing:-.25px;margin:24px 0 5px;padding-bottom:7px;border-bottom:1px solid #dfe5ef;color:#19243b;break-after:avoid}h3{font-size:11px;margin:14px 0 6px}p{margin:5px 0}.cover{padding:24px 24px 20px;border-radius:16px;background:linear-gradient(135deg,#17172d,#292354 62%,#14525a);color:white;margin:0 0 17px}.cover-brand{display:flex;align-items:center;gap:12px;margin:0 0 20px;padding:0 0 15px;border-bottom:1px solid #ffffff32}.cover-logo{display:block;width:48px;height:48px;object-fit:cover;flex:0 0 48px;border-radius:13px;border:1px solid #ffffff33;box-shadow:0 5px 18px #0003}.cover-brand-copy{display:flex;flex-direction:column;gap:3px;min-width:0}.cover-brand-copy strong{font-size:19px;line-height:1;font-weight:900;letter-spacing:3px;color:#fff}.cover-brand-copy span{font-size:7px;line-height:1.4;font-weight:800;letter-spacing:1.5px;color:#a5f3ed}.cover-brand-tag{margin-left:auto;padding:6px 9px;border:1px solid #a5f3ed66;border-radius:999px;color:#a5f3ed;font-size:7px;letter-spacing:1px;font-weight:800;white-space:nowrap}.kicker{font-size:9px;font-weight:800;letter-spacing:2px;color:#8af1e7}.cover h1{color:#fff}.cover p{color:#e6e9fb}.cover-meta{margin-top:18px;padding-top:12px;border-top:1px solid #ffffff35;display:flex;justify-content:space-between;gap:12px;font-size:9px}.report-toc{border:1px solid #dedaf8;border-radius:12px;padding:12px 14px;margin:14px 0 18px;background:#faf9ff;break-inside:avoid}.report-toc h2{font-size:14px;margin:0 0 8px;padding:0;border:0;color:#292553}.report-toc-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px 14px}.report-toc a{display:block;padding:4px 0;font-size:9px;line-height:1.35;color:#5147b8;text-decoration:none;overflow-wrap:anywhere}.report-toc a:hover{text-decoration:underline}.report-toc a:focus{outline:2px solid #7769e8;outline-offset:2px}@media(max-width:600px){.report-toc-grid{grid-template-columns:1fr}}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0}.metric{border:1px solid #e0e5ed;border-radius:9px;padding:11px;background:#f8faff}.metric b{display:block;font-size:20px;color:#28295c;line-height:1.2}.metric span{display:block;color:#68728a;font-size:8px;margin-top:4px}.panel{border:1px solid #e0e5ed;border-radius:12px;padding:12px;margin:12px 0;break-inside:avoid}.muted{color:#657188}.legend{display:flex;flex-wrap:wrap;gap:6px 12px;margin:8px 0 12px}.legend span{display:inline-flex;align-items:center;gap:5px;font-size:8px}.dot{width:8px;height:8px;border-radius:3px;display:inline-block}.pdf-rating,.pdf-dist-track span,.dot{background:#aaa}.pdf-rating[data-rating="1"],.pdf-dist-track span[data-rating="1"],.dot[data-rating="1"],.pdf-grade[data-rating="1"]{background:#ef4444}.pdf-rating[data-rating="2"],.pdf-dist-track span[data-rating="2"],.dot[data-rating="2"],.pdf-grade[data-rating="2"]{background:#f97316}.pdf-rating[data-rating="3"],.pdf-dist-track span[data-rating="3"],.dot[data-rating="3"],.pdf-grade[data-rating="3"]{background:#eab308}.pdf-rating[data-rating="4"],.pdf-dist-track span[data-rating="4"],.dot[data-rating="4"],.pdf-grade[data-rating="4"]{background:#22c55e}.pdf-rating[data-rating="5"],.pdf-dist-track span[data-rating="5"],.dot[data-rating="5"],.pdf-grade[data-rating="5"]{background:#10b981}.pdf-stack-row{display:grid;grid-template-columns:150px 1fr 25px;gap:8px;align-items:center;margin:10px 0}.pdf-stack-label{min-width:0;overflow-wrap:anywhere}.pdf-stack-label strong{display:block;font-size:9px}.pdf-stack-label small{display:block;color:#69738a;font-size:7px}.pdf-stack-track{height:12px;border-radius:7px;background:#edf1f7;display:flex;overflow:hidden}.pdf-rating{height:100%;display:block;min-width:0}.pdf-stack-row>b{font-size:9px;text-align:right}.pdf-dist-row{display:grid;grid-template-columns:100px 1fr 30px;gap:9px;align-items:center;margin:9px 0}.pdf-dist-label{font-size:9px}.pdf-dist-track,.pdf-time-track{height:10px;border-radius:6px;overflow:hidden;background:#edf1f7}.pdf-dist-track span{display:block;height:100%;border-radius:6px}.pdf-dist-row>strong{text-align:right}.pdf-columns{height:145px;display:flex;gap:3px;align-items:stretch;border-bottom:1px solid #d8deea;padding-top:6px}.pdf-col{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:3px;font-size:7px;color:#6c778d}.pdf-col-value{font-size:7px;height:9px}.pdf-col-track{height:112px;width:100%;display:flex;align-items:flex-end;justify-content:center}.pdf-col-track i{display:block;width:75%;background:linear-gradient(180deg,#51d9d0,#7169de);border-radius:3px 3px 0 0;min-height:2px}.pdf-time-row{display:grid;grid-template-columns:125px 1fr 48px;gap:8px;align-items:center;margin:8px 0;font-size:9px}.pdf-time-track i{display:block;background:linear-gradient(90deg,#6c63df,#31c7c3);height:100%;border-radius:6px}.pdf-time-row>b{text-align:right}.ra-svg{display:block;width:100%;height:auto;min-height:210px;overflow:visible}.ra-svg-dense{min-width:820px;max-width:none}@media print{.ra-svg-dense{min-width:0;max-width:100%;width:100%}.ra-count-table-wrap{overflow:visible;max-height:none}}.ra-svg-dense .ra-tick{font-size:10px}.ra-svg .ra-gridline{stroke:#dbe2ee;stroke-width:1}.ra-svg .ra-axis{stroke:#7b8495;stroke-width:1.3}.ra-svg .ra-tick{fill:#647084;font-size:12px}.ra-svg .ra-axis-title{fill:#20293a;font-size:13px;font-weight:700}.ra-svg .ra-line{fill:none;stroke-width:3.1;stroke-linecap:round;stroke-linejoin:round}.ra-svg .ra-point{stroke:#fff;stroke-width:1.8}.pdf-time-series{padding:12px}.pdf-line-panel{padding:10px 12px;break-inside:avoid}.pdf-line-chart-wrap{width:100%;overflow:hidden}.pdf-line-svg{display:block;width:100%;height:auto;max-width:100%}.nexus-activity-graph-wrap{width:100%;min-width:0;overflow:hidden;margin-top:0}.nexus-activity-svg{display:block;width:100%;min-width:0!important;max-width:100%;height:auto;overflow:visible}.nexus-activity-grid{stroke:#dbe2ee;stroke-width:1;stroke-dasharray:3 4}.nexus-activity-axis{stroke:#7b8495;stroke-width:1}.nexus-activity-line{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}.nexus-activity-area{stroke:none;pointer-events:none}.nexus-activity-point{stroke:#fff;stroke-width:1.8}.nexus-activity-tick{fill:#647084;font-size:11px;font-variant-numeric:tabular-nums}.nexus-activity-axis-title{fill:#20293a;font-size:11px;font-weight:650}.nexus-activity-empty-label{fill:#647084;font-size:13px}.pdf-paper-trends{padding:9px}.paper-trend-panel{padding:8px;margin:8px 0;border:1px solid #e0e5ed;border-radius:9px;break-inside:avoid}.paper-trend-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:7px}.paper-trend-head strong{font-size:9px;overflow-wrap:anywhere}.paper-trend-head span{font-size:8px;color:#657188;text-align:right}.paper-trend-chart{width:100%;overflow:visible}.paper-trend-svg{display:block;width:100%!important;min-width:0!important;max-width:100%!important;height:auto}.paper-trend-grid{stroke:#dbe2ee;stroke-width:1}.paper-trend-axis{stroke:#7b8495;stroke-width:1.3}.paper-trend-tick{fill:#647084;font-size:12px}.paper-trend-axis-title{fill:#20293a;font-size:13px;font-weight:700}.paper-trend-line{fill:none;stroke:var(--accent);stroke-width:3.1;stroke-linecap:round;stroke-linejoin:round}.paper-trend-point{fill:var(--accent);stroke:#fff;stroke-width:1.8}@media print{.paper-trend-svg{width:100%!important;min-width:0!important;max-width:100%!important}.pdf-line-panel,.paper-trend-panel{break-inside:avoid}}.ra-count-table-wrap{overflow-x:auto;max-height:none;margin:8px 0 14px}.ra-count-table{width:100%;border-collapse:collapse;font-size:8px}.ra-count-table th,.ra-count-table td{padding:5px 4px;border-bottom:1px solid #e5e9f0}.ra-count-table th{background:#eef1fb;color:#303b57;text-align:left}.ra-table-rating[data-rating="1"]{color:#ef4444}.ra-table-rating[data-rating="2"]{color:#f97316}.ra-table-rating[data-rating="3"]{color:#b78a00}.ra-table-rating[data-rating="4"]{color:#22c55e}.ra-table-rating[data-rating="5"]{color:#10b981}.pdf-empty{color:#66718a;padding:9px 0}.section-note{font-size:8px;color:#66718a;margin:4px 0 10px}.table-wrap{width:100%}table{width:100%;border-collapse:collapse;font-size:8px;table-layout:auto}thead{display:table-header-group}tr{break-inside:avoid}th{background:#eef1fb;color:#303b57;text-align:left;font-size:7.5px;text-transform:uppercase;letter-spacing:.3px;padding:6px 5px}td{padding:6px 5px;border-bottom:1px solid #e5e9f0;vertical-align:top;overflow-wrap:anywhere}tbody tr:nth-child(even){background:#fafbfe}.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.note-cell{white-space:pre-wrap;min-width:80px}.pdf-grade{display:inline-block;border-radius:5px;color:#fff;padding:3px 5px;white-space:nowrap;font-weight:700;font-size:7px}.footer{margin-top:24px;padding-top:8px;border-top:1px solid #e0e5ed;color:#788197;font-size:8px;display:flex;justify-content:space-between;gap:10px}.page-break{break-before:page}.no-break{break-inside:avoid}@media screen{body{max-width:920px;margin:24px auto;padding:0 18px;background:#f6f8fc}.cover{box-shadow:0 14px 35px #25265726}}@media(max-width:600px){.metrics{grid-template-columns:repeat(2,1fr)}.pdf-stack-row{grid-template-columns:110px 1fr 22px}.cover-meta{display:block}.cover-meta span{display:block;margin:3px 0}}'+
+      '@page{size:A4;margin:13mm}:root{--accent:#7769e8}*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;color:#18212e;font-size:10px;line-height:1.45;margin:0;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}h1{font-size:27px;letter-spacing:-.7px;line-height:1.1;margin:6px 0 8px;color:#121a2a}h2{font-size:16px;letter-spacing:-.25px;margin:24px 0 5px;padding-bottom:7px;border-bottom:1px solid #dfe5ef;color:#19243b;break-after:avoid}h3{font-size:11px;margin:14px 0 6px}p{margin:5px 0}.cover{padding:24px 24px 20px;border-radius:16px;background:linear-gradient(135deg,#17172d,#292354 62%,#14525a);color:white;margin:0 0 17px}.cover-brand{display:flex;align-items:center;gap:12px;margin:0 0 20px;padding:0 0 15px;border-bottom:1px solid #ffffff32}.cover-logo{display:block;width:48px;height:48px;object-fit:cover;flex:0 0 48px;border-radius:13px;border:1px solid #ffffff33;box-shadow:0 5px 18px #0003}.cover-brand-copy{display:flex;flex-direction:column;gap:3px;min-width:0}.cover-brand-copy strong{font-size:19px;line-height:1;font-weight:900;letter-spacing:3px;color:#fff}.cover-brand-copy span{font-size:7px;line-height:1.4;font-weight:800;letter-spacing:1.5px;color:#a5f3ed}.cover-brand-tag{margin-left:auto;padding:6px 9px;border:1px solid #a5f3ed66;border-radius:999px;color:#a5f3ed;font-size:7px;letter-spacing:1px;font-weight:800;white-space:nowrap}.kicker{font-size:9px;font-weight:800;letter-spacing:2px;color:#8af1e7}.cover h1{color:#fff}.cover p{color:#e6e9fb}.cover-meta{margin-top:18px;padding-top:12px;border-top:1px solid #ffffff35;display:flex;justify-content:space-between;gap:12px;font-size:9px}.report-toc{border:1px solid #dedaf8;border-radius:12px;padding:12px 14px;margin:14px 0 18px;background:#faf9ff;break-inside:avoid}.report-toc h2{font-size:14px;margin:0 0 8px;padding:0;border:0;color:#292553}.report-toc-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px 14px}.report-toc a{display:block;padding:4px 0;font-size:9px;line-height:1.35;color:#5147b8;text-decoration:none;overflow-wrap:anywhere}.report-toc a:hover{text-decoration:underline}.report-toc a:focus{outline:2px solid #7769e8;outline-offset:2px}@media(max-width:600px){.report-toc-grid{grid-template-columns:1fr}}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0}.metric{border:1px solid #e0e5ed;border-radius:9px;padding:11px;background:#f8faff}.metric b{display:block;font-size:20px;color:#28295c;line-height:1.2}.metric span{display:block;color:#68728a;font-size:8px;margin-top:4px}.panel{border:1px solid #e0e5ed;border-radius:12px;padding:12px;margin:12px 0;break-inside:avoid}.muted{color:#657188}.legend{display:flex;flex-wrap:wrap;gap:6px 12px;margin:8px 0 12px}.legend span{display:inline-flex;align-items:center;gap:5px;font-size:8px}.dot{width:8px;height:8px;border-radius:3px;display:inline-block}.pdf-rating,.pdf-dist-track span,.dot{background:#aaa}.pdf-rating[data-rating="1"],.pdf-dist-track span[data-rating="1"],.dot[data-rating="1"],.pdf-grade[data-rating="1"]{background:#ef4444}.pdf-rating[data-rating="2"],.pdf-dist-track span[data-rating="2"],.dot[data-rating="2"],.pdf-grade[data-rating="2"]{background:#f97316}.pdf-rating[data-rating="3"],.pdf-dist-track span[data-rating="3"],.dot[data-rating="3"],.pdf-grade[data-rating="3"]{background:#eab308}.pdf-rating[data-rating="4"],.pdf-dist-track span[data-rating="4"],.dot[data-rating="4"],.pdf-grade[data-rating="4"]{background:#22c55e}.pdf-rating[data-rating="5"],.pdf-dist-track span[data-rating="5"],.dot[data-rating="5"],.pdf-grade[data-rating="5"]{background:#10b981}.pdf-stack-row{display:grid;grid-template-columns:150px 1fr 25px;gap:8px;align-items:center;margin:10px 0}.pdf-stack-label{min-width:0;overflow-wrap:anywhere}.pdf-stack-label strong{display:block;font-size:9px}.pdf-stack-label small{display:block;color:#69738a;font-size:7px}.pdf-stack-track{height:12px;border-radius:7px;background:#edf1f7;display:flex;overflow:hidden}.pdf-rating{height:100%;display:block;min-width:0}.pdf-stack-row>b{font-size:9px;text-align:right}.pdf-dist-row{display:grid;grid-template-columns:100px 1fr 30px;gap:9px;align-items:center;margin:9px 0}.pdf-dist-label{font-size:9px}.pdf-dist-track,.pdf-time-track{height:10px;border-radius:6px;overflow:hidden;background:#edf1f7}.pdf-dist-track span{display:block;height:100%;border-radius:6px}.pdf-dist-row>strong{text-align:right}.pdf-columns{height:145px;display:flex;gap:3px;align-items:stretch;border-bottom:1px solid #d8deea;padding-top:6px}.pdf-col{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:3px;font-size:7px;color:#6c778d}.pdf-col-value{font-size:7px;height:9px}.pdf-col-track{height:112px;width:100%;display:flex;align-items:flex-end;justify-content:center}.pdf-col-track i{display:block;width:75%;background:linear-gradient(180deg,#51d9d0,#7169de);border-radius:3px 3px 0 0;min-height:2px}.pdf-time-row{display:grid;grid-template-columns:125px 1fr 48px;gap:8px;align-items:center;margin:8px 0;font-size:9px}.pdf-time-track i{display:block;background:linear-gradient(90deg,#6c63df,#31c7c3);height:100%;border-radius:6px}.pdf-time-row>b{text-align:right}.ra-svg{display:block;width:100%;height:auto;min-height:210px;overflow:visible}.ra-svg-dense{min-width:820px;max-width:none}@media print{.ra-svg-dense{min-width:0;max-width:100%;width:100%}.ra-count-table-wrap{overflow:visible;max-height:none}}.ra-svg-dense .ra-tick{font-size:10px}.ra-svg .ra-gridline{stroke:#dbe2ee;stroke-width:1}.ra-svg .ra-axis{stroke:#7b8495;stroke-width:1.3}.ra-svg .ra-tick{fill:#647084;font-size:12px}.ra-svg .ra-axis-title{fill:#20293a;font-size:13px;font-weight:700}.ra-svg .ra-line{fill:none;stroke-width:3.1;stroke-linecap:round;stroke-linejoin:round}.ra-svg .ra-point{stroke:#fff;stroke-width:1.8}.pdf-time-series{padding:12px}.pdf-line-panel{padding:10px 12px;break-inside:avoid}.pdf-line-chart-wrap{width:100%;overflow:hidden}.pdf-line-svg{display:block;width:100%;height:auto;max-width:100%}.nexus-activity-graph-wrap{width:100%;min-width:0;overflow:hidden;margin-top:0}.nexus-activity-svg{display:block;width:100%;min-width:0!important;max-width:100%;height:auto;overflow:visible}.nexus-activity-grid{stroke:#dbe2ee;stroke-width:1;stroke-dasharray:3 4}.nexus-activity-axis{stroke:#7b8495;stroke-width:1}.nexus-activity-line{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}.nexus-activity-area{stroke:none;pointer-events:none}.nexus-activity-point{stroke:#fff;stroke-width:1.8}.nexus-activity-tick{fill:#647084;font-size:11px;font-variant-numeric:tabular-nums}.nexus-activity-axis-title{fill:#20293a;font-size:11px;font-weight:650}.nexus-activity-empty-label{fill:#647084;font-size:13px}.pdf-paper-trends{padding:9px}.paper-trend-panel{padding:8px;margin:8px 0;border:1px solid #e0e5ed;border-radius:9px;break-inside:avoid}.paper-trend-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:7px}.paper-trend-head strong{font-size:9px;overflow-wrap:anywhere}.paper-trend-head span{font-size:8px;color:#657188;text-align:right}.paper-trend-chart{width:100%;overflow:visible}.paper-trend-svg{display:block;width:100%!important;min-width:0!important;max-width:100%!important;height:auto}.paper-trend-grid{stroke:#dbe2ee;stroke-width:1}.paper-trend-axis{stroke:#7b8495;stroke-width:1.3}.paper-trend-tick{fill:#647084;font-size:12px}.paper-trend-axis-title{fill:#20293a;font-size:13px;font-weight:700}.paper-trend-line{fill:none;stroke:var(--accent);stroke-width:3.1;stroke-linecap:round;stroke-linejoin:round}.paper-trend-point{fill:var(--accent);stroke:#fff;stroke-width:1.8}@media print{.paper-trend-svg{width:100%!important;min-width:0!important;max-width:100%!important}.pdf-line-panel,.paper-trend-panel{break-inside:avoid}}.ra-count-table-wrap{overflow-x:auto;max-height:none;margin:8px 0 14px}.ra-count-table{width:100%;border-collapse:collapse;font-size:8px}.ra-count-table th,.ra-count-table td{padding:5px 4px;border-bottom:1px solid #e5e9f0}.ra-count-table th{background:#eef1fb;color:#303b57;text-align:left}.ra-table-rating[data-rating="1"]{color:#ef4444}.ra-table-rating[data-rating="2"]{color:#f97316}.ra-table-rating[data-rating="3"]{color:#b78a00}.ra-table-rating[data-rating="4"]{color:#22c55e}.ra-table-rating[data-rating="5"]{color:#10b981}.pdf-empty{color:#66718a;padding:9px 0}.section-note{font-size:8px;color:#66718a;margin:4px 0 10px}.table-wrap{width:100%;break-inside:auto;page-break-inside:auto}.pdf-report-section{break-inside:auto;page-break-inside:auto}table{width:100%;border-collapse:collapse;font-size:8px;table-layout:auto}thead{display:table-header-group}tbody{display:table-row-group}tr{break-inside:avoid;page-break-inside:avoid}th{background:#eef1fb;color:#303b57;text-align:left;font-size:7.5px;text-transform:uppercase;letter-spacing:.3px;padding:6px 5px}td{padding:6px 5px;border-bottom:1px solid #e5e9f0;vertical-align:top;overflow-wrap:anywhere}tbody tr:nth-child(even){background:#fafbfe}.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.note-cell{white-space:pre-wrap;min-width:80px}.pdf-grade{display:inline-block;border-radius:5px;color:#fff;padding:3px 5px;white-space:nowrap;font-weight:700;font-size:7px}.footer{margin-top:24px;padding-top:8px;border-top:1px solid #e0e5ed;color:#788197;font-size:8px;display:flex;justify-content:space-between;gap:10px}.page-break{break-before:page}.no-break{break-inside:avoid}@media screen{body{max-width:920px;margin:24px auto;padding:0 18px;background:#f6f8fc}.cover{box-shadow:0 14px 35px #25265726}}@media(max-width:600px){.metrics{grid-template-columns:repeat(2,1fr)}.pdf-stack-row{grid-template-columns:110px 1fr 22px}.cover-meta{display:block}.cover-meta span{display:block;margin:3px 0}}'+
       '</style></head><body><header class="cover"><div class="cover-brand"><img class="cover-logo" src="'+esc(logoUrl)+'" alt="Nexus logo"><div class="cover-brand-copy"><strong>NEXUS</strong><span>SPACED REPETITION TRACKER</span></div><span class="cover-brand-tag">LEARNING INTELLIGENCE</span></div><h1>Study &amp; Review Difficulty Report</h1><p>A detailed record of your recall ratings, review schedule, focus sessions and study progress.</p><div class="cover-meta"><span><b>Coverage:</b> '+esc(rangeText)+'</span><span><b>Generated:</b> '+esc(fmtDate(today()))+'</span><span><b>Chart grouping:</b> '+esc(titleGroup)+'</span></div></header>'+
-      '<nav class="report-toc" aria-label="Report contents"><h2>Report contents</h2><div class="report-toc-grid"><a href="#report-rating-distribution">1. Review Difficulty distribution</a><a href="#report-rating-timeline">2. Review Difficulty Record over time</a><a href="#report-rating-groups">3. Review Difficulty counts by topic or subject</a><a href="#report-total-reviews">4. Total review activity</a><a href="#report-total-study-time">5. Total study time over time</a><a href="#report-study-by-subject">6. Study time by subject</a><a href="#report-paper-trends">7. Paper marks and score trends</a><a href="#report-review-records">8. Detailed Review Difficulty Record</a><a href="#report-study-sessions">9. Logged focus sessions</a><a href="#report-paper-records">10. Paper / practice records</a><a href="#report-journal">11. Mistakes and lesson journal</a></div></nav>'+
+      '<nav class="report-toc" aria-label="Report contents"><h2>Report contents</h2><div class="report-toc-grid">'+tocHtml+'</div></nav>'+
       '<div class="metrics"><div class="metric"><b>'+records.length+'</b><span>Review Difficulty Records</span></div><div class="metric"><b>'+(average?average.toFixed(2):'—')+' / 5</b><span>Mean review difficulty rating</span></div><div class="metric"><b>'+successful+'%</b><span>Ratings 3–5</span></div><div class="metric"><b>'+studyMinutes+'</b><span>Focus minutes logged</span></div></div>'+
-      '<h2 id="report-rating-distribution">1. Review Difficulty distribution</h2><p class="section-note">Each record contributes once to its saved Review Difficulty rating. Colour labels correspond to the saved Review Difficulty ratings in Nexus.</p><div class="panel"><div class="legend">'+[1,2,3,4,5].map(r=>'<span><i class="dot" data-rating="'+r+'"></i>'+r+' · '+esc(RATING_LABELS[r])+'</span>').join('')+'</div>'+ratingDistribution+'</div>'+
-      '<h2 id="report-rating-timeline">2. Review Difficulty Record over time · '+esc(entityLabel)+'</h2><p class="section-note">Saved review counts by Review Difficulty rating across the selected timeframe. The colours match the five Review Difficulty ratings used in Nexus.</p><div class="panel pdf-time-series">'+timelineSvg+'</div>'+timelineTable+'<div class="section-note">Table: exact count for each difficulty rating in every plotted day, week or month.</div>'+
-      '<h2 id="report-rating-groups">3. Review Difficulty counts by '+esc(titleGroup.toLowerCase())+'</h2><p class="section-note">Exact Review Difficulty counts for each topic, subject or syllabus in the selected date range.</p><div class="table-wrap"><table><thead><tr><th>'+esc(titleGroup)+'</th><th class="num">1 Again</th><th class="num">2 Hard</th><th class="num">3 Good</th><th class="num">4 Very good</th><th class="num">5 Easy</th><th class="num">Total</th></tr></thead><tbody>'+groupTable+'</tbody></table></div>'+
-      '<h2 id="report-total-reviews">4. Total review activity</h2><p class="section-note">Total saved review count across the selected timeframe, grouped by day for shorter ranges and aggregated intervals for longer ranges, using the same range logic as Analytics → Activity.</p><div class="panel pdf-line-panel">'+activityChart+'</div>'+
-      '<h2 id="report-total-study-time">5. Total study time over time</h2><p class="section-note">Total logged focus-session minutes across the selected timeframe, grouped by day for shorter ranges and aggregated intervals for longer ranges. Only recorded minutes are included.</p><div class="panel pdf-line-panel">'+studyTimeChart+'</div>'+
-      '<h2 id="report-study-by-subject">6. Study time by subject</h2><p class="section-note">Subject totals from the saved focus sessions in the selected timeframe. Only recorded minutes are included.</p><div class="panel">'+subjectTimeChart+'</div>'+
-      '<h2 id="report-paper-trends">7. Paper marks and score trends</h2><p class="section-note">Subject-wise percentage trends for scored papers and practice attempts, using the same 0–100% scale and trend points as Paper analytics. Exact raw scores remain in the records below.</p><div class="panel pdf-paper-trends">'+(paperTrendChart||'<p class="pdf-empty">No scored papers or practice attempts in this timeframe.</p>')+'</div>'+
-      '<h2 id="report-review-records">8. Detailed Review Difficulty Record <span class="muted">('+records.length+' records)</span></h2><p class="section-note">Newest records first. Includes the saved Review Difficulty rating, next interval, next due date and review note. Deleted topics remain visible when their historical details were saved.</p><div class="table-wrap"><table><thead><tr><th>Date</th><th>Syllabus</th><th>Subject</th><th>Topic</th><th>Review difficulty</th><th class="num">Interval d</th><th>Next due</th><th>Review note</th></tr></thead><tbody>'+historyRows+'</tbody></table></div>'+
-      '<h2 id="report-study-sessions">9. Logged focus sessions <span class="muted">('+studyLogs.length+' records)</span></h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Subject</th><th>Topic</th><th class="num">Duration</th><th>Session type</th><th>Note</th></tr></thead><tbody>'+studyRows+'</tbody></table></div>'+
-      '<h2 id="report-paper-records">10. Paper / practice results <span class="muted">('+paperList.length+' records)</span></h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Paper / practice</th><th>Subject</th><th class="num">Score</th><th class="num">Percent</th><th>Notes / weak areas</th></tr></thead><tbody>'+paperRows+'</tbody></table></div>'+
-      '<h2 id="report-journal">11. Mistakes and lesson journal <span class="muted">('+journals.length+' records)</span></h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Category</th><th>Subject</th><th>Topic</th><th>Issue</th><th>Correction / fix</th><th>Status</th></tr></thead><tbody>'+journalRows+'</tbody></table></div>'+
+      sectionsHtml+
       '<div class="footer"><span>Nexus · Spaced Repetition Tracker</span><span>Private report generated locally in your browser</span></div></body></html>';
-    const reportWindow=window.open('','_blank');
-    if(!reportWindow){notify('Allow pop-ups for Nexus to open the print-ready report, then choose Save as PDF.');return;}
-    try{reportWindow.document.open();reportWindow.document.write(report);reportWindow.document.close();setTimeout(function(){try{reportWindow.focus();reportWindow.print();}catch(e){notify('The report opened, but printing was blocked. Use the browser menu to Print / Save as PDF.');}},450);}catch(e){try{reportWindow.close();}catch(_){}notify('Could not open the PDF report. Try allowing pop-ups and retry.');}
+    const activeLimits=pdfExportLimits();
+    if(report.length>activeLimits.maxChars)throw new Error('The finished report is larger than this device can safely send to its print service. Reduce the table limits or export complete raw data as CSV / JSON.');
+    if(isNative){
+      let nativeReport=report;
+      const escapedLogoUrl=esc(logoUrl);
+      try{
+        const imageResponse=await fetch(logoUrl);
+        if(!imageResponse.ok)throw new Error('The Nexus report logo could not be loaded.');
+        const imageBlob=await imageResponse.blob();
+        const logoDataUrl=await new Promise((resolve,reject)=>{
+          const reader=new FileReader();
+          reader.onload=()=>resolve(String(reader.result||''));
+          reader.onerror=()=>reject(reader.error||new Error('The Nexus report logo could not be embedded.'));
+          reader.readAsDataURL(imageBlob);
+        });
+        if(!logoDataUrl.startsWith('data:image/'))throw new Error('The Nexus report logo has an unsupported image format.');
+        nativeReport=nativeReport.replace('src="'+escapedLogoUrl+'"','src="'+logoDataUrl+'"');
+      }catch(error){
+        console.warn('Nexus could not embed the report logo for native printing; continuing without it.',error);
+        nativeReport=nativeReport.replace('<img class="cover-logo" src="'+escapedLogoUrl+'" alt="Nexus logo">','<span class="cover-logo" aria-hidden="true"></span>');
+      }
+      if(dialog?.open)dialog.close();
+      await window.NexusAndroidBridge.printHtml('Nexus Study and Review Difficulty Report',nativeReport);
+      notify('Android print dialog opened. Select Save as PDF to save your report.');
+      return;
+    }
+    reportWindow.document.open();reportWindow.document.write(report);reportWindow.document.close();
+    if(dialog?.open)dialog.close();
+    setTimeout(function(){try{reportWindow.focus();reportWindow.print();}catch(e){notify('The report opened, but printing was blocked. Use the browser menu to Print / Save as PDF.');}},450);
+    }catch(error){
+      try{if(reportWindow&&!reportWindow.closed)reportWindow.close();}catch(_){}
+      throw error;
+    }
+
   }
 
   function paperScoreTrendsMarkup(papers){
@@ -359,22 +1265,293 @@
       const labelEvery=Math.max(1,Math.ceil(graphItems.length/Math.min(12,Math.floor(plotW/56)||1)));
       points.forEach((point,i)=>{svg+='<circle class="paper-trend-point" cx="'+point.x.toFixed(2)+'" cy="'+point.y.toFixed(2)+'" r="3.2"><title>'+localEsc(point.p.date)+' · '+localEsc(point.p.name||'Paper')+' · '+point.value.toFixed(1)+'%</title></circle>';if(i%labelEvery===0||i===points.length-1)svg+='<text class="paper-trend-tick" x="'+point.x.toFixed(2)+'" y="'+(height-19)+'" text-anchor="middle">'+localEsc(point.p.date.slice(5))+'</text>';});
       svg+='<text class="paper-trend-axis-title" x="'+(left+plotW/2)+'" y="'+(height-3)+'" text-anchor="middle">Attempt date</text></svg>';
-      const first=Math.round(values[0]||0),last=Math.round(values[values.length-1]||0),change=last-first,changeText=items.length>1?' · '+(change>0?'+':'')+change+' pp from first attempt':'',sampleNote=graphItems.length<items.length?' · showing '+graphItems.length+' trend points for '+items.length+' attempts; all records remain below':'';
+      const first=Math.round(values[0]||0),last=Math.round(values[values.length-1]||0),change=last-first,changeText=items.length>1?' · '+(change>0?'+':'')+change+' pp from first attempt':'',sampleNote=graphItems.length<items.length?' · showing '+graphItems.length+' trend points for '+items.length+' attempts. All records remain below':'';
       return '<div class="paper-trend-panel"><div class="paper-trend-head"><strong>'+localEsc(group.name)+'</strong><span>'+items.length+' scored attempt'+(items.length===1?'':'s')+' · latest '+last+'%'+changeText+sampleNote+'</span></div><div class="paper-trend-chart" tabindex="0" role="region" aria-label="Scrollable '+localEsc(group.name)+' score chart">'+svg+'</div></div>';
     }).join('');
   }
-    function renderHomeConsistencySummary(){
-    const target=hubEl('homeConsistencySummary');if(!target||!fsState||!state||!hubEl('view-overview')?.classList.contains('active'))return;
-    const selection=getRatingAnalyticsSelection(),from=selection.from,to=selection.to,valid=selection.valid!==false,recent=selection.records||[],rangeDays=valid?Math.max(1,dayDiff(from,to)+1):30;
-    const active=activeTopics(),mastered=active.filter(isMastered).length,overdue=active.filter(t=>status(t)==='overdue').length,masteryPct=active.length?Math.round(mastered/active.length*100):0,dueSoon=active.filter(t=>safeDate(t.dueDate)&&t.dueDate>=today()&&t.dueDate<=dateShift(today(),6)).length;
-    const now=today(),weekStart=dateShift(now,-6),weeklyMinutes=fsState.studyLogs.filter(l=>safeDate(l.date)&&l.date>=weekStart&&l.date<=now).reduce((sum,l)=>sum+studyLogMinutes(l),0),weeklyTarget=Math.max(1,fNum(fsState.settings.dailyMinutes)||90)*7,weeklyPct=Math.min(100,Math.round(weeklyMinutes/weeklyTarget*100));
-    const priorStart=valid?dateShift(from,-rangeDays):dateShift(now,-29),prior=state.history.filter(h=>safeDate(h.reviewedAt)&&h.reviewedAt>=priorStart&&h.reviewedAt<from),momentum=prior.length?Math.round((recent.length-prior.length)/prior.length*100):null;
-    const heatDays=({7:7,30:30,84:84,180:180,365:365})[Number(fsState.heatmapPeriod)]||84,heat=reviewActivity(heatDays).map(x=>'<div class="hub-heat" data-count="'+Math.min(4,x.count)+'" title="'+localEsc(x.date)+' · '+x.count+' review(s)" aria-label="'+localEsc(x.date)+': '+x.count+' review(s)"></div>').join(''),streak=currentStudyStreak();
-    const intelligence='<div class="insight-grid"><div class="insight-metric"><span class="insight-label">Review momentum</span><strong>'+(momentum===null?'New baseline':(momentum>0?'+':'')+momentum+'%')+'</strong><small>'+(momentum===null?'No prior-period data':'vs. previous '+rangeDays+' days')+'</small></div><div class="insight-metric"><span class="insight-label">Mastery coverage</span><strong>'+masteryPct+'%</strong><small>'+mastered+' of '+active.length+' active topics</small><div class="insight-track"><span style="width:'+masteryPct+'%"></span></div></div><div class="insight-metric"><span class="insight-label">Next 7-day load</span><strong>'+dueSoon+'</strong><small>'+overdue+' overdue now</small></div><div class="insight-metric"><span class="insight-label">Weekly study goal</span><strong>'+weeklyPct+'%</strong><small>'+weeklyMinutes+' / '+weeklyTarget+' min logged</small><div class="insight-track"><span style="width:'+weeklyPct+'%"></span></div></div><div class="insight-metric"><span class="insight-label">Current review streak</span><strong>'+streak+' days</strong><small>Consecutive days with at least one saved review</small></div></div>';
-    target.innerHTML=intelligence+'<div class="home-heatmap-head"><div><strong>Review activity heatmap</strong><small>Each square represents a day; darker squares indicate more saved reviews.</small></div><div class="ra-field"><label for="homeHeatmapPeriod">Heatmap period</label><select class="hub-input" id="homeHeatmapPeriod">'+selectOptions([['7','7 days'],['30','30 days'],['84','12 weeks'],['180','6 months'],['365','12 months']],String(heatDays))+'</select></div></div><div class="hub-heatmap analytics-heatmap home-activity-heatmap">'+heat+'</div>';
+  let homeConsistencyMetricsCache=null,homeTopicMetricsCache=null,homeStudyLogMetricsCache=null,homeMetricsBuildGeneration=0,homeMetricsBuildPromise=null;
+  window.NexusInvalidateHomeConsistencyCache=()=>{homeConsistencyMetricsCache=null;homeTopicMetricsCache=null;homeStudyLogMetricsCache=null;homeMetricsBuildGeneration++;homeMetricsBuildPromise=null;};
+  function getHomeConsistencyMetrics(){
+    const now=today(),allowed=['week','month','year','custom'];
+    const requestedPeriod=String(fsState.analyticsPeriod||'week');
+    const period=allowed.includes(requestedPeriod)?requestedPeriod:'week';
+    let from=now,to=now;
+    if(period==='week'){const offset=(new Date(now+'T12:00:00').getDay()+6)%7;from=dateShift(now,-offset);to=dateShift(from,6);}
+    else if(period==='month'){from=now.slice(0,7)+'-01';const parts=now.split('-');const last=new Date(Number(parts[0]),Number(parts[1]),0).getDate();to=now.slice(0,7)+'-'+String(last).padStart(2,'0');}
+    else if(period==='year'){from=now.slice(0,4)+'-01-01';to=now.slice(0,4)+'-12-31';}
+    else{from=safeDate(fsState.analyticsCustomStart)?fsState.analyticsCustomStart:dateShift(now,-29);to=safeDate(fsState.analyticsCustomEnd)?fsState.analyticsCustomEnd:now;}
+    const valid=safeDate(from)&&safeDate(to)&&from<=to;
+    const rangeDays=valid?Math.max(1,dayDiff(from,to)+1):30;
+    const heatDays=({7:7,30:30,84:84,180:180,365:365})[Number(fsState.heatmapPeriod)]||84;
+    const dailyTarget=Math.max(1,fNum(fsState.settings.dailyMinutes)||90);
+    const cache=homeConsistencyMetricsCache;
+    if(cache&&cache.topics===state.topics&&cache.history===state.history&&cache.studyLogs===fsState.studyLogs&&
+       cache.topicCount===state.topics.length&&cache.historyCount===state.history.length&&cache.studyLogCount===fsState.studyLogs.length&&
+       cache.today===now&&cache.period===period&&cache.from===from&&cache.to===to&&cache.heatDays===heatDays&&cache.dailyTarget===dailyTarget){
+      return cache.value;
+    }
+    const shared=window.NexusGetHistoryActivityIndex?.();
+    let byDate=shared&&shared.byDate;
+    if(!byDate||typeof byDate.get!=='function'){
+      byDate=new Map();
+      for(const record of state.history){const date=record&&record.reviewedAt;if(safeDate(date))byDate.set(date,(byDate.get(date)||0)+1);}
+    }
+    let recentCount=0,priorCount=0;
+    if(valid){
+      const priorStart=dateShift(from,-rangeDays);
+      for(const [date,count] of byDate){
+        if(date>=from&&date<=to)recentCount+=count;
+        else if(date>=priorStart&&date<from)priorCount+=count;
+      }
+    }
+    // Topic-level totals are independent of the selected analytics range and heatmap
+    // window. Reuse this 77k+ record pass when a user changes only those controls.
+    let topicMetrics=homeTopicMetricsCache;
+    if(!topicMetrics||topicMetrics.topics!==state.topics||topicMetrics.topicCount!==state.topics.length||
+       topicMetrics.history!==state.history||topicMetrics.historyCount!==state.history.length||topicMetrics.today!==now){
+      let activeCount=0,mastered=0,overdue=0,dueSoon=0,dueCount=0,newCount=0,reviewedCount=0,weakCount=0;
+      const homeWeekEnd=dateShift(now,6),upcomingEnd=dateShift(now,7),progressBySubject=new Map(),queue=[],upcomingQueue=[];
+      const topicHistory=shared&&shared.byTopic&&typeof shared.byTopic.get==='function'?shared.byTopic:null;
+      const queueCompare=(a,b)=>({overdue:0,due:1,new:2,upcoming:3}[a.status]??4)-({overdue:0,due:1,new:2,upcoming:3}[b.status]??4)||
+        (a.topic.dueDate||'9999').localeCompare(b.topic.dueDate||'9999')||
+        naturalCompare(a.topic.name,b.topic.name);
+      const addQueue=(item)=>{
+        let low=0,high=queue.length;
+        while(low<high){const mid=(low+high)>>1;if(queueCompare(queue[mid],item)<=0)low=mid+1;else high=mid;}
+        if(low>=7)return;queue.splice(low,0,item);if(queue.length>7)queue.pop();
+      };
+      const addUpcoming=(topic)=>{
+        let low=0,high=upcomingQueue.length;
+        while(low<high){
+          const mid=(low+high)>>1,other=upcomingQueue[mid];
+          const order=(other.dueDate||'9999').localeCompare(topic.dueDate||'9999')||naturalCompare(other.name,topic.name);
+          if(order<=0)low=mid+1;else high=mid;
+        }
+        if(low>=7)return;upcomingQueue.splice(low,0,topic);if(upcomingQueue.length>7)upcomingQueue.pop();
+      };
+      for(const topic of state.topics){
+        if(topic.archived)continue;
+        activeCount++;
+        const topicStatus=status(topic);
+        if(topicStatus==='overdue'||topicStatus==='due'){dueCount++;if(topicStatus==='overdue')overdue++;}
+        if(topicStatus==='new')newCount++;
+        if(topic.reviewCount>0)reviewedCount++;
+        let progress=progressBySubject.get(topic.subjectId);
+        if(!progress){progress={total:0,done:0};progressBySubject.set(topic.subjectId,progress);}
+        progress.total++;if(topic.reviewCount>0)progress.done++;
+        if(topicStatus==='overdue'||topicStatus==='due'||topicStatus==='new')addQueue({topic,status:topicStatus});
+        if(safeDate(topic.dueDate)&&topic.dueDate>=now&&topic.dueDate<=homeWeekEnd)dueSoon++;
+        if(safeDate(topic.dueDate)&&topic.dueDate>now&&topic.dueDate<=upcomingEnd)addUpcoming(topic);
+        // Read compact aggregates directly instead of allocating featureMeta objects
+        // for every topic. The same values also feed the Study Hub KPI strip.
+        const topicStats=topicHistory?.get(String(topic.id));
+        const recent=topicStats?.recent||[];
+        const avg=recent.length?topicStats.avg:(topic.lastRating||0);
+        const longOverdue=topicStatus==='overdue'&&dayDiff(topic.dueDate,now)>5;
+        if(topic.lapses||avg&&avg<3||longOverdue)weakCount++;
+        if(topic.reviewCount>=2&&topic.intervalDays>=4&&topicStatus!=='overdue'&&avg>=3.5)mastered++;
+      }
+      topicMetrics={topics:state.topics,topicCount:state.topics.length,history:state.history,
+        historyCount:state.history.length,today:now,activeCount,mastered,overdue,dueSoon,dueCount,
+        newCount,reviewedCount,weakCount,progressBySubject,queue,upcomingQueue};
+      homeTopicMetricsCache=topicMetrics;
+    }
+    // Weekly study totals have a separate cache. A changed study-log collection
+    // refreshes the total without repeating the full topic/history aggregation.
+    const weekStart=dateShift(now,-6);
+    let studyLogMetrics=homeStudyLogMetricsCache;
+    if(!studyLogMetrics||studyLogMetrics.logs!==fsState.studyLogs||studyLogMetrics.length!==fsState.studyLogs.length||
+       studyLogMetrics.today!==now||studyLogMetrics.weekStart!==weekStart){
+      let weeklyMinutes=0;
+      for(const log of fsState.studyLogs){
+        if(safeDate(log.date)&&log.date>=weekStart&&log.date<=now)weeklyMinutes+=studyLogMinutes(log);
+      }
+      studyLogMetrics={logs:fsState.studyLogs,length:fsState.studyLogs.length,today:now,weekStart,weeklyMinutes};
+      homeStudyLogMetricsCache=studyLogMetrics;
+    }
+    const {activeCount,mastered,overdue,dueSoon,dueCount,newCount,reviewedCount,weakCount,
+      progressBySubject,queue,upcomingQueue}=topicMetrics;
+    const weeklyMinutes=studyLogMetrics.weeklyMinutes;
+    const weeklyTarget=dailyTarget*7,weeklyPct=Math.min(100,Math.round(weeklyMinutes/weeklyTarget*100));
+    const masteryPct=activeCount?Math.round(mastered/activeCount*100):0;
+    const value={
+      activeCount,mastered,overdue,dueSoon,masteryPct,weeklyMinutes,weeklyTarget,weeklyPct,
+      dueCount,newCount,reviewedCount,weakCount,progressBySubject,queue,upcomingQueue,
+      reviewedToday:byDate.get(now)||0,
+      momentum:priorCount?Math.round((recentCount-priorCount)/priorCount*100):null,
+      rangeDays,heatDays,heat:reviewActivity(heatDays),streak:currentStudyStreak()
+    };
+    homeConsistencyMetricsCache={
+      topics:state.topics,history:state.history,studyLogs:fsState.studyLogs,
+      topicCount:state.topics.length,historyCount:state.history.length,studyLogCount:fsState.studyLogs.length,
+      today:now,period,from,to,heatDays,dailyTarget,value
+    };
+    return value;
   }
+  function homeTopicCacheMatches(cache,topics,history,now){
+    return !!cache&&cache.topics===topics&&cache.topicCount===topics.length&&
+      cache.history===history&&cache.historyCount===history.length&&cache.today===now;
+  }
+  function homeStudyLogCacheMatches(cache,logs,now){
+    const weekStart=dateShift(now,-6);
+    return !!cache&&cache.logs===logs&&cache.length===logs.length&&
+      cache.today===now&&cache.weekStart===weekStart;
+  }
+  function homeMetricsAreReady(){
+    const now=today();
+    return homeTopicCacheMatches(homeTopicMetricsCache,state.topics,state.history,now)&&
+      homeStudyLogCacheMatches(homeStudyLogMetricsCache,fsState.studyLogs,now)&&
+      !!window.NexusGetCachedHistoryActivityIndex?.();
+  }
+  window.NexusHomeMetricsAreReady=homeMetricsAreReady;
+  async function prepareHomeConsistencyMetrics(){
+    const now=today(),topics=state.topics,history=state.history,logs=fsState.studyLogs;
+    const topicLength=topics.length,historyLength=history.length,logLength=logs.length;
+    if(homeMetricsAreReady())return true;
+    if(homeMetricsBuildPromise)return homeMetricsBuildPromise;
+    const generation=homeMetricsBuildGeneration;
+    const isCurrent=()=>generation===homeMetricsBuildGeneration&&
+      state.topics===topics&&topics.length===topicLength&&
+      state.history===history&&history.length===historyLength&&
+      fsState.studyLogs===logs&&logs.length===logLength&&today()===now;
+    const task=(async()=>{
+      const historyIndex=window.NexusGetCachedHistoryActivityIndex?.()||
+        await window.NexusPrepareHistoryActivityIndex?.();
+      if(!historyIndex||!isCurrent())return false;
+      let topicMetrics=homeTopicMetricsCache;
+      if(!homeTopicCacheMatches(topicMetrics,topics,history,now)){
+        let activeCount=0,mastered=0,overdue=0,dueSoon=0,dueCount=0,newCount=0,reviewedCount=0,weakCount=0;
+        const homeWeekEnd=dateShift(now,6),upcomingEnd=dateShift(now,7);
+        const progressBySubject=new Map(),queue=[],upcomingQueue=[];
+        const topicHistory=historyIndex.byTopic;
+        const queueCompare=(a,b)=>({overdue:0,due:1,new:2,upcoming:3}[a.status]??4)-({overdue:0,due:1,new:2,upcoming:3}[b.status]??4)||
+          (a.topic.dueDate||'9999').localeCompare(b.topic.dueDate||'9999')||
+          naturalCompare(a.topic.name,b.topic.name);
+        const addQueue=item=>{
+          let low=0,high=queue.length;
+          while(low<high){const mid=(low+high)>>1;if(queueCompare(queue[mid],item)<=0)low=mid+1;else high=mid;}
+          if(low>=7)return;queue.splice(low,0,item);if(queue.length>7)queue.pop();
+        };
+        const addUpcoming=topic=>{
+          let low=0,high=upcomingQueue.length;
+          while(low<high){
+            const mid=(low+high)>>1,other=upcomingQueue[mid];
+            const order=(other.dueDate||'9999').localeCompare(topic.dueDate||'9999')||naturalCompare(other.name,topic.name);
+            if(order<=0)low=mid+1;else high=mid;
+          }
+          if(low>=7)return;upcomingQueue.splice(low,0,topic);if(upcomingQueue.length>7)upcomingQueue.pop();
+        };
+        for(let start=0;start<topicLength;start+=400){
+          const end=Math.min(topicLength,start+400);
+          for(let index=start;index<end;index++){
+            const topic=topics[index];
+            if(topic.archived)continue;
+            activeCount++;
+            const topicStatus=status(topic);
+            if(topicStatus==='overdue'||topicStatus==='due'){dueCount++;if(topicStatus==='overdue')overdue++;}
+            if(topicStatus==='new')newCount++;
+            if(topic.reviewCount>0)reviewedCount++;
+            let progress=progressBySubject.get(topic.subjectId);
+            if(!progress){progress={total:0,done:0};progressBySubject.set(topic.subjectId,progress);}
+            progress.total++;if(topic.reviewCount>0)progress.done++;
+            if(topicStatus==='overdue'||topicStatus==='due'||topicStatus==='new')addQueue({topic,status:topicStatus});
+            if(safeDate(topic.dueDate)&&topic.dueDate>=now&&topic.dueDate<=homeWeekEnd)dueSoon++;
+            if(safeDate(topic.dueDate)&&topic.dueDate>now&&topic.dueDate<=upcomingEnd)addUpcoming(topic);
+            const topicStats=topicHistory?.get(String(topic.id));
+            const recent=topicStats?.recent||[];
+            const avg=recent.length?topicStats.avg:(topic.lastRating||0);
+            const longOverdue=topicStatus==='overdue'&&dayDiff(topic.dueDate,now)>5;
+            if(topic.lapses||avg&&avg<3||longOverdue)weakCount++;
+            if(topic.reviewCount>=2&&topic.intervalDays>=4&&topicStatus!=='overdue'&&avg>=3.5)mastered++;
+          }
+          if(end<topicLength){
+            if(!isCurrent())return false;
+            await new Promise(resolve=>setTimeout(resolve,0));
+            if(!isCurrent())return false;
+          }
+        }
+        topicMetrics={topics,topicCount:topicLength,history,historyCount:historyLength,today:now,
+          activeCount,mastered,overdue,dueSoon,dueCount,newCount,reviewedCount,weakCount,
+          progressBySubject,queue,upcomingQueue};
+      }
+      if(!isCurrent())return false;
+      let studyLogMetrics=homeStudyLogMetricsCache;
+      if(!homeStudyLogCacheMatches(studyLogMetrics,logs,now)){
+        let weeklyMinutes=0;const weekStart=dateShift(now,-6);
+        for(let start=0;start<logLength;start+=400){
+          const end=Math.min(logLength,start+400);
+          for(let index=start;index<end;index++){
+            const log=logs[index];
+            if(safeDate(log.date)&&log.date>=weekStart&&log.date<=now)weeklyMinutes+=studyLogMinutes(log);
+          }
+          if(end<logLength){
+            if(!isCurrent())return false;
+            await new Promise(resolve=>setTimeout(resolve,0));
+            if(!isCurrent())return false;
+          }
+        }
+        studyLogMetrics={logs,length:logLength,today:now,weekStart,weeklyMinutes};
+      }
+      if(!isCurrent())return false;
+      homeTopicMetricsCache=topicMetrics;
+      homeStudyLogMetricsCache=studyLogMetrics;
+      homeConsistencyMetricsCache=null;
+      const activeView=document.querySelector('.view.active')?.id;
+      if(activeView==='view-overview'||activeView==='view-studyhub')window.NexusRenderAll?.();
+      return true;
+    })();
+    const wrapped=task.finally(()=>{if(homeMetricsBuildPromise===wrapped)homeMetricsBuildPromise=null;});
+    homeMetricsBuildPromise=wrapped;
+    return wrapped;
+  }
+  window.NexusPrepareHomeConsistencyMetrics=prepareHomeConsistencyMetrics;
+  // Core Overview consumes the same cached topic aggregates as this panel.
+  window.NexusGetOverviewTopicMetrics=()=>{
+    const cache=homeTopicMetricsCache;
+    return homeTopicCacheMatches(cache,state.topics,state.history,today())?cache:null;
+  };
+  // Settings may need subject totals before the analytics cache has been built.
+  // Expose only a validated cache hit so navigation never forces a full scan.
+  window.NexusGetCachedOverviewTopicMetrics=()=>{
+    const cache=homeTopicMetricsCache;
+    if(!cache||cache.topics!==state.topics||cache.topicCount!==state.topics.length||
+       cache.history!==state.history||cache.historyCount!==state.history.length||cache.today!==today())return null;
+    return cache;
+  };
+  function renderHomeConsistencySummary(){
+    const target=hubEl('homeConsistencySummary');
+    // Call sites decide when this summary should refresh. Do not silently skip
+    // population because the view's active class is in transition during startup/navigation.
+    if(!target||!fsState||!state)return;
+    if(typeof window.NexusPrepareHomeConsistencyMetrics==='function'&&typeof window.NexusPrepareHistoryActivityIndex==='function'&&!homeMetricsAreReady()){
+      target.innerHTML='<div class="consistency-loading muted small">Preparing consistency metrics for this workspace…</div>';
+      window.NexusPrepareHomeConsistencyMetrics().catch(error=>{
+        console.error('Nexus Overview consistency preparation failed',error);
+        if(target.isConnected)target.innerHTML='<div class="analytics-render-error"><strong>Consistency metrics could not be prepared.</strong><p>Your saved workspace has not been changed. Retry the calculation.</p><button type="button" class="btn btn-sm btn-primary" data-action="retry-home-consistency">Retry consistency metrics</button></div>';
+      });
+      return;
+    }
+    try{
+      const metrics=getHomeConsistencyMetrics();
+      const heat=metrics.heat.map(x=>'<div class="hub-heat" data-count="'+Math.min(4,x.count)+'" title="'+localEsc(x.date)+' · '+x.count+' review(s)" aria-label="'+localEsc(x.date)+': '+x.count+' review(s)"></div>').join('');
+      const intelligence='<div class="insight-grid"><div class="insight-metric"><span class="insight-label">Review momentum</span><strong>'+(metrics.momentum===null?'New baseline':(metrics.momentum>0?'+':'')+metrics.momentum+'%')+'</strong><small>'+(metrics.momentum===null?'No prior-period data':'vs. previous '+metrics.rangeDays+' days')+'</small></div><div class="insight-metric"><span class="insight-label">Mastery coverage</span><strong>'+metrics.masteryPct+'%</strong><small>'+metrics.mastered+' of '+metrics.activeCount+' active topics</small><div class="insight-track"><span style="width:'+metrics.masteryPct+'%"></span></div></div><div class="insight-metric"><span class="insight-label">Next 7-day load</span><strong>'+metrics.dueSoon+'</strong><small>'+metrics.overdue+' overdue now</small></div><div class="insight-metric"><span class="insight-label">Weekly study goal</span><strong>'+metrics.weeklyPct+'%</strong><small>'+metrics.weeklyMinutes+' / '+metrics.weeklyTarget+' min logged</small><div class="insight-track"><span style="width:'+metrics.weeklyPct+'%"></span></div></div><div class="insight-metric"><span class="insight-label">Current review streak</span><strong>'+metrics.streak+' days</strong><small>Consecutive days with at least one saved review</small></div></div>';
+      target.innerHTML=intelligence+'<div class="home-heatmap-head"><div><strong>Review activity heatmap</strong><small>Each square represents a day. Darker squares indicate more saved reviews.</small></div><div class="ra-field"><label for="homeHeatmapPeriod">Heatmap period</label><select class="hub-input" id="homeHeatmapPeriod">'+selectOptions([['7','7 days'],['30','30 days'],['84','12 weeks'],['180','6 months'],['365','12 months']],String(metrics.heatDays))+'</select></div></div><div class="hub-heatmap analytics-heatmap home-activity-heatmap">'+heat+'</div>';
+    }catch(error){
+      console.error('Nexus Overview consistency summary failed',error);
+      target.innerHTML='<div class="analytics-render-error"><strong>Consistency metrics could not be displayed.</strong><p>Your saved workspace has not been changed. Retry the calculation. If the problem continues, report the error to Nexus support.</p><button type="button" class="btn btn-sm btn-primary" data-action="retry-home-consistency">Retry consistency metrics</button></div>';
+    }
+  }
+  // The error state remains recoverable without reloading the application.
+  document.addEventListener('click',event=>{
+    const retry=event.target?.closest?.('[data-action="retry-home-consistency"]');
+    if(!retry)return;
+    event.preventDefault();
+    window.NexusInvalidateHomeConsistencyCache?.();
+    renderHomeConsistencySummary();
+  });
   window.NexusRefreshHomeConsistencySummary=renderHomeConsistencySummary;
   function renderActivityAnalytics(selection){
+    const pdfScope=selection?.pdfScope||null;
      const studyLogMinutes=record=>{const seconds=record&&record.durationSeconds;if(seconds!==undefined&&seconds!==null&&Number.isFinite(Number(seconds)))return Math.max(0,Number(seconds))/60;return Math.max(0,Number(record&&record.minutes)||0);};
      const formatStudyDuration=seconds=>{const total=Math.max(0,Math.round(Number(seconds)||0)),minutes=Math.floor(total/60),remainder=total%60;return minutes?`${minutes} min${remainder?' '+remainder+' sec':''}`:`${remainder} sec`;};
     // This renderer owns every date, aggregation, and SVG helper it needs.
@@ -402,34 +1579,39 @@
     const rangeValid=valid&&from<=to;
     if(!rangeValid)return '<div class="hub-empty">Choose a valid timeframe to view saved activity.</div>';
 
-    const history=Array.isArray(state&&state.history)?state.history:[];
-    const studyLogs=Array.isArray(fsState&&fsState.studyLogs)?fsState.studyLogs:[];
+    const history=Array.isArray(selection?.pdfDatasets?.reviews)?selection.pdfDatasets.reviews:(Array.isArray(state&&state.history)?state.history:[]);
+    const studyLogs=Array.isArray(selection?.pdfDatasets?.sessions)?selection.pdfDatasets.sessions:(Array.isArray(fsState&&fsState.studyLogs)?fsState.studyLogs:[]);
     const subjects=Array.isArray(state&&state.subjects)?state.subjects:[];
     const subjectNameById=new Map(subjects.map(subject=>[String(subject.id),String(subject.name||'Unnamed subject')]));
-    const reviews=history.map(record=>({record,date:activityDate(record&&record.reviewedAt)}))
-      .filter(item=>item.record&&item.date&&item.date>=from&&item.date<=to);
-    const sessions=studyLogs.map(record=>({record,date:activityDate(record&&record.date),minutes:studyLogMinutes(record)}))
-      .filter(item=>item.record&&item.date&&item.date>=from&&item.date<=to);
     const reviewsByDate=new Map(),minutesByDate=new Map(),reviewsBySubject=new Map(),minutesBySubject=new Map();
     const activeDates=new Set();
     const subjectLabel=record=>{
       const id=String(record&&record.subjectId||'');
       return subjectNameById.get(id)||String(record&&record.subjectName||'Unassigned subject');
     };
-    reviews.forEach(item=>{
-      reviewsByDate.set(item.date,(reviewsByDate.get(item.date)||0)+1);
-      const name=subjectLabel(item.record);
+    let reviewCount=0,positiveSessionCount=0,totalMinutes=0;
+    // Stream through source records once. Building filtered wrapper arrays here used
+    // several additional full-size allocations for a 77k-record workspace.
+    for(const record of history){
+      const date=activityDate(record&&record.reviewedAt);
+      if(!record||!date||date<from||date>to||(pdfScope&&!pdfRecordMatchesScope(record,pdfScope)))continue;
+      reviewCount++;
+      reviewsByDate.set(date,(reviewsByDate.get(date)||0)+1);
+      const name=subjectLabel(record);
       reviewsBySubject.set(name,(reviewsBySubject.get(name)||0)+1);
-      activeDates.add(item.date);
-    });
-    let totalMinutes=0;
-    sessions.forEach(item=>{
-      minutesByDate.set(item.date,(minutesByDate.get(item.date)||0)+item.minutes);
-      const name=subjectLabel(item.record);
-      minutesBySubject.set(name,(minutesBySubject.get(name)||0)+item.minutes);
-      totalMinutes+=item.minutes;
-      if(item.minutes>0)activeDates.add(item.date);
-    });
+      activeDates.add(date);
+    }
+    for(const record of studyLogs){
+      const date=activityDate(record&&record.date);
+      if(!record||!date||date<from||date>to||(pdfScope&&!pdfRecordMatchesScope(record,pdfScope)))continue;
+      const minutes=studyLogMinutes(record);
+      if(minutes>0)positiveSessionCount++;
+      minutesByDate.set(date,(minutesByDate.get(date)||0)+minutes);
+      const name=subjectLabel(record);
+      minutesBySubject.set(name,(minutesBySubject.get(name)||0)+minutes);
+      totalMinutes+=minutes;
+      if(minutes>0)activeDates.add(date);
+    }
 
     const span=activityDayDiff(from,to)+1,longRange=span>35;
     const buildActivitySeries=(start,end,values)=>{
@@ -491,10 +1673,10 @@
     const reviewSeries=buildActivitySeries(from,to,reviewsByDate),studySeries=buildActivitySeries(from,to,minutesByDate);
     const reviewTitle=longRange?'Total review count':'Daily review count',studyTitle=longRange?'Total study time':'Daily study time';
     const rangeDescription=longRange?'Aggregated totals across the selected timeframe.':'Daily totals across the selected timeframe.';
-    const reviewGraph=renderActivityChart(reviewSeries,reviewTitle,'Reviews','#8978f8','nexusActivityReviewsGradient',reviews.length>0);
-    const studyGraph=renderActivityChart(studySeries,studyTitle,'Minutes','#32bfc0','nexusActivityStudyGradient',sessions.some(item=>item.minutes>0));
-    const sessionCount=sessions.filter(item=>item.minutes>0).length;
-    const kpis='<div class="hub-kpis"><div class="hub-kpi"><strong>'+reviews.length+'</strong><span>Reviews in range</span></div><div class="hub-kpi"><strong>'+formatStudyDuration(totalMinutes*60)+'</strong><span>Logged study time</span></div><div class="hub-kpi"><strong>'+sessionCount+'</strong><span>Study sessions logged</span></div><div class="hub-kpi"><strong>'+activeDates.size+'</strong><span>Days with activity</span></div></div>';
+    const reviewGraph=renderActivityChart(reviewSeries,reviewTitle,'Reviews','#8978f8','nexusActivityReviewsGradient',reviewCount>0);
+    const studyGraph=renderActivityChart(studySeries,studyTitle,'Minutes','#32bfc0','nexusActivityStudyGradient',positiveSessionCount>0);
+    const sessionCount=positiveSessionCount;
+    const kpis='<div class="hub-kpis"><div class="hub-kpi"><strong>'+reviewCount+'</strong><span>Reviews in range</span></div><div class="hub-kpi"><strong>'+formatStudyDuration(totalMinutes*60)+'</strong><span>Logged study time</span></div><div class="hub-kpi"><strong>'+sessionCount+'</strong><span>Study sessions logged</span></div><div class="hub-kpi"><strong>'+activeDates.size+'</strong><span>Days with activity</span></div></div>';
     const charts='<div class="hub-grid analytics-chart-grid">'+
       hubCard(reviewTitle,rangeDescription,reviewGraph,true)+
       hubCard(studyTitle,rangeDescription+' Only completed focus sessions with saved minutes contribute to the graph.',studyGraph,true)+
@@ -510,7 +1692,7 @@
       '</div>';
   }
 
-  let analyticsSection='presses';
+  let analyticsSection='presses',analyticsEntityQuery='',analyticsEntitySearchTimer=0;
   function renderAnalytics(){
     const selection=getRatingAnalyticsSelection(),from=selection.from,to=selection.to,valid=selection.valid!==false,recent=selection.records||[],rangeDays=valid?Math.max(1,dayDiff(from,to)+1):30;
     const keys=['presses','papers','activity'];if(!keys.includes(analyticsSection))analyticsSection='presses';
@@ -530,8 +1712,13 @@
       const activityHero='<div class="analytics-hero"><div><span class="analytics-eyebrow">LEARNING INTELLIGENCE</span><h3>Your progress, decoded.</h3><p>Review history and saved study sessions for the selected timeframe.</p></div><div class="hub-actions"><button class="btn btn-primary" data-hub-action="analytics-export-pdf"><svg class="nexus-action-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 15h8M8 18h5"/></svg> Export detailed PDF</button><button class="btn btn-soft" data-hub-action="analytics-export">Export CSV</button></div></div>';
       return activityHero+nav+activityFilter+'<div class="analytics-section-content" data-analytics-section="activity">'+renderActivityAnalytics(selection)+'</div>';
     }
-    const ratingLevel=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic',ratingOptions=getRatingAnalyticsEntityOptions(ratingLevel),ratingEntityId=getRatingAnalyticsEntityId(ratingLevel),ratingEntityChoices=ratingOptions.length?selectOptions(ratingOptions.map(x=>[x.value,x.label+' — '+x.subtitle]),ratingEntityId):'<option value="">No '+esc(ratingLevel)+' records available</option>',groupingLabel=ratingLevel==='syllabus'?'syllabus / stream':ratingLevel;
-    const reviewScopeFields=analyticsSection==='presses'?'<div class="ra-field"><label for="hubRatingGrouping">Analyse by</label><select class="hub-input" id="hubRatingGrouping">'+selectOptions([['topic','Individual topic'],['subject','Subject'],['syllabus','Syllabus / stream']],ratingLevel)+'</select></div><div class="ra-field"><label for="hubRatingEntity">Choose '+esc(groupingLabel)+'</label><select class="hub-input" id="hubRatingEntity">'+ratingEntityChoices+'</select></div>':'';
+    const ratingLevel=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic';
+    const ratingOptions=analyticsSection==='presses'?getRatingAnalyticsEntityOptions(ratingLevel,analyticsEntityQuery,150,String(fsState.analyticsRatingEntity||'ALL')):[];
+    const ratingEntityId=analyticsSection==='presses'?getRatingAnalyticsEntityId(ratingLevel,ratingOptions):'';
+    const ratingEntityChoices=ratingOptions.length?selectOptions(ratingOptions.map(option=>[option.value,option.label+' — '+option.subtitle]),ratingEntityId):'<option value="">No '+esc(ratingLevel)+' records available</option>';
+    const groupingLabel=ratingLevel==='syllabus'?'syllabus / stream':ratingLevel;
+    const entityHint=analyticsSection==='presses'?(ratingOptions.matchCount>ratingOptions.limit?'Showing the first '+ratingOptions.limit+' of '+ratingOptions.matchCount+' matches. Search to narrow the list.':ratingOptions.matchCount+' matching entries.'):'';
+    const reviewScopeFields=analyticsSection==='presses'?'<div class="ra-field"><label for="hubRatingGrouping">Analyse by</label><select class="hub-input" id="hubRatingGrouping">'+selectOptions([['topic','Individual topic'],['subject','Subject'],['syllabus','Syllabus / stream']],ratingLevel)+'</select></div><div class="ra-field"><label for="hubRatingEntitySearch">Find '+esc(groupingLabel)+'</label><input class="hub-input" id="hubRatingEntitySearch" type="search" maxlength="120" placeholder="Search '+esc(groupingLabel)+'…" value="'+localEsc(analyticsEntityQuery)+'"><label for="hubRatingEntity">Choose '+esc(groupingLabel)+'</label><select class="hub-input" id="hubRatingEntity">'+ratingEntityChoices+'</select><small class="hub-muted" id="hubRatingEntityHint">'+entityHint+'</small></div>':'';
     const customRange=selection.range==='custom',customDates='<div class="ra-custom-dates" id="hubRatingCustomDates" '+(customRange?'':'hidden')+'><div class="ra-field"><label for="hubRatingCustomStart">From date</label><input class="hub-input" type="date" id="hubRatingCustomStart" value="'+localEsc(selection.from)+'"></div><div class="ra-field"><label for="hubRatingCustomEnd">To date</label><input class="hub-input" type="date" id="hubRatingCustomEnd" value="'+localEsc(selection.to)+'"></div><button class="btn btn-primary" type="button" data-hub-action="analytics-custom-apply">Apply custom range</button></div>';
     const sharedTimeframeFilter='<div class="analytics-global-filter ra-controls '+(analyticsSection==='presses'?'':'single-filter')+'">'+reviewScopeFields+'<div class="ra-field"><label for="hubRatingPeriod">Timeframe</label><select class="hub-input" id="hubRatingPeriod">'+selectOptions([['week','This week'],['month','This month'],['year','This year'],['custom','Choose date range']],selection.range)+'</select></div></div>'+customDates;
     const hero='<div class="analytics-hero"><div><span class="analytics-eyebrow">LEARNING INTELLIGENCE</span><h3>Your progress, decoded.</h3><p>Choose a section to explore review difficulty ratings, paper scores, and study activity for your selected timeframe.</p></div><div class="hub-actions"><button class="btn btn-primary" data-hub-action="analytics-export-pdf"><svg class="nexus-action-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 15h8M8 18h5"/></svg> Export detailed PDF</button><button class="btn btn-soft" data-hub-action="analytics-export">Export CSV</button></div></div>';
@@ -540,7 +1727,7 @@
       const avg=recent.length?recent.reduce((sum,h)=>sum+fNum(h.rating),0)/recent.length:0,good=recent.length?Math.round(recent.filter(h=>Number(h.rating)>=3).length/recent.length*100):0;
       const kpis='<div class="hub-kpis"><div class="hub-kpi"><strong>'+recent.length+'</strong><span>Reviews in range</span></div><div class="hub-kpi"><strong>'+(avg?avg.toFixed(2)+'/5':'—')+'</strong><span>Mean recall rating</span></div><div class="hub-kpi"><strong>'+good+'%</strong><span>Ratings 3–5</span></div><div class="hub-kpi"><strong>'+currentStudyStreak()+'d</strong><span>Current review streak</span></div></div>';
       const level=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic';
-      content=hubCard('Review difficulty trends','Compare review difficulty ratings over time. Toggle Again, Hard, Good, Very good, or Easy to isolate the difficulties you want.',ratingAnalyticsChartMarkup(selection,level,getRatingAnalyticsEntityId(level)),true)+hubCard('Selected period summary','These totals use the timeframe chosen in Review difficulty trends.',kpis,true);
+      content=hubCard('Review difficulty trends','Compare review difficulty ratings over time. Toggle Again, Hard, Good, Very good, or Easy to isolate the difficulties you want.',ratingAnalyticsChartMarkup(selection,level,ratingEntityId,ratingOptions),true)+hubCard('Selected period summary','These totals use the timeframe chosen in Review difficulty trends.',kpis,true);
     }else if(analyticsSection==='papers'){
       const practices=fsState.papers.filter(p=>safeDate(p.date)&&valid&&p.date>=from&&p.date<=to).slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
       const scored=practices.filter(p=>p.score!==null&&p.score!==undefined&&Number.isFinite(Number(p.score))&&Number(p.maxScore)>0),avgScore=scored.length?Math.round(scored.reduce((sum,p)=>sum+Number(p.score)/Number(p.maxScore)*100,0)/scored.length):0,errors=practices.reduce((sum,p)=>sum+Math.max(0,fNum(p.errorCount)),0);
@@ -560,15 +1747,9 @@
   let analyticsReturnParent=null,analyticsReturnNext=null;
   const analyticsDefaultParent=hubEl('hubContent')?.parentElement||null,analyticsDefaultNext=hubEl('hubContent')?.nextSibling||null;
   function ensureAnalyticsEntityForRange(level){
-    const options=getRatingAnalyticsEntityOptions(level),prior=String(fsState.analyticsRatingEntity||''),selected=options.find(option=>option.value===prior);
+    const prior=String(fsState.analyticsRatingEntity||'');
     const range=getRatingAnalyticsSelection();
-    if(selected&&getRatingAnalyticsScopedRecords(range.records,level,selected.value).length)return selected.value;
-    // A previously selected topic may be inactive during this month while other topics
-    // still have ratings. Use the aggregate view rather than leaving Analytics blank.
-    const all=options.find(option=>option.value==='ALL');
-    const best=options.map(option=>({option,count:getRatingAnalyticsScopedRecords(range.records,level,option.value).length}))
-      .filter(item=>item.count>0).sort((a,b)=>b.count-a.count||a.option.label.localeCompare(b.option.label))[0]?.option;
-    const next=all?.value||best?.value||options[0]?.value||'';
+    const next=prior==='ALL'||(prior&&hasRatingAnalyticsScopedRecord(range.records,level,prior))?prior:'ALL';
     if(next!==prior){fsState.analyticsRatingEntity=next;saveFs();}
     return next;
   }
@@ -583,17 +1764,18 @@
     if(panel.parentElement===target&&analyticsDefaultParent)analyticsDefaultParent.insertBefore(panel,analyticsDefaultNext&&analyticsDefaultNext.parentElement===analyticsDefaultParent?analyticsDefaultNext:null);
     const parent=panel.parentElement||analyticsDefaultParent,next=panel.nextSibling;
     try{
+      document.body.classList.add('analytics-mode');
       const level=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic';
       ensureAnalyticsEntityForRange(level);hubTab='analytics';renderHub();
       analyticsReturnParent=parent;analyticsReturnNext=next;
-      target.appendChild(panel);standalone.hidden=false;document.body.classList.add('analytics-mode');
+      target.appendChild(panel);standalone.hidden=false;
       window.scrollTo({top:0,behavior:'auto'});
     }catch(error){
       document.body.classList.remove('analytics-mode');standalone.hidden=true;
       if(parent&&panel.parentElement===target)parent.insertBefore(panel,next&&next.parentElement===parent?next:null);
       analyticsReturnParent=null;analyticsReturnNext=null;hubTab='planner';
       console.error('Nexus Analytics failed to open',error);
-      notify('Analytics could not open. Please try again; reload the app if it continues.');
+      notify('Analytics could not open. Please try again. Reload the app if the problem continues.');
     }
   }
   function closeAnalyticsWindow(){
@@ -604,36 +1786,75 @@
     if(panel&&parent)parent.insertBefore(panel,next&&next.parentElement===parent?next:null);
     if(standalone)standalone.hidden=true;
     analyticsReturnParent=null;analyticsReturnNext=null;hubTab='planner';
-    try{renderHub();}catch(error){console.error('Nexus Study Hub failed to return from Analytics',error);notify('The Study Hub could not refresh. Please reload the app.');}
+    if(hubEl('view-studyhub')?.classList.contains('active')){
+      try{renderHub();}catch(error){console.error('Nexus Study Hub failed to return from Analytics',error);notify('The Study Hub could not refresh. Please reload the app.');}
+    }
     window.scrollTo({top:0,behavior:'auto'});
   }
   function openDangerZone(){if(document.body.classList.contains('danger-mode'))return;renderHistory();$('dangerZoneStandalone').hidden=false;document.body.classList.add('danger-mode');window.scrollTo({top:0,behavior:'auto'});}
   function closeDangerZone(){document.body.classList.remove('danger-mode');$('dangerZoneStandalone').hidden=true;window.scrollTo({top:0,behavior:'auto'});}
-  function globalSearchMarkup(q){const query=String(q||'').trim().toLocaleLowerCase();if(!query)return '<div class="hub-empty">Type a topic, note, subject, paper, or mistake to search across the tracker.</div>';const ts=state.topics.filter(t=>{const sub=subjectFor(t),st=streamFor(sub);return [t.name,t.notes,sub?.name,st?.name].some(v=>String(v||'').toLocaleLowerCase().includes(query));}).slice(0,80);const js=fsState.journal.filter(j=>[j.category,j.issue,j.fix,state.subjects.find(s=>s.id===j.subjectId)?.name].some(v=>String(v||'').toLocaleLowerCase().includes(query))).slice(0,25);const ps=fsState.papers.filter(p=>[p.name,p.weakAreas,p.notes,state.subjects.find(s=>s.id===p.subjectId)?.name].some(v=>String(v||'').toLocaleLowerCase().includes(query))).slice(0,25);const topicResult=ts.map(t=>`<div class="hub-row"><label class="hub-switch"><input type="checkbox" data-hub-action="select-topic" data-id="${localEsc(t.id)}" ${fsState.selectedTopicIds.includes(t.id)?'checked':''}><span class="hub-row-main"><span class="hub-row-title">${localEsc(t.name)}</span><span class="hub-row-meta">${localEsc(subjectFor(t)?.name||'')} · ${localEsc(statusText(status(t)))}${t.archived?' · Archived':''}</span></span></label><div class="hub-row-actions"><button class="btn btn-sm" data-hub-action="edit-topic" data-id="${localEsc(t.id)}">Edit</button></div></div>`).join('');const journalResult=js.map(j=>`<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(j.category)} · ${localEsc(j.issue.slice(0,180))}</div><div class="hub-row-meta">Journal · ${localEsc(fmtDate(j.date))}</div></div></div>`).join('');const paperResult=ps.map(p=>`<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(p.name)}</div><div class="hub-row-meta">Practice · ${localEsc(fmtDate(p.date))}</div></div></div>`).join('');return `<div class="hub-list">${topicResult||''}${journalResult}${paperResult}</div>${ts.length+js.length+ps.length===0?'<div class="hub-empty">No matching topics, journal entries, or papers.</div>':''}<div class="hub-muted" style="margin-top:8px">${ts.length} topic(s), ${js.length} journal item(s), ${ps.length} paper(s) matched. Topic checkboxes select items for bulk actions below.</div>`;}
-  function renderTools(){const reminderSupported='Notification'in window;const selected=fsState.selectedTopicIds.filter(id=>state.topics.some(t=>t.id===id)).length;const age=fsState.lastBackupAt?dayDiff(fsState.lastBackupAt,today()):null;const searchCard=`<div class="hub-field"><label for="hubGlobalSearch">Search every subject, topic, journal and paper</label><input class="hub-input" id="hubGlobalSearch" type="search" placeholder="Try a lesson name, formula, or error…"></div><div id="hubSearchResults" style="margin-top:10px"></div><div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${selected} topic(s) selected</div><div class="hub-row-meta">Bulk actions update selected topic schedules or archive state; they do not create fake review history.</div></div></div><div class="hub-actions"><button class="btn btn-sm" data-hub-action="bulk-due-today">Set selected due today</button><div class="hub-field" style="min-width:150px"><label for="hubBulkDueDate">Custom due date</label><input class="hub-input" type="date" id="hubBulkDueDate" min="${today()}"></div><button class="btn btn-sm" data-hub-action="bulk-due-custom">Apply custom date</button><button class="btn btn-sm" data-hub-action="bulk-archive">Archive selected</button><button class="btn btn-sm" data-hub-action="bulk-unarchive">Unarchive selected</button><button class="btn btn-sm" data-hub-action="bulk-export">Export selected CSV</button><button class="btn btn-sm btn-danger" data-hub-action="bulk-delete">Delete selected</button><button class="btn btn-sm btn-danger" data-hub-action="bulk-clear">Clear selection</button></div>`;
+  function globalSearchMarkup(q){
+    const query=String(q||'').trim().toLocaleLowerCase();
+    if(!query)return '<div class="hub-empty">Type a topic, note, subject, paper, or mistake to search across the tracker.</div>';
+    const ts=[];let topicMatchCount=0;
+    const subjectById=new Map(state.subjects.map(subject=>[String(subject.id),subject]));
+    for(const topic of state.topics){
+      const subject=subjectById.get(String(topic.subjectId)),stream=subject?streamFor(subject):null;
+      if(![topic.name,topic.notes,subject?.name,stream?.name].some(value=>String(value||'').toLocaleLowerCase().includes(query)))continue;
+      topicMatchCount++;
+      if(ts.length<80)ts.push(topic);
+    }
+    const js=[],ps=[];
+    // Keep search-result memory bounded instead of materialising every match before slicing.
+    for(const journal of fsState.journal){
+      const subject=subjectById.get(String(journal.subjectId));
+      if(![journal.category,journal.issue,journal.fix,subject?.name].some(value=>String(value||'').toLocaleLowerCase().includes(query)))continue;
+      if(js.length<25)js.push(journal);
+    }
+    for(const paper of fsState.papers){
+      const subject=subjectById.get(String(paper.subjectId));
+      if(![paper.name,paper.weakAreas,paper.notes,subject?.name].some(value=>String(value||'').toLocaleLowerCase().includes(query)))continue;
+      if(ps.length<25)ps.push(paper);
+    }
+    const topicResult=ts.map(t=>`<div class="hub-row"><label class="hub-switch"><input type="checkbox" data-hub-action="select-topic" data-id="${localEsc(t.id)}" ${fsState.selectedTopicIds.includes(t.id)?'checked':''}><span class="hub-row-main"><span class="hub-row-title">${localEsc(t.name)}</span><span class="hub-row-meta">${localEsc(subjectFor(t)?.name||'')} · ${localEsc(statusText(status(t)))}${t.archived?' · Archived':''}</span></span></label><div class="hub-row-actions"><button class="btn btn-sm" data-hub-action="edit-topic" data-id="${localEsc(t.id)}">Edit</button></div></div>`).join('');
+    const journalResult=js.map(j=>`<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(j.category)} · ${localEsc(j.issue.slice(0,180))}</div><div class="hub-row-meta">Journal · ${localEsc(fmtDate(j.date))}</div></div></div>`).join('');
+    const paperResult=ps.map(p=>`<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(p.name)}</div><div class="hub-row-meta">Practice · ${localEsc(fmtDate(p.date))}</div></div></div>`).join('');
+    return `<div class="hub-list">${topicResult||''}${journalResult}${paperResult}</div>${topicMatchCount+js.length+ps.length===0?'<div class="hub-empty">No matching topics, journal entries, or papers.</div>':''}<div class="hub-muted" style="margin-top:8px">${topicMatchCount} topic(s), ${js.length} journal item(s), ${ps.length} paper(s) matched. Only the first 80 matching topics are shown; refine the search for a shorter result set. Topic checkboxes select items for bulk actions below.</div>`;
+  }
+  function countSelectedTopics(){
+    // One Set lookup per topic avoids scanning the full catalogue once per selected ID.
+    const selectedIds=new Set(fsState.selectedTopicIds);
+    let count=0;
+    for(const topic of state.topics)if(selectedIds.has(topic.id))count++;
+    return count;
+  }
+  function renderTools(){const reminderSupported='Notification'in window;const selected=countSelectedTopics();const age=fsState.lastBackupAt?dayDiff(fsState.lastBackupAt,today()):null;const searchCard=`<div class="hub-field"><label for="hubGlobalSearch">Search every subject, topic, journal and paper</label><input class="hub-input" id="hubGlobalSearch" type="search" placeholder="Try a lesson name, formula, or error…"></div><div id="hubSearchResults" style="margin-top:10px"></div><div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${selected} topic(s) selected</div><div class="hub-row-meta">Bulk actions update selected topic schedules or archive state. They do not create fake review history.</div></div></div><div class="hub-actions"><button class="btn btn-sm" data-hub-action="bulk-due-today">Set selected due today</button><div class="hub-field" style="min-width:150px"><label for="hubBulkDueDate">Custom due date</label><input class="hub-input" type="date" id="hubBulkDueDate" min="${today()}"></div><button class="btn btn-sm" data-hub-action="bulk-due-custom">Apply custom date</button><button class="btn btn-sm" data-hub-action="bulk-archive">Archive selected</button><button class="btn btn-sm" data-hub-action="bulk-unarchive">Unarchive selected</button><button class="btn btn-sm" data-hub-action="bulk-export">Export selected CSV</button><button type="button" class="btn btn-sm btn-danger" data-hub-action="bulk-delete">Delete selected</button><button class="btn btn-sm btn-danger" data-hub-action="bulk-clear">Clear selection</button></div>`;
     const settings=`<div class="hub-form"><div class="hub-field"><label for="hubBacklogDays">Backlog recovery window (days)</label><input type="number" id="hubBacklogDays" min="1" max="60" value="${localEsc(fsState.settings.backlogDays||7)}"></div><div class="hub-field"><label for="hubReminderTime">Daily reminder time</label><input type="time" id="hubReminderTime" value="${localEsc(fsState.settings.reminderTime||'08:00')}"></div></div><label class="hub-switch" style="margin-top:10px"><input type="checkbox" id="hubRemindersEnabled" ${fsState.settings.reminders?'checked':''}><span>Enable due-study reminder while Nexus is open</span></label><div class="hub-actions"><button class="btn btn-sm btn-primary" data-hub-action="save-tool-settings">Save reminder settings</button><button class="btn btn-sm" data-hub-action="request-notifications">Enable browser notifications</button><button class="btn btn-sm" data-hub-action="check-reminder">Check reminder now</button></div><div class="hub-note">Browser notifications can be checked while the app is running and permission is granted. A fully closed browser cannot reliably send scheduled reminders without push infrastructure and a server.</div>`;
     const data=`<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">Backup status</div><div class="hub-row-meta">${fsState.lastBackupAt?`Last recorded backup: ${localEsc(fmtDate(fsState.lastBackupAt))} (${age} day(s) ago)`:'No backup recorded yet.'}</div></div><span class="hub-badge ${age===null||age>7?'warn':'good'}">${age===null?'Needed':age>7?'Due':'Recent'}</span></div><div class="hub-actions"><button class="btn btn-sm btn-primary" data-hub-action="full-backup"><svg class="nexus-action-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11m-4-4 4 4 4-4"/><path d="M5 16v4h14v-4"/></svg> Download full backup</button><button class="btn btn-sm" data-hub-action="full-restore"><svg class="nexus-action-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H10l2 2h5.5A2.5 2.5 0 0 1 20 9.5v8a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5z"/><path d="M12 16v-6m-2.5 2.5L12 10l2.5 2.5"/></svg> Restore / merge backup</button><button class="btn btn-sm" data-hub-action="export-papers">Export papers CSV</button><button class="btn btn-sm" data-hub-action="export-journal">Export journal CSV</button><button class="btn btn-sm" data-hub-action="export-study">Export focus log CSV</button><button class="btn btn-sm" data-hub-action="csv-template">Download topic CSV template</button><button class="btn btn-sm" data-hub-action="csv-import">Import topics CSV</button><input id="hubImportFile" type="file" accept=".json,.csv,application/json,text/csv" hidden></div><div class="hub-note">Study data is stored locally by default. Use Cloud sync in Setup & data to connect a private Supabase account, or continue using manual JSON export/import. Keep copies in a separate location.</div>`;
     const goalForm=`<form id="hubGoalForm" class="hub-form"><div class="hub-field"><label for="hubGoalTitle">Milestone</label><input id="hubGoalTitle" required maxlength="160" placeholder="e.g. Finish 5 timed Economics papers"></div><div class="hub-field"><label for="hubGoalUnit">Goal type</label><select id="hubGoalUnit">${selectOptions([['papers','Papers'],['hours','Focus hours'],['reviews','Reviews'],['topics','Topics'],['custom','Manual count']], 'papers')}</select></div><div class="hub-field"><label for="hubGoalTarget">Target</label><input id="hubGoalTarget" type="number" min="1" max="100000" value="5" required></div><div class="hub-field"><label for="hubGoalDate">Target date (optional)</label><input id="hubGoalDate" type="date"></div><div class="hub-actions full"><button class="btn btn-primary" type="submit">Add milestone</button></div></form>`;
-    const goals=fsState.goals.map(g=>{const progress=goalProgress(g),pct=Math.min(100,Math.round(progress/Math.max(1,g.target)*100));return `<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(g.title)}</div><div class="hub-row-meta">${localEsc(g.unit)} · ${progress}/${g.target}${g.dueDate?` · due ${localEsc(fmtDate(g.dueDate))}`:''}</div><div class="hub-meter"><span style="width:${pct}%"></span></div></div><div class="hub-row-actions">${g.unit==='custom'?`<button class="btn btn-sm" data-hub-action="goal-plus" data-id="${localEsc(g.id)}">+1</button>`:''}<button class="btn btn-sm btn-danger" data-hub-action="delete-goal" data-id="${localEsc(g.id)}">Delete</button></div></div>`;}).join('');
+    const goals=fsState.goals.map(g=>{const progress=goalProgress(g),pct=Math.min(100,Math.round(progress/Math.max(1,g.target)*100));return `<div class="hub-row"><div class="hub-row-main"><div class="hub-row-title">${localEsc(g.title)}</div><div class="hub-row-meta">${localEsc(g.unit)} · ${progress}/${g.target}${g.dueDate?` · due ${localEsc(fmtDate(g.dueDate))}`:''}</div><div class="hub-meter"><span style="width:${pct}%"></span></div></div><div class="hub-row-actions">${g.unit==='custom'?`<button class="btn btn-sm" data-hub-action="goal-plus" data-id="${localEsc(g.id)}">+1</button>`:''}<button type="button" class="btn btn-sm btn-danger" data-hub-action="delete-goal" data-id="${localEsc(g.id)}">Delete</button></div></div>`;}).join('');
     return `<div class="hub-grid">${hubCard('Global search and bulk actions','Find items across the app, select several topics, and apply reversible schedule or archive operations.',searchCard,true)}${hubCard('Reminder & backlog settings','Browser notification capability and backlog controls.',settings)}${hubCard('Backup, restore, import and export','Portable data protection, CSV imports, and feature export.',data)}${hubCard('Goals and milestones','Count reviews, papers, focus hours, topics, or manual progress toward targets.',`${goalForm}<div class="hub-list" style="margin-top:14px">${goals||'<div class="hub-empty">No milestones yet. Add one that is measurable and date-bounded.</div>'}</div>`,true)}</div>`;}
   function goalProgress(g){switch(g.unit){case'reviews':return state.history.filter(h=>!g.dueDate||h.reviewedAt<=g.dueDate).length;case'papers':return fsState.papers.length;case'hours':return Math.floor(totalStudyMinutes()/60);case'topics':return activeTopics().filter(t=>t.reviewCount>0).length;default:return fNum(g.progress);}}
   function renderHub(){
+    window.NexusDeleteDiagnosticPhase?.('render:study-hub:resolve-content');
     const content=hubEl('hubContent');if(!content)return;
     try{
-      updateKpis();document.querySelectorAll('[data-hub-tab]').forEach(b=>b.classList.toggle('active',b.dataset.hubTab===hubTab));
+      window.NexusDeleteDiagnosticPhase?.('render:study-hub:'+hubTab);
+      if(!document.body.classList.contains('analytics-mode'))updateKpis();
+      document.querySelectorAll('[data-hub-tab]').forEach(b=>b.classList.toggle('active',b.dataset.hubTab===hubTab));
       const renderers={planner:renderPlanner,mastery:renderMastery,papers:renderPapers,journal:renderJournal,analytics:renderAnalytics,tools:renderTools};
       content.innerHTML=(renderers[hubTab]||renderPlanner)();
       if(hubTab==='tools')renderGlobalResults();
     }catch(error){
+      window.NexusDeleteDiagnosticNoteError?.('render:study-hub-caught',error);
       console.error('Nexus Study Hub render failed ('+hubTab+')',error);
       if(hubTab==='analytics')content.innerHTML='<div class="hub-empty analytics-render-error"><strong>This analytics section could not be displayed.</strong><p>Your saved data has not been changed. Retry the section; if the problem repeats, reload the app and report the failure.</p><button type="button" class="btn btn-primary" data-hub-action="analytics-retry">Retry analytics</button></div>';
       else notify('The Study Hub could not refresh. Please try again.');
     }
-    try{renderHomeConsistencySummary();}catch(error){console.error('Nexus Overview consistency summary failed',error);}
   }
   function renderGlobalResults(){const inp=hubEl('hubGlobalSearch'),out=hubEl('hubSearchResults');if(!inp||!out)return;inp.value=inp.dataset.q||'';out.innerHTML=globalSearchMarkup(inp.value);}
-  function hubSwitch(tab){hubTab=tab;renderHub();try{hubEl('view-studyhub').scrollIntoView({behavior:'smooth',block:'start'});}catch(_){}}
-  function persistAndRender(base=false){saveFs();if(base){save();renderAll();}renderHub();}
+  function hubSwitch(tab){hubTab=tab;renderHub();try{hubEl('view-studyhub').scrollIntoView({behavior:'auto',block:'nearest'});}catch(_){}}
+  function persistAndRender(base=false){saveFs();if(base){save({entityChanges:[]});renderAll();}renderHub();}
   function downloadBlob(filename,text,type){const blob=new Blob([text],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;a.rel='noopener';a.style.position='fixed';a.style.left='-10000px';document.body.appendChild(a);try{a.click();}finally{a.remove();setTimeout(()=>URL.revokeObjectURL(url),15000);}}
   function csvCellHub(v){return window.NexusBackupRestoreUtils.csvCell(v);}
   function exportHubCsv(which){let rows=[],filename='nexus-hub-export.csv';if(which==='papers'){filename=`nexus-papers-${today()}.csv`;rows=[['Name','Subject','Kind','Date','Score','Max score','Duration minutes','Error count','Weak areas','Notes'],...fsState.papers.map(p=>[p.name,state.subjects.find(s=>s.id===p.subjectId)?.name||'',p.kind,p.date,p.score,p.maxScore,p.duration,p.errorCount,p.weakAreas,p.notes])];}else if(which==='journal'){filename=`nexus-journal-${today()}.csv`;rows=[['Date','Type','Subject','Topic','Severity','Issue','Correction','Resolved'],...fsState.journal.map(j=>[j.date,j.category,state.subjects.find(s=>s.id===j.subjectId)?.name||'',getTopic(j.topicId)?.name||'',j.severity,j.issue,j.fix,j.solved?'yes':'no'])];}else if(which==='selected'){filename=`nexus-selected-topics-${today()}.csv`;const ts=state.topics.filter(t=>fsState.selectedTopicIds.includes(t.id));rows=[['Stream','Subject','Topic','Notes','Last reviewed','Last rating','Next due','Review count','Status'],...ts.map(t=>{const d=subjectDisplay(t);return[d.stream,d.subject,t.name,t.notes,t.lastReviewed,t.lastRating,t.dueDate,t.reviewCount,status(t)];})];}else{filename=`nexus-study-log-${today()}.csv`;rows=[['Date','Whole Minutes','Total Seconds','Type','Note'],...fsState.studyLogs.map(x=>[x.date,Math.floor(studyLogMinutes(x)),Math.round(studyLogMinutes(x)*60),x.type,x.note||''])];}downloadBlob(filename,'\uFEFF'+rows.map(r=>r.map(csvCellHub).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('Study Hub CSV exported.');}
@@ -695,10 +1916,14 @@
       added++;
     }
     if(!added){notify(`CSV import complete: 0 added, ${dupes} duplicates skipped, ${invalid} invalid rows skipped.`);return;}
-    window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[
-      {key:window.NexusStorageKey,value:JSON.stringify(nextState)}
-    ],{state:nextState,featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}},{returnOperationPayload:false});
+    const entries=[{key:window.NexusStorageKey,value:JSON.stringify(nextState)}];
+    const revisionEntry=window.NexusWorkspaceEntityRevisionEntry?.();
+    if(revisionEntry)entries.push(revisionEntry);
+    window.NexusOfflineSyncQueue.commitWorkspace(localStorage,entries,
+      {state:nextState,featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}},
+      {returnOperationPayload:false});
     state=nextState;
+    await window.NexusRebuildEntityProjection?.();
     const saveStatus=$('saveStatus');
     if(saveStatus){saveStatus.textContent='Saved on this device';saveStatus.style.color='';}
     if(window.NexusCloudSync)window.NexusCloudSync.schedule();
@@ -710,7 +1935,7 @@
       alert('CSV data was saved, but the screen did not refresh cleanly. Reload Nexus to view the imported topics.');
     }
   }
-  function backupPayload(){let backupState=state;try{if(window.NexusRepairCurriculumState)backupState=window.NexusRepairCurriculumState(JSON.parse(JSON.stringify(state)));}catch(error){console.warn('Could not normalize curriculum metadata for the backup; original workspace data will still be exported.',error);}let syncStatus={schemaVersion:1,accountBoundQueueExcluded:true,queueStatus:'unavailable'};try{if(window.NexusOfflineSyncQueue)syncStatus={...syncStatus,...window.NexusOfflineSyncQueue.summary(localStorage,localStorage.getItem('nexus.cloud.last-user-id')),queueStatus:'local-only-metadata'};}catch(_){}return {app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:backupState,featureState:fsState,syncMetadata:syncStatus};}
+  function backupPayload(){let backupState=state;try{if(window.NexusRepairCurriculumState)backupState=window.NexusRepairCurriculumState(state);}catch(error){console.warn('Could not normalize curriculum metadata for the backup; original workspace data will still be exported.',error);}let syncStatus={schemaVersion:1,accountBoundQueueExcluded:true,queueStatus:'unavailable'};try{if(window.NexusOfflineSyncQueue)syncStatus={...syncStatus,...window.NexusOfflineSyncQueue.summary(localStorage,localStorage.getItem('nexus.cloud.last-user-id')),queueStatus:'local-only-metadata'};}catch(_){}return {app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:backupState,featureState:fsState,syncMetadata:syncStatus};}
   function fullBackup(){fsState.lastBackupAt=today();saveFs();downloadBlob(`nexus-full-backup-${today()}.json`,JSON.stringify(backupPayload(),null,2),'application/json;charset=utf-8');notify('Full backup downloaded. Keep an extra copy outside the browser.');renderHub();}
   window.NexusCreateBackupPayload=backupPayload;
   window.NexusExportFullBackup=fullBackup;
@@ -757,15 +1982,21 @@
       const serializedCards=JSON.stringify(Object.fromEntries((nextState.topics||[]).filter(topic=>topic&&topic.fsrs).map(topic=>[String(topic.id),topic.fsrs])));
       const serializedFsrsSettings=JSON.stringify(nextFeatures.fsrsSettings);
       if(mode==='REPLACE'&&window.NexusOfflineSyncQueue.hasPending(localStorage,localStorage.getItem('nexus.cloud.last-user-id'))&&!confirm('This account has an unsynced local snapshot. Continue with REPLACE? The pending snapshot will be preserved in local recovery metadata, and only the restored workspace will be queued for upload.'))return;
-      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[
+      const entries=[
         {key:STORAGE_KEY,value:serializedState},
         {key:FEATURE_KEY,value:serializedFeatures},
         {key:'nexus.fsrs.cards.v1',value:serializedCards},
         {key:'nexus.fsrs.settings.v1',value:serializedFsrsSettings}
-      ],{state:nextState,featureState:nextFeatures},{archivePending:mode==='REPLACE',reason:'manual-restore-replace',returnOperationPayload:false});
+      ];
+      const revisionEntry=window.NexusWorkspaceEntityRevisionEntry?.();
+      if(revisionEntry)entries.push(revisionEntry);
+      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,entries,
+        {state:nextState,featureState:nextFeatures},
+        {archivePending:mode==='REPLACE',reason:'manual-restore-replace',returnOperationPayload:false});
       committed=true;
       state=nextState;
       fsState=nextFeatures;
+      await window.NexusRebuildEntityProjection?.();
       if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(nextFeatures.fsrsSettings,{syncFeature:false,persist:false});
       focusGoalCacheKey='';
       focusStart=fsState.focusStartedAt?new Date(fsState.focusStartedAt).getTime():null;
@@ -795,19 +2026,19 @@
   function formatElapsed(ms){const sec=Math.max(0,Math.floor(ms/1000)),h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60;return h?`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;}
   function refreshLiveFocusUi(){if(!focusStart)return;const elapsed=focusPausedAt?focusPausedAt-focusStart:Date.now()-focusStart;const clock=hubEl('hubFocusClock');if(clock)clock.textContent=formatElapsed(elapsed);const bigClock=document.getElementById('focusModeClock');if(bigClock)bigClock.textContent=formatElapsed(elapsed);const status=document.getElementById('focusModeStatus');if(status)status.textContent=focusPausedAt?'Paused · take your time':'Stay present · one task at a time';const pauseBtn=document.getElementById('focusPauseBtn');if(pauseBtn){pauseBtn.textContent=focusPausedAt?'▶':'Ⅱ';pauseBtn.setAttribute('aria-label',focusPausedAt?'Resume timer':'Pause timer');}const focusDialog=document.getElementById('focusModeDialog');if(focusDialog)focusDialog.classList.toggle('is-paused',!!focusPausedAt);const liveMinutes=liveFocusMinutesToday(),daily=fNum(fsState.settings.dailyMinutes)||90,goalKey=today()+'|'+liveMinutes+'|'+fsState.studyLogs.length+'|'+daily;if(goalKey!==focusGoalCacheKey){focusGoalCacheKey=goalKey;focusGoalLoggedMinutes=loggedMinutesToday();const total=focusGoalLoggedMinutes+liveMinutes,pct=Math.round(total/Math.max(1,daily)*100);const n=hubEl('hubDoneMinutes'),b=hubEl('hubGoalBadge'),m=hubEl('hubGoalMeter');if(n)n.textContent=formatStudyDuration(total*60);if(b){b.textContent=pct+'% of daily goal';b.classList.toggle('good',total>=daily);b.classList.toggle('warn',total<daily);}if(m)m.style.width=Math.min(100,total/Math.max(1,daily)*100)+'%';}}
   if(focusStart&&!focusTimer)focusTimer=setInterval(refreshLiveFocusUi,1000);
-  function logFocusStop(){if(!focusStart){notify('No focus session is currently running.');return;}const stoppedAt=Date.now(),start=focusStart,end=focusPausedAt||stoppedAt,elapsedSeconds=Math.max(0,Math.floor((end-start)/1000)),mins=Math.floor(elapsedSeconds/60),actualStart=Date.parse(fsState.focusActualStartedAt||''),wallStart=Number.isFinite(actualStart)?actualStart:start;const note=`Started ${new Date(wallStart).toLocaleString()} · ended ${new Date(stoppedAt).toLocaleString()} · Duration: ${formatStudyDuration(elapsedSeconds)}`;fsState.studyLogs.unshift({id:fid(),date:today(),startedAt:new Date(wallStart).toISOString(),endedAt:new Date(stoppedAt).toISOString(),minutes:mins,durationSeconds:elapsedSeconds,type:'Focus session',subjectId:focusSubjectId||'',topicId:focusTopicId||'',note:(focusTopicId?'Topic: '+(getTopic(focusTopicId)?.name||'Selected topic')+' · ':'')+note});focusStart=null;focusPausedAt=null;fsState.focusStartedAt=null;fsState.focusActualStartedAt=null;fsState.focusPausedAt=null;const focusDialog=document.getElementById('focusModeDialog');if(focusDialog?.open)focusDialog.close();if(focusTimer){clearInterval(focusTimer);focusTimer=null;}saveFs();notify(`Logged ${formatStudyDuration(elapsedSeconds)}.`);renderHub();}
+  function logFocusStop(){if(!focusStart){notify('No focus session is currently running.');return;}const stoppedAt=Date.now(),start=focusStart,end=focusPausedAt||stoppedAt,elapsedSeconds=Math.max(0,Math.floor((end-start)/1000)),mins=Math.floor(elapsedSeconds/60),actualStart=Date.parse(fsState.focusActualStartedAt||''),wallStart=Number.isFinite(actualStart)?actualStart:start;const note=`Started ${new Date(wallStart).toLocaleString()} · ended ${new Date(stoppedAt).toLocaleString()} · Duration: ${formatStudyDuration(elapsedSeconds)}`;const entry={id:fid(),date:today(),startedAt:new Date(wallStart).toISOString(),endedAt:new Date(stoppedAt).toISOString(),minutes:mins,durationSeconds:elapsedSeconds,type:'Focus session',subjectId:focusSubjectId||'',topicId:focusTopicId||'',note:(focusTopicId?'Topic: '+(getTopic(focusTopicId)?.name||'Selected topic')+' · ':'')+note};fsState.studyLogs.unshift(entry);focusStart=null;focusPausedAt=null;fsState.focusStartedAt=null;fsState.focusActualStartedAt=null;fsState.focusPausedAt=null;const focusDialog=document.getElementById('focusModeDialog');if(focusDialog?.open)focusDialog.close();if(focusTimer){clearInterval(focusTimer);focusTimer=null;}saveFs([featureEntityPutChange('studyLogs',entry)]);notify(`Logged ${formatStudyDuration(elapsedSeconds)}.`);renderHub();}
   function discardFocusSession(){if(!focusStart){notify('No focus session is currently running.');return;}if(!confirm('Discard the active focus session without saving any study-time history? This removes the running timer and no session will be logged.'))return;focusStart=null;focusPausedAt=null;fsState.focusStartedAt=null;fsState.focusActualStartedAt=null;fsState.focusPausedAt=null;const focusDialog=document.getElementById('focusModeDialog');if(focusDialog?.open)focusDialog.close();if(focusTimer){clearInterval(focusTimer);focusTimer=null;}saveFs();renderHub();refreshLiveFocusUi();notify('Active focus session discarded. No study time was logged.');}
   function startFocus(){if(focusStart){notify('A focus session is already running.');return;}focusTopicId=hubEl('hubStudyTopic')?.value||'';focusSubjectId=focusTopicId?(subjectFor(getTopic(focusTopicId))?.id||''):(hubEl('hubStudySubject')?.value||'');fsState.focusTopicId=focusTopicId;fsState.focusSubjectId=focusSubjectId;focusStart=Date.now();focusPausedAt=null;fsState.focusStartedAt=new Date(focusStart).toISOString();fsState.focusActualStartedAt=new Date(focusStart).toISOString();fsState.focusPausedAt=null;saveFs();if(focusTimer)clearInterval(focusTimer);focusTimer=setInterval(refreshLiveFocusUi,1000);notify('Focus timer started. Elapsed time is timestamp-based and survives app backgrounding and offline use.');renderHub();refreshLiveFocusUi();openFocusMode();}
   function openFocusMode(){const d=document.getElementById('focusModeDialog');if(!d)return;const t=getTopic(focusTopicId);const sub=state.subjects.find(x=>x.id===focusSubjectId);const title=t?.name||sub?.name||'Independent study session';const target=Number(fsState.settings.sessionMinutes)||25;const label=document.getElementById('focusModeTopic');if(label)label.textContent=title;const goal=document.getElementById('focusModeGoal');if(goal)goal.textContent='Session target · '+target+' min';if(!d.open)d.showModal();refreshLiveFocusUi();}function toggleFocusPause(){if(!focusStart)return;if(focusPausedAt){const pausedFor=Date.now()-focusPausedAt;focusStart+=pausedFor;fsState.focusStartedAt=new Date(focusStart).toISOString();focusPausedAt=null;fsState.focusPausedAt=null;}else{focusPausedAt=Date.now();fsState.focusPausedAt=new Date(focusPausedAt).toISOString();}saveFs();refreshLiveFocusUi();}function markTask(id,checked){const arr=new Set(fsState.taskChecks[today()]||[]);if(checked)arr.add(id);else arr.delete(id);fsState.taskChecks[today()]=Array.from(arr);saveFs();renderHub();}
-  function spreadBacklog(){const n=Math.max(1,Math.min(60,fNum(fsState.settings.backlogDays)||7));const over=activeTopics().filter(t=>status(t)==='overdue').sort((a,b)=>(a.dueDate||'').localeCompare(b.dueDate||''));if(!over.length){notify('No overdue topics to redistribute.');return;}if(!confirm(`Spread ${over.length} overdue topic(s) across the next ${n} days?\n\nThis changes due dates but does not add review history. Export a backup first if unsure.`))return;startUndo('Overdue backlog rescheduled');over.forEach((t,i)=>{t.dueDate=dateShift(today(),Math.floor(i*n/over.length));});save();renderAll();renderHub();notify(`Spread ${over.length} overdue topics across ${n} days.`,true);}
-  function balanceWorkload(){const days=Math.max(1,Math.min(90,Number(hubEl('hubWorkloadDays')?.value)||7));fsState.settings.workloadDays=days;const candidates=activeTopics().filter(t=>!t.archived&&['overdue','due','new'].includes(status(t))).sort((a,b)=>topicPriority(b)-topicPriority(a));if(!candidates.length){saveFs();renderHub();notify('No active due, overdue, or new topics to balance.');return;}if(!confirm(`Distribute ${candidates.length} due/new topic(s) across ${days} day(s)? This changes due dates only and does not add review history.`)){saveFs();return;}startUndo('Study workload balanced');const loads=Array(days).fill(0);const buckets=Array.from({length:days},()=>[]);for(const t of candidates){const mins=estimateMinutes(t);let best=0;for(let i=1;i<days;i++){if(loads[i]<loads[best])best=i;}buckets[best].push(t);loads[best]+=mins;}buckets.forEach((items,i)=>items.forEach(t=>{t.dueDate=dateShift(today(),i);}));save();saveFs();renderAll();renderHub();notify(`Balanced ${candidates.length} topics over ${days} days. Review history was not changed.`,true);}
-  function saveRecallSession(e){e.preventDefault();const val=id=>hubEl(id)?.value?.trim()||'';const recalled=val('hubRecallRecalled'),gaps=val('hubRecallGaps');if(!recalled&&!gaps){alert('Record what you recalled or at least one gap to fix.');return;}const subjectId=val('hubRecallSubject'),topicId=val('hubRecallTopic'),quality=Number(val('hubRecallConfidence'))||3,method=val('hubRecallMethod');fsState.journal.unshift({id:fid(),date:today(),category:'Theory recall',subjectId,topicId,severity:quality<=2?3:quality===3?2:1,issue:`Method: ${method}. Recall quality: ${quality}/5.
-Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded.',solved:!gaps});fsState.studyLogs.unshift({id:fid(),date:today(),minutes:0,type:'Theory recall',note:`${method}; quality ${quality}/5${topicId?' · '+(getTopic(topicId)?.name||'topic'):''}`});saveFs();renderHub();notify('Theory recall session saved to your journal.');}
-  function bulkAction(action){const chosen=state.topics.filter(t=>fsState.selectedTopicIds.includes(t.id));if(!chosen.length){notify('Select topics in search results first.');return;}if(action==='bulk-export'){exportHubCsv('selected');return;}if(action==='bulk-clear'){fsState.selectedTopicIds=[];saveFs();renderHub();return;}if(action==='bulk-delete'){if(!confirm('Permanently delete '+chosen.length+' selected topic(s) and their saved review history? This cannot be undone. Export a backup first if unsure.'))return;const ids=new Set(chosen.map(t=>t.id));startUndo('Bulk topic deletion');state.topics=state.topics.filter(t=>!ids.has(t.id));state.history=state.history.filter(h=>!ids.has(h.topicId));fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!ids.has(id));save();renderAll();saveFs();renderHub();notify('Deleted '+chosen.length+' topic(s) and associated review history.');return;}let dueDate=today();if(action==='bulk-due-custom'){dueDate=hubEl('hubBulkDueDate')?.value||'';if(!safeDate(dueDate)){notify('Choose a valid custom due date first.');return;}}const label=action==='bulk-due-today'?'Set due date to today for':action==='bulk-due-custom'?'Set custom due date for':action==='bulk-archive'?'Archive':'Unarchive';if(!confirm(label+' '+chosen.length+' selected topic(s)?'))return;startUndo('Bulk topic update');chosen.forEach(t=>{if(action==='bulk-due-today'||action==='bulk-due-custom')t.dueDate=dueDate;if(action==='bulk-archive')t.archived=true;if(action==='bulk-unarchive')t.archived=false;});save();renderAll();saveFs();renderHub();notify('Updated '+chosen.length+' topic(s).',true);}
+  function spreadBacklog(){const n=Math.max(1,Math.min(60,fNum(fsState.settings.backlogDays)||7));const over=activeTopics().filter(t=>status(t)==='overdue').sort((a,b)=>(a.dueDate||'').localeCompare(b.dueDate||''));if(!over.length){notify('No overdue topics to redistribute.');return;}if(!confirm(`Spread ${over.length} overdue topic(s) across the next ${n} days?\n\nThis changes due dates but does not add review history. Export a backup first if unsure.`))return;window.NexusStartUndoTopicBatch('Overdue backlog rescheduled',over,['dueDate']);over.forEach((t,i)=>{t.dueDate=dateShift(today(),Math.floor(i*n/over.length));});saveTopicEntityChanges(over);renderAll();renderHub();notify(`Spread ${over.length} overdue topics across ${n} days.`,true);}
+  function balanceWorkload(){const days=Math.max(1,Math.min(90,Number(hubEl('hubWorkloadDays')?.value)||7));fsState.settings.workloadDays=days;const candidates=activeTopics().filter(t=>!t.archived&&['overdue','due','new'].includes(status(t))).sort((a,b)=>topicPriority(b)-topicPriority(a));if(!candidates.length){saveFs();renderHub();notify('No active due, overdue, or new topics to balance.');return;}if(!confirm(`Distribute ${candidates.length} due/new topic(s) across ${days} day(s)? This changes due dates only and does not add review history.`)){saveFs();return;}window.NexusStartUndoTopicBatch('Study workload balanced',candidates,['dueDate']);const loads=Array(days).fill(0);const buckets=Array.from({length:days},()=>[]);for(const t of candidates){const mins=estimateMinutes(t);let best=0;for(let i=1;i<days;i++){if(loads[i]<loads[best])best=i;}buckets[best].push(t);loads[best]+=mins;}buckets.forEach((items,i)=>items.forEach(t=>{t.dueDate=dateShift(today(),i);}));saveTopicEntityChanges(candidates);saveFs();renderAll();renderHub();notify(`Balanced ${candidates.length} topics over ${days} days. Review history was not changed.`,true);}
+  function saveRecallSession(e){e.preventDefault();const val=id=>hubEl(id)?.value?.trim()||'';const recalled=val('hubRecallRecalled'),gaps=val('hubRecallGaps');if(!recalled&&!gaps){alert('Record what you recalled or at least one gap to fix.');return;}const subjectId=val('hubRecallSubject'),topicId=val('hubRecallTopic'),quality=Number(val('hubRecallConfidence'))||3,method=val('hubRecallMethod');const journalEntry={id:fid(),date:today(),category:'Theory recall',subjectId,topicId,severity:quality<=2?3:quality===3?2:1,issue:`Method: ${method}. Recall quality: ${quality}/5.
+Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded.',solved:!gaps};const logEntry={id:fid(),date:today(),minutes:0,type:'Theory recall',note:`${method}; quality ${quality}/5${topicId?' · '+(getTopic(topicId)?.name||'topic'):''}`};fsState.journal.unshift(journalEntry);fsState.studyLogs.unshift(logEntry);saveFs([featureEntityPutChange('journal',journalEntry),featureEntityPutChange('studyLogs',logEntry)]);renderHub();notify('Theory recall session saved to your journal.');}
+  function bulkAction(action){const selectedIds=new Set(fsState.selectedTopicIds);const chosen=state.topics.filter(t=>selectedIds.has(t.id));if(!chosen.length){notify('Select topics in search results first.');return;}if(action==='bulk-export'){exportHubCsv('selected');return;}if(action==='bulk-clear'){fsState.selectedTopicIds=[];saveFs();renderHub();return;}if(action==='bulk-delete'){if(!confirm('Delete '+chosen.length+' selected topic(s) and their saved review history? You can use Undo immediately after deletion. Export a full backup first if you may need to restore these records later.'))return;const ids=new Set(chosen.map(t=>t.id));const deletedHistory=state.history.filter(h=>ids.has(h.topicId));window.NexusStartUndoBulkDelete('Bulk topic deletion');cascadeUndoState=captureCascadeUndo();if(window.NexusCurriculumIntegrity&&typeof window.NexusCurriculumIntegrity.markDeletedTopics==='function')window.NexusCurriculumIntegrity.markDeletedTopics(state,window.NexusCurriculumPacks||[],chosen);state.topics=state.topics.filter(t=>!ids.has(t.id));state.history=state.history.filter(h=>!ids.has(h.topicId));fsState.selectedTopicIds=fsState.selectedTopicIds.filter(id=>!ids.has(id));const entityChangeCount=chosen.length+deletedHistory.length;const persisted=entityChangeCount<=1000?save({entityChanges:[...chosen.map(t=>window.NexusTrackerEntityDeleteChange('topics',t.id)),...deletedHistory.map(h=>window.NexusTrackerEntityDeleteChange('history',h.id))]}):save({replaceEntities:true});if(!persisted){if(window.NexusUndoLastAction)window.NexusUndoLastAction();notify('Bulk deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}renderAll();renderHub();window.NexusRefreshUndoTimeout?.();return;}let dueDate=today();if(action==='bulk-due-custom'){dueDate=hubEl('hubBulkDueDate')?.value||'';if(!safeDate(dueDate)){notify('Choose a valid custom due date first.');return;}}const label=action==='bulk-due-today'?'Set due date to today for':action==='bulk-due-custom'?'Set custom due date for':action==='bulk-archive'?'Archive':'Unarchive';if(!confirm(label+' '+chosen.length+' selected topic(s)?'))return;window.NexusStartUndoTopicBatch('Bulk topic update',chosen,(action==='bulk-due-today'||action==='bulk-due-custom')?['dueDate']:['archived']);chosen.forEach(t=>{if(action==='bulk-due-today'||action==='bulk-due-custom')t.dueDate=dueDate;if(action==='bulk-archive')t.archived=true;if(action==='bulk-unarchive')t.archived=false;});saveTopicEntityChanges(chosen);renderAll();saveFs();renderHub();notify('Updated '+chosen.length+' topic(s).',true);}
   function maybeNotify(){if(!fsState.settings.reminders)return;const now=new Date(),hh=String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');if(hh!==fsState.settings.reminderTime||fsState.lastReminderAt===today())return;const count=activeTopics().filter(t=>['overdue','due'].includes(status(t))).length;fsState.lastReminderAt=today();saveFs();if(count&&'Notification'in window&&Notification.permission==='granted'){try{new Notification('Nexus study reminder',{body:`${count} topic(s) are due or overdue. Open Nexus to plan your session.`});}catch(_){notify(`Study reminder: ${count} topic(s) due or overdue.`);}}else if(count)notify(`Study reminder: ${count} topic(s) due or overdue.`);}
-  function savePaper(e){e.preventDefault();const val=id=>hubEl(id)?.value?.trim()||'';const name=val('hubPaperName');if(!name)return;const score=val('hubPaperScore')===''?null:Number(val('hubPaperScore')),max=val('hubPaperMax')===''?null:Number(val('hubPaperMax'));if(score!==null&&max!==null&&(score<0||max<=0||score>max)){alert('Score must be between zero and the maximum score.');return;}const p={id:fid(),name:name.slice(0,160),subjectId:val('hubPaperSubject'),kind:val('hubPaperKind'),date:val('hubPaperDate')||today(),score:score===null?null:score,maxScore:max===null?null:max,duration:Math.max(0,Number(val('hubPaperDuration'))||0),errorCount:Math.max(0,Number(val('hubPaperErrors'))||0),weakAreas:val('hubPaperWeak').slice(0,1000),notes:val('hubPaperNotes').slice(0,2000)};fsState.papers.unshift(p);saveFs();renderHub();notify('Paper/practice record saved.');}
-  function saveJournal(e){e.preventDefault();const val=id=>hubEl(id)?.value?.trim()||'';const issue=val('hubJournalIssue');if(!issue)return;fsState.journal.unshift({id:fid(),date:today(),category:val('hubJournalCategory'),subjectId:val('hubJournalSubject'),topicId:val('hubJournalTopic'),severity:Number(val('hubJournalSeverity'))||2,issue:issue.slice(0,3000),fix:val('hubJournalFix').slice(0,3000),solved:false});saveFs();renderHub();notify('Journal entry saved.');}
-  function saveGoal(e){e.preventDefault();const title=hubEl('hubGoalTitle').value.trim(),unit=hubEl('hubGoalUnit').value,target=Number(hubEl('hubGoalTarget').value);if(!title||target<1){alert('Enter a milestone title and positive target.');return;}fsState.goals.unshift({id:fid(),title:title.slice(0,160),unit,target,progress:0,dueDate:hubEl('hubGoalDate').value||''});saveFs();renderHub();notify('Milestone added.');}
+  function savePaper(e){e.preventDefault();const val=id=>hubEl(id)?.value?.trim()||'';const name=val('hubPaperName');if(!name)return;const score=val('hubPaperScore')===''?null:Number(val('hubPaperScore')),max=val('hubPaperMax')===''?null:Number(val('hubPaperMax'));if(score!==null&&max!==null&&(score<0||max<=0||score>max)){alert('Score must be between zero and the maximum score.');return;}const p={id:fid(),name:name.slice(0,160),subjectId:val('hubPaperSubject'),kind:val('hubPaperKind'),date:val('hubPaperDate')||today(),score:score===null?null:score,maxScore:max===null?null:max,duration:Math.max(0,Number(val('hubPaperDuration'))||0),errorCount:Math.max(0,Number(val('hubPaperErrors'))||0),weakAreas:val('hubPaperWeak').slice(0,1000),notes:val('hubPaperNotes').slice(0,2000)};fsState.papers.unshift(p);saveFs([featureEntityPutChange('papers',p)]);renderHub();notify('Paper/practice record saved.');}
+  function saveJournal(e){e.preventDefault();const val=id=>hubEl(id)?.value?.trim()||'';const issue=val('hubJournalIssue');if(!issue)return;const entry={id:fid(),date:today(),category:val('hubJournalCategory'),subjectId:val('hubJournalSubject'),topicId:val('hubJournalTopic'),severity:Number(val('hubJournalSeverity'))||2,issue:issue.slice(0,3000),fix:val('hubJournalFix').slice(0,3000),solved:false};fsState.journal.unshift(entry);saveFs([featureEntityPutChange('journal',entry)]);renderHub();notify('Journal entry saved.');}
+  function saveGoal(e){e.preventDefault();const title=hubEl('hubGoalTitle').value.trim(),unit=hubEl('hubGoalUnit').value,target=Number(hubEl('hubGoalTarget').value);if(!title||target<1){alert('Enter a milestone title and positive target.');return;}const goal={id:fid(),title:title.slice(0,160),unit,target,progress:0,dueDate:hubEl('hubGoalDate').value||''};fsState.goals.unshift(goal);saveFs([featureEntityPutChange('goals',goal)]);renderHub();notify('Milestone added.');}
   function savePlannerSettings(){const daily=Number(hubEl('hubDailyMinutes').value),session=Number(hubEl('hubSessionMinutes').value),weekly=Number(hubEl('hubWeeklyGoal').value);if(!(daily>=10&&daily<=720)||!(session>=5&&session<=180)||!(weekly>=1&&weekly<=2000)){alert('Please enter valid time and target values.');return;}fsState.settings.dailyMinutes=daily;fsState.settings.sessionMinutes=session;fsState.settings.weeklyReviewGoal=weekly;fsState.settings.scheduler=hubEl('hubScheduler').value;saveFs();renderHub();notify('Planner settings saved.');}
   function saveTargets(){document.querySelectorAll('[data-target-subject]').forEach(el=>{const n=Math.max(0,Math.min(10000,Number(el.value)||0));if(n)fsState.syllabusTargets[el.dataset.targetSubject]=n;else delete fsState.syllabusTargets[el.dataset.targetSubject];});saveFs();renderHub();notify('Syllabus targets saved.');}
   function saveToolSettings(){fsState.settings.backlogDays=Math.max(1,Math.min(60,Number(hubEl('hubBacklogDays').value)||7));fsState.settings.reminderTime=hubEl('hubReminderTime').value||'08:00';fsState.settings.reminders=hubEl('hubRemindersEnabled').checked;saveFs();renderHub();notify('Reminder settings saved.');}
@@ -819,7 +2050,7 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
   interval=function(rating,previous){const r=Number(rating),prev=Math.max(0,Number(previous)||0);if(fsState.settings.scheduler!=='fsrs-lite')return classicInterval(r,prev);const topic=(typeof reviewTopicId!=='undefined'&&reviewTopicId)?getTopic(reviewTopicId):null;const meta=topic?featureMeta(topic):{avg:topic?.lastRating||3};const avg=meta.avg||3;const multipliers={1:0.55,2:1.1,3:1.75,4:2.35,5:3.0};let days;if(r===1)days=1;else if(prev===0)days=({1:1,2:2,3:4,4:7,5:12})[r]||4;else days=Math.round(prev*(multipliers[r]||1.5)*(0.78+avg*0.09));return Math.max(1,Math.min(Math.max(120,Math.min(365,Number(fsState.settings.maxInterval)||120)),days));};
   // Preserve existing topic/review behavior while refreshing Hub views after core data changes.
   const baseRenderAll=renderAll;
-  renderAll=function(){baseRenderAll();renderHomeConsistencySummary();if(hubEl('view-studyhub')&&hubEl('view-studyhub').classList.contains('active'))renderHub();};
+  renderAll=function(){hubKpiCache=null;baseRenderAll();if(hubEl('view-studyhub')&&hubEl('view-studyhub').classList.contains('active'))renderHub();};
   const baseExportBackup=exportBackup;
   exportBackup=function(){fullBackup();};
   const baseImportBackup=importBackup;
@@ -832,17 +2063,61 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
   document.querySelectorAll('[data-hub-tab]').forEach(b=>b.addEventListener('click',()=>hubSwitch(b.dataset.hubTab)));
   hubEl('hubQuickBackup').addEventListener('click',fullBackup);
   hubEl('hubContent').addEventListener('input',e=>{if(e.target.id==='hubGlobalSearch'){e.target.dataset.q=e.target.value;const out=hubEl('hubSearchResults');if(out)out.innerHTML=globalSearchMarkup(e.target.value);}});
-  hubEl('hubContent').addEventListener('change',e=>{const el=e.target;if(['hubRatingGrouping','hubRatingEntity','hubRatingPeriod','hubStudyTimeGrouping'].includes(el.id))return;if(el.id==='hubRatingGrouping'||el.id==='hubRatingEntity'||el.id==='hubRatingPeriod'){if(el.id==='hubRatingGrouping'){fsState.analyticsRatingGrouping=el.value;fsState.analyticsRatingEntity='';}else if(el.id==='hubRatingEntity')fsState.analyticsRatingEntity=el.value;else fsState.analyticsPeriod=el.value;
+  hubEl('hubContent').addEventListener('change',e=>{const el=e.target;if(['hubRatingGrouping','hubRatingEntity','hubRatingPeriod','hubStudyTimeGrouping'].includes(el.id))return;if(el.id==='hubRatingGrouping'||el.id==='hubRatingEntity'||el.id==='hubRatingPeriod'){if(el.id==='hubRatingGrouping'){fsState.analyticsRatingGrouping=el.value;fsState.analyticsRatingEntity='';analyticsEntityQuery='';}else if(el.id==='hubRatingEntity')fsState.analyticsRatingEntity=el.value;else fsState.analyticsPeriod=el.value;
       if(el.id==='hubRatingPeriod'||el.id==='hubRatingGrouping'){
         const level=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic';
         ensureAnalyticsEntityForRange(level);
       }
       saveFs();renderHub();}else if(el.dataset.hubAction==='check-task'){markTask(el.dataset.id,el.checked);}else if(el.dataset.hubAction==='select-topic'){const a=new Set(fsState.selectedTopicIds);el.checked?a.add(el.dataset.id):a.delete(el.dataset.id);fsState.selectedTopicIds=Array.from(a);saveFs();const inp=hubEl('hubGlobalSearch');if(inp){inp.dataset.q=inp.value;renderGlobalResults();}}});
   hubEl('hubContent').addEventListener('submit',e=>{if(e.target.id==='hubPaperForm')savePaper(e);if(e.target.id==='hubJournalForm')saveJournal(e);if(e.target.id==='hubGoalForm')saveGoal(e);if(e.target.id==='hubRecallForm')saveRecallSession(e);});
-  hubEl('hubContent').addEventListener('click',e=>{const b=e.target.closest('[data-hub-action]');if(!b)return;const a=b.dataset.hubAction,id=b.dataset.id;
-    if(['analytics-card-toggle','analytics-section','analytics-toggle-rating','analytics-custom-apply','analytics-export-pdf','analytics-export','analytics-retry'].includes(a))return;
-    if(a==='analytics-card-toggle'){const card=b.closest('[data-analytics-collapsible]'),content=card?.querySelector('.analytics-card-content');if(!card||!content)return;content.hidden=!content.hidden;b.setAttribute('aria-expanded',String(!content.hidden));b.textContent=content.hidden?'Expand':'Collapse';return;}
-    if(a==='analytics-section'){const next=b.dataset.analyticsSection;if(['presses','papers','activity'].includes(next)){analyticsSection=next;renderHub();}return;}
+  function handleStudyHubDeleteClick(event){
+    const origin=event.target&&event.target.nodeType===1?event.target:event.target&&event.target.parentElement;
+    const button=origin&&typeof origin.closest==='function'?origin.closest('button[data-hub-action]'):null;
+    if(!button)return;
+    const action=button.dataset.hubAction,id=button.dataset.id;
+    if(!['delete-study-log','delete-paper','delete-journal','delete-goal','bulk-delete'].includes(action))return;
+    event.preventDefault();
+    event.stopPropagation();
+    window.NexusDeleteDiagnosticStart?.(action);
+    const diagnosticButton=document.getElementById('deleteDiagnosticBtn');
+    if(diagnosticButton)diagnosticButton.style.display='none';
+    try{
+      window.NexusDeleteDiagnosticPhase?.('hub:dispatch-'+action);
+      if(action==='delete-study-log')deleteStudyLog(id);
+      else if(action==='delete-paper'){
+        deleteStudyHubRecord('papers',id,{confirmMessage:'Delete this paper/practice record?',missingMessage:'That paper/practice record could not be found. Refresh the list and try again.',failureMessage:'Paper deletion was not saved. The previous record has been restored.'});
+      }else if(action==='delete-journal'){
+        deleteStudyHubRecord('journal',id,{confirmMessage:'Delete this journal entry?',missingMessage:'That journal entry could not be found. Refresh the list and try again.',failureMessage:'Journal deletion was not saved. The previous entry has been restored.'});
+      }else if(action==='delete-goal'){
+        deleteStudyHubRecord('goals',id,{confirmMessage:'Delete this milestone?',missingMessage:'That milestone could not be found. Refresh the list and try again.',failureMessage:'Milestone deletion was not saved. The previous milestone has been restored.'});
+      }else if(action==='bulk-delete')bulkAction(action);
+    }catch(error){
+      const diagnostic=window.NexusDeleteDiagnosticFail?window.NexusDeleteDiagnosticFail(error):null;
+      console.error('Nexus Study Hub delete action failed ('+action+')',diagnostic||error);
+      const detail=String(error&&error.message||error||'Unknown error').replace(/\s+/g,' ').slice(0,180);
+      if(diagnosticButton)diagnosticButton.style.display='';
+      notify('Delete failed ('+action+'): '+(diagnostic?.failedAt?'['+diagnostic.failedAt+'] ':'')+detail,Boolean(window.NexusHasPendingUndo?.()),{showMessage:true});
+    }finally{
+      window.NexusDeleteDiagnosticComplete?.();
+    }
+  }
+  document.addEventListener('click',handleStudyHubDeleteClick,true);
+
+
+  hubEl('hubContent').addEventListener('click',e=>{
+    const b=e.target.closest('[data-hub-action]');if(!b)return;
+    const a=b.dataset.hubAction,id=b.dataset.id;
+    if(['analytics-card-toggle','analytics-section','analytics-toggle-rating','analytics-custom-apply','analytics-export-pdf','analytics-export','analytics-retry'].includes(a)&&(b.closest('#analyticsStandalone')||document.body.classList.contains('analytics-mode')))return;
+    if(a==='analytics-card-toggle'){
+      const card=b.closest('[data-analytics-collapsible]'),content=card?.querySelector('.analytics-card-content');
+      if(!card||!content)return;
+      content.hidden=!content.hidden;b.setAttribute('aria-expanded',String(!content.hidden));b.textContent=content.hidden?'Expand':'Collapse';return;
+    }
+    if(a==='analytics-section'){
+      const next=b.dataset.analyticsSection;
+      if(['presses','papers','activity'].includes(next)){analyticsSection=next;renderHub();}
+      return;
+    }
     if(a==='analytics-toggle-rating'){
       const rating=Number(b.dataset.ratingToggle),current=getVisibleAnalyticsRatings();
       if(!Number.isInteger(rating)||rating<1||rating>5)return;
@@ -852,16 +2127,31 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
       }else fsState.analyticsVisibleRatings=[...current,rating].sort((x,y)=>x-y);
       saveFs();renderHub();return;
     }
+    if(a==='analytics-custom-apply'){
+      const from=hubEl('hubRatingCustomStart')?.value||'',to=hubEl('hubRatingCustomEnd')?.value||'';
+      if(!safeDate(from)||!safeDate(to)||from>to){notify('Choose valid dates. The From date must be on or before the To date.');return;}
+      fsState.analyticsCustomStart=from;fsState.analyticsCustomEnd=to;fsState.analyticsPeriod='custom';saveFs();renderHub();return;
+    }
+    if(a==='analytics-export-pdf'){
+      try{openAnalyticsPdfDialog();}catch(error){console.error('Nexus Analytics PDF export failed',error);notify('Could not generate the PDF report. Allow pop-ups and try again.');}
+      return;
+    }
+    if(a==='analytics-export'){
+      try{exportAnalyticsCsv();}catch(error){console.error('Nexus Analytics CSV export failed',error);notify('Could not export analytics CSV. Please try again.');}
+      return;
+    }
+    if(a==='analytics-retry'){renderHub();return;}
     if(a==='review-topic'){openReview(id);return;}if(a==='open-calendar'){openReviewCalendar();return;}if(a==='edit-topic'){switchView('topics');openTopic(id);return;}
-    if(a==='analytics-custom-apply'){const from=hubEl('hubRatingCustomStart')?.value||'',to=hubEl('hubRatingCustomEnd')?.value||'';if(!safeDate(from)||!safeDate(to)||from>to){notify('Choose valid dates. The From date must be on or before the To date.');return;}fsState.analyticsCustomStart=from;fsState.analyticsCustomEnd=to;fsState.analyticsPeriod='custom';saveFs();renderHub();return;}if(a==='analytics-export-pdf'){exportAnalyticsPdf();return;}if(a==='analytics-export'){const selection=getRatingAnalyticsSelection(),from=selection.from,to=selection.to,rows=[['Metric','Value'],['From',from],['To',to],['Reviews',state.history.filter(h=>h.reviewedAt>=from&&h.reviewedAt<=to).length],['Mean recall rating',(()=>{const r=state.history.filter(h=>h.reviewedAt>=from&&h.reviewedAt<=to);return r.length?(r.reduce((n,h)=>n+fNum(h.rating),0)/r.length).toFixed(2):'N/A';})()],['Active topics',activeTopics().length],['Mastered topics',activeTopics().filter(isMastered).length],['Overdue topics',activeTopics().filter(t=>status(t)==='overdue').length],['Study minutes in range',fsState.studyLogs.filter(l=>l.date>=from&&l.date<=to).reduce((n,l)=>n+studyLogMinutes(l),0)],['Generated at',new Date().toISOString()]],csv=rows.map(row=>row.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\\r\\n');downloadBlob('nexus-analytics-'+from+'-to-'+to+'.csv',csv,'text/csv;charset=utf-8');notify('Analytics CSV exported.');return;}if(a==='refresh-plan'){renderHub();return;}if(a==='toggle-final-revision'){fsState.settings.finalRevision=!fsState.settings.finalRevision;saveFs();renderHub();notify(fsState.settings.finalRevision?'Final-revision mode enabled. Non-mastered topics get higher priority.':'Final-revision mode disabled.');return;}if(a==='balance-workload'){balanceWorkload();return;}if(a==='backlog-plan'){spreadBacklog();return;}
-    if(a==='save-planner-settings'){savePlannerSettings();return;}if(a==='focus-start'){startFocus();return;}if(a==='focus-stop'){logFocusStop();return;}if(a==='focus-discard'){discardFocusSession();return;}if(a==='study-history-toggle'){const target=hubEl(b.dataset.target);if(!target)return;target.hidden=!target.hidden;b.setAttribute('aria-expanded',String(!target.hidden));b.textContent=target.hidden?'Expand':'Collapse';return;}if(a==='delete-study-log'){deleteStudyLog(id);return;}if(a==='save-targets'){saveTargets();return;}
-    if(a==='delete-paper'){if(confirm('Delete this paper/practice record?')){fsState.papers=fsState.papers.filter(p=>p.id!==id);saveFs();renderHub();}return;}if(a==='export-papers'){exportHubCsv('papers');return;}
-    if(a==='toggle-journal'){const j=fsState.journal.find(x=>x.id===id);if(j){j.solved=!j.solved;saveFs();renderHub();}return;}if(a==='delete-journal'){if(confirm('Delete this journal entry?')){fsState.journal=fsState.journal.filter(j=>j.id!==id);saveFs();renderHub();}return;}
+    if(a==='refresh-plan'){window.NexusInvalidatePlannerCache?.();renderHub();return;}if(a==='toggle-final-revision'){fsState.settings.finalRevision=!fsState.settings.finalRevision;saveFs();renderHub();notify(fsState.settings.finalRevision?'Final-revision mode enabled. Non-mastered topics get higher priority.':'Final-revision mode disabled.');return;}if(a==='balance-workload'){balanceWorkload();return;}if(a==='backlog-plan'){spreadBacklog();return;}
+    if(a==='save-planner-settings'){savePlannerSettings();return;}if(a==='focus-start'){startFocus();return;}if(a==='focus-stop'){logFocusStop();return;}if(a==='focus-discard'){discardFocusSession();return;}if(a==='study-history-toggle'){const target=hubEl(b.dataset.target);if(!target)return;target.hidden=!target.hidden;b.setAttribute('aria-expanded',String(!target.hidden));b.textContent=target.hidden?'Expand':'Collapse';return;}if(a==='study-history-more'){studyLogHistoryLimit+=100;renderHub();return;}if(a==='save-targets'){saveTargets();return;}
+    if(a==='export-papers'){exportHubCsv('papers');return;}
+    if(a==='toggle-journal'){const j=fsState.journal.find(x=>x.id===id);if(j){j.solved=!j.solved;saveFs([featureEntityPutChange('journal',j,'keep')]);renderHub();}return;}
     if(a==='save-tool-settings'){saveToolSettings();return;}if(a==='request-notifications'){requestNotify();return;}if(a==='check-reminder'){const c=activeTopics().filter(t=>['overdue','due'].includes(status(t))).length;notify(c?`${c} topic(s) due or overdue. Open Daily planner to prioritise them.`:'No topics due or overdue right now.');return;}
     if(a==='full-backup'){fullBackup();return;}if(a==='full-restore'){hubEl('hubImportFile').click();return;}if(a==='export-journal'){exportHubCsv('journal');return;}if(a==='export-study'){exportHubCsv('study');return;}if(a==='csv-template'){exportTemplate();return;}if(a==='csv-import'){hubEl('hubImportFile').accept='.csv';hubEl('hubImportFile').click();return;}
     if(a==='bulk-due-today'||a==='bulk-due-custom'||a==='bulk-archive'||a==='bulk-unarchive'||a==='bulk-export'||a==='bulk-delete'||a==='bulk-clear'){bulkAction(a);return;}
-    if(a==='delete-goal'){if(confirm('Delete this milestone?')){fsState.goals=fsState.goals.filter(g=>g.id!==id);saveFs();renderHub();}return;}if(a==='goal-plus'){const g=fsState.goals.find(g=>g.id===id);if(g){g.progress=(g.progress||0)+1;saveFs();renderHub();}return;}
+    if(a==='goal-plus'){const g=fsState.goals.find(g=>g.id===id);if(g){g.progress=(g.progress||0)+1;saveFs([featureEntityPutChange('goals',g,'keep')]);renderHub();}return;}
   });
+
   document.addEventListener('click',e=>{
     const toggle=e.target.closest('[data-home-collapse]');if(!toggle)return;
     const target=document.getElementById(toggle.dataset.homeCollapse);if(!target)return;
@@ -897,7 +2187,7 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
         if(!safeDate(from)||!safeDate(to)||from>to){notify('Choose valid dates. The From date must be on or before the To date.');return;}
         fsState.analyticsCustomStart=from;fsState.analyticsCustomEnd=to;fsState.analyticsPeriod='custom';saveFs();renderHub();return;
       }
-      if(action==='analytics-export-pdf'){exportAnalyticsPdf();return;}
+      if(action==='analytics-export-pdf'){openAnalyticsPdfDialog();return;}
       if(action==='analytics-export'){exportAnalyticsCsv();return;}
       if(action==='analytics-retry'){renderHub();return;}
     }catch(error){
@@ -905,6 +2195,7 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
       notify(action==='analytics-export-pdf'?'Could not generate the PDF report. Allow pop-ups and try again.':action==='analytics-export'?'Could not export analytics CSV. Please try again.':'Analytics could not update. Please try again.');
     }
   });
+
   document.addEventListener('change',e=>{
     const el=e.target;if(!el)return;
     if(['hubRatingGrouping','hubRatingEntity','hubRatingPeriod'].includes(el.id)){
@@ -920,7 +2211,32 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
     if(el.id==='hubStudyTimeGrouping'){fsState.studyTimeGrouping=el.value==='topic'?'topic':'subject';saveFs();try{renderHub();}catch(error){console.error('Study time grouping failed',error);notify('Could not update study-time grouping.');}return;}
     if(el.id==='homeHeatmapPeriod'){fsState.heatmapPeriod=el.value;saveFs();try{renderHomeConsistencySummary();}catch(error){console.error('Home heatmap update failed',error);notify('Could not update the Overview heatmap.');}}
   });
-  hubEl('hubContent').addEventListener('input',e=>{if(e.target.id==='hubStudySearch'){fsState.studyTopicQuery=e.target.value;saveFs();const sel=hubEl('hubStudyTopic');if(sel){const q=e.target.value.toLowerCase();sel.innerHTML=selectOptions(state.topics.filter(t=>!t.archived&&(!q||[t.name,t.notes,subjectFor(t)?.name].some(v=>String(v||'').toLowerCase().includes(q)))).map(t=>[t.id,(subjectFor(t)?.name?subjectFor(t).name+' · ':'')+t.name]),focusTopicId);}}});
+  hubEl('hubContent').addEventListener('input',e=>{
+    if(e.target.id==='hubStudySearch'){
+      fsState.studyTopicQuery=e.target.value;
+      const sel=hubEl('hubStudyTopic');
+      if(sel)sel.innerHTML=studyTopicOptionsMarkup(fsState.studyTopicQuery,focusTopicId,150);
+      return;
+    }
+    if(e.target.id==='hubRatingEntitySearch'){
+      analyticsEntityQuery=e.target.value;
+      const query=analyticsEntityQuery;
+      clearTimeout(analyticsEntitySearchTimer);
+      analyticsEntitySearchTimer=setTimeout(()=>{
+        const search=hubEl('hubRatingEntitySearch');
+        if(!search||search.value!==query)return;
+        const level=['topic','subject','syllabus'].includes(fsState.analyticsRatingGrouping)?fsState.analyticsRatingGrouping:'topic';
+        const select=hubEl('hubRatingEntity'),current=String(select?.value||fsState.analyticsRatingEntity||'ALL');
+        const options=getRatingAnalyticsEntityOptions(level,query,150,current);
+        if(select){
+          select.innerHTML=selectOptions(options.map(option=>[option.value,option.label+' — '+option.subtitle]),current);
+          select.value=current;
+        }
+        const hint=hubEl('hubRatingEntityHint');
+        if(hint)hint.textContent=options.matchCount>options.limit?'Showing the first '+options.limit+' of '+options.matchCount+' matches. Search to narrow the list.':options.matchCount+' matching entries.';
+      },120);
+    }
+  });
   hubEl('hubContent').addEventListener('change',async e=>{if(e.target.id==='hubStudyTimeGrouping')return;if(e.target.id==='hubStudyTimeGrouping'){fsState.studyTimeGrouping=e.target.value==='topic'?'topic':'subject';saveFs();renderHub();return;}if(e.target.id==='hubStudyTopic'){focusTopicId=e.target.value;const t=getTopic(focusTopicId);focusSubjectId=t?(subjectFor(t)?.id||''):focusSubjectId;fsState.focusTopicId=focusTopicId;fsState.focusSubjectId=focusSubjectId;saveFs();return;}if(e.target.id==='hubTimerMinutes'){fsState.settings.sessionMinutes=Math.max(5,Math.min(240,Number(e.target.value)||25));saveFs();return;}if(e.target.id==='hubCalendarWindow'){fsState.calendarWindow=e.target.value;saveFs();renderHub();return;}if(e.target.id==='hubImportFile'){const f=e.target.files?.[0];e.target.value='';if(f)await restoreOrMerge(f);}});
 
   // Override reset to clear all extension data only after the user's existing reset flow confirms.
@@ -945,6 +2261,8 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
         {key:'nexus.fsrs.cards.v1',value:'{}'},
         {key:'nexus.fsrs.settings.v1',value:JSON.stringify(resetFeatures.fsrsSettings)}
       ];
+      const revisionEntry=window.NexusWorkspaceEntityRevisionEntry?.(owner);
+      if(revisionEntry)entries.push(revisionEntry);
       queue.commitWorkspace(localStorage,entries,{state:resetState,featureState:resetFeatures},{archivePending:true,reason:'manual-reset',returnOperationPayload:false});
       state=resetState;fsState=resetFeatures;
       if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(resetFeatures.fsrsSettings,{syncFeature:false,persist:false});
@@ -955,6 +2273,7 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
       if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function')await storage.flush();
       OLD_KEYS.forEach(k=>localStorage.removeItem(k));
       if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function')await storage.flush();
+      await window.NexusRebuildEntityProjection?.();
       if(window.NexusCloudSync)window.NexusCloudSync.schedule();
       renderAll();renderHub();
       notify('Tracker and Study Hub data reset. If signed in, check cloud sync status before using another device.');
@@ -965,15 +2284,68 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
   };
 
   // Gentle reminder check and 60-second scheduled-time check while open.
-  const dueCountAtOpen=activeTopics().filter(t=>['overdue','due'].includes(status(t))).length;
+  let dueCountAtOpen=0;for(const topic of state.topics)if(!topic.archived&&['overdue','due'].includes(status(topic)))dueCountAtOpen++;
   if(dueCountAtOpen&&fsState.lastReminderAt!==today())setTimeout(()=>{if(fsState.settings.reminders)notify(`You have ${dueCountAtOpen} topic(s) due or overdue. Open Study Hub → Daily planner.`);},1200);
   setInterval(maybeNotify,60000);
-  document.addEventListener('click',e=>{const b=e.target.closest('[data-focus-action]');if(b){const a=b.dataset.focusAction;if(a==='pause')toggleFocusPause();else if(a==='reset'){if(confirm('Reset this focus session? The elapsed time will not be logged.')){focusStart=Date.now();focusPausedAt=null;fsState.focusStartedAt=new Date(focusStart).toISOString();fsState.focusActualStartedAt=new Date(focusStart).toISOString();fsState.focusPausedAt=null;saveFs();refreshLiveFocusUi();}}else if(a==='stop')logFocusStop();else if(a==='discard')discardFocusSession();return;}const c=e.target.closest('[data-calendar-action]');if(c){const a=c.dataset.calendarAction;if(a==='close')document.getElementById('reviewCalendarDialog')?.close();else if(a==='prev'||a==='next'){calendarMonth.setMonth(calendarMonth.getMonth()+(a==='prev'?-1:1));renderReviewCalendar();}return;}const day=e.target.closest('[data-calendar-day]');if(day){calendarSelected=day.dataset.calendarDay;renderReviewCalendar();}});document.getElementById('reviewCalendarWindow')?.addEventListener('change',e=>{calendarMonths=Number(e.target.value)||1;calendarMonth.setMonth(calendarMonth.getMonth()+calendarMonths);calendarMonth.setDate(1);renderReviewCalendar();});document.getElementById('homeOpenCalendarSecondary')?.addEventListener('click',openReviewCalendar);function openReviewCalendar(){const d=document.getElementById('reviewCalendarDialog');if(!d)return;calendarMonth=new Date();calendarMonth.setDate(1);calendarSelected=today();renderReviewCalendar();d.showModal();}let calendarMonth=new Date(new Date().getFullYear(),new Date().getMonth(),1),calendarSelected=today(),calendarMonths=1;function renderReviewCalendar(){const grid=document.getElementById('reviewCalendarGrid'),monthLabel=document.getElementById('reviewCalendarMonth'),details=document.getElementById('reviewCalendarDetails');if(!grid||!monthLabel||!details)return;const year=calendarMonth.getFullYear(),month=calendarMonth.getMonth();monthLabel.textContent=calendarMonth.toLocaleDateString(undefined,{month:'long',year:'numeric'});const range=document.getElementById('reviewCalendarWindow');if(range)range.value=String(calendarMonths);const first=new Date(year,month,1),startOffset=(first.getDay()+6)%7,days=new Date(year,month+1,0).getDate(),prevDays=new Date(year,month,0).getDate();let html=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(x=>'<div class="calendar-weekday">'+x+'</div>').join('');for(let i=0;i<42;i++){let dayNum=i-startOffset+1,dt,outs=false;if(dayNum<1){dt=new Date(year,month-1,prevDays+dayNum);outs=true;}else if(dayNum>days){dt=new Date(year,month+1,dayNum-days);outs=true;}else dt=new Date(year,month,dayNum);const iso=dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');const count=activeTopics().filter(t=>t.dueDate===iso||(!t.dueDate&&t.createdAt===iso)).length,exams=state.exams.filter(x=>x.date===iso);html+='<button type="button" class="calendar-day '+(outs?'outside ':'')+(iso===today()?'today ':'')+(iso===calendarSelected?'selected':'')+'" data-calendar-day="'+iso+'"><span class="calendar-day-number">'+dt.getDate()+'</span><span class="calendar-dots">'+(count?'<i title="'+count+' reviews"></i>':'')+(exams.length?'<i class="exam" title="Exam"></i>':'')+'</span><span class="calendar-day-count">'+(count?count+' due':'')+(exams.length?' · '+exams.length+' exam':'')+'</span></button>';}grid.innerHTML=html;const selectedDate=new Date(calendarSelected+'T12:00:00').toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric',year:'numeric'});const topics=activeTopics().filter(t=>t.dueDate===calendarSelected||(!t.dueDate&&t.createdAt===calendarSelected));const exams=state.exams.filter(x=>x.date===calendarSelected);details.innerHTML='<h3>'+selectedDate+'</h3>'+(topics.map(t=>'<div class="calendar-event"><i class="legend-review"></i><div><strong>'+localEsc(t.name)+'</strong><span>'+localEsc(subjectFor(t)?.name||'Topic review')+'</span></div></div>').join(''))+(exams.map(x=>'<div class="calendar-event"><i class="legend-exam"></i><div><strong>'+localEsc(x.name)+'</strong><span>Exam · '+localEsc(x.type||'')+'</span></div></div>').join(''))+(!topics.length&&!exams.length?'<div class="muted small">Nothing scheduled for this day.</div>':'');} if(focusStart){focusTimer=setInterval(refreshLiveFocusUi,1000);}
+  document.addEventListener('click',e=>{const b=e.target.closest('[data-focus-action]');if(b){const a=b.dataset.focusAction;if(a==='pause')toggleFocusPause();else if(a==='reset'){if(confirm('Reset this focus session? The elapsed time will not be logged.')){focusStart=Date.now();focusPausedAt=null;fsState.focusStartedAt=new Date(focusStart).toISOString();fsState.focusActualStartedAt=new Date(focusStart).toISOString();fsState.focusPausedAt=null;saveFs();refreshLiveFocusUi();}}else if(a==='stop')logFocusStop();else if(a==='discard')discardFocusSession();return;}const c=e.target.closest('[data-calendar-action]');if(c){const a=c.dataset.calendarAction;if(a==='close')document.getElementById('reviewCalendarDialog')?.close();else if(a==='more-topics'){calendarTopicLimit+=100;renderReviewCalendar();}else if(a==='prev'||a==='next'){calendarTopicLimit=100;calendarMonth.setMonth(calendarMonth.getMonth()+(a==='prev'?-1:1));renderReviewCalendar();}return;}const day=e.target.closest('[data-calendar-day]');if(day){calendarSelected=day.dataset.calendarDay;calendarTopicLimit=100;renderReviewCalendar();}});document.getElementById('reviewCalendarWindow')?.addEventListener('change',e=>{calendarMonths=Number(e.target.value)||1;calendarMonth.setMonth(calendarMonth.getMonth()+calendarMonths);calendarMonth.setDate(1);renderReviewCalendar();});document.getElementById('homeOpenCalendarSecondary')?.addEventListener('click',openReviewCalendar);function openReviewCalendar(){const d=document.getElementById('reviewCalendarDialog');if(!d)return;calendarMonth=new Date();calendarMonth.setDate(1);calendarSelected=today();calendarTopicLimit=100;renderReviewCalendar();d.showModal();}let calendarMonth=new Date(new Date().getFullYear(),new Date().getMonth(),1),calendarSelected=today(),calendarMonths=1,calendarTopicLimit=100;function renderReviewCalendar(){
+    const grid=document.getElementById('reviewCalendarGrid'),monthLabel=document.getElementById('reviewCalendarMonth'),details=document.getElementById('reviewCalendarDetails');
+    if(!grid||!monthLabel||!details)return;
+    const year=calendarMonth.getFullYear(),month=calendarMonth.getMonth();
+    monthLabel.textContent=calendarMonth.toLocaleDateString(undefined,{month:'long',year:'numeric'});
+    const range=document.getElementById('reviewCalendarWindow');if(range)range.value=String(calendarMonths);
+    const first=new Date(year,month,1),startOffset=(first.getDay()+6)%7,days=new Date(year,month+1,0).getDate(),prevDays=new Date(year,month,0).getDate();
+    const dates=[];
+    for(let i=0;i<42;i++){
+      const dayNum=i-startOffset+1;
+      let dt,outs=false;
+      if(dayNum<1){dt=new Date(year,month-1,prevDays+dayNum);outs=true;}
+      else if(dayNum>days){dt=new Date(year,month+1,dayNum-days);outs=true;}
+      else dt=new Date(year,month,dayNum);
+      const iso=dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
+      dates.push({dt,iso,outs});
+    }
+    const visibleDates=new Set(dates.map(item=>item.iso)),dueCounts=new Map(),examsByDate=new Map();
+    const selectedTopics=[],subjectById=new Map(state.subjects.map(subject=>[String(subject.id),subject]));
+    let selectedTopicCount=0;
+    // Build the 42-day calendar index in one topic pass. Previously each cell
+    // filtered the complete active-topic array, multiplying work by 42.
+    for(const topic of state.topics){
+      if(topic.archived)continue;
+      const date=topic.dueDate||topic.createdAt||'';
+      if(!visibleDates.has(date))continue;
+      dueCounts.set(date,(dueCounts.get(date)||0)+1);
+      if(date===calendarSelected){
+        selectedTopicCount++;
+        if(selectedTopics.length<calendarTopicLimit)selectedTopics.push(topic);
+      }
+    }
+    for(const exam of state.exams){
+      if(!exam||!exam.date||!visibleDates.has(exam.date))continue;
+      const entries=examsByDate.get(exam.date)||[];
+      entries.push(exam);examsByDate.set(exam.date,entries);
+    }
+    const html=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(label=>'<div class="calendar-weekday">'+label+'</div>').join('')+dates.map(({dt,iso,outs})=>{
+      const count=dueCounts.get(iso)||0,exams=examsByDate.get(iso)||[];
+      return '<button type="button" class="calendar-day '+(outs?'outside ':'')+(iso===today()?'today ':'')+(iso===calendarSelected?'selected':'')+'" data-calendar-day="'+iso+'"><span class="calendar-day-number">'+dt.getDate()+'</span><span class="calendar-dots">'+(count?'<i title="'+count+' reviews"></i>':'')+(exams.length?'<i class="exam" title="Exam"></i>':'')+'</span><span class="calendar-day-count">'+(count?count+' due':'')+(exams.length?' · '+exams.length+' exam':'')+'</span></button>';
+    }).join('');
+    grid.innerHTML=html;
+    const selectedDate=new Date(calendarSelected+'T12:00:00').toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+    const exams=examsByDate.get(calendarSelected)||[];
+    const topicRows=selectedTopics.map(topic=>{
+      const subject=subjectById.get(String(topic.subjectId));
+      return '<div class="calendar-event"><i class="legend-review"></i><div><strong>'+localEsc(topic.name)+'</strong><span>'+localEsc(subject?.name||'Topic review')+'</span></div></div>';
+    }).join('');
+    const more=selectedTopicCount>selectedTopics.length?'<button type="button" class="btn btn-sm" data-calendar-action="more-topics">Show 100 more ('+(selectedTopicCount-selectedTopics.length)+' remaining)</button>':'';
+    const examRows=exams.map(exam=>'<div class="calendar-event"><i class="legend-exam"></i><div><strong>'+localEsc(exam.name)+'</strong><span>Exam · '+localEsc(exam.type||'')+'</span></div></div>').join('');
+    details.innerHTML='<h3>'+selectedDate+'</h3>'+(selectedTopicCount?'<p class="muted small">Showing '+selectedTopics.length+' of '+selectedTopicCount+' scheduled topic(s).</p>':'')+topicRows+more+examRows+(!selectedTopicCount&&!exams.length?'<div class="muted small">Nothing scheduled for this day.</div>':'');
+  } if(focusStart){focusTimer=setInterval(refreshLiveFocusUi,1000);}
   // Home is the normal startup view: avoid building the hidden Study Hub planner.
   // Preserve correct startup rendering if another flow has already activated Study Hub.
   const studyHubView=hubEl('view-studyhub');
-  if(studyHubView?.classList.contains('active'))renderHub();
-  try{renderHomeConsistencySummary();}catch(error){console.error('Nexus Overview consistency summary failed',error);}
+  if(!window.NexusDeferInitialRender&&studyHubView?.classList.contains('active'))renderHub();
+  if(!window.NexusDeferInitialRender){
+    try{renderHomeConsistencySummary();}catch(error){console.error('Nexus Overview consistency summary failed',error);}
+  }
   const restoreFocusUi=()=>{if(focusStart)openFocusMode();else refreshLiveFocusUi();};
   if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',restoreFocusUi,{once:true});}else{restoreFocusUi();}
 })();

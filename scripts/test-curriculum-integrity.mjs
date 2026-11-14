@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
@@ -25,6 +26,21 @@ assert.ok(pack.subjects.every(subject => String(subject.legacyIdPrefix).startsWi
 const today = () => '2026-10-22';
 const makeId = prefix => prefix + '-test-' + Math.random().toString(36).slice(2, 7);
 const copy = value => JSON.parse(JSON.stringify(value));
+
+const normalizeFunctionStart=appCore.indexOf('function normalizeState(raw){');
+const normalizeLimitStart=appCore.lastIndexOf('const MAX_CURRICULUM_MARKERS=',normalizeFunctionStart);
+const normalizeEnd=appCore.indexOf('// Curriculum rows are owned by explicit install intent',normalizeFunctionStart);
+assert.ok(normalizeFunctionStart>=0&&normalizeLimitStart>=0&&normalizeEnd>normalizeFunctionStart,'the real app-core workspace normalizer and its marker limit must be available');
+const normalizerContext={
+  migrateOld(){throw new Error('The normalizer test must use the current workspace schema.');},
+  normalizeTopic(topic,fallbackSubjectId){return {...topic,subjectId:String(topic.subjectId||fallbackSubjectId)};},
+  sanitizeExam(exam){return {...exam};},
+  validDate(){return false;},
+  today(){return '2026-11-09';}
+};
+vm.createContext(normalizerContext);
+vm.runInContext(appCore.slice(normalizeLimitStart,normalizeEnd),normalizerContext,{filename:'app-core-normalize-state.js'});
+
 const emptyState = () => ({
   schema: 3, streams: [], subjects: [], topics: [], exams: [], history: [],
   settings: { theme: 'dark', intervalCap: 120, installedCurricula: [], curriculumTombstones: [] }
@@ -235,7 +251,11 @@ const deletedTopicState = copy(fresh);
 const topicToDelete = deletedTopicState.topics.find(topic => topic.id === 'curr-bs-02');
 integrity.markDeletedTopic(deletedTopicState, catalogue.packs, topicToDelete);
 deletedTopicState.topics = deletedTopicState.topics.filter(topic => topic.id !== topicToDelete.id);
-integrity.repair(deletedTopicState, catalogue.packs, { today, makeId });
+deletedTopicState.history.push({id:'stale-deleted-topic-review',topicId:topicToDelete.id,subjectId:topicToDelete.subjectId,topicName:topicToDelete.name});
+const topicDeletionRepair=integrity.repair(deletedTopicState, catalogue.packs, { today, makeId });
+assert.equal(topicDeletionRepair.changed,true,'history-only cleanup for an already-missing topic must report a workspace change');
+assert.equal(deletedTopicState.history.length,0,'a deleted catalogue topic must not leave stale review history behind');
+assert.equal(integrity.repair(copy(deletedTopicState),catalogue.packs,{today,makeId}).changed,false,'the history-only cleanup must be idempotent');
 assert.equal(deletedTopicState.topics.length, 45);
 assert.equal(deletedTopicState.topics.some(topic => topic.id === topicToDelete.id), false);
 
@@ -268,11 +288,11 @@ assert.ok(staleCloudState.topics.some(topic => topic.id === 'manual-topic-2'));
 // boundary is included in both online and offline paths.
 // The Library's stream/subject tree lives in a separate shared DOM region. It must
 // be regenerated with the topic cards rather than waiting for a Settings-tab visit.
-assert.ok(appCore.includes('function renderStructureList(){'),
+assert.ok(appCore.includes('function renderStructureList(topicCountsBySubject=null){'),
   'streams and subjects must have a dedicated renderer shared by Settings and Library');
-const libraryRenderer = appCore.slice(appCore.indexOf('function renderTopics()'), appCore.indexOf('function compareHistoryRows'));
-assert.ok(libraryRenderer.includes('renderStructureList();'),
-  'opening or refreshing the Library must render its stream and subject hierarchy');
+const libraryRenderer = appCore.slice(appCore.indexOf('async function renderTopics()'), appCore.indexOf('function compareHistoryRows'));
+assert.ok(libraryRenderer.includes('renderStructureList(topicCountsBySubject)'),
+  'the Library must render its stream and subject hierarchy using the topic counts from its cooperative scan');
 const settingsRenderer = appCore.slice(appCore.indexOf('function renderSetup()'), appCore.indexOf('function renderAll()'));
 assert.ok(settingsRenderer.includes('renderStructureList();'),
   'Settings must use the same stream/subject renderer as Library');
@@ -288,7 +308,7 @@ const runtimeAssets = [...runtimeBody.matchAll(/'([^']+)'/g)].map(match => match
 assert.ok(runtimeAssets.indexOf('curriculum-integrity.js') < runtimeAssets.indexOf('explore-curriculum.js') &&
   runtimeAssets.indexOf('explore-curriculum.js') < runtimeAssets.indexOf('app-core.js'),
   'curriculum integrity and Explore lifecycle modules must load before app initialization, after storage bootstrap');
-assert.ok(cloudSync.includes('window.NexusRepairCurriculumState?window.NexusRepairCurriculumState(normalized):normalized'),
+assert.ok(cloudSync.includes('window.NexusRepairNormalizedCurriculumState?window.NexusRepairNormalizedCurriculumState(normalized):normalized'),
   'remote snapshots must be repaired before reconciliation');
 assert.ok(cloudSync.includes('Rebuild catalogue-owned rows before any cloud write'),
   'the upload path must repair and atomically requeue the current workspace before writing');
@@ -304,9 +324,112 @@ assert.ok(serviceWorker.includes("'./curriculum-integrity.js'") &&
 
 const startupRepairSource = appCore.slice(appCore.indexOf('function persistLoadedRepair'), appCore.indexOf('function save()'));
 assert.ok(startupRepairSource.includes('function persistLoadedRepair(data)'), 'startup repair persistence must be explicit and auditable');
-assert.ok(startupRepairSource.includes('queue.commitWorkspace(localStorage,[{key:STORAGE_KEY,value:JSON.stringify(data)}],{state:data,featureState},{returnOperationPayload:false})'),
-  'a repaired startup workspace must be committed atomically with the matching offline outbox payload');
-assert.ok(startupRepairSource.includes('if(JSON.stringify(repaired)!==JSON.stringify(normalized))'),
-  'startup must persist only when curriculum repair changes the normalized workspace');
+assert.ok(startupRepairSource.includes('const entries=[{key:STORAGE_KEY,value:JSON.stringify(data)}];') &&
+  startupRepairSource.includes('const revisionEntry=workspaceEntityRevisionEntry();') &&
+  startupRepairSource.includes('if(revisionEntry)entries.push(revisionEntry);') &&
+  startupRepairSource.includes('queue.commitWorkspace(localStorage,entries,{state:data,featureState},{returnOperationPayload:false})'),
+  'a repaired startup workspace and its entity-revision invalidation must be committed atomically with the matching offline outbox payload');
+assert.ok(startupRepairSource.includes('const result=repairCurriculumStateResult(normalized)') && startupRepairSource.includes('if(result.changed)'),
+  'startup must use the repair result instead of serializing the entire workspace to detect changes');
+assert.ok(appCore.includes('window.NexusRepairNormalizedCurriculumState=repairCurriculumState') &&
+  appCore.includes('window.NexusRepairNormalizedCurriculumStateWithResult=repairCurriculumStateResult'),
+  'sync code must be able to repair an already-normalized state without normalizing every record again');
+
+
+{
+  const count=12032,manualCount=65112;
+  const names=Array.from({length:count},(_,index)=>'Synthetic topic '+index);
+  const definition={id:'synthetic-subject',workspaceId:'synthetic-subject',name:'Synthetic Subject',
+    legacyIdPrefix:'seed-synthetic',topics:names};
+  const largePack={id:'synthetic-large-pack',streamId:'stream-synthetic',streamName:'Synthetic Stream',subjects:[definition]};
+  const catalogTopics=names.map((name,index)=>({
+    id:'curr-synthetic-'+String(index+1).padStart(2,'0'),subjectId:definition.workspaceId,name,
+    reviewCount:0,intervalDays:0,archived:false
+  }));
+  const manualTopics=Array.from({length:manualCount},(_,index)=>({
+    id:'manual-'+index,subjectId:'manual-subject',name:'Manual topic '+index,
+    reviewCount:0,intervalDays:0,archived:false
+  }));
+  const bulkDeleteState={
+    schema:3,
+    streams:[{id:largePack.streamId,name:largePack.streamName},{id:'manual-stream',name:'Manual stream'}],
+    subjects:[{id:definition.workspaceId,name:definition.name,streamId:largePack.streamId,order:0},
+      {id:'manual-subject',name:'Manual subject',streamId:'manual-stream'}],
+    topics:catalogTopics.concat(manualTopics),
+    history:names.map((name,index)=>({id:'bulk-catalog-history-'+index,topicId:catalogTopics[index].id,
+      subjectId:definition.workspaceId,topicName:name,reviewedAt:'2026-10-01'}))
+      .concat([{id:'bulk-manual-history',topicId:'manual-0',subjectId:'manual-subject',topicName:'Manual topic 0'}]),
+    exams:[],
+    settings:{theme:'dark',installedCurricula:[integrity.keys.pack(largePack.id)],curriculumTombstones:[]}
+  };
+  const markedCount=integrity.markDeletedTopics(bulkDeleteState,[largePack],catalogTopics);
+  assert.equal(markedCount,count,'batch deletion must write a tombstone for every selected catalogue topic');
+  assert.equal(bulkDeleteState.settings.curriculumTombstones.length,count,
+    'large deletion intent must not be truncated to the former 5,000-marker cap');
+  // Exercise the exact normalizer used for downloaded schema-4 cloud snapshots.
+  // A 12,032-row deletion must survive this boundary before curriculum repair runs.
+  const normalizedAfterDelete=normalizerContext.normalizeState(bulkDeleteState);
+  assert.equal(normalizedAfterDelete.settings.curriculumTombstones.length,count,
+    'workspace normalization must retain all 12,032 deletion markers instead of truncating them to 5,000');
+  const normalizedRepair=integrity.repair(normalizedAfterDelete,[largePack],{today,makeId});
+  assert.equal(normalizedAfterDelete.settings.curriculumTombstones.length,count,
+    'curriculum repair must preserve all 12,032 deletion markers after normalization');
+  assert.equal(normalizedAfterDelete.topics.filter(topic=>topic.id.startsWith('curr-synthetic-')).length,0,
+    'normalization followed by repair must not resurrect any explicitly deleted catalogue topic');
+  assert.equal(normalizedAfterDelete.topics.length,manualCount,
+    'all 65,112 unrelated manual topics must remain after normalization and repair');
+  const manyInstallMarkers=names.map(name=>integrity.keys.topic(largePack.id,definition.id,name));
+  const normalizedInstallIntents=normalizerContext.normalizeState({
+    ...emptyState(),settings:{theme:'dark',intervalCap:120,installedCurricula:manyInstallMarkers,curriculumTombstones:[]}
+  });
+  assert.equal(normalizedInstallIntents.settings.installedCurricula.length,count,
+    'workspace normalization must retain more than 5,000 granular installed-topic markers too');
+
+  const deletedIds=new Set(catalogTopics.map(topic=>topic.id));
+  bulkDeleteState.topics=bulkDeleteState.topics.filter(topic=>!deletedIds.has(topic.id));
+  bulkDeleteState.history=bulkDeleteState.history.filter(entry=>!deletedIds.has(entry.topicId));
+  const bulkRepair=integrity.repair(bulkDeleteState,[largePack],{today,makeId});
+  assert.equal(bulkRepair.changed,false,'repair must preserve the explicitly deleted topics without rebuilding them');
+  assert.equal(bulkDeleteState.topics.length,manualCount,
+    'a 12,032-topic batch deletion must not resurrect catalogue records from installed-pack intent');
+  assert.equal(bulkDeleteState.history.length,1,'unrelated manual history must survive batched topic deletion');
+  assert.ok(bulkDeleteState.topics.every(topic=>topic.id.startsWith('manual-')),
+    'only unrelated manual topics should remain after the batch delete');
+  console.log('Large topic deletion tombstones passed: '+markedCount+' catalogue records preserved as deleted intent.');
+  const largeState={
+    schema:3,
+    streams:[{id:largePack.streamId,name:largePack.streamName},{id:'manual-stream',name:'Manual stream'}],
+    subjects:[{id:definition.workspaceId,name:definition.name,streamId:largePack.streamId},
+      {id:'manual-subject',name:'Manual subject',streamId:'manual-stream'}],
+    topics:catalogTopics.concat(manualTopics),
+    history:names.map((name,index)=>({id:'catalog-history-'+index,topicId:catalogTopics[index].id,
+      subjectId:definition.workspaceId,topicName:name,reviewedAt:'2026-10-01'}))
+      .concat([{id:'manual-history',topicId:'manual-0',subjectId:'manual-subject',topicName:'Manual topic 0',reviewedAt:'2026-10-02'}]),
+    exams:[],
+    settings:{
+      theme:'dark',
+      installedCurricula:[integrity.keys.pack(largePack.id)],
+      curriculumTombstones:[integrity.keys.deletedSubject(largePack.id,definition.id)]
+    }
+  };
+  const started=Date.now();
+  const outcome=integrity.repair(largeState,[largePack],{today,makeId});
+  const duration=Date.now()-started;
+  assert.equal(outcome.changed,true,'a mass subject deletion must report a workspace change');
+  assert.equal(largeState.topics.length,manualCount,
+    'a 12,032-topic subject deletion must remove only its own topics from a 77,144-topic workspace');
+  assert.equal(largeState.topics[0].id,'manual-0','unrelated manual topics must remain in their original order');
+  assert.equal(largeState.subjects.some(subject=>subject.id===definition.workspaceId),false,
+    'the deleted subject must not be restored by curriculum repair');
+  assert.equal(largeState.history.length,1,'only history associated with the deleted subject must be removed');
+  assert.equal(largeState.history[0].id,'manual-history','unrelated manual history must remain intact');
+  assert.ok(largeState.streams.some(stream=>stream.id==='manual-stream'),'unrelated streams must remain intact');
+  console.log('Large curriculum tombstone regression passed: '+count+' deleted topics from '+(count+manualCount)+' topics in '+duration+'ms.');
+}
+const curriculumSource=readFileSync(new URL('../curriculum-integrity.js',import.meta.url),'utf8');
+const repairSource=curriculumSource.slice(curriculumSource.indexOf('function repair(state, packs, options)'),
+  curriculumSource.indexOf('function markInstalled(state, pack, scope, subjectId, topicName)'));
+assert.ok(!repairSource.includes('JSON.stringify('),
+  'curriculum repair must not serialize the full workspace to detect whether records changed');
 
 console.log('Curriculum integrity regression tests passed.');

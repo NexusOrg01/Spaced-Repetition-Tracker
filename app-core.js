@@ -63,11 +63,156 @@
     'Economics':'ආර්ථික විද්‍යාව','ECON':'ආර්ථික විද්‍යාව'
   };
   const RATING_LABELS = {1:'Again',2:'Hard',3:'Good',4:'Very good',5:'Easy'};
-  let state, undoState=null, undoTimer=null, toastTimer=null, editTopicId=null, reviewTopicId=null, selectedReviewRating=null, editStreamId=null, editSubjectId=null, editExamId=null, installPrompt=window.NexusInstallPrompt||null, historyVisibleLimit=100, historyInsightsDirty=true, historySortedCache=null, historySortedCacheSource=null, historySortedCacheLength=-1, historySortedCacheFirst=null, historyMetricsCache=null;
+  let state, undoState=null, undoTimer=null, toastTimer=null, undoSilent=false, editTopicId=null, reviewTopicId=null, selectedReviewRating=null, editStreamId=null, editSubjectId=null, editExamId=null, installPrompt=window.NexusInstallPrompt||null, topicVisibleLimit=100, historyVisibleLimit=100, historyInsightsDirty=true, historyMetricsCache=null,historyMetricsRevision=0,historyMetricsBuildSequence=0,historyMetricsObservedSource=null,historyMetricsObservedLength=-1;
+  const UNDO_TIMEOUT_MS=15000;
+  let activeDeleteDiagnostic=null;
+  const DELETE_DIAGNOSTIC_STORAGE_KEY='nexus:last-delete-diagnostic';
+  function markDeleteDiagnosticPhase(name){
+    if(!activeDeleteDiagnostic)return;
+    const phase=String(name||'unknown').slice(0,100);
+    activeDeleteDiagnostic.phase=phase;
+    activeDeleteDiagnostic.phases.push({name:phase,elapsedMs:Math.max(0,Date.now()-activeDeleteDiagnostic.startedMs)});
+    if(activeDeleteDiagnostic.phases.length>32)activeDeleteDiagnostic.phases.shift();
+  }
+  function persistDeleteDiagnostic(record){
+    window.NexusLastDeleteDiagnostic=record;
+    try{const storage=window.sessionStorage;if(storage)storage.setItem(DELETE_DIAGNOSTIC_STORAGE_KEY,JSON.stringify(record));}catch(_){}
+  }
+  function beginDeleteDiagnostic(action){
+    activeDeleteDiagnostic={
+      schemaVersion:1,action:String(action||'unknown'),status:'running',
+      startedAt:new Date().toISOString(),startedMs:Date.now(),phase:'handler:begin',phases:[],caughtErrors:[],
+      counts:{streams:Array.isArray(state?.streams)?state.streams.length:0,
+        subjects:Array.isArray(state?.subjects)?state.subjects.length:0,
+        topics:Array.isArray(state?.topics)?state.topics.length:0,
+        history:Array.isArray(state?.history)?state.history.length:0}
+    };
+    window.NexusLastDeleteDiagnostic=null;
+    try{window.sessionStorage?.removeItem(DELETE_DIAGNOSTIC_STORAGE_KEY);}catch(_){}
+    markDeleteDiagnosticPhase('handler:begin');
+    return activeDeleteDiagnostic;
+  }
+  function noteDeleteDiagnosticError(phase,error){
+    if(!activeDeleteDiagnostic)return;
+    activeDeleteDiagnostic.caughtErrors.push({
+      phase:String(phase||activeDeleteDiagnostic.phase||'unknown').slice(0,100),
+      name:String(error&&error.name||'Error').slice(0,100),
+      message:String(error&&error.message||error||'Unknown error').slice(0,300),
+      stack:String(error&&error.stack||'').slice(0,3000)
+    });
+    if(activeDeleteDiagnostic.caughtErrors.length>4)activeDeleteDiagnostic.caughtErrors.shift();
+  }
+  function completeDeleteDiagnostic(){
+    if(!activeDeleteDiagnostic)return null;
+    const record=activeDeleteDiagnostic;
+    record.status=record.caughtErrors.length?'completed_with_caught_error':'completed';
+    record.endedAt=new Date().toISOString();
+    record.elapsedMs=Math.max(0,Date.now()-record.startedMs);
+    activeDeleteDiagnostic=null;
+    if(record.caughtErrors.length)persistDeleteDiagnostic(record);
+    else window.NexusLastDeleteDiagnostic=record;
+    return record;
+  }
+  function failDeleteDiagnostic(error){
+    const record=activeDeleteDiagnostic||{schemaVersion:1,action:'unknown',phases:[],caughtErrors:[],phase:'handler:unknown',startedMs:Date.now()};
+    record.status='failed';
+    record.failedAt=record.phase||'handler:unknown';
+    record.endedAt=new Date().toISOString();
+    record.elapsedMs=Math.max(0,Date.now()-(record.startedMs||Date.now()));
+    record.error={name:String(error&&error.name||'Error').slice(0,100),
+      message:String(error&&error.message||error||'Unknown error').slice(0,300),
+      stack:String(error&&error.stack||'').slice(0,5000)};
+    activeDeleteDiagnostic=null;
+    persistDeleteDiagnostic(record);
+    return record;
+  }
+  window.NexusDeleteDiagnosticStart=beginDeleteDiagnostic;
+  window.NexusDeleteDiagnosticPhase=markDeleteDiagnosticPhase;
+  window.NexusDeleteDiagnosticNoteError=noteDeleteDiagnosticError;
+  window.NexusDeleteDiagnosticComplete=completeDeleteDiagnostic;
+  window.NexusDeleteDiagnosticFail=failDeleteDiagnostic;
+  window.NexusGetLastDeleteDiagnostic=()=>{
+    if(window.NexusLastDeleteDiagnostic)return window.NexusLastDeleteDiagnostic;
+    try{const raw=window.sessionStorage?.getItem(DELETE_DIAGNOSTIC_STORAGE_KEY);return raw?JSON.parse(raw):null;}catch(_){return null;}
+  };
   const $ = id => document.getElementById(id);
   const clone = obj => JSON.parse(JSON.stringify(obj));
   const makeId = prefix => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  function createTopKCollector(limit,compare){
+    const capacity=Math.max(0,Math.floor(Number(limit)||0)),heap=[];
+    let count=0;
+    function siftDown(index){
+      while(true){
+        const left=index*2+1,right=left+1;
+        let worst=index;
+        if(left<heap.length&&compare(heap[left],heap[worst])>0)worst=left;
+        if(right<heap.length&&compare(heap[right],heap[worst])>0)worst=right;
+        if(worst===index)return;
+        [heap[index],heap[worst]]=[heap[worst],heap[index]];
+        index=worst;
+      }
+    }
+    function siftUp(index){
+      while(index>0){
+        const parent=(index-1)>>1;
+        if(compare(heap[parent],heap[index])>=0)return;
+        [heap[index],heap[parent]]=[heap[parent],heap[index]];
+        index=parent;
+      }
+    }
+    return {
+      add(item){
+        if(item===null||item===undefined)return;
+        count++;
+        if(!capacity)return;
+        if(heap.length<capacity){heap.push(item);siftUp(heap.length-1);}
+        else if(compare(item,heap[0])<0){heap[0]=item;siftDown(0);}
+      },
+      finish(){heap.sort(compare);return {items:heap,count};}
+    };
+  }
+  function selectTopK(items,limit,compare,project=value=>value){
+    const collector=createTopKCollector(limit,compare);
+    for(const source of items)collector.add(project(source));
+    return collector.finish();
+  }
+  // Large list filtering remains O(n), but it must not monopolise the UI thread.
+  // Yield between bounded batches and abandon obsolete searches/renders immediately.
+  const LARGE_LIST_SCAN_BATCH=400;
+  let topicRenderSequence=0,historyRenderSequence=0;
+  async function selectTopKCooperative(items,limit,compare,project=value=>value,isCurrent=()=>true){
+    const collector=createTopKCollector(limit,compare),length=items.length;
+    for(let start=0;start<length;start+=LARGE_LIST_SCAN_BATCH){
+      const end=Math.min(length,start+LARGE_LIST_SCAN_BATCH);
+      for(let index=start;index<end;index++)collector.add(project(items[index]));
+      if(end<length){
+        if(!isCurrent())return null;
+        await new Promise(resolve=>setTimeout(resolve,0));
+        if(!isCurrent())return null;
+      }
+    }
+    return isCurrent()?collector.finish():null;
+  }
+  async function buildTopicCountsCooperative(topics,isCurrent=()=>true){
+    const counts=new Map(),length=topics.length;
+    for(let start=0;start<length;start+=LARGE_LIST_SCAN_BATCH){
+      const end=Math.min(length,start+LARGE_LIST_SCAN_BATCH);
+      for(let index=start;index<end;index++){
+        const topic=topics[index];
+        if(topic&&!topic.archived)counts.set(topic.subjectId,(counts.get(topic.subjectId)||0)+1);
+      }
+      if(end<length){
+        if(!isCurrent())return null;
+        await new Promise(resolve=>setTimeout(resolve,0));
+        if(!isCurrent())return null;
+      }
+    }
+    return isCurrent()?counts:null;
+  }
+  window.NexusCreateTopKCollector=createTopKCollector;
+  window.NexusSelectTopK=selectTopK;
+  window.NexusSelectTopKCooperative=selectTopKCooperative;
   function today(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
   function validDate(s){if(!/^\d{4}-\d{2}-\d{2}$/.test(String(s||'')))return false;const [y,m,d]=s.split('-').map(Number);const x=new Date(y,m-1,d);return x.getFullYear()===y&&x.getMonth()===m-1&&x.getDate()===d;}
   function plusDays(date,days){if(!validDate(date))return '';const d=new Date(date+'T12:00:00');d.setDate(d.getDate()+Number(days));return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
@@ -109,12 +254,15 @@
       const s=findSubject(h.subject)||ensureSubject(h.subject);const targetSub=s.id;const top=fresh.topics.find(t=>t.subjectId===targetSub&&t.name===(h.topic||h.topicName));const rating=Math.min(5,Math.max(1,Number(h.rating??h.score)||3));const reviewed=validDate(h.reviewedAt||h.reviewedDate)?(h.reviewedAt||h.reviewedDate):today();const due=validDate(h.dueDate||h.nextDate)?(h.dueDate||h.nextDate):plusDays(reviewed,({1:1,2:2,3:4,4:7,5:12})[rating]);
       return {id:String(h.id||makeId('history')+i),topicId:top?.id||'',streamId:s?.streamId||'',subjectId:s?.id||'',streamName:s?fresh.streams.find(x=>x.id===s.streamId)?.name:'',subjectName:s?.name||String(h.subject||'Imported'),topicName:String(h.topic||h.topicName||'Untitled topic'),reviewedAt:reviewed,rating,intervalDays:Math.max(1,Math.min(120,Number(h.intervalDays)||dayDiff(reviewed,due)||1)),dueDate:due,note:String(h.note||'')};
     });
-    const settings=raw.settings||{}; fresh.settings.theme=['system','light','dark'].includes(settings.theme)?settings.theme:'system'; fresh.settings.installedCurricula=Array.isArray(settings.installedCurricula)?Array.from(new Set(settings.installedCurricula.filter(x=>typeof x==='string'&&x.length>0))).slice(-5000):[]; fresh.settings.curriculumTombstones=Array.isArray(settings.curriculumTombstones)?Array.from(new Set(settings.curriculumTombstones.filter(x=>typeof x==='string'&&x.length>0))).slice(-5000):[];
+    const settings=raw.settings||{}; fresh.settings.theme=['system','light','dark'].includes(settings.theme)?settings.theme:'system'; fresh.settings.installedCurricula=Array.isArray(settings.installedCurricula)?Array.from(new Set(settings.installedCurricula.filter(x=>typeof x==='string'&&x.length>0))).slice(-MAX_CURRICULUM_MARKERS):[]; fresh.settings.curriculumTombstones=Array.isArray(settings.curriculumTombstones)?Array.from(new Set(settings.curriculumTombstones.filter(x=>typeof x==='string'&&x.length>0))).slice(-MAX_CURRICULUM_MARKERS):[];
     if(validDate(settings.examDate)){fresh.exams.push({id:'exam-legacy-migrated',name:'GCE Advanced Level',date:settings.examDate,type:'Academic exam',notes:''});}
     if(Array.isArray(settings.exams))fresh.exams=settings.exams.map(ex=>sanitizeExam(ex));
     return fresh;
   }
   function sanitizeExam(ex){return {id:String(ex.id||makeId('exam')),name:String(ex.name||'Exam').slice(0,150),date:validDate(ex.date)?ex.date:'',type:String(ex.type||'Other').slice(0,60),notes:String(ex.notes||'').slice(0,500)};}
+  // Keep this aligned with curriculum-integrity.js: large batch deletions can
+  // legitimately require more than 5,000 durable installed/deleted intent markers.
+  const MAX_CURRICULUM_MARKERS=100000;
   function normalizeState(raw){
     if(!raw||typeof raw!=='object')throw new Error('Invalid backup format.');
     if(!Array.isArray(raw.streams)||!Array.isArray(raw.subjects)||!Array.isArray(raw.topics))return migrateOld(raw);
@@ -131,51 +279,134 @@
     const cleanHistory=Array.isArray(raw.history)?raw.history.slice(0,200000).map((h,i)=>{const rating=Number(h.rating??h.score);const reviewed=validDate(h.reviewedAt||h.reviewedDate)?(h.reviewedAt||h.reviewedDate):today();return {id:String(h.id||`history-${i}-${Date.now()}`),topicId:String(h.topicId||''),streamId:String(h.streamId||''),subjectId:String(h.subjectId||''),streamName:String(h.streamName||''),subjectName:String(h.subjectName||h.subject||'Unknown subject').slice(0,100),topicName:String(h.topicName||h.topic||'Untitled topic').slice(0,240),reviewedAt:reviewed,rating:rating>=1&&rating<=5?rating:3,intervalDays:Math.min(120,Math.max(1,Number(h.intervalDays)||1)),dueDate:validDate(h.dueDate||h.nextDate)?(h.dueDate||h.nextDate):'',note:String(h.note||'').slice(0,1000)};}):[];
     const exams=Array.isArray(raw.exams)?raw.exams.filter(e=>e&&e.name).map(sanitizeExam):[];
     const theme=['system','light','dark'].includes(raw.settings?.theme)?raw.settings.theme:'system';
-    const installedCurricula=Array.isArray(raw.settings?.installedCurricula)?Array.from(new Set(raw.settings.installedCurricula.filter(x=>typeof x==='string'&&x.length>0))).slice(-5000):[];
-    const curriculumTombstones=Array.isArray(raw.settings?.curriculumTombstones)?Array.from(new Set(raw.settings.curriculumTombstones.filter(x=>typeof x==='string'&&x.length>0))).slice(-5000):[];
+    const installedCurricula=Array.isArray(raw.settings?.installedCurricula)?Array.from(new Set(raw.settings.installedCurricula.filter(x=>typeof x==='string'&&x.length>0))).slice(-MAX_CURRICULUM_MARKERS):[];
+    const curriculumTombstones=Array.isArray(raw.settings?.curriculumTombstones)?Array.from(new Set(raw.settings.curriculumTombstones.filter(x=>typeof x==='string'&&x.length>0))).slice(-MAX_CURRICULUM_MARKERS):[];
     return {schema:3,streams,subjects,topics,history:cleanHistory,exams,settings:{theme,intervalCap:Math.min(120,Math.max(1,Number(raw.settings?.intervalCap)||120)),installedCurricula,curriculumTombstones}};
   }
   // Curriculum rows are owned by explicit install intent, not by whether a topic has
   // review progress. The previous cleanup inferred ownership from seed IDs and deleted
   // untouched Commerce-pack rows on every reload.
-  function repairCurriculumState(data){
+  function repairCurriculumStateResult(data){
     const api=window.NexusCurriculumIntegrity;
-    if(!api||typeof api.repair!=='function')return data;
-    return api.repair(data,CURRICULUM_PACKS,{today,makeId}).state;
+    if(!api||typeof api.repair!=='function')return {state:data,changed:false,restoredStreams:0,restoredSubjects:0,restoredTopics:0};
+    return api.repair(data,CURRICULUM_PACKS,{today,makeId});
   }
+  function repairCurriculumState(data){return repairCurriculumStateResult(data).state;}
+  window.NexusRepairNormalizedCurriculumState=repairCurriculumState;
+  window.NexusRepairNormalizedCurriculumStateWithResult=repairCurriculumStateResult;
   window.NexusRepairCurriculumState=function(data){return repairCurriculumState(normalizeState(data));};
+  function workspaceEntityRevisionEntry(ownerId){
+    let currentOwner='';
+    if(ownerId===undefined){try{currentOwner=localStorage.getItem('nexus.cloud.last-user-id')||'';}catch(_){}}
+    const owner=String(ownerId===undefined?currentOwner:(ownerId||'')).trim();
+    if(!owner)return null;
+    const storage=window.NexusStorage;
+    const key=storage&&typeof storage.getWorkspaceEntityRevisionKey==='function'
+      ?storage.getWorkspaceEntityRevisionKey(owner):'';
+    return key?{key,value:Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)}:null;
+  }
+  window.NexusWorkspaceEntityRevisionEntry=workspaceEntityRevisionEntry;
   function persistLoadedRepair(data){
     const queue=window.NexusOfflineSyncQueue;
     if(!queue||typeof queue.commitWorkspace!=='function')throw new Error('Safe offline sync queue is unavailable.');
     const rawFeatures=localStorage.getItem('recall.study.features.v1');
     const featureState=rawFeatures===null?{}:JSON.parse(rawFeatures);
     if(!featureState||typeof featureState!=='object'||Array.isArray(featureState))throw new Error('Saved Study Hub data is invalid.');
-    queue.commitWorkspace(localStorage,[{key:STORAGE_KEY,value:JSON.stringify(data)}],{state:data,featureState},{returnOperationPayload:false});
+    const entries=[{key:STORAGE_KEY,value:JSON.stringify(data)}];
+    const revisionEntry=workspaceEntityRevisionEntry();
+    if(revisionEntry)entries.push(revisionEntry);
+    queue.commitWorkspace(localStorage,entries,{state:data,featureState},{returnOperationPayload:false});
   }
   function loadAndRepair(data){
     const normalized=normalizeState(data);
-    const repaired=repairCurriculumState(normalized);
-    if(JSON.stringify(repaired)!==JSON.stringify(normalized)){
+    const result=repairCurriculumStateResult(normalized);
+    const repaired=result.state;
+    if(result.changed){
       try{persistLoadedRepair(repaired);}catch(e){console.warn('Curriculum repair is available in memory but could not be persisted safely; original saved data was left intact.',e);}
     }
     return repaired;
   }
   function loadState(){const current=safeRead(STORAGE_KEY);if(current){try{return loadAndRepair(current);}catch(e){console.warn('Saved data was invalid; existing saved bytes were not overwritten.',e);}}const old=safeRead('alSrsTrackerV2');if(old){try{return loadAndRepair(migrateOld(old.state||old));}catch(e){console.warn(e);}}const legacyT=safeRead('alTrackerData'),legacyH=safeRead('alHistoryLog');if(Array.isArray(legacyT)||Array.isArray(legacyH))return loadAndRepair(migrateOld({topics:legacyT||[],history:legacyH||[]}));return baseState();}
+  const TRACKER_ENTITY_ARRAYS=['streams','subjects','topics','history','exams'];
+  function trackerEntityPutChange(collection,row,order='append'){
+    const position=order==='prepend'?'prepend':null;
+    return {collection,id:String(row&&row.id||''),operation:'put',position,value:row};
+  }
+  function trackerEntityDeleteChange(collection,id){
+    return {collection,id:String(id),operation:'delete'};
+  }
+  window.NexusTrackerEntityPutChange=trackerEntityPutChange;
+  window.NexusTrackerEntityDeleteChange=trackerEntityDeleteChange;
+  function trackerEntityRoot(){
+    const value={...state};
+    for(const collection of TRACKER_ENTITY_ARRAYS)delete value[collection];
+    return value;
+  }
+  function featureEntityRoot(value){
+    const rootValue={...(value||{})};
+    for(const collection of ['journal','papers','goals','studyLogs'])delete rootValue[collection];
+    return rootValue;
+  }
   let storageSaveRevision=0;
-  function save(){
+  function save(options={}){
     try{
-      state=repairCurriculumState(state);
-      const featureState=window.NexusGetFeatureState?window.NexusGetFeatureState():(()=>{
-        try{const x=JSON.parse(localStorage.getItem('recall.study.features.v1')||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{}}catch(_){return {}}
-      })();
+      if(state.history!==historyMetricsObservedSource||state.history.length!==historyMetricsObservedLength){
+        historyMetricsRevision++;
+        historyMetricsBuildSequence++;
+        historyMetricsObservedSource=state.history;
+        historyMetricsObservedLength=state.history.length;
+      }
+      window.NexusInvalidateHomeConsistencyCache?.();
+      window.NexusInvalidatePlannerCache?.();
+      markDeleteDiagnosticPhase('save:feature-state-snapshot');
+      // Curriculum repair runs at hydration, import/restore, cloud-merge, and catalogue
+      // boundaries. Repeating a full catalogue scan on every ordinary review/save would
+      // make a large workspace pay for repair work even when no catalogue state changed.
+      // The queue commits synchronously and serializes its payload before returning,
+      // so this save can safely pass the live feature-state reference instead of
+      // allocating a second deep copy of the entire Study Hub workspace.
+      const featureState=window.NexusGetFeatureStateForCommit
+        ?window.NexusGetFeatureStateForCommit()
+        :window.NexusGetFeatureState?window.NexusGetFeatureState():(()=>{
+          try{const x=JSON.parse(localStorage.getItem('recall.study.features.v1')||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{}}catch(_){return {}}
+        })();
       if(!window.NexusOfflineSyncQueue)throw new Error('Safe offline sync queue is unavailable.');
-      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,[{key:STORAGE_KEY,value:JSON.stringify(state)}],{state,featureState},{returnOperationPayload:false});
+      markDeleteDiagnosticPhase('save:serialize-tracker');
+      const trackerSnapshot=JSON.stringify(state);
+      const featureSnapshot=JSON.stringify(featureState);
+      const requestedEntityChanges=Array.isArray(options)?options:
+        (Array.isArray(options.entityChanges)?options.entityChanges:null);
+      const entityReplace=requestedEntityChanges===null||options.replaceEntities===true;
+      // Freeze the small change set and metadata roots synchronously. The durable
+      // write and entity transaction run after the current IndexedDB flush, by which
+      // time the live application objects may already contain a newer edit.
+      const frozenEntityChanges=requestedEntityChanges===null?null:JSON.parse(JSON.stringify(requestedEntityChanges));
+      const trackerRoot=JSON.parse(JSON.stringify(trackerEntityRoot()));
+      const featureRoot=JSON.parse(JSON.stringify(featureEntityRoot(featureState)));
+      const workspaceEntries=[{key:STORAGE_KEY,value:trackerSnapshot}];
+      if(window.NexusFeatureStorageKey){
+        markDeleteDiagnosticPhase('save:serialize-feature-state-storage');
+        workspaceEntries.push({key:window.NexusFeatureStorageKey,value:featureSnapshot});
+      }
+      const workspaceOwner=localStorage.getItem('nexus.cloud.last-user-id')||'';
+      if(workspaceOwner&&(entityReplace||frozenEntityChanges?.length)){
+        const entityRevisionKey=window.NexusStorage?.getWorkspaceEntityRevisionKey?.(workspaceOwner);
+        if(entityRevisionKey)workspaceEntries.push({
+          key:entityRevisionKey,value:Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)
+        });
+      }
+      markDeleteDiagnosticPhase('save:offline-queue-commit');
+      // Persist tracker, Study Hub state and the pending cloud snapshot in one atomic
+      // queue commit. The cloud hook below only records that this commit has happened;
+      // it must not serialize and enqueue the same workspace a second time.
+      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,workspaceEntries,{state,featureState},{returnOperationPayload:false});
       const storage=window.NexusStorage;
       if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function'){
         const saveRevision=++storageSaveRevision;
         $('saveStatus').textContent='Saving to this device…';
         $('saveStatus').style.color='';
-        storage.flush().then(()=>{
+        const durableFlush=storage.flush();
+        durableFlush.then(()=>{
           if(saveRevision!==storageSaveRevision)return;
           $('saveStatus').textContent='Saved on this device';
           $('saveStatus').style.color='';
@@ -186,23 +417,209 @@
           notify('Could not finish saving to durable device storage. Keep Nexus open and export a backup before continuing.');
           console.error('Nexus durable save failed',error);
         });
+        const owner=localStorage.getItem('nexus.cloud.last-user-id')||'';
+        if(owner&&typeof storage.syncWorkspaceEntities==='function'){
+          storage.syncWorkspaceEntities(owner,frozenEntityChanges,{
+            trackerRoot,featureRoot,trackerSnapshotJson:trackerSnapshot,
+            featureSnapshotJson:featureSnapshot,replace:entityReplace,durablePromise:durableFlush
+          }).catch(error=>{
+            // The current snapshot and offline queue remain authoritative. A failed
+            // entity projection is marked stale and rebuilt from that safe snapshot.
+            console.warn('Nexus entity projection update failed; snapshot storage remains active.',error);
+          });
+        }
       }else{
         $('saveStatus').textContent='Saved on this device';
         $('saveStatus').style.color='';
       }
-      if(window.NexusCloudSync&&window.NexusCloudSync.recordLocalSave)window.NexusCloudSync.recordLocalSave({state,featureState});
+      markDeleteDiagnosticPhase('save:cloud-sync-record');
+      if(window.NexusCloudSync&&window.NexusCloudSync.noteCommittedLocalSave)window.NexusCloudSync.noteCommittedLocalSave({state,featureState});
+      else if(window.NexusCloudSync&&window.NexusCloudSync.recordLocalSave)window.NexusCloudSync.recordLocalSave({state,featureState});
+      markDeleteDiagnosticPhase('save:cloud-sync-schedule');
       if(window.NexusCloudSync)window.NexusCloudSync.schedule();
       return true;
     }catch(e){
+      noteDeleteDiagnosticError('core:save-caught',e);
       $('saveStatus').textContent='Save failed — export backup';
       $('saveStatus').style.color='var(--red)';
       notify('Could not save data. Export a backup and check browser storage.');
       return false;
     }
   }
-  function notify(text,undoable=false){$('toastText').textContent=text;$('undoBtn').style.display=undoable?'':'none';$('toast').classList.toggle('undoable',undoable);$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),6500);}
-  function startUndo(text){if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();undoState=clone(state);clearTimeout(undoTimer);notify(text,true);undoTimer=setTimeout(()=>{undoState=null;$('undoBtn').style.display='none';},6500);}
-  function undo(){if(!undoState)return;state=undoState;undoState=null;clearTimeout(undoTimer);if(window.NexusUndoCascadeDelete)window.NexusUndoCascadeDelete();save();renderAll();$('toast').classList.remove('show');}
+  // Rebuild the staged entity projection after snapshot-replacement flows such as
+  // CSV import, JSON restore, undo, or account-bound workspace replacement. The
+  // durable snapshot remains authoritative; projection failure is non-fatal and
+  // leaves a visible diagnostic for later recovery.
+  window.NexusRebuildEntityProjection=()=>{
+    const storage=window.NexusStorage,owner=localStorage.getItem('nexus.cloud.last-user-id')||'';
+    if(!owner||!storage||typeof storage.isEnabled!=='function'||!storage.isEnabled()||
+       typeof storage.syncWorkspaceEntities!=='function')return Promise.resolve({skipped:true});
+    try{
+      const featureState=window.NexusGetFeatureStateForCommit
+        ?window.NexusGetFeatureStateForCommit()
+        :window.NexusGetFeatureState?window.NexusGetFeatureState():{};
+      const trackerSnapshot=JSON.stringify(state),featureSnapshot=JSON.stringify(featureState);
+      const trackerRoot=JSON.parse(JSON.stringify(trackerEntityRoot()));
+      const featureRoot=JSON.parse(JSON.stringify(featureEntityRoot(featureState)));
+      const durablePromise=typeof storage.flush==='function'?storage.flush():Promise.resolve();
+      return storage.syncWorkspaceEntities(owner,null,{
+        trackerRoot,featureRoot,trackerSnapshotJson:trackerSnapshot,
+        featureSnapshotJson:featureSnapshot,replace:true,durablePromise
+      }).catch(error=>{
+        console.warn('Nexus entity projection rebuild failed; the durable snapshot remains active.',error);
+        return {ok:false,error:String(error&&error.message||error)};
+      });
+    }catch(error){
+      console.warn('Nexus entity projection rebuild could not be scheduled; the durable snapshot remains active.',error);
+      return Promise.resolve({ok:false,error:String(error&&error.message||error)});
+    }
+  };
+  function notify(text,undoable=false,options={}){$('toastText').textContent=text;$('undoBtn').style.display=undoable?'':'none';$('toast').classList.toggle('undoable',undoable);$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),2600);}
+  function clearUndoPresentation(){
+    $('undoBtn').style.display='none';
+    $('toastText').hidden=false;
+    $('toast').classList.remove('show','undoable','undo-only');
+  }
+  function scheduleUndoExpiry(){
+    clearTimeout(undoTimer);
+    undoTimer=setTimeout(()=>{
+      undoTimer=null;undoState=null;undoSilent=false;
+      clearUndoPresentation();
+    },UNDO_TIMEOUT_MS);
+  }
+  function armUndo(text,options={}){
+    undoSilent=Boolean(options.silent);
+    notify(text,true);
+    scheduleUndoExpiry();
+  }
+  function startUndoBulkDelete(text,options={}){
+    markDeleteDiagnosticPhase('undo:clear-cascade-snapshot');
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    // Bulk deletes replace top-level arrays and only mutate the small settings
+    // tombstone object. Keep the original large topic/history arrays by reference.
+    markDeleteDiagnosticPhase('undo:clone-settings');
+    undoState={kind:'state-reference',value:state,streams:state.streams,subjects:state.subjects,topics:state.topics,history:state.history,settings:clone(state.settings)};
+    armUndo(text,{silent:options.silent!==false});
+  }
+  function startUndoTopicEdit(text,topic){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    undoState={kind:'topic-edit',value:state,topic,before:{name:topic.name,subjectId:topic.subjectId,notes:topic.notes,dueDate:topic.dueDate}};
+    armUndo(text);
+  }
+  function startUndoTopicAdd(text,topicId){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    undoState={kind:'topic-add',value:state,topicId};
+    armUndo(text);
+  }
+  function startUndoHistoryChange(text,options={}){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    undoState={kind:'history-reference',value:state,history:state.history};
+    armUndo(text,{silent:options.silent===true});
+  }
+  function startUndoWorkspaceReplace(text){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    undoState={kind:'workspace-reference',value:state};
+    armUndo(text);
+  }
+  function startUndoEntityEdit(text,collection,item,fields){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    const before={};for(const field of fields)before[field]=item[field];
+    undoState={kind:'entity-edit',value:state,item,before};
+    armUndo(text);
+  }
+  function startUndoEntityAdd(text,collection,itemId){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    undoState={kind:'entity-add',value:state,collection,itemId};
+    armUndo(text);
+  }
+  function startUndoArrayReplacement(text,collection,options={}){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    undoState={kind:'array-reference',value:state,collection,previous:state[collection]};
+    armUndo(text,{silent:options.silent===true});
+  }
+  function startUndoArrayItemReplacement(text,collection,index){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    undoState={kind:'array-item-reference',value:state,collection,index,previous:state[collection][index]};
+    armUndo(text);
+  }
+  function startUndoTopicBatch(text,topics,fields){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    const changes=[];
+    const uniqueTopics=new Set();
+    for(const topic of topics||[]){
+      if(!topic||uniqueTopics.has(topic))continue;
+      uniqueTopics.add(topic);
+      const before={};for(const field of fields||[])before[field]=topic[field];
+      changes.push({topic,before});
+    }
+    undoState={kind:'topic-batch-edit',value:state,changes};
+    armUndo(text);
+  }
+  window.NexusStartUndoBulkDelete=startUndoBulkDelete;
+  window.NexusStartUndoTopicBatch=startUndoTopicBatch;
+  window.NexusUndoLastAction=()=>undo();
+  window.NexusHasPendingUndo=()=>Boolean(undoState);
+  window.NexusStartUndoFeatureArrayDelete=(collection,previous)=>{
+    if(!['studyLogs','papers','journal','goals'].includes(collection)||!Array.isArray(previous))return false;
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    undoState={kind:'feature-array-reference',value:state,collection,previous};
+    armUndo('',{silent:true});
+    return true;
+  };
+  window.NexusRefreshUndoTimeout=()=>{
+    if(!undoState)return false;
+    scheduleUndoExpiry();
+    return true;
+  };
+  function startUndoReview(text,topic,reviewId){
+    if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
+    // A review mutates one topic and prepends one history row. Capture only the
+    // previous topic fields and history length instead of cloning 20+ MiB of data.
+    undoState={kind:'review',value:state,topic,reviewId,historyLength:state.history.length,
+      topicBefore:{lapses:topic.lapses,streak:topic.streak,lastReviewed:topic.lastReviewed,lastRating:topic.lastRating,
+        intervalDays:topic.intervalDays,dueDate:topic.dueDate,reviewCount:topic.reviewCount}};
+    armUndo(text);
+  }
+  function undo(){
+    if(!undoState)return;
+    const pending=undoState;undoState=null;undoSilent=false;clearTimeout(undoTimer);undoTimer=null;
+    if(pending.kind==='review'){
+      state=pending.value;Object.assign(pending.topic,pending.topicBefore);
+      if(state.history.length===pending.historyLength+1&&state.history[0]?.id===pending.reviewId)state.history.shift();
+      else state.history=state.history.filter(entry=>String(entry&&entry.id||'')!==String(pending.reviewId));
+    }else if(pending.kind==='state-reference'){
+      state=pending.value;state.streams=pending.streams;state.subjects=pending.subjects;state.topics=pending.topics;state.history=pending.history;state.settings=pending.settings;
+    }else if(pending.kind==='topic-edit'){
+      state=pending.value;Object.assign(pending.topic,pending.before);
+    }else if(pending.kind==='topic-add'){
+      state=pending.value;state.topics=state.topics.filter(topic=>String(topic.id)!==String(pending.topicId));
+    }else if(pending.kind==='history-reference'){
+      state=pending.value;state.history=pending.history;
+    }else if(pending.kind==='entity-edit'){
+      state=pending.value;Object.assign(pending.item,pending.before);
+    }else if(pending.kind==='entity-add'){
+      state=pending.value;state[pending.collection]=state[pending.collection].filter(item=>String(item.id)!==String(pending.itemId));
+    }else if(pending.kind==='array-reference'){
+      state=pending.value;state[pending.collection]=pending.previous;
+    }else if(pending.kind==='array-item-reference'){
+      state=pending.value;state[pending.collection][pending.index]=pending.previous;
+    }else if(pending.kind==='feature-array-reference'){
+      state=pending.value;
+      if(!window.NexusRestoreFeatureArray||!window.NexusRestoreFeatureArray(pending.collection,pending.previous)){
+        clearUndoPresentation();
+        notify('Undo could not restore this Study Hub record. Export a backup and reload before continuing.');
+        return;
+      }
+    }else if(pending.kind==='topic-batch-edit'){
+      state=pending.value;for(const change of pending.changes)Object.assign(change.topic,change.before);
+    }else state=pending.value;
+    const restoredCascade=window.NexusUndoCascadeDelete?window.NexusUndoCascadeDelete({persist:false,render:false}):false;
+    const persisted=save({replaceEntities:true});
+    renderAll();
+    if(restoredCascade&&window.NexusRenderHub)window.NexusRenderHub();
+    clearUndoPresentation();
+    if(!persisted)notify('Undo was applied on this device, but saving failed. Export a backup before closing.');
+  }
   function subjectFor(topic){return state.subjects.find(s=>s.id===topic.subjectId)||null;}
   function streamFor(subject){return state.streams.find(s=>s.id===subject?.streamId)||null;}
   function getTopic(id){return state.topics.find(t=>t.id===String(id));}
@@ -221,43 +638,112 @@
     if(name==='explore')renderExplore();
     if(name==='history'){refreshFilterOptions();renderHistory();}
     if(name==='setup')renderSetup();
-    window.scrollTo({top:0,behavior:'smooth'});
+    window.scrollTo({top:0,behavior:'auto'});
   }
   function statCard(label,value,foot){return `<div class="stat"><div class="stat-label">${esc(label)}</div><div class="stat-value">${esc(value)}</div><div class="stat-foot">${esc(foot)}</div></div>`;}
+  function insertSortedLimit(items,item,limit,compare){
+    let low=0,high=items.length;
+    while(low<high){const middle=(low+high)>>1;if(compare(items[middle],item)<=0)low=middle+1;else high=middle;}
+    if(low>=limit)return;
+    items.splice(low,0,item);
+    if(items.length>limit)items.pop();
+  }
   function renderOverview(){
-    const topics=activeTopics(), due=topics.filter(t=>['overdue','due'].includes(status(t))), newTopics=topics.filter(t=>status(t)==='new');
-    const reviewedToday=getHistoryMetrics().byDate.get(today())||0;
-    $('statsGrid').innerHTML=statCard('Due now',due.length,`${due.filter(t=>status(t)==='overdue').length} overdue`)+statCard('Not reviewed',newTopics.length,'Active topics with no review')+statCard('Reviewed topics',topics.filter(t=>t.reviewCount>0).length,`of ${topics.length} active topics`)+statCard('Reviews today',reviewedToday,'Review records dated today');
-    const ex=nearestExam();if(ex){const remaining=dayDiff(today(),ex.date);$('examBanner').innerHTML=`<div><h3>${esc(ex.name)}</h3><p>${esc(ex.type)} · ${fmtDate(ex.date)}${ex.notes?` · ${esc(ex.notes)}`:''}</p></div><div class="countdown"><strong>${remaining>=0?remaining:Math.abs(remaining)}</strong><span>${remaining>0?'days remaining':remaining===0?'today':'days since'}</span></div>`;}else{$('examBanner').innerHTML=`<div><h3>No exam dates added</h3><p>Add an exam or deadline to display a countdown here.</p></div><button class="btn btn-sm" id="bannerAddExam">＋ Add exam</button>`;$('bannerAddExam').addEventListener('click',()=>openExam());}
-    const queue=topics.slice().sort((a,b)=>dueRank(status(a))-dueRank(status(b))||((a.dueDate||'9999').localeCompare(b.dueDate||'9999'))).filter(t=>['overdue','due','new'].includes(status(t))).slice(0,7);
-    $('dueQueue').innerHTML=queue.length?queue.map(t=>{const d=subjectDisplay(t),st=status(t);return `<div class="due-item"><div style="min-width:0"><div class="due-title">${esc(t.name)}</div><div class="due-meta"><span>${esc(d.subject)}</span><span>·</span><span>${esc(d.stream)}</span><span class="pill ${st}">${statusText(st)}</span></div></div><button type="button" class="btn btn-sm btn-primary" data-action="review" data-id="${esc(t.id)}">Review</button></div>`;}).join(''):`<div class="empty"><strong>You're all caught up</strong>No overdue or due topics at the moment. New topics are available under Topics.</div>`;
-    const subjectGroups=state.subjects.map(sub=>{const ts=topics.filter(t=>t.subjectId===sub.id);return {s:sub,ts,done:ts.filter(t=>t.reviewCount>0).length,stream:streamFor(sub)?.name||''};}).filter(x=>x.ts.length||state.subjects.length<8);
-    $('progressList').innerHTML=subjectGroups.length?subjectGroups.map(g=>{const p=g.ts.length?Math.round(g.done/g.ts.length*100):0;return `<div class="progress-row"><div class="progress-label"><strong>${esc(g.s.name)}</strong><span>${g.done}/${g.ts.length} · ${p}%</span></div><div class="progress-track"><div class="progress-fill" style="width:${p}%"></div></div><div class="muted small" style="margin-top:4px">${esc(g.stream)}</div></div>`;}).join(''):`<div class="empty">Add a subject to see progress.</div>`;
-    renderUpcomingQueue();renderOverviewAnalytics();
+    const topics=state.topics,todayKey=today();
+    // Study Hub supplies a shared, revision-aware aggregate so Overview and the
+    // Consistency panel do not each scan the full topic catalogue independently.
+    let sharedOverview=null;
+    try{sharedOverview=window.NexusGetOverviewTopicMetrics?.()||null;}
+    catch(error){console.error('Shared Overview metrics failed; using the safe local calculation.',error);}
+    if(!sharedOverview){
+      $('statsGrid').innerHTML='<div class="panel muted small">Preparing workspace overview…</div>';
+      $('dueQueue').innerHTML='<div class="empty">Calculating review priorities…</div>';
+      window.NexusPrepareHomeConsistencyMetrics?.().catch(error=>{
+        console.error('Nexus Overview metrics preparation failed',error);
+        $('statsGrid').innerHTML='<div class="panel analytics-render-error">Overview metrics could not be prepared. Reopen Overview to retry.</div>';
+      });
+      return;
+    }
+    const progressBySubject=sharedOverview.progressBySubject||new Map();
+    const queue=sharedOverview.queue||[];
+    const activeCount=sharedOverview.activeCount||0,dueCount=sharedOverview.dueCount||0;
+    const overdueCount=sharedOverview.overdue||0,newCount=sharedOverview.newCount||0;
+    const reviewedCount=sharedOverview.reviewedCount||0;
+    const reviewedToday=window.NexusGetCachedHistoryActivityIndex?.()?.byDate.get(todayKey)||0;
+    $('statsGrid').innerHTML=statCard('Due now',dueCount,overdueCount+' overdue')+statCard('Not reviewed',newCount,'Active topics with no review')+statCard('Reviewed topics',reviewedCount,'of '+activeCount+' active topics')+statCard('Reviews today',reviewedToday,'Review records dated today');
+    const ex=nearestExam();if(ex){const remaining=dayDiff(todayKey,ex.date);$('examBanner').innerHTML='<div><h3>'+esc(ex.name)+'</h3><p>'+esc(ex.type)+' · '+fmtDate(ex.date)+(ex.notes?' · '+esc(ex.notes):'')+'</p></div><div class="countdown"><strong>'+(remaining>=0?remaining:Math.abs(remaining))+'</strong><span>'+(remaining>0?'days remaining':remaining===0?'today':'days since')+'</span></div>';}else{$('examBanner').innerHTML='<div><h3>No exam dates added</h3><p>Add an exam or deadline to display a countdown here.</p></div><button class="btn btn-sm" id="bannerAddExam">＋ Add exam</button>';$('bannerAddExam').addEventListener('click',()=>openExam());}
+    $('dueQueue').innerHTML=queue.length?queue.map(({topic,status:st})=>{const d=subjectDisplay(topic);return '<div class="due-item"><div style="min-width:0"><div class="due-title">'+esc(topic.name)+'</div><div class="due-meta"><span>'+esc(d.subject)+'</span><span>·</span><span>'+esc(d.stream)+'</span><span class="pill '+st+'">'+statusText(st)+'</span></div></div><button type="button" class="btn btn-sm btn-primary" data-action="review" data-id="'+esc(topic.id)+'">Review</button></div>';}).join(''):'<div class="empty"><strong>You\'re all caught up</strong>No overdue or due topics at the moment. New topics are available under Topics.</div>';
+    const subjectGroups=state.subjects.map(sub=>{const stats=progressBySubject.get(sub.id)||{total:0,done:0};return {s:sub,total:stats.total,done:stats.done,stream:streamFor(sub)?.name||''};}).filter(x=>x.total||state.subjects.length<8);
+    $('progressList').innerHTML=subjectGroups.length?subjectGroups.map(g=>{const p=g.total?Math.round(g.done/g.total*100):0;return '<div class="progress-row"><div class="progress-label"><strong>'+esc(g.s.name)+'</strong><span>'+g.done+'/'+g.total+' · '+p+'%</span></div><div class="progress-track"><div class="progress-fill" style="width:'+p+'%"></div></div><div class="muted small" style="margin-top:4px">'+esc(g.stream)+'</div></div>';}).join(''):'<div class="empty">Add a subject to see progress.</div>';
+    renderUpcomingQueue(sharedOverview);renderOverviewAnalytics();
+  }
+  function addTopicHistoryMetric(metrics,record){
+    const id=String(record&&record.topicId||'');if(!id)return;
+    let item=metrics.byTopic.get(id);if(!item){item={recent:[],count:0,sum:0,avg:0,allAvg:0};metrics.byTopic.set(id,item);}
+    item.count++;item.sum+=Number(record.rating)||0;
+    const date=record.reviewedAt||'',recent=item.recent;let index=0;
+    while(index<recent.length&&(recent[index].reviewedAt||'')>=date)index++;
+    if(index<5){recent.splice(index,0,record);if(recent.length>5)recent.pop();}
+    item.avg=recent.length?recent.reduce((sum,entry)=>sum+(Number(entry.rating)||0),0)/recent.length:0;
+    item.allAvg=item.count?item.sum/item.count:0;
   }
   function addHistoryMetricRecord(metrics,record){
     if(!record)return;
     const date=record.reviewedAt;
     if(validDate(date)){metrics.byDate.set(date,(metrics.byDate.get(date)||0)+1);metrics.dates.add(date);}
+    addTopicHistoryMetric(metrics,record);
     metrics.ratingSum+=Number(record.rating)||0;
     const ratingIndex=Number(record.rating)-1;
     if(Number.isInteger(ratingIndex)&&ratingIndex>=0&&ratingIndex<5)metrics.ratingCounts[ratingIndex]++;
   }
   function buildHistoryMetrics(entries){
-    const metrics={source:entries,length:entries.length,firstRecord:entries[0],byDate:new Map(),dates:new Set(),ratingSum:0,ratingCounts:[0,0,0,0,0]};
+    const metrics={source:entries,length:entries.length,firstRecord:entries[0],byDate:new Map(),dates:new Set(),byTopic:new Map(),ratingSum:0,ratingCounts:[0,0,0,0,0]};
     for(const record of entries)addHistoryMetricRecord(metrics,record);
     return metrics;
   }
   function getHistoryMetrics(){
     const entries=state.history,cache=historyMetricsCache;
-    if(cache&&cache.source===entries){
+    if(cache&&cache.source===entries&&cache.revision===historyMetricsRevision){
       if(cache.length===entries.length)return cache;
       if(entries.length===cache.length+1&&entries[1]===cache.firstRecord){
-        addHistoryMetricRecord(cache,entries[0]);cache.length=entries.length;cache.firstRecord=entries[0];return cache;
+        addHistoryMetricRecord(cache,entries[0]);cache.length=entries.length;cache.firstRecord=entries[0];cache.revision=historyMetricsRevision;return cache;
       }
     }
-    historyMetricsCache=buildHistoryMetrics(entries);return historyMetricsCache;
+    historyMetricsCache=buildHistoryMetrics(entries);
+    historyMetricsCache.revision=historyMetricsRevision;
+    return historyMetricsCache;
   }
+  async function prepareHistoryActivityIndex(){
+    const entries=state.history,expectedLength=entries.length,revision=historyMetricsRevision;
+    const cache=historyMetricsCache;
+    if(cache&&cache.source===entries&&cache.length===expectedLength&&cache.revision===revision)return cache;
+    const buildId=++historyMetricsBuildSequence;
+    const isCurrent=()=>buildId===historyMetricsBuildSequence&&state.history===entries&&
+      entries.length===expectedLength&&historyMetricsRevision===revision;
+    const metrics={source:entries,length:expectedLength,firstRecord:entries[0],revision,
+      byDate:new Map(),dates:new Set(),byTopic:new Map(),ratingSum:0,ratingCounts:[0,0,0,0,0]};
+    const batchSize=400;
+    for(let start=0;start<expectedLength;start+=batchSize){
+      const end=Math.min(expectedLength,start+batchSize);
+      for(let index=start;index<end;index++)addHistoryMetricRecord(metrics,entries[index]);
+      if(end<expectedLength){
+        if(!isCurrent())return null;
+        await new Promise(resolve=>setTimeout(resolve,0));
+        if(!isCurrent())return null;
+      }
+    }
+    if(!isCurrent())return null;
+    historyMetricsCache=metrics;
+    return metrics;
+  }
+  // One shared read-only index supplies Overview and Study Hub analytics. Consumers
+  // must not mutate its Maps or Sets; saves and immutable history changes refresh it.
+  window.NexusGetHistoryActivityIndex=()=>getHistoryMetrics();
+  window.NexusGetCachedHistoryActivityIndex=()=>{
+    const cache=historyMetricsCache,entries=state.history;
+    return cache&&cache.source===entries&&cache.length===entries.length&&cache.revision===historyMetricsRevision?cache:null;
+  };
+  window.NexusPrepareHistoryActivityIndex=prepareHistoryActivityIndex;
   function recentHistoryCount(days,metrics=getHistoryMetrics()){
     const end=today();let count=0;
     for(let i=0;i<days;i++)count+=metrics.byDate.get(plusDays(end,-i))||0;
@@ -321,11 +807,21 @@
     const series=dailyReviewSeries(7);
     $('overviewAnalytics').innerHTML=`<div class="insight-metrics">${metricMarkup(recent.length,'Reviews this week')}${metricMarkup(average?average.toFixed(1)+'/5':'—','Average recall rating')}${metricMarkup(currentStudyStreak()+'d','Current study streak')}</div><div class="chart-heading"><span>Daily reviews</span><small>7-day activity</small></div>${state.history.length?overviewLineChartMarkup(series):'<div class="chart-empty">Your chart will fill in after your first review.</div>'}`;
   }
-  function renderUpcomingQueue(){
-    const limit=plusDays(today(),7);
-    const items=activeTopics().filter(t=>validDate(t.dueDate)&&t.dueDate>today()&&t.dueDate<=limit).sort((a,b)=>a.dueDate.localeCompare(b.dueDate)||naturalCompare(a.name,b.name)).slice(0,7);
-    $('upcomingCount').textContent=`${items.length} scheduled`;
-    $('upcomingQueue').innerHTML=items.length?items.map(t=>{const d=subjectDisplay(t),days=dayDiff(today(),t.dueDate);return `<div class="due-item upcoming-row"><div style="min-width:0"><div class="due-title">${esc(t.name)}</div><div class="due-meta"><span>${esc(d.subject)}</span><span class="pill upcoming">In ${days} day${days===1?'':'s'}</span></div></div><div class="upcoming-date"><strong>${esc(fmtDate(t.dueDate))}</strong><button type="button" class="btn btn-sm" data-action="review" data-id="${esc(t.id)}">Review</button></div></div>`;}).join(''):`<div class="empty"><strong>No reviews scheduled this week</strong>Upcoming topics will appear here when their next review date falls within seven days.</div>`;
+  function renderUpcomingQueue(sharedMetrics=null){
+    const todayKey=today(),limit=plusDays(todayKey,7),items=[];
+    if(Array.isArray(sharedMetrics?.upcomingQueue)){
+      // Reuse the bounded top-seven list from the shared Overview aggregate.
+      // This avoids a second full scan of tens of thousands of topics.
+      items.push(...sharedMetrics.upcomingQueue);
+    }else{
+      const compare=(a,b)=>a.dueDate.localeCompare(b.dueDate)||naturalCompare(a.name,b.name);
+      for(const topic of state.topics){
+        if(topic.archived||!validDate(topic.dueDate)||topic.dueDate<=todayKey||topic.dueDate>limit)continue;
+        insertSortedLimit(items,topic,7,compare);
+      }
+    }
+    $('upcomingCount').textContent=items.length+' scheduled';
+    $('upcomingQueue').innerHTML=items.length?items.map(t=>{const d=subjectDisplay(t),days=dayDiff(todayKey,t.dueDate);return '<div class="due-item upcoming-row"><div style="min-width:0"><div class="due-title">'+esc(t.name)+'</div><div class="due-meta"><span>'+esc(d.subject)+'</span><span class="pill upcoming">In '+days+' day'+(days===1?'':'s')+'</span></div></div><div class="upcoming-date"><strong>'+esc(fmtDate(t.dueDate))+'</strong><button type="button" class="btn btn-sm" data-action="review" data-id="'+esc(t.id)+'">Review</button></div></div>';}).join(''):'<div class="empty"><strong>No reviews scheduled this week</strong>Upcoming topics will appear here when their next review date falls within seven days.</div>';
   }
   function renderHistoryInsights(){
     const series=dailyReviewSeries(14),recent=recentHistoryCount(7),average=averageRating();
@@ -356,9 +852,9 @@
       esc,makeId,today,save,renderAll,notify,
       getIntegrity:()=>window.NexusCurriculumIntegrity,
       onCatalogLoaded:()=>{
-        const before=JSON.stringify(state);
-        state=repairCurriculumState(state);
-        if(JSON.stringify(state)!==before)save();
+        const result=repairCurriculumStateResult(state);
+        state=result.state;
+        if(result.changed)save({replaceEntities:true});
         renderAll();
       },
       onCatalogError:error=>console.warn('Nexus curriculum catalogue could not be refreshed; using the built-in Commerce fallback.',error)
@@ -379,49 +875,133 @@
     if(controller)return controller.install(packId,subjectId,topicName);
     return false;
   }
-  function renderTopics(){
-    // Render the Library's stream/subject tree together with its topic cards.
-    renderStructureList();
+  async function renderTopics(){
+    const renderId=++topicRenderSequence,source=state.topics;
+    const isCurrent=()=>renderId===topicRenderSequence&&source===state.topics&&
+      document.querySelector('.view.active')?.id==='view-topics';
     const q=$('topicSearch').value.trim().toLocaleLowerCase(),streamId=$('topicStreamFilter').value,subjectId=$('topicSubjectFilter').value,stat=$('topicStatusFilter').value,sort=$('topicSort').value;
-    let items=activeTopics().filter(t=>{const sub=subjectFor(t),st=streamFor(sub),stt=status(t);return (!q||[t.name,t.notes,sub?.name,st?.name].some(x=>String(x||'').toLocaleLowerCase().includes(q)))&&(streamId==='ALL'||st?.id===streamId)&&(subjectId==='ALL'||t.subjectId===subjectId)&&(stat==='ALL'||(stat==='due-now'?['overdue','due'].includes(stt):stt===stat));});
-    items.sort((a,b)=>{if(sort==='name')return naturalCompare(a.name,b.name);if(sort==='stream'){const aa=subjectDisplay(a),bb=subjectDisplay(b);return naturalCompare(aa.stream,bb.stream)||naturalCompare(aa.subject,bb.subject)||naturalCompare(a.name,b.name);}if(sort==='least')return a.reviewCount-b.reviewCount||naturalCompare(a.name,b.name);return dueRank(status(a))-dueRank(status(b))||(a.dueDate||'9999').localeCompare(b.dueDate||'9999')||naturalCompare(a.name,b.name);});
-    $('topicCountLabel').textContent=`Showing ${items.length} of ${activeTopics().length} active topics`;
-    $('topicGrid').innerHTML=items.length?items.map(t=>{const d=subjectDisplay(t),s=status(t);return `<article class="topic-card"><div class="topic-card-top"><div style="min-width:0"><div class="topic-name">${esc(t.name)}</div><div class="topic-sub">${esc(d.stream)} · ${esc(d.subject)}</div></div><span class="pill ${s}">${statusText(s)}</span></div>${t.notes?`<div class="topic-note">${esc(t.notes)}</div>`:''}<div class="topic-details"><span>Last: ${fmtDate(t.lastReviewed)}</span><span>Next: ${fmtDate(t.dueDate)}</span><span>Interval: ${t.intervalDays||'—'}d</span><span>Reviews: ${t.reviewCount}</span></div><div class="topic-actions"><button class="btn btn-sm btn-primary" data-action="review" data-id="${esc(t.id)}">Review</button><button class="btn btn-sm" data-action="edit-topic" data-id="${esc(t.id)}">Edit</button><span class="spacer"></span><button class="btn btn-sm btn-danger" data-action="delete-topic" data-id="${esc(t.id)}">Delete</button></div></article>`;}).join(''):`<div class="panel" style="grid-column:1/-1"><div class="empty"><strong>No matching topics</strong>Change the filters or add a topic.</div></div>`;
+    const subjectById=new Map(state.subjects.map(subject=>[String(subject.id),subject]));
+    const streamById=new Map(state.streams.map(stream=>[String(stream.id),stream]));
+    const compare=(a,b)=>{
+      if(sort==='name')return naturalCompare(a.topic.name,b.topic.name)||a.order-b.order;
+      if(sort==='stream')return naturalCompare(a.stream,b.stream)||naturalCompare(a.subject,b.subject)||naturalCompare(a.topic.name,b.topic.name)||a.order-b.order;
+      if(sort==='least')return a.topic.reviewCount-b.topic.reviewCount||naturalCompare(a.topic.name,b.topic.name)||a.order-b.order;
+      return dueRank(a.status)-dueRank(b.status)||(a.topic.dueDate||'9999').localeCompare(b.topic.dueDate||'9999')||naturalCompare(a.topic.name,b.topic.name)||a.order-b.order;
+    };
+    let activeCount=0,topicOrder=0;
+    const topicCountsBySubject=new Map();
+    if(!$('topicGrid').children.length)$('topicGrid').innerHTML='<div class="empty">Loading topics…</div>';
+    const selection=await selectTopKCooperative(source,topicVisibleLimit,compare,topic=>{
+      const order=topicOrder++;
+      if(topic.archived)return null;
+      activeCount++;
+      topicCountsBySubject.set(topic.subjectId,(topicCountsBySubject.get(topic.subjectId)||0)+1);
+      const subject=subjectById.get(String(topic.subjectId)),stream=subject?streamById.get(String(subject.streamId)):null;
+      const topicStatus=status(topic);
+      if(q&&![topic.name,topic.notes,subject?.name,stream?.name].some(value=>String(value||'').toLocaleLowerCase().includes(q)))return null;
+      if(streamId!=='ALL'&&stream?.id!==streamId)return null;
+      if(subjectId!=='ALL'&&topic.subjectId!==subjectId)return null;
+      if(stat!=='ALL'&&(stat==='due-now'?!['overdue','due'].includes(topicStatus):topicStatus!==stat))return null;
+      return {topic,status:topicStatus,subject:subject?.name||'Unknown subject',stream:stream?.name||'Unknown stream',order};
+    },isCurrent);
+    if(!selection||!isCurrent())return;
+    // The same cooperative scan supplies the structure counts; avoid a second
+    // synchronous pass over all topics merely to build the stream/subject tree.
+    renderStructureList(topicCountsBySubject);
+    const visible=selection.items,remaining=selection.count-visible.length;
+    $('topicCountLabel').textContent=`Showing ${visible.length} of ${selection.count} matching topics (${activeCount} active)`;
+    const cards=visible.map(({topic:t,status:s,subject,stream})=>`<article class="topic-card"><div class="topic-card-top"><div style="min-width:0"><div class="topic-name">${esc(t.name)}</div><div class="topic-sub">${esc(stream)} · ${esc(subject)}</div></div><span class="pill ${s}">${statusText(s)}</span></div>${t.notes?`<div class="topic-note">${esc(t.notes)}</div>`:''}<div class="topic-details"><span>Last: ${fmtDate(t.lastReviewed)}</span><span>Next: ${fmtDate(t.dueDate)}</span><span>Interval: ${t.intervalDays||'—'}d</span><span>Reviews: ${t.reviewCount}</span></div><div class="topic-actions"><button class="btn btn-sm btn-primary" data-action="review" data-id="${esc(t.id)}">Review</button><button class="btn btn-sm" data-action="edit-topic" data-id="${esc(t.id)}">Edit</button><span class="spacer"></span><button type="button" class="btn btn-sm btn-danger" data-action="delete-topic" data-id="${esc(t.id)}">Delete</button></div></article>`).join('');
+    const more=remaining?`<div style="grid-column:1/-1;display:flex;justify-content:center;padding:12px"><button type="button" class="btn btn-sm" data-action="show-more-topics">Show 100 more topics (${remaining} remaining)</button></div>`:'';
+    $('topicGrid').innerHTML=cards||`<div class="panel" style="grid-column:1/-1"><div class="empty"><strong>No matching topics</strong>Change the filters or add a topic.</div></div>`;
+    if(more)$('topicGrid').insertAdjacentHTML('beforeend',more);
   }
-  function compareHistoryRows(a,b){return b.reviewedAt.localeCompare(a.reviewedAt)||String(b.id).localeCompare(String(a.id));}
-  function getSortedHistory(){
-    const entries=state.history;
-    if(historySortedCache&&historySortedCacheSource===entries){
-      if(historySortedCacheLength===entries.length)return historySortedCache;
-      if(entries.length===historySortedCacheLength+1&&entries[1]===historySortedCacheFirst&&entries[0]){
-        const record=entries[0];let low=0,high=historySortedCache.length;
-        while(low<high){const middle=(low+high)>>1;if(compareHistoryRows(record,historySortedCache[middle])<0)high=middle;else low=middle+1;}
-        historySortedCache.splice(low,0,record);historySortedCacheLength=entries.length;historySortedCacheFirst=record;return historySortedCache;
-      }
-    }
-    historySortedCache=entries.slice().sort(compareHistoryRows);historySortedCacheSource=entries;historySortedCacheLength=entries.length;historySortedCacheFirst=entries[0];
-    return historySortedCache;
-  }  function renderHistory(){const q=$('historySearch').value.trim().toLocaleLowerCase(),streamId=$('historyStreamFilter').value,subjectId=$('historySubjectFilter').value;const subjectById=new Map(state.subjects.map(x=>[x.id,x])),subjectByName=new Map(state.subjects.map(x=>[x.name,x])),streamById=new Map(state.streams.map(x=>[x.id,x])),streamByName=new Map(state.streams.map(x=>[x.name,x]));const orderedHistory=getSortedHistory();const filtered=orderedHistory.filter(h=>{const subject=subjectById.get(h.subjectId)||subjectByName.get(h.subjectName),stream=streamById.get(h.streamId)||streamByName.get(h.streamName)||streamById.get(subject?.streamId);return(!q||[h.topicName,h.subjectName,h.streamName,h.note].some(x=>String(x||'').toLocaleLowerCase().includes(q)))&&(streamId==='ALL'||stream?.id===streamId)&&(subjectId==='ALL'||subject?.id===subjectId);});
-    const visible=filtered.slice(0,historyVisibleLimit);
-    $('historyList').innerHTML=visible.length?visible.map(h=>`<article class="history-entry"><div><h3>${esc(h.topicName)}</h3><p>${esc(h.streamName)} · ${esc(h.subjectName)} · ${fmtDate(h.reviewedAt)}</p><p>Next: ${fmtDate(h.dueDate)} · ${h.intervalDays} day interval</p>${h.note?`<div class="history-note">${esc(h.note)}</div>`:''}<div class="history-actions"><button class="btn btn-sm btn-danger" data-action="delete-history" data-id="${esc(h.id)}">Delete entry</button></div></div><div class="history-score">${h.rating}/5<br><span class="muted small">${esc(RATING_LABELS[h.rating])}</span></div></article>`).join(''):`<div class="panel"><div class="empty"><strong>No review records found</strong>Completed reviews will appear here.</div></div>`;
-    $('historyCountLabel').textContent=`Showing ${visible.length} of ${filtered.length} matching records (${state.history.length} total). Deleting an entry also removes that review from Analytics and future exports; topic schedules remain unchanged.`;
-    $('historyPagination').hidden=visible.length>=filtered.length;
+    function compareHistoryRows(a,b){return b.reviewedAt.localeCompare(a.reviewedAt)||String(b.id).localeCompare(String(a.id));}
+  async function renderHistory(){
+    const renderId=++historyRenderSequence,source=state.history;
+    const isCurrent=()=>renderId===historyRenderSequence&&source===state.history&&
+      document.querySelector('.view.active')?.id==='view-history';
+    const q=$('historySearch').value.trim().toLocaleLowerCase(),streamId=$('historyStreamFilter').value,subjectId=$('historySubjectFilter').value;
+    const subjectById=new Map(state.subjects.map(x=>[String(x.id),x])),subjectByName=new Map(state.subjects.map(x=>[String(x.name),x]));
+    const streamById=new Map(state.streams.map(x=>[String(x.id),x])),streamByName=new Map(state.streams.map(x=>[String(x.name),x]));
+    const compare=(a,b)=>compareHistoryRows(a.record,b.record)||a.order-b.order;
+    let historyOrder=0;
+    if(!$('historyList').children.length)$('historyList').innerHTML='<div class="empty">Loading review history…</div>';
+    const selection=await selectTopKCooperative(source,historyVisibleLimit,compare,h=>{
+      const order=historyOrder++;
+      const subject=subjectById.get(String(h.subjectId||''))||subjectByName.get(String(h.subjectName||''));
+      const stream=streamById.get(String(h.streamId||''))||streamByName.get(String(h.streamName||''))||streamById.get(String(subject?.streamId||''));
+      const matches=(!q||[h.topicName,h.subjectName,h.streamName,h.note].some(x=>String(x||'').toLocaleLowerCase().includes(q)))&&
+        (streamId==='ALL'||stream?.id===streamId)&&(subjectId==='ALL'||subject?.id===subjectId);
+      return matches?{record:h,order}:null;
+    },isCurrent);
+    if(!selection||!isCurrent())return;
+    const visible=selection.items.map(item=>item.record);
+    $('historyList').innerHTML=visible.length?visible.map(h=>`<article class="history-entry"><div><h3>${esc(h.topicName)}</h3><p>${esc(h.streamName)} · ${esc(h.subjectName)} · ${fmtDate(h.reviewedAt)}</p><p>Next: ${fmtDate(h.dueDate)} · ${h.intervalDays} day interval</p>${h.note?`<div class="history-note">${esc(h.note)}</div>`:''}<div class="history-actions"><button type="button" class="btn btn-sm btn-danger" data-action="delete-history" data-id="${esc(h.id)}">Delete entry</button></div></div><div class="history-score">${h.rating}/5<br><span class="muted small">${esc(RATING_LABELS[h.rating])}</span></div></article>`).join(''):`<div class="panel"><div class="empty"><strong>No review records found</strong>Completed reviews will appear here.</div></div>`;
+    $('historyCountLabel').textContent=`Showing ${visible.length} of ${selection.count} matching records (${source.length} total). Deleting an entry also removes that review from Analytics and future exports; topic schedules remain unchanged.`;
+    $('historyPagination').hidden=visible.length>=selection.count;
     if(historyInsightsDirty){renderHistoryInsights();historyInsightsDirty=false;}
   }
-  function renderStructureList(){const streamsMarkup=state.streams.map(st=>{const subjects=state.subjects.filter(s=>s.streamId===st.id);return `<div class="entity"><div><strong>${esc(st.name)}</strong><small>${subjects.length} subject${subjects.length===1?'':'s'}</small>${subjects.map(s=>`<div class="entity" style="padding:8px 0 0 10px"><div><strong style="font-size:12px">${esc(s.name)}</strong><small>${activeTopics().filter(t=>t.subjectId===s.id).length} active topics</small></div><div class="inline-actions"><button class="btn btn-sm" data-action="edit-subject" data-id="${esc(s.id)}">Edit</button><button class="btn btn-sm btn-danger" data-action="delete-subject" data-id="${esc(s.id)}" ${state.topics.some(t=>t.subjectId===s.id)?'':''}>Delete</button></div></div>`).join('')}</div><div class="inline-actions"><button class="btn btn-sm" data-action="add-subject-to-stream" data-id="${esc(st.id)}">＋ Subject</button><button class="btn btn-sm" data-action="edit-stream" data-id="${esc(st.id)}">Edit</button><button class="btn btn-sm btn-danger" data-action="delete-stream" data-id="${esc(st.id)}" ${subjects.length?'':''}>Delete</button></div></div>`;}).join('');$('structureList').innerHTML=streamsMarkup||'<div class="empty">No streams created.</div>';}
+    let structureRenderSequence=0;
+  function renderStructureList(topicCountsBySubject=null){
+    const target=$('structureList');
+    const renderMarkup=topicCounts=>{
+      const subjectsByStream=new Map();
+      for(const subject of state.subjects){
+        if(!subjectsByStream.has(subject.streamId))subjectsByStream.set(subject.streamId,[]);
+        subjectsByStream.get(subject.streamId).push(subject);
+      }
+      const streamsMarkup=state.streams.map(st=>{
+        const subjects=subjectsByStream.get(st.id)||[];
+        return `<div class="entity"><div><strong>${esc(st.name)}</strong><small>${subjects.length} subject${subjects.length===1?'':'s'}</small>${subjects.map(s=>`<div class="entity" style="padding:8px 0 0 10px"><div><strong style="font-size:12px">${esc(s.name)}</strong><small>${topicCounts.get(s.id)||0} active topics</small></div><div class="inline-actions"><button class="btn btn-sm" data-action="edit-subject" data-id="${esc(s.id)}">Edit</button><button type="button" class="btn btn-sm btn-danger" data-action="delete-subject" data-id="${esc(s.id)}">Delete</button></div></div>`).join('')}</div><div class="inline-actions"><button class="btn btn-sm" data-action="add-subject-to-stream" data-id="${esc(st.id)}">＋ Subject</button><button class="btn btn-sm" data-action="edit-stream" data-id="${esc(st.id)}">Edit</button><button type="button" class="btn btn-sm btn-danger" data-action="delete-stream" data-id="${esc(st.id)}">Delete</button></div></div>`;
+      }).join('');
+      target.innerHTML=streamsMarkup||'<div class="empty">No streams created.</div>';
+    };
+    if(topicCountsBySubject instanceof Map){
+      structureRenderSequence++;
+      renderMarkup(topicCountsBySubject);
+      return;
+    }
+    const cached=window.NexusGetCachedOverviewTopicMetrics?.();
+    if(cached?.progressBySubject instanceof Map){
+      const counts=new Map();
+      for(const [id,entry] of cached.progressBySubject)counts.set(id,entry?.total||0);
+      structureRenderSequence++;
+      renderMarkup(counts);
+      return;
+    }
+    const renderId=++structureRenderSequence,source=state.topics;
+    const isCurrent=()=>renderId===structureRenderSequence&&source===state.topics&&
+      ['view-setup','view-topics'].includes(document.querySelector('.view.active')?.id);
+    if(!target.children.length)target.innerHTML='<div class="empty">Updating topic counts…</div>';
+    buildTopicCountsCooperative(source,isCurrent).then(counts=>{
+      if(counts&&isCurrent())renderMarkup(counts);
+    }).catch(error=>{
+      if(!isCurrent())return;
+      console.error('Nexus stream/subject counts could not be prepared',error);
+      target.innerHTML='<div class="empty">Topic counts could not be loaded. Reopen this section to retry.</div>';
+    });
+  }
+  
   function renderSetup(){refreshFilterOptions();$('themeSelect').value=state.settings.theme;renderStructureList();
-    const exams=state.exams.slice().sort((a,b)=>a.date.localeCompare(b.date));$('examList').innerHTML=exams.length?exams.map(ex=>`<div class="entity"><div><strong>${esc(ex.name)}</strong><small>${fmtDate(ex.date)} · ${esc(ex.type)}${validDate(ex.date)&&ex.date>=today()?` · ${dayDiff(today(),ex.date)} day(s) left`:''}</small>${ex.notes?`<small>${esc(ex.notes)}</small>`:''}</div><div class="inline-actions"><button class="btn btn-sm" data-action="edit-exam" data-id="${esc(ex.id)}">Edit</button><button class="btn btn-sm btn-danger" data-action="delete-exam" data-id="${esc(ex.id)}">Delete</button></div></div>`).join(''):'<div class="empty"><strong>No exams scheduled</strong>Add an exam or deadline.</div>';
+    const exams=state.exams.slice().sort((a,b)=>a.date.localeCompare(b.date));$('examList').innerHTML=exams.length?exams.map(ex=>`<div class="entity"><div><strong>${esc(ex.name)}</strong><small>${fmtDate(ex.date)} · ${esc(ex.type)}${validDate(ex.date)&&ex.date>=today()?` · ${dayDiff(today(),ex.date)} day(s) left`:''}</small>${ex.notes?`<small>${esc(ex.notes)}</small>`:''}</div><div class="inline-actions"><button class="btn btn-sm" data-action="edit-exam" data-id="${esc(ex.id)}">Edit</button><button type="button" class="btn btn-sm btn-danger" data-action="delete-exam" data-id="${esc(ex.id)}">Delete</button></div></div>`).join(''):'<div class="empty"><strong>No exams scheduled</strong>Add an exam or deadline.</div>';
   }
   function renderAll(){
+    if(window.NexusDeferInitialRender){
+      window.NexusDeferredRenderRequested=true;
+      return;
+    }
     historyInsightsDirty=true;
     const activeView=document.querySelector('.view.active')?.id||'view-overview';
-    if(activeView==='view-overview'){renderOverview();if(window.NexusRefreshHomeConsistencySummary)window.NexusRefreshHomeConsistencySummary();}
-    else if(activeView==='view-topics'){refreshFilterOptions();renderTopics();}
-    else if(activeView==='view-history'){refreshFilterOptions();renderHistory();}
-    else if(activeView==='view-setup'){renderSetup();}
-    else if(activeView==='view-explore'){renderExplore();}
-    applyTheme();
+    if(activeView==='view-overview'){markDeleteDiagnosticPhase('render:overview');renderOverview();if(window.NexusRefreshHomeConsistencySummary){markDeleteDiagnosticPhase('render:home-consistency');window.NexusRefreshHomeConsistencySummary();}}
+    else if(activeView==='view-topics'){markDeleteDiagnosticPhase('render:topics');refreshFilterOptions();renderTopics();}
+    else if(activeView==='view-history'){markDeleteDiagnosticPhase('render:history');refreshFilterOptions();renderHistory();}
+    else if(activeView==='view-setup'){markDeleteDiagnosticPhase('render:setup');renderSetup();}
+    else if(activeView==='view-explore'){markDeleteDiagnosticPhase('render:explore');renderExplore();}
+    markDeleteDiagnosticPhase('render:theme');applyTheme();
   }
+  // Bootstrap invokes this after every runtime module has loaded. The closure reads
+  // the current renderAll binding, including the Study Hub wrapper installed later.
+  window.NexusRenderAll=()=>renderAll();
   function openReview(id){
     const t=getTopic(id);if(!t)return;
     reviewTopicId=t.id;selectedReviewRating=null;
@@ -469,12 +1049,16 @@
     const due=customDueInput||autoDue;
     const note=$('reviewNote').value.trim();
     const finalNote=[note,customDueInput?`[Custom next: ${customDueInput}]`:'' ].filter(Boolean).join(' ');
-    startUndo('Review recorded.');
+    const reviewEntry={id:makeId('history'),topicId:t.id,streamId:stream?.id||'',subjectId:subject?.id||'',streamName:d.stream,subjectName:d.subject,topicName:t.name,reviewedAt:reviewed,rating,intervalDays:days,dueDate:due,note:finalNote};
+    startUndoReview('Review recorded.',t,reviewEntry.id);
     if(rating===1)t.lapses=(t.lapses||0)+1;
     t.streak=rating>=3?(t.streak||0)+1:0;
     t.lastReviewed=reviewed;t.lastRating=rating;t.intervalDays=days;t.dueDate=due;t.reviewCount=(t.reviewCount||0)+1;
-    state.history.unshift({id:makeId('history'),topicId:t.id,streamId:stream?.id||'',subjectId:subject?.id||'',streamName:d.stream,subjectName:d.subject,topicName:t.name,reviewedAt:reviewed,rating,intervalDays:days,dueDate:due,note:finalNote});
-    const persisted=save();
+    state.history.unshift(reviewEntry);
+    const persisted=save({entityChanges:[
+      trackerEntityPutChange('topics',t,'keep'),
+      trackerEntityPutChange('history',reviewEntry,'prepend')
+    ]});
     $('reviewDialog').close();
     selectedReviewRating=null;$('reviewCustomDue').value='';
     renderAll();
@@ -487,27 +1071,222 @@
     renderReviewPreview();
   }
   function openTopic(id=null){editTopicId=id;const t=id?getTopic(id):null;$('topicDialogTitle').textContent=t?'Edit topic':'Add topic';$('topicNameInput').value=t?.name||'';$('topicNotesInput').value=t?.notes||'';if($('topicDueInput'))$('topicDueInput').value=t?.dueDate||'';refreshFilterOptions();const sub=subjectFor(t||{});$('topicStreamInput').value=sub?.streamId||state.streams[0]?.id||'';refreshTopicSubjectInput();$('topicSubjectInput').value=t?.subjectId||state.subjects.find(s=>s.streamId===$('topicStreamInput').value)?.id||'';$('topicDialog').showModal();}
-  function saveTopic(e){e.preventDefault();const name=$('topicNameInput').value.trim(),subjectId=$('topicSubjectInput').value,notes=$('topicNotesInput').value.trim(),customDue=$('topicDueInput')?.value||'';if(!name||!state.subjects.some(s=>s.id===subjectId)){notify('Choose a valid subject.');return;}const dup=activeTopics().find(t=>t.id!==editTopicId&&t.subjectId===subjectId&&t.name.toLocaleLowerCase()===name.toLocaleLowerCase());if(dup&&!confirm('A topic with that name already exists in this subject. Save a duplicate anyway?'))return;startUndo(editTopicId?'Topic updated.':'Topic added.');if(editTopicId){const t=getTopic(editTopicId);if(t){t.name=name;t.subjectId=subjectId;t.notes=notes;if(customDue&&validDate(customDue)){t.dueDate=customDue;}}}else {const newTopic={id:makeId('topic'),subjectId,name,notes,custom:true,createdAt:today(),lastReviewed:'',lastRating:null,dueDate:customDue&&validDate(customDue)?customDue:'',intervalDays:0,reviewCount:0,streak:0,lapses:0,archived:false};state.topics.push(newTopic);}save();$('topicDialog').close();renderAll();switchView('topics');notify('Topic saved.'+(customDue?' Custom review date set.':''),true);}
-  function deleteTopic(id){const t=getTopic(id);if(!t)return;if(!confirm(`Delete “${t.name}” from the topic tracker? Existing history entries will be retained.`))return;startUndo('Topic deleted.');if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedTopic(state,CURRICULUM_PACKS,t);state.topics=state.topics.filter(x=>x.id!==id);save();renderAll();notify('Topic deleted. Review history is retained.',true);}
+  function saveTopic(e){
+    e.preventDefault();
+    const name=$('topicNameInput').value.trim(),subjectId=$('topicSubjectInput').value,notes=$('topicNotesInput').value.trim(),customDue=$('topicDueInput')?.value||'';
+    if(!name||!state.subjects.some(subject=>subject.id===subjectId)){notify('Choose a valid subject.');return;}
+    const duplicate=activeTopics().find(topic=>topic.id!==editTopicId&&topic.subjectId===subjectId&&topic.name.toLocaleLowerCase()===name.toLocaleLowerCase());
+    if(duplicate&&!confirm('A topic with that name already exists in this subject. Save a duplicate anyway?'))return;
+    if(editTopicId){
+      const topic=getTopic(editTopicId);if(!topic)return;
+      startUndoTopicEdit('Topic updated.',topic);
+      topic.name=name;topic.subjectId=subjectId;topic.notes=notes;
+      if(customDue&&validDate(customDue))topic.dueDate=customDue;
+    }else{
+      const newTopic={id:makeId('topic'),subjectId,name,notes,custom:true,createdAt:today(),lastReviewed:'',lastRating:null,dueDate:customDue&&validDate(customDue)?customDue:'',intervalDays:0,reviewCount:0,streak:0,lapses:0,archived:false};
+      startUndoTopicAdd('Topic added.',newTopic.id);
+      state.topics.push(newTopic);
+    }
+    save({entityChanges:[trackerEntityPutChange('topics',editTopicId?getTopic(editTopicId):state.topics[state.topics.length-1],editTopicId?'keep':'append')]});
+    $('topicDialog').close();renderAll();switchView('topics');notify('Topic saved.'+(customDue?' Custom date set.':''),true);
+  }
+  function deleteTopic(id){
+    markDeleteDiagnosticPhase('topic:lookup');
+    const t=getTopic(id);if(!t)return;
+    if(!confirm(`Delete “${t.name}” from the topic tracker? Existing history entries will be retained.`))return;
+    markDeleteDiagnosticPhase('topic:undo-snapshot');
+    startUndoBulkDelete('Topic deleted.',{silent:true});
+    markDeleteDiagnosticPhase('topic:curriculum-tombstone');
+    if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedTopic(state,CURRICULUM_PACKS,t);
+    markDeleteDiagnosticPhase('topic:filter-tracker');
+    state.topics=state.topics.filter(item=>item.id!==id);
+    markDeleteDiagnosticPhase('topic:save');
+    if(!save({entityChanges:[trackerEntityDeleteChange('topics',id)]})){markDeleteDiagnosticPhase('topic:rollback');undo();notify('Topic deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}
+    markDeleteDiagnosticPhase('topic:render-all');
+    renderAll();window.NexusRefreshUndoTimeout?.();
+  }
   function openStream(id=null){editStreamId=id;const st=id?state.streams.find(s=>s.id===id):null;$('streamDialogTitle').textContent=st?'Edit stream / course':'Add stream / course';$('streamNameInput').value=st?.name||'';$('streamDialog').showModal();}
-  function saveStream(e){e.preventDefault();const name=$('streamNameInput').value.trim();if(!name)return;const duplicate=state.streams.find(s=>s.id!==editStreamId&&s.name.toLocaleLowerCase()===name.toLocaleLowerCase());if(duplicate){notify('A stream with that name already exists.');return;}startUndo('Stream saved.');if(editStreamId){const st=state.streams.find(s=>s.id===editStreamId);if(st)st.name=name;}else state.streams.push({id:makeId('stream'),name});save();$('streamDialog').close();renderAll();notify('Stream saved.',true);}
+  function saveStream(e){
+    e.preventDefault();const name=$('streamNameInput').value.trim();if(!name)return;
+    const duplicate=state.streams.find(item=>item.id!==editStreamId&&item.name.toLocaleLowerCase()===name.toLocaleLowerCase());
+    if(duplicate){notify('A stream with that name already exists.');return;}
+    if(editStreamId){const stream=state.streams.find(item=>item.id===editStreamId);if(!stream)return;startUndoEntityEdit('Stream saved.','streams',stream,['name']);stream.name=name;}
+    else{const stream={id:makeId('stream'),name};startUndoEntityAdd('Stream saved.','streams',stream.id);state.streams.push(stream);}
+    const savedStream=state.streams.find(item=>item.id===editStreamId)||state.streams[state.streams.length-1];
+    save({entityChanges:[trackerEntityPutChange('streams',savedStream,editStreamId?'keep':'append')]});
+    $('streamDialog').close();renderAll();notify('Stream saved.',true);
+  }
   function openSubject(id=null,preselectedStream=null){editSubjectId=id;const sub=id?state.subjects.find(s=>s.id===id):null;$('subjectDialogTitle').textContent=sub?'Edit subject':'Add subject';refreshFilterOptions();$('subjectStreamInput').value=sub?.streamId||preselectedStream||state.streams[0]?.id||'';$('subjectNameInput').value=sub?.name||'';$('subjectDialog').showModal();}
-  function saveSubject(e){e.preventDefault();const name=$('subjectNameInput').value.trim(),streamId=$('subjectStreamInput').value;if(!name||!state.streams.some(s=>s.id===streamId))return;const dupe=state.subjects.find(s=>s.id!==editSubjectId&&s.streamId===streamId&&s.name.toLocaleLowerCase()===name.toLocaleLowerCase());if(dupe){notify('That subject already exists in this stream.');return;}startUndo('Subject saved.');if(editSubjectId){const sub=state.subjects.find(s=>s.id===editSubjectId);if(sub){sub.name=name;sub.streamId=streamId;}}else state.subjects.push({id:makeId('subject'),name,streamId,order:state.subjects.length});save();$('subjectDialog').close();renderAll();notify('Subject saved.',true);}
-  function deleteSubject(id){const sub=state.subjects.find(s=>s.id===id);if(!sub)return;const topicIds=state.topics.filter(t=>t.subjectId===id).map(t=>t.id),historyCount=state.history.filter(h=>h.subjectId===id||topicIds.includes(h.topicId)).length;if(!confirm(`Delete subject “${sub.name}” and all its data?\n\nThis permanently removes ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. This cannot be undone after you leave this page. Export a full JSON backup first if unsure.`))return;startUndo('Subject and its data deleted.');if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedSubject(state,CURRICULUM_PACKS,sub);if(window.NexusCascadeDeleteSubject)window.NexusCascadeDeleteSubject(id,topicIds);state.topics=state.topics.filter(t=>t.subjectId!==id);state.history=state.history.filter(h=>h.subjectId!==id&&!topicIds.includes(h.topicId));state.subjects=state.subjects.filter(s=>s.id!==id);save();renderAll();notify('Subject and nested data deleted.',true);}
-  function deleteStream(id){const st=state.streams.find(s=>s.id===id);if(!st)return;const subjectIds=state.subjects.filter(s=>s.streamId===id).map(s=>s.id),topicIds=state.topics.filter(t=>subjectIds.includes(t.subjectId)).map(t=>t.id),historyCount=state.history.filter(h=>subjectIds.includes(h.subjectId)||topicIds.includes(h.topicId)||h.streamId===id).length;if(!confirm(`Delete stream “${st.name}” and all nested data?\n\nThis permanently removes ${subjectIds.length} subject(s), ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. This cannot be undone after you leave this page. Export a full JSON backup first if unsure.`))return;startUndo('Stream and its data deleted.');if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedStream(state,CURRICULUM_PACKS,st);if(window.NexusCascadeDeleteStream)window.NexusCascadeDeleteStream(id,subjectIds,topicIds);state.topics=state.topics.filter(t=>!subjectIds.includes(t.subjectId));state.history=state.history.filter(h=>!subjectIds.includes(h.subjectId)&&!topicIds.includes(h.topicId)&&h.streamId!==id);state.subjects=state.subjects.filter(s=>s.streamId!==id);state.streams=state.streams.filter(s=>s.id!==id);save();renderAll();notify('Stream and nested data deleted.',true);}
+  function saveSubject(e){
+    e.preventDefault();const name=$('subjectNameInput').value.trim(),streamId=$('subjectStreamInput').value;
+    if(!name||!state.streams.some(stream=>stream.id===streamId))return;
+    const duplicate=state.subjects.find(subject=>subject.id!==editSubjectId&&subject.streamId===streamId&&subject.name.toLocaleLowerCase()===name.toLocaleLowerCase());
+    if(duplicate){notify('That subject already exists in this stream.');return;}
+    if(editSubjectId){const subject=state.subjects.find(item=>item.id===editSubjectId);if(!subject)return;startUndoEntityEdit('Subject saved.','subjects',subject,['name','streamId']);subject.name=name;subject.streamId=streamId;}
+    else{const subject={id:makeId('subject'),name,streamId,order:state.subjects.length};startUndoEntityAdd('Subject saved.','subjects',subject.id);state.subjects.push(subject);}
+    const savedSubject=state.subjects.find(item=>item.id===editSubjectId)||state.subjects[state.subjects.length-1];
+    save({entityChanges:[trackerEntityPutChange('subjects',savedSubject,editSubjectId?'keep':'append')]});
+    $('subjectDialog').close();renderAll();notify('Subject saved.',true);
+  }
+  function deleteSubject(id){
+    markDeleteDiagnosticPhase('subject:lookup');
+    const subject=state.subjects.find(item=>item.id===id);if(!subject)return;
+    markDeleteDiagnosticPhase('subject:collect-topic-ids');
+    // Build the ID list and lookup set in one pass. Avoid filter().map()'s
+    // additional full-size temporary array on large workspaces.
+    const topicIds=[];
+    const topicIdSet=new Set();
+    const historyIds=[];
+    for(const topic of state.topics){
+      if(topic.subjectId!==id)continue;
+      topicIds.push(topic.id);
+      topicIdSet.add(topic.id);
+    }
+    // Capture feature-row IDs before the cascade mutates its arrays so the
+    // entity projection receives the same dependent deletions as the snapshot.
+    const featureStateBefore=window.NexusGetFeatureStateForCommit?window.NexusGetFeatureStateForCommit():{};
+    const journalIds=(featureStateBefore.journal||[])
+      .filter(item=>item&& (item.subjectId===id||topicIdSet.has(item.topicId))).map(item=>String(item.id));
+    const paperIds=(featureStateBefore.papers||[])
+      .filter(item=>item&&item.subjectId===id).map(item=>String(item.id));
+    // Count without allocating a temporary array of every matching history row.
+    let historyCount=0;
+    for(const entry of state.history){
+      if(entry.subjectId===id||topicIdSet.has(entry.topicId)){historyCount++;historyIds.push(entry.id);}
+    }
+    if(!confirm(`Delete subject “${subject.name}” and all its data?\n\nThis permanently removes ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. Undo is available for 15 seconds after deletion. Export a full JSON backup first if unsure.`))return;
+    markDeleteDiagnosticPhase('subject:undo-snapshot');
+    startUndoBulkDelete('Subject and its data deleted.',{silent:true});
+    markDeleteDiagnosticPhase('subject:curriculum-tombstone');
+    if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedSubject(state,CURRICULUM_PACKS,subject);
+    markDeleteDiagnosticPhase('subject:study-hub-cascade');
+    if(window.NexusCascadeDeleteSubject&&window.NexusCascadeDeleteSubject(id,topicIds,{persist:false,render:false})===false){
+      markDeleteDiagnosticPhase('subject:rollback-cascade');
+      undo();notify('Subject deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;
+    }
+    markDeleteDiagnosticPhase('subject:filter-topics');
+    state.topics=state.topics.filter(topic=>topic.subjectId!==id);
+    markDeleteDiagnosticPhase('subject:filter-history');
+    state.history=state.history.filter(h=>h.subjectId!==id&&!topicIdSet.has(h.topicId));
+    markDeleteDiagnosticPhase('subject:filter-subjects');
+    state.subjects=state.subjects.filter(item=>item.id!==id);
+    markDeleteDiagnosticPhase('subject:save');
+    const entityChangeCount=1+topicIds.length+historyIds.length+journalIds.length+paperIds.length;
+    const persisted=entityChangeCount<=1000?save({entityChanges:[
+      trackerEntityDeleteChange('subjects',id),
+      ...topicIds.map(topicId=>trackerEntityDeleteChange('topics',topicId)),
+      ...historyIds.map(historyId=>trackerEntityDeleteChange('history',historyId)),
+      ...journalIds.map(journalId=>({collection:'journal',id:journalId,operation:'delete'})),
+      ...paperIds.map(paperId=>({collection:'papers',id:paperId,operation:'delete'}))
+    ]}):save({replaceEntities:true});
+    if(!persisted){
+      markDeleteDiagnosticPhase('subject:rollback-save');
+      undo();notify('Subject deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;
+    }
+    markDeleteDiagnosticPhase('subject:render-all');
+    renderAll();
+    markDeleteDiagnosticPhase('subject:render-study-hub');
+    if(window.NexusRenderHub)window.NexusRenderHub();
+    window.NexusRefreshUndoTimeout?.();
+  }
+  function deleteStream(id){
+    markDeleteDiagnosticPhase('stream:lookup');
+    const stream=state.streams.find(item=>item.id===id);if(!stream)return;
+    markDeleteDiagnosticPhase('stream:collect-subject-ids');
+    const subjectIds=[];
+    for(const subject of state.subjects)if(subject.streamId===id)subjectIds.push(subject.id);
+    const subjectIdSet=new Set(subjectIds);
+    markDeleteDiagnosticPhase('stream:collect-topic-ids');
+    const topicIds=[];
+    const topicIdSet=new Set();
+    for(const topic of state.topics){
+      if(!subjectIdSet.has(topic.subjectId))continue;
+      topicIds.push(topic.id);
+      topicIdSet.add(topic.id);
+    }
+    const featureStateBefore=window.NexusGetFeatureStateForCommit?window.NexusGetFeatureStateForCommit():{};
+    const journalIds=(featureStateBefore.journal||[])
+      .filter(item=>item&&(subjectIdSet.has(item.subjectId)||topicIdSet.has(item.topicId))).map(item=>String(item.id));
+    const paperIds=(featureStateBefore.papers||[])
+      .filter(item=>item&&subjectIdSet.has(item.subjectId)).map(item=>String(item.id));
+    let historyCount=0;
+    const historyIds=[];
+    for(const entry of state.history){
+      if(subjectIdSet.has(entry.subjectId)||topicIdSet.has(entry.topicId)||entry.streamId===id){
+        historyCount++;historyIds.push(entry.id);
+      }
+    }
+    if(!confirm(`Delete stream “${stream.name}” and all nested data?\n\nThis permanently removes ${subjectIds.length} subject(s), ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. Undo is available for 15 seconds after deletion. Export a full JSON backup first if unsure.`))return;
+    markDeleteDiagnosticPhase('stream:undo-snapshot');
+    startUndoBulkDelete('Stream and its data deleted.',{silent:true});
+    markDeleteDiagnosticPhase('stream:curriculum-tombstone');
+    if(window.NexusCurriculumIntegrity)window.NexusCurriculumIntegrity.markDeletedStream(state,CURRICULUM_PACKS,stream);
+    markDeleteDiagnosticPhase('stream:study-hub-cascade');
+    if(window.NexusCascadeDeleteStream&&window.NexusCascadeDeleteStream(id,subjectIds,topicIds,{persist:false,render:false})===false){
+      markDeleteDiagnosticPhase('stream:rollback-cascade');
+      undo();notify('Stream deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;
+    }
+    markDeleteDiagnosticPhase('stream:filter-topics');
+    state.topics=state.topics.filter(topic=>!subjectIdSet.has(topic.subjectId));
+    markDeleteDiagnosticPhase('stream:filter-history');
+    state.history=state.history.filter(h=>!subjectIdSet.has(h.subjectId)&&!topicIdSet.has(h.topicId)&&h.streamId!==id);
+    markDeleteDiagnosticPhase('stream:filter-subjects');
+    state.subjects=state.subjects.filter(subject=>subject.streamId!==id);
+    markDeleteDiagnosticPhase('stream:filter-streams');
+    state.streams=state.streams.filter(item=>item.id!==id);
+    markDeleteDiagnosticPhase('stream:save');
+    const entityChangeCount=1+subjectIds.length+topicIds.length+historyIds.length+journalIds.length+paperIds.length;
+    const persisted=entityChangeCount<=1000?save({entityChanges:[
+      trackerEntityDeleteChange('streams',id),
+      ...subjectIds.map(subjectId=>trackerEntityDeleteChange('subjects',subjectId)),
+      ...topicIds.map(topicId=>trackerEntityDeleteChange('topics',topicId)),
+      ...historyIds.map(historyId=>trackerEntityDeleteChange('history',historyId)),
+      ...journalIds.map(journalId=>({collection:'journal',id:journalId,operation:'delete'})),
+      ...paperIds.map(paperId=>({collection:'papers',id:paperId,operation:'delete'}))
+    ]}):save({replaceEntities:true});
+    if(!persisted){
+      markDeleteDiagnosticPhase('stream:rollback-save');
+      undo();notify('Stream deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;
+    }
+    markDeleteDiagnosticPhase('stream:render-all');
+    renderAll();
+    markDeleteDiagnosticPhase('stream:render-study-hub');
+    if(window.NexusRenderHub)window.NexusRenderHub();
+    window.NexusRefreshUndoTimeout?.();
+  }
   function openExam(id=null){editExamId=id;const ex=id?state.exams.find(e=>e.id===id):null;$('examDialogTitle').textContent=ex?'Edit exam or deadline':'Add exam or deadline';$('examNameInput').value=ex?.name||'';$('examDateInput').value=ex?.date||'';$('examTypeInput').value=ex?.type||'Academic exam';$('examNotesInput').value=ex?.notes||'';$('examDialog').showModal();}
-  function saveExam(e){e.preventDefault();const name=$('examNameInput').value.trim(),date=$('examDateInput').value;if(!name||!validDate(date)){notify('Enter an exam name and a valid date.');return;}startUndo('Exam saved.');const item={id:editExamId||makeId('exam'),name,date,type:$('examTypeInput').value,notes:$('examNotesInput').value.trim()};if(editExamId){const i=state.exams.findIndex(x=>x.id===editExamId);if(i>=0)state.exams[i]=item;}else state.exams.push(item);save();$('examDialog').close();renderAll();notify('Exam saved.',true);}
-  function deleteExam(id){const ex=state.exams.find(e=>e.id===id);if(!ex||!confirm(`Delete “${ex.name}”?`))return;startUndo('Exam deleted.');state.exams=state.exams.filter(e=>e.id!==id);save();renderAll();notify('Exam deleted.',true);}
+  function saveExam(e){
+    e.preventDefault();const name=$('examNameInput').value.trim(),date=$('examDateInput').value;
+    if(!name||!validDate(date)){notify('Enter an exam name and a valid date.');return;}
+    const item={id:editExamId||makeId('exam'),name,date,type:$('examTypeInput').value,notes:$('examNotesInput').value.trim()};
+    if(editExamId){const index=state.exams.findIndex(exam=>exam.id===editExamId);if(index<0)return;startUndoArrayItemReplacement('Exam saved.','exams',index);state.exams[index]=item;}
+    else{startUndoEntityAdd('Exam saved.','exams',item.id);state.exams.push(item);}
+    const savedExam=state.exams.find(exam=>exam.id===item.id);
+    save({entityChanges:[trackerEntityPutChange('exams',savedExam,editExamId?'keep':'append')]});
+    $('examDialog').close();renderAll();notify('Exam saved.',true);
+  }
+  function deleteExam(id){
+    markDeleteDiagnosticPhase('exam:lookup');
+    const exam=state.exams.find(item=>item.id===id);if(!exam||!confirm(`Delete “${exam.name}”?`))return;
+    markDeleteDiagnosticPhase('exam:undo-snapshot');
+    startUndoArrayReplacement('Exam deleted.','exams',{silent:true});
+    markDeleteDiagnosticPhase('exam:filter');
+    state.exams=state.exams.filter(item=>item.id!==id);
+    markDeleteDiagnosticPhase('exam:save');
+    if(!save({entityChanges:[trackerEntityDeleteChange('exams',id)]})){markDeleteDiagnosticPhase('exam:rollback');undo();notify('Exam deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}
+    markDeleteDiagnosticPhase('exam:render-all');
+    renderAll();window.NexusRefreshUndoTimeout?.();
+  }
   function downloadFile(filename,content,type){const blob=new Blob([content],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);}
   function exportBackup(){if(typeof window.NexusExportFullBackup==='function'){window.NexusExportFullBackup();return;}const packet={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state,featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}};downloadFile(`nexus-backup-${today()}.json`,JSON.stringify(packet,null,2),'application/json;charset=utf-8');notify('Full backup downloaded. Keep it somewhere safe.');}
   const csvCell=v=>window.NexusBackupRestoreUtils.csvCell(v);
   function exportHistory(){const rows=[['Review date','Stream','Subject','Topic','Rating','Rating meaning','Interval days','Next due','Note'],...state.history.map(h=>[h.reviewedAt,h.streamName,h.subjectName,h.topicName,h.rating,RATING_LABELS[h.rating],h.intervalDays,h.dueDate,h.note])];downloadFile(`nexus-history-${today()}.csv`,'\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('History CSV exported.');}
   function exportTopics(){const rows=[['Stream','Subject','Topic','Notes','Last reviewed','Last rating','Next due','Interval days','Review count','Streak','Lapses','Status'],...state.topics.map(t=>{const d=subjectDisplay(t);return[d.stream,d.subject,t.name,t.notes,t.lastReviewed,t.lastRating,t.dueDate,t.intervalDays,t.reviewCount,t.streak,t.lapses,status(t)];})];downloadFile(`nexus-topics-${today()}.csv`,'\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('Topics CSV exported.');}
-  async function importBackup(file){if(!file)return;try{const parsed=JSON.parse(await file.text()),raw=parsed?.state||parsed;const restored=normalizeState(raw);if(!restored.topics||!restored.history||!restored.subjects)throw new Error('Required backup sections are missing.');if(!confirm(`Import ${restored.topics.length} topics, ${restored.history.length} history records, and ${restored.exams.length} exams? This replaces current local data.`))return;startUndo('Backup imported.');state=restored;save();renderAll();switchView('overview');notify('Backup restored.',true);}catch(err){alert(`Could not import this backup. ${err.message||'Check the file format.'}`);}finally{$('importFile').value='';}}
-  function clearHistory(){if(!state.history.length){notify('History is already empty.');return;}if(!confirm('DANGER ZONE — Clear every saved review-history entry?\n\nAll rating analytics, review-history exports and historical counts based on these records will be lost. Topic schedules may remain unchanged. Use Undo immediately or restore a backup if this was accidental. Continue?'))return;startUndo('History cleared.');state.history=[];save();renderAll();notify('History cleared; schedules remain unchanged.',true);}
-  function resetAll(){if(!confirm('Reset all local data, including topics, custom streams, subjects, exams, settings and history? Download a backup first if you may need it.'))return;startUndo('Tracker reset.');state=baseState();save();renderAll();switchView('overview');notify('Tracker reset.',true);}
+  async function importBackup(file){if(!file)return;try{const parsed=JSON.parse(await file.text()),raw=parsed?.state||parsed;const restored=normalizeState(raw);if(!restored.topics||!restored.history||!restored.subjects)throw new Error('Required backup sections are missing.');if(!confirm(`Import ${restored.topics.length} topics, ${restored.history.length} history records, and ${restored.exams.length} exams? This replaces current local data.`))return;startUndoWorkspaceReplace('Backup imported.');state=restored;save({replaceEntities:true});renderAll();switchView('overview');notify('Backup restored.',true);}catch(err){alert(`Could not import this backup. ${err.message||'Check the file format.'}`);}finally{$('importFile').value='';}}
+  function clearHistory(){if(!state.history.length){notify('History is already empty.');return;}if(!confirm('DANGER ZONE — Clear every saved review-history entry?\n\nAll rating analytics, review-history exports and historical counts based on these records will be lost. Topic schedules may remain unchanged. Use Undo immediately or restore a backup if this was accidental. Continue?'))return;startUndoHistoryChange('History cleared.');state.history=[];save({replaceEntities:true});renderAll();notify('History cleared; schedules remain unchanged.',true);}
+  function resetAll(){if(!confirm('Reset all local data, including topics, custom streams, subjects, exams, settings and history? Download a backup first if you may need it.'))return;startUndoWorkspaceReplace('Tracker reset.');state=baseState();save({replaceEntities:true});renderAll();switchView('overview');notify('Tracker reset.',true);}
   function applyTheme(){document.documentElement.dataset.theme=state.settings.theme;const themeColor=document.querySelector('meta[name="theme-color"]');if(themeColor){const appBackground=getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();if(appBackground)themeColor.setAttribute('content',appBackground);}$('themeSelect').value=state.settings.theme;$('themeBtn').textContent=state.settings.theme==='light'?'☀':state.settings.theme==='dark'?'☾':'◐';$('themeBtn').title=`Theme: ${state.settings.theme}. Click to cycle.`;}
-  function cycleTheme(){const seq=['system','light','dark'];state.settings.theme=seq[(seq.indexOf(state.settings.theme)+1)%seq.length];save();applyTheme();notify(`Theme: ${state.settings.theme}.`);}
+  function cycleTheme(){const seq=['system','light','dark'];state.settings.theme=seq[(seq.indexOf(state.settings.theme)+1)%seq.length];save({entityChanges:[]});applyTheme();notify(`Theme: ${state.settings.theme}.`);}
   function openHelp(){$('helpDialog').showModal();}
   function install(){$('pwaInstallOption').hidden=false;$('installNote').textContent=installPrompt?'Use the button below to install Nexus through your browser.':'If the button cannot open an install prompt, use your browser menu: in Chrome, tap ⋮ and choose “Install app”. If it is not listed, refresh Nexus and check again. On other browsers, use “Add to Home screen” if available.';$('installDialog').showModal();}
   async function installPwa(){
@@ -544,19 +1323,71 @@
 
     $('installNote').textContent='This browser does not provide an in-page installation prompt. In Chrome, open the ⋮ menu and choose “Install app”. If that option is missing, refresh Nexus and try again. Other browsers may offer “Add to Home screen” instead.';
   }
+  function deleteHistoryEntry(id){
+    markDeleteDiagnosticPhase('history:lookup');
+    const entry=state.history.find(item=>String(item.id)===String(id));
+    if(!entry){notify('That review-history entry could not be found. Refresh the history and try again.');return;}
+    if(!confirm('DANGER ZONE — Delete this review record?\n\nThis review will disappear from rating analytics and future history exports. The topic schedule will not change. Undo is available for 15 seconds after deletion. Continue?'))return;
+    markDeleteDiagnosticPhase('history:undo-snapshot');
+    startUndoHistoryChange('History entry deleted.',{silent:true});
+    markDeleteDiagnosticPhase('history:filter');
+    state.history=state.history.filter(item=>String(item.id)!==String(id));
+    historyInsightsDirty=true;
+    markDeleteDiagnosticPhase('history:save');
+    if(!save({entityChanges:[trackerEntityDeleteChange('history',id)]})){markDeleteDiagnosticPhase('history:rollback');undo();notify('Review-history deletion was not saved. Nexus restored the previous data; check storage and export a backup.',true);return;}
+    markDeleteDiagnosticPhase('history:render');
+    renderHistory();window.NexusRefreshUndoTimeout?.();
+  }
+  function handleCoreDeleteClick(event){
+    const origin=event.target&&event.target.nodeType===1?event.target:event.target&&event.target.parentElement;
+    const button=origin&&typeof origin.closest==='function'?origin.closest('button[data-action]'):null;
+    if(!button)return;
+    const action=button.dataset.action,id=button.dataset.id;
+    if(!['delete-topic','delete-history','delete-subject','delete-stream','delete-exam'].includes(action))return;
+    event.preventDefault();
+    event.stopPropagation();
+    beginDeleteDiagnostic(action);
+    $('deleteDiagnosticBtn').style.display='none';
+    try{
+      markDeleteDiagnosticPhase('core:dispatch-'+action);
+      if(action==='delete-topic')deleteTopic(id);
+      else if(action==='delete-history')deleteHistoryEntry(id);
+      else if(action==='delete-subject')deleteSubject(id);
+      else if(action==='delete-stream')deleteStream(id);
+      else if(action==='delete-exam')deleteExam(id);
+      completeDeleteDiagnostic();
+    }catch(error){
+      const diagnostic=failDeleteDiagnostic(error);
+      console.error('Nexus delete action failed ('+action+')',diagnostic||error);
+      const detail=String(error&&error.message||error||'Unknown error').replace(/\s+/g,' ').slice(0,180);
+      $('deleteDiagnosticBtn').style.display='';
+      notify('Delete failed ('+action+'): '+(diagnostic?.failedAt?'['+diagnostic.failedAt+'] ':'')+detail,Boolean(undoState),{showMessage:true});
+    }
+  }
+  document.addEventListener('click',handleCoreDeleteClick,true);
+  $('deleteDiagnosticBtn').addEventListener('click',async()=>{
+    const diagnostic=window.NexusGetLastDeleteDiagnostic?window.NexusGetLastDeleteDiagnostic():null;
+    if(!diagnostic){notify('No saved deletion diagnostic is available.');return;}
+    const report=JSON.stringify(diagnostic,null,2);
+    try{
+      if(navigator.clipboard&&navigator.clipboard.writeText){await navigator.clipboard.writeText(report);notify('Deletion diagnostic copied. Send it with the error screenshot.');return;}
+    }catch(_){}
+    try{window.prompt('Copy this deletion diagnostic and send it with the error screenshot:',report);}catch(_){notify('Could not open the diagnostic copy prompt.');}
+  });
+
   // Events are attached once; dynamic content uses delegated handlers.
   document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>switchView(b.dataset.view)));
   
-  $('viewDueBtn').addEventListener('click',()=>{switchView('topics');$('topicStatusFilter').value='due-now';renderTopics();});
+  $('viewDueBtn').addEventListener('click',()=>{switchView('topics');topicVisibleLimit=100;$('topicStatusFilter').value='due-now';renderTopics();});
   // Delegate review actions once so dynamically rendered due and upcoming queues work consistently.
   document.addEventListener('click',e=>{const b=e.target.closest('button[data-action="review"]');if(!b)return;openReview(b.dataset.id);});
-  $('topicGrid').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='edit-topic')openTopic(id);if(action==='delete-topic')deleteTopic(id);});
-  $('historyList').addEventListener('click',e=>{const b=e.target.closest('button[data-action="delete-history"]');if(!b)return;const id=b.dataset.id;const entry=state.history.find(h=>h.id===id);if(!entry||!confirm('DANGER ZONE — Delete this review record?\n\nThis review will disappear from rating analytics and future history exports. The topic schedule will not change. Use Undo immediately or restore a backup if needed. Continue?'))return;startUndo('History entry deleted.');state.history=state.history.filter(h=>h.id!==id);historyInsightsDirty=true;historySortedCache=null;save();renderHistory();notify('History entry deleted.',true);});
-  $('structureList').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='edit-stream')openStream(id);if(action==='delete-stream')deleteStream(id);if(action==='add-subject-to-stream')openSubject(null,id);if(action==='edit-subject')openSubject(id);if(action==='delete-subject')deleteSubject(id);});
-  $('examList').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;if(b.dataset.action==='edit-exam')openExam(b.dataset.id);if(b.dataset.action==='delete-exam')deleteExam(b.dataset.id);});
+  $('topicGrid').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='edit-topic')openTopic(id);if(action==='show-more-topics'){topicVisibleLimit+=100;renderTopics();}});
+  // Review-history deletion is routed by handleCoreDeleteClick above.
+  $('structureList').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const {action,id}=b.dataset;if(action==='edit-stream')openStream(id);if(action==='add-subject-to-stream')openSubject(null,id);if(action==='edit-subject')openSubject(id);});
+  $('examList').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;if(b.dataset.action==='edit-exam')openExam(b.dataset.id);});
   let topicSearchTimer=0,historySearchTimer=0,exploreSearchTimer=0;
-  $('topicSearch').addEventListener('input',()=>{clearTimeout(topicSearchTimer);topicSearchTimer=setTimeout(renderTopics,110);});
-  ['topicStreamFilter','topicSubjectFilter','topicStatusFilter','topicSort'].forEach(id=>$(id).addEventListener('change',renderTopics));
+  $('topicSearch').addEventListener('input',()=>{topicVisibleLimit=100;clearTimeout(topicSearchTimer);topicSearchTimer=setTimeout(renderTopics,110);});
+  ['topicStreamFilter','topicSubjectFilter','topicStatusFilter','topicSort'].forEach(id=>$(id).addEventListener('change',()=>{topicVisibleLimit=100;renderTopics();}));
   $('historySearch').addEventListener('input',()=>{clearTimeout(historySearchTimer);historyVisibleLimit=100;historySearchTimer=setTimeout(renderHistory,110);});
   ['historyStreamFilter','historySubjectFilter'].forEach(id=>$(id).addEventListener('change',()=>{historyVisibleLimit=100;renderHistory();}));
   $('historyShowMoreBtn').addEventListener('click',()=>{historyVisibleLimit+=100;renderHistory();});
@@ -571,7 +1402,7 @@
   $('reviewCustomDue').addEventListener('change',renderReviewPreview);
   document.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click',()=>$(b.dataset.close).close()));
   $('reviewNote').addEventListener('input',()=>{});
-  $('themeBtn').addEventListener('click',cycleTheme);$('themeSelect').addEventListener('change',()=>{state.settings.theme=$('themeSelect').value;save();applyTheme();notify('Theme preference saved.');});$('helpBtn').addEventListener('click',openHelp);$('installBtn').addEventListener('click',install);$('supportNexusBtn').addEventListener('click',()=>$('supportNexusDialog').showModal());$('pwaInstallOption').addEventListener('click',installPwa);
+  $('themeBtn').addEventListener('click',cycleTheme);$('themeSelect').addEventListener('change',()=>{state.settings.theme=$('themeSelect').value;save({entityChanges:[]});applyTheme();notify('Theme preference saved.');});$('helpBtn').addEventListener('click',openHelp);$('installBtn').addEventListener('click',install);$('supportNexusBtn').addEventListener('click',()=>$('supportNexusDialog').showModal());$('pwaInstallOption').addEventListener('click',installPwa);
   $('backupBtn').addEventListener('click',exportBackup);$('menuBackup').addEventListener('click',()=>{$('moreMenu').open=false;exportBackup();});$('restoreBtn').addEventListener('click',()=>$('importFile').click());$('menuRestore').addEventListener('click',()=>{$('moreMenu').open=false;$('importFile').click();});$('importFile').addEventListener('change',e=>importBackup(e.target.files?.[0]));
   $('historyCsvBtn').addEventListener('click',exportHistory);$('setupHistoryCsvBtn').addEventListener('click',exportHistory);$('menuHistoryCsv').addEventListener('click',()=>{exportHistory();$('moreMenu').open=false;});$('setupTopicsCsvBtn').addEventListener('click',exportTopics);$('menuTopicsCsv').addEventListener('click',()=>{exportTopics();$('moreMenu').open=false;});$('clearHistoryBtn').addEventListener('click',clearHistory);
   function refreshDeletionChoiceUi(){
@@ -620,184 +1451,82 @@
   window.addEventListener('appinstalled',()=>{installPrompt=null;window.NexusInstallPrompt=null;$('installBtn').classList.add('is-installed');$('installBtnLabel').textContent='Installed';notify('Nexus installed on this device.');});
   // Service-worker registration is handled once by nexus-app-bootstrap.js before app modules load.
 
-  // --- Persistent Undo toast: one source of truth for message, visibility, and timers. ---
+  // --- Shared notification and Undo lifecycle. ---
   (function(){
-    const toastEl = document.getElementById('toast');
-    const toastTextEl = document.getElementById('toastText');
-    const undoBtnEl = document.getElementById('undoBtn');
-    const closeUndoBtnEl = document.getElementById('closeUndoBtn');
-    let transientToastTimer = null;
-    let clearUndoAfterCloseTimer = null;
-
+    const toastEl=document.getElementById('toast');
+    const toastTextEl=document.getElementById('toastText');
+    const undoBtnEl=document.getElementById('undoBtn');
+    const closeUndoBtnEl=document.getElementById('closeUndoBtn');
+    let transientToastTimer=null;
     function clearToastTimers(){
-      clearTimeout(toastTimer);
-      toastTimer = null;
-      clearTimeout(transientToastTimer);
-      transientToastTimer = null;
+      clearTimeout(toastTimer);toastTimer=null;
+      clearTimeout(transientToastTimer);transientToastTimer=null;
     }
-    function showUndoAction(){
-      undoBtnEl.style.display = 'inline-flex';
+    function showUndoAction(showMessage=false){
+      if(undoSilent&&!showMessage){
+        toastTextEl.textContent='';toastTextEl.hidden=true;
+        toastEl.classList.add('undo-only');
+      }else{
+        toastTextEl.hidden=false;toastEl.classList.remove('undo-only');
+      }
+      undoBtnEl.style.display='inline-flex';
       toastEl.classList.add('undoable','show');
     }
     function clearUndoAction(){
-      undoBtnEl.style.display = 'none';
-      toastEl.classList.remove('undoable');
+      undoBtnEl.style.display='none';toastTextEl.hidden=false;
+      toastEl.classList.remove('undoable','undo-only');
     }
-
-    window.startUndo = function(msg){
-      if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
-      clearToastTimers();
-      clearTimeout(undoTimer);
-      undoTimer = null;
-      clearTimeout(clearUndoAfterCloseTimer);
-      clearUndoAfterCloseTimer = null;
-      undoState = clone(state);
-      toastTextEl.textContent = msg;
-      showUndoAction();
-    };
-
-    window.notify = function(msg, isPersistent){
+    window.notify=function(msg,isPersistent,options={}){
       clearToastTimers();
       if(undoState){
-        // Theme changes and unrelated notifications must not hide an active Undo action.
-        if(isPersistent) toastTextEl.textContent = msg;
-        showUndoAction();
-        return;
+        const showMessage=options&&options.showMessage===true;
+        if(showMessage||(isPersistent&&!undoSilent)){
+          toastTextEl.textContent=msg;toastTextEl.hidden=false;
+        }
+        showUndoAction(showMessage);return;
       }
-
-      toastTextEl.textContent = msg;
-      clearUndoAction();
-      toastEl.classList.add('show');
-      transientToastTimer = setTimeout(()=>{
-        if(!undoState) toastEl.classList.remove('show');
-      },2600);
+      toastTextEl.hidden=false;toastTextEl.textContent=msg;
+      clearUndoAction();toastEl.classList.add('show');
+      transientToastTimer=setTimeout(()=>{if(!undoState)toastEl.classList.remove('show');},2600);
     };
-
-    window.hideUndo = function(){
-      toastEl.classList.remove('show');
+    window.NexusCancelUndoAction=function(){
+      clearToastTimers();clearTimeout(undoTimer);undoTimer=null;
+      undoState=null;undoSilent=false;clearUndoAction();toastEl.classList.remove('show');
     };
+    window.hideUndo=()=>window.NexusCancelUndoAction();
+    if(closeUndoBtnEl)closeUndoBtnEl.addEventListener('click',()=>window.NexusCancelUndoAction());
 
-    undoBtnEl.addEventListener('click',()=>{
-      clearToastTimers();
-      clearTimeout(clearUndoAfterCloseTimer);
-      undoState = null;
-      clearUndoAction();
-      toastEl.classList.remove('show');
+    const origConfirm=window.confirm;
+    window.confirmAction=function({title,desc}){return origConfirm(title+"\n\n"+desc);};
+
+    // These handlers are top-level declarations in this classic script and are
+    // already exposed on window. Do not reassign arrow wrappers here: each wrapper
+    // would overwrite its own global binding and recursively call itself.
+    window.clearHistory=function(){
+      if(!confirm('Clear ALL history?\\n\\nThis will delete '+state.history.length+' records. Schedules stay but past reviews are retained.\\n\\nExport a backup first!'))return;
+      if(!confirm('Are you absolutely sure?'))return;
+      startUndoHistoryChange('All history cleared.');
+      state.history=[];save({replaceEntities:true});renderAll();
+    };
+    window.resetAll=function(){
+      if(!confirm('Reset ALL data?\\n\\nThis deletes topics, subjects, streams, exams, history and settings. Export a backup first.'))return;
+      const typed=prompt('To confirm, type RESET in capital letters:');
+      if(typed!=='RESET'){alert('Cancelled');return;}
+      startUndoWorkspaceReplace('All data reset.');
+      localStorage.removeItem(STORAGE_KEY);OLD_KEYS.forEach(key=>localStorage.removeItem(key));
+      state=baseState();save({replaceEntities:true});renderAll();
+    };
+    document.getElementById('toggleTopicFilters')?.addEventListener('click',()=>{
+      const bar=document.getElementById('topicFiltersBar');if(!bar)return;
+      bar.style.display=bar.style.display==='none'?'flex':'none';
+      if(bar.style.display!=='none')bar.style.animation='slideDown .35s ease';
     });
-
-    if(closeUndoBtnEl){
-      closeUndoBtnEl.addEventListener('click',()=>{
-        clearTimeout(clearUndoAfterCloseTimer);
-        toastEl.classList.remove('show');
-        clearUndoAfterCloseTimer = setTimeout(()=>{
-          // A new undoable action may have started while the close animation was running.
-          if(!toastEl.classList.contains('show')){
-            undoState = null;
-            clearUndoAction();
-          }
-          clearUndoAfterCloseTimer = null;
-        },300);
-      });
-    }
-
-    // Enhanced confirm for data protection
-    const origConfirm = window.confirm;
-    window.confirmAction = function({title, desc}){
-      // Use native confirm but with detailed message for now, wrapped in custom later
-      return origConfirm(title + "\n\n" + desc);
-    };
-    
-    // Patch delete functions with extra protection
-    const origDeleteTopic = window.deleteTopic;
-    window.deleteTopic = function(id){
-      const t = state.topics.find(x=>x.id===id);
-      if(!t) return;
-      if(!confirm(`Delete topic?\n\nTopic: "${t.name}"\nReviews: ${t.reviewCount||0}\nDue: ${t.dueDate||'—'}\n\nThis will also remove its history.\n\nYou can UNDO with the persistent bar that will appear at bottom.`)) return;
-      startUndo('Topic deleted');
-      state.topics = state.topics.filter(x=>x.id!==id);
-      state.history = state.history.filter(h=>h.topicId!==id);
-      save(); renderAll();
-    };
-    
-    const origDeleteSubject = window.deleteSubject;
-    window.deleteSubject = function(id){
-      // Use the core cascade-aware handler so topics, review history, and linked records are cleaned up together.
-      if(typeof origDeleteSubject === 'function') return origDeleteSubject(id);
-      console.error('Subject deletion handler is unavailable; no data was changed.');
-    };
-    
-    const origDeleteStream = window.deleteStream;
-    window.deleteStream = function(id){
-      // Use the core cascade-aware handler so nested subjects, topics, and linked records are cleaned up together.
-      if(typeof origDeleteStream === 'function') return origDeleteStream(id);
-      console.error('Stream deletion handler is unavailable; no data was changed.');
-    };
-    
-    const origDeleteExam = window.deleteExam;
-    window.deleteExam = function(id){
-      const ex = state.exams.find(x=>x.id===id);
-      if(!confirm(`Delete exam "${ex?.name}" on ${ex?.date}?`)) return;
-      startUndo('Exam deleted');
-      state.exams = state.exams.filter(x=>x.id!==id);
-      save(); renderAll();
-    };
-    
-    // Patch history delete - extra protection
-    const historyList = document.getElementById('historyList');
-    if(historyList){
-      historyList.addEventListener('click', function(e){
-        const b = e.target.closest('button[data-action="delete-history"]');
-        if(!b) return;
-        e.stopImmediatePropagation();
-        e.preventDefault();
-        const id = b.dataset.id;
-        const h = state.history.find(x=>x.id===id);
-        if(!h) return;
-        if(!confirm(`DANGER ZONE — Delete this review record?\n\nTopic: "${h.topicName}"\nDate: ${h.reviewedAt}\nRating: ${h.rating}/5\n\nThis review will be removed from rating analytics and future history exports. The topic schedule will not change. Use Undo immediately or restore a backup if needed.`)) return;
-        startUndo('History entry deleted');
-        state.history = state.history.filter(x=>x.id!==id);
-        historyInsightsDirty=true;historySortedCache=null;
-        save(); renderHistory();
-      }, true);
-    }
-    
-    window.clearHistory = function(){
-      if(!confirm(`Clear ALL history?\n\nThis will delete ${state.history.length} records. Schedules stay but past reviews lost.\n\nExport backup first!`)) return;
-      if(!confirm('Are you absolutely sure? This is permanent without backup.')) return;
-      startUndo('All history cleared');
-      state.history = [];
-      save(); renderAll();
-    };
-    
-    window.resetAll = function(){
-      if(!confirm('Reset ALL data?\n\nDeletes ALL topics, subjects, streams, exams, history, settings.\nDefault Sinhala syllabus (Accounting, BS, Econ) will be restored on next load.\n\nExport backup first!')) return;
-      const typed = prompt('To confirm, type RESET in capital letters:');
-      if(typed!=='RESET'){ alert('Cancelled'); return; }
-      startUndo('All data reset.');
-      localStorage.removeItem(STORAGE_KEY);
-      OLD_KEYS.forEach(k=>localStorage.removeItem(k));
-      state = baseState();
-      save(); renderAll();
-    };
-    
-    // Dropdown filters toggle
-    document.getElementById('toggleTopicFilters')?.addEventListener('click', ()=>{
-      const bar = document.getElementById('topicFiltersBar');
-      if(!bar) return;
-      bar.style.display = bar.style.display==='none' ? 'flex' : 'none';
-      if(bar.style.display!=='none'){ bar.style.animation='slideDown .35s ease'; }
+    document.getElementById('toggleHistoryFilters')?.addEventListener('click',()=>{
+      const bar=document.getElementById('historyFiltersBar');if(!bar)return;
+      bar.style.display=bar.style.display==='none'?'flex':'none';
+      if(bar.style.display!=='none')bar.style.animation='slideDown .35s ease';
     });
-    document.getElementById('toggleHistoryFilters')?.addEventListener('click', ()=>{
-      const bar = document.getElementById('historyFiltersBar');
-      if(!bar) return;
-      bar.style.display = bar.style.display==='none' ? 'flex' : 'none';
-      if(bar.style.display!=='none'){ bar.style.animation='slideDown .35s ease'; }
-    });
-    
-    // Overview collapse/expand is handled by explicit labelled buttons in the markup.
-    // Do not re-add legacy arrow-only controls or click handlers to panel headers.
-
   })();
 
-  state=loadState();save();renderAll();
+  state=loadState();save({entityChanges:[]});renderAll();
   loadCurriculumCatalog();

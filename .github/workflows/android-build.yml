@@ -1,0 +1,110 @@
+name: F-Droid Android build
+
+on:
+  push:
+    branches:
+      - "android/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-build:
+    name: Build F-Droid debug and unsigned release APKs
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[web-only]') }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: android/package-lock-source/*.b64
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: false
+
+      - name: Check out pinned esbuild source
+        uses: actions/checkout@v4
+        with:
+          repository: evanw/esbuild
+          ref: 609683d892977362a0f99026cb74b96263d728a9
+          path: .build/esbuild
+
+      - name: Check out pinned golang.org/x/sys source
+        uses: actions/checkout@v4
+        with:
+          repository: golang/sys
+          ref: c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf
+          path: .build/golang-x-sys
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK 36
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Build Android-local web assets and sync native project
+        env:
+          ESBUILD_SOURCE_DIR: .build/esbuild
+          GO_SYS_SOURCE_DIR: .build/golang-x-sys
+          NEXUS_ESBUILD_BINARY: .build/bin/esbuild
+          NEXUS_ANDROID_CLOUD_MODE: staging
+        run: npm run android:sync:fdroid
+
+      - name: Generate npm dependency and licence inventory
+        env:
+          NEXUS_ANDROID_CLOUD_MODE: staging
+        run: npm run android:sbom
+
+      - name: Verify Android asset isolation and native feature wiring
+        run: npm run test:android
+
+      - name: Build F-Droid debug and unsigned release APKs
+        working-directory: android
+        run: |
+          mkdir -p build/reports/fdroid-dependencies
+          ./gradlew --no-daemon --stacktrace --dependency-verification strict buildEnvironment :app:buildEnvironment > build/reports/fdroid-dependencies/fdroid-build-environment.txt
+          ./gradlew --no-daemon --stacktrace --dependency-verification strict :app:dependencies --configuration fdroidDebugRuntimeClasspath > build/reports/fdroid-dependencies/fdroid-debug-runtime.txt
+          ./gradlew --no-daemon --stacktrace --dependency-verification strict :app:dependencies --configuration fdroidReleaseRuntimeClasspath > build/reports/fdroid-dependencies/fdroid-release-runtime.txt
+          ! grep -Eiq 'com[.]google[.]android[.]gms|com[.]google[.]firebase|firebase-analytics|play-services' build/reports/fdroid-dependencies/fdroid-debug-runtime.txt build/reports/fdroid-dependencies/fdroid-release-runtime.txt
+          ./gradlew --no-daemon --stacktrace --dependency-verification strict assembleFdroidDebug assembleFdroidRelease
+          git diff --exit-code -- gradle/verification-metadata.xml
+
+      - name: Generate Gradle/Maven dependency licence inventory
+        run: node scripts/write-android-gradle-license-inventory.mjs
+
+      - name: Upload Android preview artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-android-release-validation
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            android/app/build/outputs/apk/fdroid/debug/*.apk
+            android/app/build/outputs/apk/fdroid/release/*.apk
+            android/gradle/verification-metadata.xml
+            android/build/reports/fdroid-dependencies/*.txt
+            android/build/reports/third-party/*
+            android/build/reports/dependency-verification/**/*.html

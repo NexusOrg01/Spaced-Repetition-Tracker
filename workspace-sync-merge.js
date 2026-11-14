@@ -13,7 +13,40 @@
     if(isObject(value))return '{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+stable(value[k])).join(',')+'}';
     return JSON.stringify(value);
   }
-  const same=(a,b)=>a===ABSENT||b===ABSENT?a===b:stable(a)===stable(b);
+  // Compare JSON-shaped snapshots without serializing them into temporary strings.
+  // The previous stable-string comparison allocated a second representation of every
+  // large topic, history row and nested FSRS object on every merge pass.
+  function same(a,b){
+    if(a===b)return true;
+    if(a===ABSENT||b===ABSENT||a===null||b===null)return false;
+    if(typeof a!=='object'||typeof b!=='object')return Object.is(a,b);
+    const arrayA=Array.isArray(a),arrayB=Array.isArray(b);
+    if(arrayA!==arrayB)return false;
+    if(arrayA){
+      if(a.length!==b.length)return false;
+      for(let i=0;i<a.length;i++)if(!same(a[i],b[i]))return false;
+      return true;
+    }
+    if(!isObject(a)||!isObject(b))return false;
+    const keys=Object.keys(a);
+    if(keys.length!==Object.keys(b).length)return false;
+    for(const key of keys){
+      if(!Object.prototype.hasOwnProperty.call(b,key)||!same(a[key],b[key]))return false;
+    }
+    return true;
+  }
+  const MISSING_BASELINE_DEFAULTS={
+    'state.settings.theme':'system',
+    'featureState.settings.dailyMinutes':90,
+    'featureState.settings.sessionMinutes':25,
+    'featureState.settings.scheduler':'classic',
+    'featureState.settings.weeklyReviewGoal':100,
+    'featureState.settings.backlogDays':7,
+    'featureState.settings.reminderTime':'08:00',
+    'featureState.settings.finalRevision':false,
+    'featureState.settings.workloadDays':7,
+    'featureState.lastBackupAt':''
+  };
   function shown(value){return value===ABSENT?null:copy(value);}
   function putOwn(target,key,value){Object.defineProperty(target,key,{value,enumerable:true,configurable:true,writable:true});}
   function recordConflict(conflicts,path,base,local,remote,resolution){
@@ -25,20 +58,28 @@
     // survives a three-way cloud reconciliation without clobbering unrelated markers.
     if(/(?:^|\.)settings\.(installedCurricula|curriculumTombstones)$/.test(path)&&
       (Array.isArray(base)||Array.isArray(local)||Array.isArray(remote)))return mergeSet(base,local,remote);
-    if(same(local,remote))return copy(local);
-    if(same(local,base))return copy(remote);
-    if(same(remote,base))return copy(local);
+    if(same(local,remote))return local;
+    // If an older saved baseline predates a preference field, a client-added
+    // application default is not evidence of a deliberate edit. Prefer the
+    // non-default side; two distinct non-default edits still use conflict handling.
+    if(base===ABSENT&&Object.prototype.hasOwnProperty.call(MISSING_BASELINE_DEFAULTS,path)){
+      const fallback=MISSING_BASELINE_DEFAULTS[path];
+      if(same(local,fallback)&&!same(remote,fallback))return remote;
+      if(same(remote,fallback)&&!same(local,fallback))return local;
+    }
+    if(same(local,base))return remote;
+    if(same(remote,base))return local;
     // A concurrent delete versus edit is a genuine conflict. Keep the edited
     // record/property so content is not silently lost; archive the deletion.
     if(local===ABSENT&&remote!==ABSENT){
       if(same(remote,base))return ABSENT;
       recordConflict(conflicts,path,base,local,remote,'remote-edit');
-      return copy(remote);
+      return remote;
     }
     if(remote===ABSENT&&local!==ABSENT){
       if(same(local,base))return ABSENT;
       recordConflict(conflicts,path,base,local,remote,'local-edit');
-      return copy(local);
+      return local;
     }
     if(isObject(local)&&isObject(remote)&&(base===ABSENT||isObject(base))){
       const b=base===ABSENT?{}:base,keys=new Set([...Object.keys(b),...Object.keys(local),...Object.keys(remote)]),out={};
@@ -54,7 +95,7 @@
     // Same-field concurrent edits use local-device precedence. The losing
     // remote value is saved in the conflict recovery archive before upload.
     recordConflict(conflicts,path,base,local,remote,'local');
-    return copy(local);
+    return local;
   }
   function rows(value){return Array.isArray(value)?value:[];}
   function rowMap(value){
@@ -79,17 +120,23 @@
     for(const key of SCHEDULE_FIELDS)delete out[key];
     return out;
   }
+  function schedulesSame(a,b){
+    for(const key of SCHEDULE_FIELDS){
+      const hasA=a!==ABSENT&&Object.prototype.hasOwnProperty.call(a,key);
+      const hasB=b!==ABSENT&&Object.prototype.hasOwnProperty.call(b,key);
+      if(hasA!==hasB||(hasA&&!same(a[key],b[key])))return false;
+    }
+    return true;
+  }
   function mergeTopicRecord(base,local,remote,path,conflicts){
-    // Topic scheduling/FSRS fields form one logical unit. If both devices
-    // reviewed the same topic offline, do not splice parts of two scheduler
-    // outputs into an internally inconsistent card; keep local schedule and
-    // preserve the complete remote alternative in the conflict archive.
+    // Compare schedule fields directly instead of allocating three projection
+    // objects for every topic in a large workspace.
     if(!isObject(local)||!isObject(remote)||local===ABSENT||remote===ABSENT)return mergeValue(base,local,remote,path,conflicts);
+    const localChanged=!schedulesSame(base,local);
+    const remoteChanged=!schedulesSame(base,remote);
+    if(!localChanged||!remoteChanged||schedulesSame(local,remote))return mergeValue(base,local,remote,path,conflicts);
     const baseSchedule=base===ABSENT?ABSENT:scheduleProjection(base);
     const localSchedule=scheduleProjection(local),remoteSchedule=scheduleProjection(remote);
-    const localChanged=!same(baseSchedule===ABSENT?{}:baseSchedule,localSchedule);
-    const remoteChanged=!same(baseSchedule===ABSENT?{}:baseSchedule,remoteSchedule);
-    if(!localChanged||!remoteChanged||same(localSchedule,remoteSchedule))return mergeValue(base,local,remote,path,conflicts);
     recordConflict(conflicts,path+'.__reviewSchedule',baseSchedule,localSchedule,remoteSchedule,'local');
     const merged=mergeValue(base===ABSENT?ABSENT:omitSchedule(base),omitSchedule(local),omitSchedule(remote),path,conflicts);
     if(merged===ABSENT)return ABSENT;
@@ -104,12 +151,104 @@
     }
     return out;
   }
+  function mergeRecordValue(baseValue,localValue,remoteValue,collectionPath,id,conflicts){
+    const itemPath=collectionPath+'['+id+']';
+    return collectionPath==='state.topics'
+      ?mergeTopicRecord(baseValue,localValue,remoteValue,itemPath,conflicts)
+      :mergeValue(baseValue,localValue,remoteValue,itemPath,conflicts);
+  }
   function mergeRecords(baseRows,localRows,remoteRows,path,conflicts){
-    const b=rowMap(baseRows),l=rowMap(localRows),r=rowMap(remoteRows),ids=new Set([...b.keys(),...l.keys(),...r.keys()]),out=[];
-    for(const id of ids){
-      const bv=b.has(id)?b.get(id):ABSENT,lv=l.has(id)?l.get(id):ABSENT,rv=r.has(id)?r.get(id):ABSENT;
-      const value=path==='state.topics'?mergeTopicRecord(bv,lv,rv,path+'['+id+']',conflicts):mergeValue(bv,lv,rv,path+'['+id+']',conflicts);
+    const b=rowMap(baseRows),l=rowMap(localRows),r=rowMap(remoteRows),out=[];
+    for(const [id,bv] of b){
+      const value=mergeRecordValue(bv,l.has(id)?l.get(id):ABSENT,r.has(id)?r.get(id):ABSENT,path,id,conflicts);
       if(value!==ABSENT)out.push(value);
+    }
+    for(const [id,lv] of l){
+      if(b.has(id))continue;
+      const value=mergeRecordValue(ABSENT,lv,r.has(id)?r.get(id):ABSENT,path,id,conflicts);
+      if(value!==ABSENT)out.push(value);
+    }
+    for(const [id,rv] of r){
+      if(b.has(id)||l.has(id))continue;
+      const value=mergeRecordValue(ABSENT,ABSENT,rv,path,id,conflicts);
+      if(value!==ABSENT)out.push(value);
+    }
+    return out;
+  }
+  const MERGE_YIELD_BATCH=400;
+  const SAME_YIELD_BATCH=2048;
+  function yieldToBrowser(){return new Promise(resolve=>setTimeout(resolve,0));}
+  async function sameAsync(a,b){
+    // Iterative structural comparison avoids giant stable-JSON strings and recursive
+    // call-stack growth. A frame is retained per nesting level, not per record.
+    const stack=[{a,b,entered:false}],hasOwn=Object.prototype.hasOwnProperty;
+    let inspected=0;
+    while(stack.length){
+      const frame=stack[stack.length-1];
+      if(!frame.entered){
+        frame.entered=true;
+        if(frame.a===frame.b){stack.pop();continue;}
+        if(frame.a===null||frame.b===null){return false;}
+        const typeA=typeof frame.a,typeB=typeof frame.b;
+        if(typeA!=='object'||typeB!=='object'){
+          if(!Object.is(frame.a,frame.b))return false;
+          stack.pop();continue;
+        }
+        const arrayA=Array.isArray(frame.a),arrayB=Array.isArray(frame.b);
+        if(arrayA!==arrayB)return false;
+        frame.isArray=arrayA;
+        if(arrayA){
+          if(frame.a.length!==frame.b.length)return false;
+          frame.length=frame.a.length;
+        }else{
+          if(!isObject(frame.a)||!isObject(frame.b))return false;
+          frame.keys=Object.keys(frame.a);
+          if(frame.keys.length!==Object.keys(frame.b).length)return false;
+          for(const key of frame.keys)if(!hasOwn.call(frame.b,key))return false;
+        }
+        frame.index=0;
+      }
+      const length=frame.isArray?frame.length:frame.keys.length;
+      if(frame.index>=length){stack.pop();continue;}
+      const key=frame.isArray?frame.index++:frame.keys[frame.index++];
+      stack.push({a:frame.a[key],b:frame.b[key],entered:false});
+      inspected++;
+      if(inspected%SAME_YIELD_BATCH===0)await yieldToBrowser();
+    }
+    return true;
+  }
+  async function indexRowsAsync(index,value,side){
+    const source=rows(value);
+    for(let i=0;i<source.length;i++){
+      const row=source[i];
+      if(!isObject(row))throw new Error('Cannot safely merge a malformed workspace record. Repair the record before syncing.');
+      if(row.id===undefined||row.id===null||String(row.id)==='')throw new Error('Cannot safely merge a record without a stable ID. Repair the record before syncing.');
+      const id=String(row.id);
+      let entry=index.get(id);
+      if(!entry){
+        entry={base:ABSENT,local:ABSENT,remote:ABSENT};
+        index.set(id,entry);
+      }else if(entry[side]!==ABSENT){
+        throw new Error('Cannot safely merge records with duplicate stable record ID "'+id+'". Fix the duplicate IDs before syncing.');
+      }
+      entry[side]=row;
+      if((i+1)%MERGE_YIELD_BATCH===0)await yieldToBrowser();
+    }
+  }
+  async function mergeRecordsAsync(baseRows,localRows,remoteRows,path,conflicts){
+    // Keep one index of record references rather than three full Maps. On a large
+    // workspace this cuts index overhead, and each index pass yields so Android WebView
+    // can paint and process input while the snapshot is being reconciled.
+    const index=new Map(),out=[];
+    await indexRowsAsync(index,baseRows,'base');
+    await indexRowsAsync(index,localRows,'local');
+    await indexRowsAsync(index,remoteRows,'remote');
+    let processed=0;
+    for(const [id,entry] of index){
+      const value=mergeRecordValue(entry.base,entry.local,entry.remote,path,id,conflicts);
+      if(value!==ABSENT)out.push(value);
+      processed++;
+      if(processed%MERGE_YIELD_BATCH===0)await yieldToBrowser();
     }
     return out;
   }
@@ -137,16 +276,14 @@
         const rv=Object.prototype.hasOwnProperty.call(r,key)?r[key]:ABSENT;
         value=mergeValue(bv,lv,rv,path+'.'+key,conflicts);
       }
-      if(value!==ABSENT)out[key]=value;
+      if(value!==ABSENT)putOwn(out,key,value);
     }
     return out;
   }
-  function merge(basePayload,localPayload,remotePayload){
+  function validateMergeInputs(localPayload,remotePayload){
     if(!isObject(localPayload)||!isObject(localPayload.state)||!isObject(remotePayload)||!isObject(remotePayload.state))throw new Error('Three-way workspace merge requires valid local and cloud snapshots.');
-    const base=isObject(basePayload)?basePayload:{state:{},featureState:{}};
-    const conflicts=[];
-    const state=mergeSection(base.state,localPayload.state,remotePayload.state,'state',['streams','subjects','topics','history','exams'],conflicts);
-    const featureState=mergeSection(base.featureState,localPayload.featureState||{},remotePayload.featureState||{},'featureState',['journal','papers','goals','studyLogs'],conflicts);
+  }
+  function finishMerge(base,localPayload,remotePayload,state,featureState,conflicts){
     if(root&&root.NexusCurriculumIntegrity&&typeof root.NexusCurriculumIntegrity.reconcileMergedIntents==='function'){
       const integrity=root.NexusCurriculumIntegrity;
       const intentResult=integrity.reconcileMergedIntents(base.state,localPayload.state,remotePayload.state,state);
@@ -161,5 +298,37 @@
     const payload={...remotePayload,state,featureState,exportedAt:new Date().toISOString()};
     return {payload,conflicts};
   }
-  return {merge,stable};
+  function merge(basePayload,localPayload,remotePayload){
+    validateMergeInputs(localPayload,remotePayload);
+    const base=isObject(basePayload)?basePayload:{state:{},featureState:{}},conflicts=[];
+    const state=mergeSection(base.state,localPayload.state,remotePayload.state,'state',['streams','subjects','topics','history','exams'],conflicts);
+    const featureState=mergeSection(base.featureState,localPayload.featureState||{},remotePayload.featureState||{},'featureState',['journal','papers','goals','studyLogs'],conflicts);
+    return finishMerge(base,localPayload,remotePayload,state,featureState,conflicts);
+  }
+  async function mergeSectionAsync(base,local,remote,path,recordFields,conflicts){
+    const b=isObject(base)?base:{},l=isObject(local)?local:{},r=isObject(remote)?remote:{};
+    const keys=new Set([...Object.keys(b),...Object.keys(l),...Object.keys(r)]),out={};
+    for(const key of keys){
+      let value;
+      if(recordFields.includes(key))value=await mergeRecordsAsync(b[key],l[key],r[key],path+'.'+key,conflicts);
+      else if(key==='selectedTopicIds')value=mergeSet(b[key],l[key],r[key]);
+      else if(path==='featureState'&&key==='taskChecks')value=mergeSetMap(b[key],l[key],r[key]);
+      else{
+        const bv=Object.prototype.hasOwnProperty.call(b,key)?b[key]:ABSENT;
+        const lv=Object.prototype.hasOwnProperty.call(l,key)?l[key]:ABSENT;
+        const rv=Object.prototype.hasOwnProperty.call(r,key)?r[key]:ABSENT;
+        value=mergeValue(bv,lv,rv,path+'.'+key,conflicts);
+      }
+      if(value!==ABSENT)putOwn(out,key,value);
+    }
+    return out;
+  }
+  async function mergeAsync(basePayload,localPayload,remotePayload){
+    validateMergeInputs(localPayload,remotePayload);
+    const base=isObject(basePayload)?basePayload:{state:{},featureState:{}},conflicts=[];
+    const state=await mergeSectionAsync(base.state,localPayload.state,remotePayload.state,'state',['streams','subjects','topics','history','exams'],conflicts);
+    const featureState=await mergeSectionAsync(base.featureState,localPayload.featureState||{},remotePayload.featureState||{},'featureState',['journal','papers','goals','studyLogs'],conflicts);
+    return finishMerge(base,localPayload,remotePayload,state,featureState,conflicts);
+  }
+  return {merge,mergeAsync,stable,sameAsync};
 });

@@ -285,7 +285,7 @@
         }
       }
       const error = new Error('Could not save the complete restore to this browser. ' +
-        (rollbackErrors.length ? 'Automatic rollback was not fully successful; do not close or reload Nexus yet.' :
+        (rollbackErrors.length ? 'Automatic rollback was not fully successful. Do not close or reload Nexus yet.' :
           'The previous saved data has been restored. Check available browser storage and try again.'));
       error.cause = cause;
       error.rollbackSucceeded = rollbackErrors.length === 0;
@@ -295,26 +295,28 @@
   }
 
   function cloudConflict(message) {
-    const error = new Error(message || 'Cloud data changed on another device. Local changes were preserved; reload and merge before syncing again.');
+    const error = new Error(message || 'Cloud data changed on another device. Local changes were preserved. Reload and merge before syncing again.');
     error.code = 'NEXUS_CLOUD_CONFLICT';
     return error;
   }
 
-  async function writeCloudSnapshot(client, userId, payload, expectedStamp, stamp) {
+  async function writeCloudSnapshot(client, userId, payload, expectedStamp, stamp, signal) {
     if (!client || typeof userId !== 'string' || !userId || !isRecord(payload) || typeof stamp !== 'string') {
       throw new Error('Invalid cloud snapshot write.');
     }
     let result;
     if (expectedStamp) {
-      result = await client.from('nexus_user_data')
+      let query = client.from('nexus_user_data')
         .update({ payload, updated_at: stamp })
         .eq('user_id', userId)
-        .eq('updated_at', expectedStamp)
-        .select('updated_at');
+        .eq('updated_at', expectedStamp);
+      if (signal && typeof query.abortSignal === 'function') query = query.abortSignal(signal);
+      result = await query.select('updated_at');
     } else {
-      result = await client.from('nexus_user_data')
-        .insert({ user_id: userId, payload, updated_at: stamp })
-        .select('updated_at');
+      let query = client.from('nexus_user_data')
+        .insert({ user_id: userId, payload, updated_at: stamp });
+      if (signal && typeof query.abortSignal === 'function') query = query.abortSignal(signal);
+      result = await query.select('updated_at');
     }
     if (result && result.error) {
       if (!expectedStamp && result.error.code === '23505') throw cloudConflict();

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { resolvePreviewConfig, renderConfigScript } from './build.mjs';
+import { resolvePreviewConfig, resolveStagingEntityDeltaEnabled, renderConfigScript } from './build.mjs';
 
 const previewEnv = {
   VERCEL_ENV: 'preview',
@@ -154,5 +154,53 @@ assert.match(cloudSyncSource, /emailRedirectTo:authRedirectUrl\(\)/,
   'email OAuth must return to the active deployment rather than a hard-coded preview');
 assert.doesNotMatch(cloudSyncSource, /(?:redirectTo|emailRedirectTo):\s*['"]https?:\/\//,
   'no OAuth callback may be pinned to an old preview or production hostname');
+
+
+ // Phase 3.4 is default-off. Only an explicit opt-in on the exact PR preview,
+ // targeting the exact isolated Supabase staging project, may open the runtime gate.
+ const deltaPreviewEnv = {
+   ...previewEnv,
+   VERCEL_GIT_COMMIT_REF: 'android/capacitor-multistore-foundation',
+   NEXUS_SUPABASE_URL: 'https://xuwfzibxhxzxxupprxsq.supabase.co',
+   NEXUS_ENTITY_DELTA_SYNC_STAGING: 'true'
+ };
+ const deltaPreviewConfig = resolvePreviewConfig(deltaPreviewEnv);
+ assert.equal(resolveStagingEntityDeltaEnabled(deltaPreviewEnv, deltaPreviewConfig), true,
+   'the exact PR preview may opt in only when it targets the isolated Nexus staging project');
+ assert.equal(resolveStagingEntityDeltaEnabled({ ...deltaPreviewEnv, NEXUS_ENTITY_DELTA_SYNC_STAGING: 'false' }, deltaPreviewConfig), false,
+   'an explicit false value must keep the delta runtime disabled');
+ assert.equal(resolveStagingEntityDeltaEnabled({ ...deltaPreviewEnv, NEXUS_ENTITY_DELTA_SYNC_STAGING: undefined }, deltaPreviewConfig), false,
+   'the absent opt-in must keep the delta runtime disabled');
+ assert.equal(resolveStagingEntityDeltaEnabled({ ...deltaPreviewEnv, VERCEL_ENV: 'production' }, deltaPreviewConfig), false,
+   'production builds must never open the staging delta runtime');
+ assert.equal(resolveStagingEntityDeltaEnabled({ ...deltaPreviewEnv, VERCEL_GIT_COMMIT_REF: 'main' }, deltaPreviewConfig), false,
+   'other Vercel branches must never open the staging delta runtime');
+ assert.equal(resolveStagingEntityDeltaEnabled({
+   ...deltaPreviewEnv, NEXUS_SUPABASE_URL: 'https://txugbdavblpettcnhcxl.supabase.co'
+ }, { url: 'https://txugbdavblpettcnhcxl.supabase.co', key: deltaPreviewEnv.NEXUS_SUPABASE_ANON_KEY }), false,
+   'the delta runtime must reject the production Supabase project');
+ assert.equal(resolveStagingEntityDeltaEnabled({
+   ...deltaPreviewEnv, NEXUS_SUPABASE_URL: 'https://other-staging.supabase.co'
+ }, { url: 'https://other-staging.supabase.co', key: deltaPreviewEnv.NEXUS_SUPABASE_ANON_KEY }), false,
+   'the delta runtime must reject an unrelated staging project');
+ const netlifyDeltaPreviewEnv = {
+   ...deltaPreviewEnv,
+   VERCEL_ENV: undefined,
+   VERCEL_GIT_COMMIT_REF: undefined,
+   CONTEXT: 'deploy-preview',
+   BRANCH: 'android/capacitor-multistore-foundation'
+ };
+ assert.equal(resolveStagingEntityDeltaEnabled(netlifyDeltaPreviewEnv, deltaPreviewConfig), true,
+   'the exact Netlify deploy preview may use the same explicit isolated-staging opt-in');
+ assert.equal(resolveStagingEntityDeltaEnabled({ ...netlifyDeltaPreviewEnv, CONTEXT: 'production' }, deltaPreviewConfig), false,
+   'Netlify production must never open the staging delta runtime');
+ assert.match(renderConfigScript(deltaPreviewConfig, true), /window\.NEXUS_ENTITY_DELTA_SYNC_STAGING=true/,
+   'the generated preview bootstrap must inject the enabled runtime gate');
+ assert.match(renderConfigScript(deltaPreviewConfig, false), /window\.NEXUS_ENTITY_DELTA_SYNC_STAGING=false/,
+   'the generated bootstrap must default the runtime gate to false');
+ assert.match(renderConfigScript(deltaPreviewConfig), /window\.NEXUS_ENTITY_DELTA_SYNC_STAGING=false/,
+   'omitting the runtime opt-in must preserve the default-off gate');
+ assert.match(renderConfigScript(null, true), /window\.NEXUS_ENTITY_DELTA_SYNC_STAGING=false/,
+   'a missing Supabase config must prevent the runtime gate from opening');
 
 console.log('Preview-only Supabase configuration guard tests passed.');

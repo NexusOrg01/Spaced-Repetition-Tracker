@@ -1,0 +1,47 @@
+# TEMPLATE ONLY. Replace the application ID, version, versionCode and commit before copying
+# to fdroiddata/metadata/<FINAL_APPLICATION_ID>.yml. Do not submit this file as-is.
+AutoName: "Nexus: Spaced Repetition Tracker"
+Categories:
+  - Science & Education
+License: Apache-2.0
+AuthorName: NexusOrg01
+AuthorWebSite: https://github.com/NexusOrg01
+WebSite: https://github.com/NexusOrg01/Spaced-Repetition-Tracker
+SourceCode: https://github.com/NexusOrg01/Spaced-Repetition-Tracker
+IssueTracker: https://github.com/NexusOrg01/Spaced-Repetition-Tracker/issues
+Summary: Offline-first spaced repetition and study planner
+Description: |-
+  Nexus is an offline-first study and spaced-repetition tracker.
+  Organize streams, subjects and topics, review material with FSRS
+  scheduling, and manage study plans, journals, goals and papers in
+  the Study Hub. JSON and CSV backup/restore are supported.
+  Account sign-in and cloud synchronisation are optional. Core study,
+  review and backup features remain usable offline. The Android app
+  does not include advertising, analytics or Google Play Services.
+# Discuss whether NonFreeNet is appropriate with F-Droid maintainers:
+# cloud sync is optional but currently uses a fixed hosted Supabase endpoint.
+RepoType: git
+Repo: https://github.com/NexusOrg01/Spaced-Repetition-Tracker.git
+Builds:
+  - versionName: REPLACE_WITH_RELEASE_VERSION
+    versionCode: 1
+    commit: REPLACE_WITH_FULL_RELEASE_COMMIT
+    subdir: android
+    srclibs:
+      - nodejs@27f213124280b4db4cd1e3dd42f6f8afd01ceff7
+      - esbuild@609683d892977362a0f99026cb74b96263d728a9
+      - golang-sys@c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf
+    sudo: apt-get update && apt-get install -y build-essential python3 golang-go
+    prebuild: python3 ../scripts/restore-android-lock.py
+    build: |
+      cd ..
+      bash scripts/build-nodejs-from-source.sh "$$nodejs$$" "$PWD/.build/nodejs-install"
+      export PATH="$PWD/.build/nodejs-install/bin:$PATH"
+      ESBUILD_SOURCE_DIR=$$esbuild$$ GO_SYS_SOURCE_DIR=$$golang-sys$$ NEXUS_ESBUILD_BINARY=.build/bin/esbuild NEXUS_ANDROID_APPLICATION_ID=REPLACE_WITH_FINAL_APPLICATION_ID NEXUS_ANDROID_CLOUD_MODE=source NEXUS_ANDROID_ALLOW_PRODUCTION_CLOUD=true npm run android:sync:fdroid
+    gradle: fdroid
+    # The F-Droid build uses system Gradle; the checked-in wrapper JAR is not required.
+    output: app/build/outputs/apk/fdroid/release/app-fdroid-release-unsigned.apk
+    gradleprops:
+      - nexusApplicationId=REPLACE_WITH_FINAL_APPLICATION_ID
+      - nexusVersionCode=1
+      - nexusVersionName=REPLACE_WITH_RELEASE_VERSION

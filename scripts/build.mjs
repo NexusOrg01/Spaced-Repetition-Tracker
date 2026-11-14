@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = resolve(root, 'dist');
 const LIVE_HOST = 'txugbdavblpettcnhcxl.supabase.co';
-const PREVIEW_BRANCHES = new Set(['feat/account-bound-offline-sync', 'ai-dev/rebuild-commerce-sync-integrity', 'ai-dev/fix-signin-preserve-offline-workspace', 'ai-dev/fix-commerce-pending-overwrite', 'ai-dev/rebuild-explore-curriculum-lifecycle', 'ai-dev/fresh-curriculum-sync-rebuild']);
+const PREVIEW_BRANCHES = new Set(['feat/account-bound-offline-sync', 'ai-dev/rebuild-commerce-sync-integrity', 'ai-dev/fix-signin-preserve-offline-workspace', 'ai-dev/fix-commerce-pending-overwrite', 'ai-dev/rebuild-explore-curriculum-lifecycle', 'ai-dev/fresh-curriculum-sync-rebuild', 'android/capacitor-multistore-foundation']);
 
 function isAllowedAnonKey(key) {
   if (key.startsWith('sb_secret_') || key.length < 20) return false;
@@ -51,9 +51,22 @@ export function resolvePreviewConfig(env) {
   return { url: url.origin, key };
 }
 
-export function renderConfigScript(config) {
+export function resolveStagingEntityDeltaEnabled(env, config) {
+  const vercelPreview = env.VERCEL_ENV === 'preview' &&
+    String(env.VERCEL_GIT_COMMIT_REF || '') === 'android/capacitor-multistore-foundation';
+  const netlifyDeployPreview = env.CONTEXT === 'deploy-preview' &&
+    String(env.BRANCH || '') === 'android/capacitor-multistore-foundation';
+  return (vercelPreview || netlifyDeployPreview) &&
+    env.NEXUS_ENTITY_DELTA_SYNC_STAGING === 'true' &&
+    !!config && config.url === 'https://xuwfzibxhxzxxupprxsq.supabase.co';
+}
+
+export function renderConfigScript(config, enableStagingEntityDelta = false) {
+  const enabled = enableStagingEntityDelta === true && !!config &&
+    config.url === 'https://xuwfzibxhxzxxupprxsq.supabase.co';
   return "/* Generated at build time; do not edit or commit project credentials. */\n" +
-    "(function(){'use strict';const config=" + JSON.stringify(config) +
+    "(function(){'use strict';window.NEXUS_ENTITY_DELTA_SYNC_STAGING=" + String(enabled) +
+    ";const config=" + JSON.stringify(config) +
     ";if(!config)return;try{localStorage.setItem('nexus.cloud.config.v1',JSON.stringify(config));}catch(_){}})();\n";
 }
 
@@ -88,10 +101,10 @@ async function verifyStorageBootstrap() {
   const storage = await readFile(join(root, 'nexus-storage.js'), 'utf8');
   const bootstrap = await readFile(join(root, 'nexus-app-bootstrap.js'), 'utf8');
   const expected = [
-    'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
-    'explore-curriculum.js', 'app-core.js', 'fsrs-bundle.js', 'study-hub.js', 'nexus-build-config.js',
-    'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-sync.js',
-    'nexus-app-inline.js', 'workspace-isolation-guard.js'
+    'workspace-isolation-guard.js', 'backup-restore-utils.js', 'offline-sync-queue.js',
+    'curriculum-integrity.js', 'explore-curriculum.js', 'app-core.js', 'fsrs-bundle.js',
+    'study-hub.js', 'nexus-build-config.js', 'cloud-sync-recovery.js',
+    'workspace-sync-merge.js', 'cloud-chunk-storage.js', 'entity-delta-sync.js', 'cloud-sync.js', 'nexus-app-inline.js'
   ];
   assert.equal(html.split('<script src="./nexus-storage.js"></script>').length - 1, 1,
     'index.html must load the storage adapter exactly once.');
@@ -113,7 +126,7 @@ async function verifyStorageBootstrap() {
   for (const asset of [
     'backup-restore-utils.js', 'offline-sync-queue.js', 'curriculum-integrity.js',
     'explore-curriculum.js', 'app-core.js', 'study-hub.js', 'nexus-build-config.js',
-    'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-sync.js', 'workspace-isolation-guard.js', 'fsrs-bundle.js'
+    'cloud-sync-recovery.js', 'workspace-sync-merge.js', 'cloud-chunk-storage.js', 'entity-delta-sync.js', 'cloud-sync.js', 'workspace-isolation-guard.js', 'fsrs-bundle.js'
   ]) {
     assert.ok(!html.includes('<script src="./' + asset + '"></script>'),
       'App module ' + asset + ' must not execute directly from index.html before durable storage initialization.');
@@ -125,16 +138,21 @@ async function copySiteFiles() {
   await verifyStorageBootstrap();
   await rm(output, { recursive: true, force: true });
   await mkdir(output, { recursive: true });
-  const excluded = new Set(['.git', '.github', 'node_modules', 'dist', 'scripts', 'supabase', '.gitignore', 'package.json', 'vercel.json', 'netlify.toml']);
+  const excluded = new Set(['.git', '.github', '.build', 'node_modules', 'dist', 'scripts', 'supabase', 'android', '.gitignore', 'package.json', 'vercel.json', 'netlify.toml']);
   for (const entry of await readdir(root, { withFileTypes: true })) {
     if (excluded.has(entry.name)) continue;
     await cp(join(root, entry.name), join(output, entry.name), { recursive: true });
   }
   const config = resolvePreviewConfig(process.env);
-  await writeFile(join(output, 'nexus-build-config.js'), renderConfigScript(config), 'utf8');
+  const stagingEntityDeltaEnabled = resolveStagingEntityDeltaEnabled(process.env, config);
+  await writeFile(join(output, 'nexus-build-config.js'),
+    renderConfigScript(config, stagingEntityDeltaEnabled), 'utf8');
   assert.ok(await readdir(output).then(items => items.includes('index.html')), 'static build must include index.html');
   if (config) {
     console.log('Built isolated Supabase staging config for the designated Preview branch.');
+    if (stagingEntityDeltaEnabled) {
+      console.log('Explicit Phase 3.4 entity-delta opt-in is enabled for the isolated staging preview.');
+    }
   } else {
     console.log('Built static Nexus output without injecting staging credentials.');
     if (PREVIEW_BRANCHES.has(String(process.env.CF_PAGES_BRANCH || '').trim())) {

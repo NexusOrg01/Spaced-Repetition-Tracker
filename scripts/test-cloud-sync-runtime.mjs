@@ -19,6 +19,49 @@ globalThis.NexusCurriculumPacks = commerceCatalogue.packs;
 const commercePack = commerceCatalogue.packs.find(pack => pack.id === 'sl-al-commerce-si');
 const workspaceMerge = require('../workspace-sync-merge.js');
 const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
+
+const syncMarkerLimitMatch=source.match(/const MAX_SYNC_CURRICULUM_MARKERS=(\d+);/);
+const mergeStateStart=source.indexOf('function mergeState(local,remote){');
+const mergeStateEnd=source.indexOf('function hasLocalWork(',mergeStateStart);
+assert.ok(syncMarkerLimitMatch&&Number(syncMarkerLimitMatch[1])>=12032,
+  'cloud-side account merge must use a marker limit large enough for batch deletion');
+assert.ok(mergeStateStart>=0&&mergeStateEnd>mergeStateStart,'cloud-side guest/account merge helper must be available');
+const mergeStateSandbox={
+  clone:value=>JSON.parse(JSON.stringify(value)),
+  normalizeState:value=>({...value,settings:{...(value.settings||{})}}),
+  window:{NexusCurriculumIntegrity:{reconcileMergedIntents(){return {changed:false,conflicts:[]};}}}
+};
+vm.createContext(mergeStateSandbox);
+vm.runInContext(syncMarkerLimitMatch[0]+'\n'+source.slice(mergeStateStart,mergeStateEnd),mergeStateSandbox,{filename:'cloud-merge-state.js'});
+const largeInstallMarkers=Array.from({length:12032},(_,index)=>'installed:topic:synthetic-pack:synthetic-subject:'+JSON.stringify('Topic '+index));
+const largeDeleteMarkers=Array.from({length:12032},(_,index)=>'deleted:topic:synthetic-pack:synthetic-subject:'+JSON.stringify('Topic '+index));
+const mergedMarkerState=mergeStateSandbox.mergeState({
+  streams:[],subjects:[],topics:[],exams:[],history:[],
+  settings:{installedCurricula:largeInstallMarkers,curriculumTombstones:largeDeleteMarkers}
+},{
+  streams:[],subjects:[],topics:[],exams:[],history:[],
+  settings:{installedCurricula:[],curriculumTombstones:[]}
+});
+assert.equal(mergedMarkerState.settings.installedCurricula.length,12032,
+  'guest/account workspace merge must retain more than 5,000 granular install markers');
+assert.equal(mergedMarkerState.settings.curriculumTombstones.length,12032,
+  'guest/account workspace merge must retain all 12,032 deletion markers');
+
+
+const initializationStart=source.indexOf('async function initializeSession(s){');
+const initializationEnd=source.indexOf('async function sameWorkspace(',initializationStart);
+assert.ok(initializationStart>=0&&initializationEnd>initializationStart,'cloud initialization source must be inspectable');
+const initializationSource=source.slice(initializationStart,initializationEnd);
+const initializationRemoteRead=initializationSource.indexOf('const remote=await fetchRemote(newUserId);');
+const initializationLocalSnapshot=initializationSource.indexOf('let localPayload=snapshot();');
+assert.ok(initializationRemoteRead>=0&&initializationLocalSnapshot>initializationRemoteRead,
+  'large local state must be snapshotted after the asynchronous cloud read so an offline edit during the request is included');
+assert.ok(!initializationSource.includes("localPayload=snapshot();const remote=await fetchRemote(newUserId);")&&
+  !initializationSource.includes('sameWorkspace(localPayload,latestLocalPayload)'),
+  'account initialization must not deep-clone and compare the entire local workspace twice before any account decision');
+assert.ok(source.includes("const normalizedBase=savedBase?normalizeWorkspacePayload({...savedBase,schema:4}):null;"),
+  'a last-verified workspace base is already normalized and must not receive a second legacy normalization pass that creates false concurrent-edit conflicts');
+
 const OWNER = queue.OWNER;
 const STATE_KEY = 'recall.study.tracker.v1';
 const FEATURE_KEY = 'recall.study.features.v1';
@@ -52,12 +95,14 @@ function makeElement() {
 }
 const storage = new MemoryStorage({
   [OWNER]: accountA.id,
+  'nexus.syncdiag.enabled': '1',
   [CONFIG_KEY]: JSON.stringify({ url: 'https://nexus-staging-test.supabase.co', key: 'sb_publishable_test_key_value_long_enough' }),
   [STATE_KEY]: JSON.stringify(stateFor('offline-A')),
   [FEATURE_KEY]: JSON.stringify(featuresFor('offline-A'))
 });
 const localState = stateFor('offline-A');
 let activeSession = { user: accountA };
+let authStateCallback = null;
 let networkAvailable = false;
 let deferNextRemoteRead = false;
 let releaseDeferredRemoteRead = null;
@@ -67,8 +112,28 @@ let turnOfflineDuringRacingCommit = false;
 const rows = new Map();
 const listeners = {};
 const elements = new Map();
+let dialogEnabled = false;
+let dialogChoice = 'merge';
+let dialogShownCount = 0;
+const accountChoiceDialog = {
+  open: false,
+  buttons: [],
+  addEventListener() {},
+  removeEventListener() {},
+  querySelectorAll() {
+    this.buttons = ['merge', 'replace-cloud', 'replace'].map(value => ({ dataset: { accountChoice: value }, onclick: null }));
+    return this.buttons;
+  },
+  showModal() {
+    this.open = true;
+    dialogShownCount++;
+    const selected = this.buttons.find(button => button.dataset.accountChoice === dialogChoice);
+    if (selected && selected.onclick) selected.onclick();
+  },
+  close() { this.open = false; }
+};
 const getElement = id => {
-  if (id === 'accountChoiceDialog') return null;
+  if (id === 'accountChoiceDialog') return dialogEnabled ? accountChoiceDialog : null;
   if (!elements.has(id)) elements.set(id, makeElement());
   return elements.get(id);
 };
@@ -79,6 +144,7 @@ const document = {
   createElement() { return { set src(v) { this._src = v; }, addEventListener() {} }; },
   head: { appendChild() {} }
 };
+const entityProjectionRebuilds = [];
 const window = {
   NexusBackupRestoreUtils: backup,
   NexusOfflineSyncQueue: queue,
@@ -95,6 +161,14 @@ const window = {
   NexusFSRS: { currentSettings: { ...DEFAULT_FSRS }, settings() { return { ...this.currentSettings }; }, setSettings(value) { this.currentSettings = { ...value }; } },
   NexusStorageKey: STATE_KEY,
   NexusFeatureStorageKey: FEATURE_KEY,
+  NexusRebuildEntityProjection: async () => {
+    entityProjectionRebuilds.push({
+      ownerId: storage.getItem(OWNER),
+      state: JSON.parse(storage.getItem(STATE_KEY) || 'null'),
+      featureState: JSON.parse(storage.getItem(FEATURE_KEY) || 'null')
+    });
+    return { mode: 'snapshot-backfill' };
+  },
   NexusGetFeatureState: () => JSON.parse(storage.getItem(FEATURE_KEY) || '{}'),
   NexusNormalizeFeatureState: v => v && typeof v === 'object' && !Array.isArray(v) ? JSON.parse(JSON.stringify(v)) : {},
   NexusSetFeatureState: (v, options = {}) => { storage.setItem(FEATURE_KEY, JSON.stringify(v || {})); if (options.persist === false) return true; return true; },
@@ -160,7 +234,7 @@ function makeQuery(table) {
 }
 const client = {
   auth: {
-    onAuthStateChange() {},
+    onAuthStateChange(callback) { authStateCallback = callback; return { data: { subscription: { unsubscribe() {} } } }; },
     async getSession() { return { data: { session: activeSession }, error: null }; },
     async getUser() { return { data: { user: activeSession && activeSession.user }, error: null }; }
   },
@@ -170,7 +244,7 @@ window.supabase = { createClient() { return client; } };
 context = {
   window, document, navigator: { get onLine() { return networkAvailable; } },
   location: { hostname: 'preview.example', origin: 'https://preview.example', pathname: '/' },
-  localStorage: storage, URL, console, Promise, Date, Map, Array, Object, JSON, String, Math, Number, Error,
+  localStorage: storage, URL, URLSearchParams, console, Promise, Date, Map, Array, Object, JSON, String, Math, Number, Error, AbortController,
   setTimeout, clearTimeout, setInterval, clearInterval,
   state: localState,
   clone: v => JSON.parse(JSON.stringify(v)),
@@ -968,8 +1042,14 @@ for (const scenario of [
   context.state = guestCommerceState;
   activeSession = { user: accountB };
   networkAvailable = true;
+  dialogEnabled = true;
+  dialogChoice = 'merge';
+  const choiceCountBefore = dialogShownCount;
 
   await window.NexusCloudSync.reconnect();
+  dialogEnabled = false;
+  assert.equal(dialogShownCount, choiceCountBefore + 1,
+    'first sign-in with a guest workspace and account-bound pending snapshot must require an explicit merge choice');
 
   const localAfterSignIn = JSON.parse(storage.getItem(STATE_KEY));
   const synced = rows.get(accountB.id).payload.state;
@@ -1194,6 +1274,14 @@ for (const scenario of [
     'a local save must update the queued payload rather than allowing an older snapshot to overwrite it');
   assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics.length, changedState.topics.length,
     'queueing a local save must not remove or alter the locally persisted workspace');
+
+  const pendingBeforeCommittedNote=queue.getPending(storage,accountB.id);
+  window.NexusCloudSync.noteCommittedLocalSave({state:changedState,featureState:currentFeatures});
+  const pendingAfterCommittedNote=queue.getPending(storage,accountB.id);
+  assert.equal(pendingAfterCommittedNote.operationId,pendingBeforeCommittedNote.operationId,
+    'a save already committed by app-core must not create a second queue snapshot');
+  assert.ok(pendingAfterCommittedNote.payload.state.topics.some(topic=>topic.id==='local-save-after-pending'),
+    'the lightweight committed-save hook must leave the already-committed queue payload intact');
 }
 
 // A different authenticated account must recover only its own cached local workspace
@@ -1222,7 +1310,16 @@ for (const scenario of [
   };
   activeSession = { user: accountB };
   networkAvailable = false;
+  const rebuildsBeforeAccountBCacheRestore = entityProjectionRebuilds.length;
   await window.NexusCloudSync.reconnect();
+  assert.equal(entityProjectionRebuilds.length, rebuildsBeforeAccountBCacheRestore + 1,
+    'restoring a different account cache must rebuild the entity projection after its snapshot commit');
+  assert.equal(entityProjectionRebuilds.at(-1).ownerId, accountB.id,
+    'the account-handoff entity projection must be bound to the newly committed owner');
+  assert.equal(entityProjectionRebuilds.at(-1).state.topics[0].id, 'cached-B-offline',
+    'the entity projection rebuild must observe the restored target-account snapshot, not the previous account');
+  assert.equal(entityProjectionRebuilds.at(-1).featureState.journal[0].text, 'cached-B-offline',
+    'the entity projection rebuild must include the restored target-account Study Hub data');
   assert.equal(storage.getItem(OWNER), accountB.id,
     'offline account handoff should activate only the target account when its local snapshot is found');
   assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id, 'cached-B-offline',
@@ -1257,4 +1354,215 @@ for (const scenario of [
   await window.NexusCloudSync.reconnect();
 }
 
-console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, and target-account pending-snapshot isolation.');
+
+// End-to-end second-device regression: Device 2 starts with the old verified
+// 77,144-topic snapshot. Device 1 has removed a 12,032-topic subject and its
+// review history from the cloud. Reconnect must apply that deletion, retain the
+// 65,112 unrelated topics, and clear the outbox only after the merged cloud
+// snapshot is verified.
+{
+  const totalTopics=77144,deletedCount=12032,retainedCount=totalTopics-deletedCount;
+  const baseStamp='2026-11-09T00:00:00.000Z';
+  const remoteStamp='2026-11-09T00:00:01.000Z';
+  const baseState={
+    schema:3,
+    streams:[
+      {id:'large-target-stream',name:'Large target stream'},
+      {id:'large-manual-stream',name:'Unrelated manual stream'}
+    ],
+    subjects:[
+      {id:'large-deleted-subject',name:'Subject deleted on Device 1',streamId:'large-target-stream',order:0},
+      {id:'large-retained-subject',name:'Unrelated retained subject',streamId:'large-manual-stream',order:0}
+    ],
+    topics:[],
+    exams:[],
+    history:[],
+    settings:{theme:'system',intervalCap:120,installedCurricula:[],curriculumTombstones:[]}
+  };
+  for(let index=0;index<deletedCount;index++){
+    const id='device-sync-deleted-'+index;
+    baseState.topics.push({
+      id,name:'Deleted topic '+index,subjectId:'large-deleted-subject',
+      notes:'',custom:true,createdAt:'2026-10-01',lastReviewed:'2026-11-01',
+      lastRating:4,dueDate:'2026-11-10',intervalDays:7,reviewCount:1,
+      streak:1,lapses:0,archived:false
+    });
+    baseState.history.push({
+      id:'device-sync-deleted-review-'+index,topicId:id,streamId:'large-target-stream',
+      subjectId:'large-deleted-subject',streamName:'Large target stream',
+      subjectName:'Subject deleted on Device 1',topicName:'Deleted topic '+index,
+      reviewedAt:'2026-11-01',rating:4,intervalDays:7,dueDate:'2026-11-10',note:''
+    });
+  }
+  for(let index=0;index<retainedCount;index++){
+    baseState.topics.push({
+      id:'device-sync-retained-'+index,name:'Retained topic '+index,
+      subjectId:'large-retained-subject',notes:'',custom:true,createdAt:'2026-10-01',
+      lastReviewed:'',lastRating:null,dueDate:'',intervalDays:0,reviewCount:0,
+      streak:0,lapses:0,archived:false
+    });
+  }
+  baseState.history.push({
+    id:'device-sync-retained-review',topicId:'device-sync-retained-0',
+    streamId:'large-manual-stream',subjectId:'large-retained-subject',
+    streamName:'Unrelated manual stream',subjectName:'Unrelated retained subject',
+    topicName:'Retained topic 0',reviewedAt:'2026-11-01',rating:3,
+    intervalDays:4,dueDate:'2026-11-05',note:'keep'
+  });
+  assert.equal(baseState.topics.length,totalTopics);
+  const remoteState={
+    ...JSON.parse(JSON.stringify(baseState)),
+    streams:baseState.streams.filter(item=>item.id!=='large-target-stream'),
+    subjects:baseState.subjects.filter(item=>item.id!=='large-deleted-subject'),
+    topics:baseState.topics.filter(topic=>topic.subjectId!=='large-deleted-subject'),
+    history:baseState.history.filter(entry=>entry.subjectId!=='large-deleted-subject')
+  };
+  assert.equal(remoteState.topics.length,retainedCount);
+  assert.equal(remoteState.history.length,1);
+  const basePayload={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:baseStamp,state:baseState,featureState:featuresFor(null)};
+  const remotePayload={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:remoteStamp,state:remoteState,featureState:featuresFor(null)};
+  const directMerge=await window.NexusWorkspaceSyncMerge.mergeAsync(
+    {state:baseState,featureState:basePayload.featureState},basePayload,remotePayload
+  );
+  assert.equal(directMerge.payload.state.topics.length,retainedCount,
+    'the direct three-way merge must preserve a one-sided remote subject deletion before cloud initialization is involved');
+
+  if(queue.hasPending(storage,accountA.id))queue.archive(storage,accountA.id,'large-second-device-sync-test-reset');
+  storage.setItem(OWNER,accountA.id);
+  storage.setItem(STATE_KEY,JSON.stringify(baseState));
+  storage.setItem(FEATURE_KEY,JSON.stringify(basePayload.featureState));
+  context.state=JSON.parse(JSON.stringify(baseState));
+  queue.rememberBase(storage,accountA.id,basePayload,baseStamp);
+  queue.rememberStamp(storage,accountA.id,baseStamp);
+  rows.set(accountA.id,{user_id:accountA.id,payload:remotePayload,updated_at:remoteStamp});
+  window.NexusStorage=null;
+  activeSession={user:accountA};
+  networkAvailable=true;
+  storage.setItem('nexus.syncdiag.session.v1','[]');
+  const syncDiagnosticsBefore=0;
+
+  await window.NexusCloudSync.reconnect();
+
+  const syncDiagnostics=JSON.parse(storage.getItem('nexus.syncdiag.session.v1')||'[]').slice(syncDiagnosticsBefore);
+  const downloaded=JSON.parse(storage.getItem(STATE_KEY));
+  const verifiedCloud=rows.get(accountA.id)?.payload?.state;
+  const debugBase=queue.getBase(storage,accountA.id);
+  const syncDebug={status:getElement('cloudStatus').textContent,owner:storage.getItem(OWNER),
+    localTopics:downloaded.topics.length,globalTopics:context.state.topics.length,
+    remoteTopics:verifiedCloud?.topics?.length||0,
+    pendingTopics:queue.getPending(storage,accountA.id)?.payload?.state?.topics?.length||0,
+    baseTopics:debugBase?.state?.topics?.length||0,
+    message:getElement('cloudHelpText').textContent,
+    stages:syncDiagnostics.map(event=>({stage:event.stage,workspace:event.workspace,extra:Object.fromEntries(Object.entries(event).filter(([key])=>['durationMs','cooperative','baseTopicCount','localTopicCount','remoteTopicCount','conflictCount','topicCount','storageEnabled','reason','errorCode'].includes(key)))}))};
+  assert.equal(downloaded.topics.length,retainedCount,
+    'Device 2 must apply the 12,032-topic deletion instead of retaining its stale 77,144-topic snapshot: '+JSON.stringify(syncDebug));
+  assert.equal(downloaded.subjects.length,1,'the deleted subject must be absent on Device 2');
+  assert.equal(downloaded.subjects[0].id,'large-retained-subject');
+  assert.equal(downloaded.topics.some(topic=>topic.subjectId==='large-deleted-subject'),false,
+    'no topic from the deleted subject may survive on Device 2');
+  assert.equal(downloaded.topics[0].id,'device-sync-retained-0',
+    'the unrelated manual topics must remain available after deletion sync');
+  assert.equal(downloaded.history.length,1,
+    'review history belonging to the deleted subject must be removed while unrelated history remains');
+  assert.equal(downloaded.history[0].id,'device-sync-retained-review');
+  assert.equal(verifiedCloud?.topics?.length,retainedCount,
+    'the verified cloud state must retain exactly the unrelated topic records');
+  assert.equal(verifiedCloud?.history?.length,1,
+    'the verified cloud state must not restore deleted review history');
+  assert.equal(queue.hasPending(storage,accountA.id),false,
+    'Device 2 may clear its pending queue only after the merged snapshot is verified');
+  assert.equal(getElement('cloudStatus').textContent,'Synced',
+    'Device 2 must report Synced only after its large deletion reconciliation completes');
+  const verifiedBase=queue.getBase(storage,accountA.id);
+  assert.equal(verifiedBase.state.topics.length,retainedCount,
+    'the next sync baseline must advance to the verified post-deletion snapshot');
+}
+ 
+// First login must not silently merge an unassigned imported workspace into an existing cloud account.
+const accountC={id:'account-C',email:'c@example.test'};
+const guestC=payloadFor('guest-imported-C');
+const cloudC=payloadFor('cloud-existing-C');
+storage.removeItem(OWNER);
+storage.setItem(STATE_KEY,JSON.stringify(guestC.state));
+storage.setItem(FEATURE_KEY,JSON.stringify(guestC.featureState));
+context.state=guestC.state;
+rows.set(accountC.id,{user_id:accountC.id,payload:cloudC,updated_at:'2026-11-13T18:00:00.000Z'});
+activeSession={user:accountC};networkAvailable=true;
+await window.NexusCloudSync.reconnect();
+assert.equal(getElement('cloudStatus').textContent,'Data choice required',
+  'a first login with distinct unassigned offline data and an existing cloud snapshot must stop for an explicit choice');
+assert.equal(storage.getItem(OWNER),null,'the unassigned workspace must not be claimed by the account before the user chooses');
+assert.deepEqual(JSON.parse(storage.getItem(STATE_KEY)).topics.map(topic=>topic.id),['guest-imported-C'],
+  'the imported offline workspace must remain unchanged while the choice is pending');
+assert.deepEqual(rows.get(accountC.id).payload.state.topics.map(topic=>topic.id),['cloud-existing-C'],
+  'the existing cloud workspace must not be overwritten before the user chooses');
+assert.equal(queue.hasPending(storage,accountC.id),false,
+  'no pending upload may be created before the first-login conflict choice');
+
+// A separate account-bound pending snapshot must not be hidden by an unassigned guest workspace.
+const accountD={id:'account-D',email:'d@example.test'};
+const guestD=payloadFor('cloud-same-D');
+const pendingD=payloadFor('pending-only-D');
+storage.setItem(OWNER,accountD.id);
+queue.commitWorkspace(storage,[
+  {key:STATE_KEY,value:JSON.stringify(pendingD.state)},
+  {key:FEATURE_KEY,value:JSON.stringify(pendingD.featureState)}
+],pendingD);
+storage.removeItem(OWNER);
+storage.setItem(STATE_KEY,JSON.stringify(guestD.state));
+storage.setItem(FEATURE_KEY,JSON.stringify(guestD.featureState));
+context.state=guestD.state;
+rows.set(accountD.id,{user_id:accountD.id,payload:guestD,updated_at:'2026-11-13T18:05:00.000Z'});
+activeSession={user:accountD};dialogEnabled=true;dialogChoice='merge';
+const dialogCountBeforeD=dialogShownCount;
+await window.NexusCloudSync.reconnect();
+dialogEnabled=false;
+assert.equal(dialogShownCount,dialogCountBeforeD+1,
+  'the unassigned guest and account-bound pending snapshot must require an explicit user merge choice');
+assert.equal(storage.getItem(OWNER),accountD.id,'the account may claim the combined workspace only after the user chooses');
+const mergedD=JSON.parse(storage.getItem(STATE_KEY));
+assert.ok(mergedD.topics.some(topic=>topic.id==='cloud-same-D'),'the current guest workspace must survive the explicit merge');
+assert.ok(mergedD.topics.some(topic=>topic.id==='pending-only-D'),'the account-bound pending snapshot must survive the explicit merge');
+assert.ok(rows.get(accountD.id).payload.state.topics.some(topic=>topic.id==='cloud-same-D'),'the guest workspace must be verified in cloud');
+assert.ok(rows.get(accountD.id).payload.state.topics.some(topic=>topic.id==='pending-only-D'),'the account pending snapshot must be verified in cloud');
+assert.equal(queue.hasPending(storage,accountD.id),false,'the combined pending queue clears only after read-back verification');
+assert.equal(getElement('cloudStatus').textContent,'Synced','the explicit merge must finish in a terminal synced state');
+
+// A SIGNED_OUT event followed by SIGNED_IN for the same user during initialization
+// must not let the queued null session overwrite the newer authenticated session.
+const accountE={id:'account-E',email:'e@example.test'};
+const payloadE=payloadFor('auth-race-E');
+storage.setItem(OWNER,accountE.id);
+storage.setItem(STATE_KEY,JSON.stringify(payloadE.state));
+storage.setItem(FEATURE_KEY,JSON.stringify(payloadE.featureState));
+context.state=payloadE.state;
+rows.set(accountE.id,{user_id:accountE.id,payload:payloadE,updated_at:'2026-11-13T18:10:00.000Z'});
+activeSession={user:accountE};networkAvailable=true;releaseDeferredRemoteRead=null;deferNextRemoteRead=true;
+const authRaceInitialization=window.NexusCloudSync.reconnect();
+for(let i=0;i<100&&!releaseDeferredRemoteRead;i++)await new Promise(resolve=>setTimeout(resolve,5));
+assert.equal(typeof authStateCallback,'function','the Supabase auth subscription must be installed before the race test');
+assert.equal(typeof releaseDeferredRemoteRead,'function','the initial cloud read must be held while auth events are injected');
+authStateCallback('SIGNED_OUT',null);
+authStateCallback('SIGNED_IN',{user:accountE});
+authStateCallback('INITIAL_SESSION',{user:accountE});
+const releaseAuthRaceRead=releaseDeferredRemoteRead;
+releaseAuthRaceRead();
+releaseDeferredRemoteRead=null;
+let authRaceTimeout;
+try{
+  await Promise.race([
+    authRaceInitialization,
+    new Promise((_,reject)=>{
+      authRaceTimeout=setTimeout(()=>reject(new Error('Auth-event initialization did not settle within 10 seconds after the deferred cloud read was released.')),10000);
+    })
+  ]);
+}finally{clearTimeout(authRaceTimeout);}
+await new Promise(resolve=>setTimeout(resolve,100));
+assert.equal(window.NexusCloudSync.getAccountState().signedIn,true,
+  'the latest same-user SIGNED_IN event must replace a queued SIGNED_OUT null session');
+assert.equal(window.NexusCloudSync.getAccountState().ready,true,
+  'the account must finish initialization after the duplicate auth-event burst');
+assert.equal(getElement('cloudStatus').textContent,'Synced',
+  'duplicate auth events must not leave the sync status in a signed-out or loading state');
+
+console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, target-account pending-snapshot isolation, first-login conflict gating, auth-session queue recovery, and 77,144-record second-device deletion reconciliation.');
