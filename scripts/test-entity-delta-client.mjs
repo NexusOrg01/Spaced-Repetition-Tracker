@@ -497,20 +497,26 @@ function coordinatorHarness(options={}){
     ]},
     {revision:2,operation_id:'remote-op-two',changes:[
       {ordinal:0,collection:'topics',id:'topic-delete',operation:'delete',position:null,value:null}
+    ]},
+    {revision:3,operation_id:'remote-op-three',changes:[
+      {ordinal:0,collection:'topics',id:'topic-after-delete',operation:'put',position:2,
+        value:{id:'topic-after-delete',name:'After delete',subjectId:'subject-main',notes:'Later group'}}
     ]}
   ];
   const prepared=await window.NexusEntityDeltaSync.prepareSnapshotReconciliation(
-    baseSnapshot,localSnapshot,remoteGroups,0,2
+    baseSnapshot,localSnapshot,remoteGroups,0,3
   );
   assert.equal(prepared.ok,true,'reconciliation should rebuild a contiguous remote snapshot and run the shared merge');
-  assert.equal(prepared.throughRevision,2);
-  assert.equal(prepared.groupCount,2);
-  assert.equal(prepared.changeCount,5);
+  assert.equal(prepared.throughRevision,3);
+  assert.equal(prepared.groupCount,3);
+  assert.equal(prepared.changeCount,6);
   const mergedTopics=prepared.payload.state.topics;
   assert.equal(mergedTopics.find(row=>row.id==='topic-shared').notes,'Local notes',
     'the existing merge policy should preserve the local side of a same-field conflict');
   assert.ok(mergedTopics.some(row=>row.id==='topic-local'),'local-only records must survive');
   assert.ok(mergedTopics.some(row=>row.id==='topic-remote'),'remote-only records must survive');
+  assert.ok(mergedTopics.some(row=>row.id==='topic-after-delete'),
+    'a later insert must use the compacted order produced by the preceding deletion group');
   assert.ok(!mergedTopics.some(row=>row.id==='topic-delete'),'a one-sided remote deletion must be preserved');
   assert.equal(prepared.payload.state.settings.theme,'dark','remote metadata-root edits must be reconstructed');
   assert.equal(prepared.payload.state.settings.intervalCap,150,'independent local metadata-root edits must survive');
@@ -521,7 +527,7 @@ function coordinatorHarness(options={}){
   assert.equal(localSnapshot.state.topics[0].notes,'Local notes','remote reconstruction must not mutate the active local workspace');
 
   const gap=window.NexusEntityDeltaSync.reconstructRemoteSnapshot(
-    baseSnapshot,[remoteGroups[1]],0,2
+    baseSnapshot,[remoteGroups[1]],0,3
   );
   assert.equal(gap.ok,false,'a missing first revision must fail closed');
   assert.equal(gap.reason,'remote_revision_gap');
