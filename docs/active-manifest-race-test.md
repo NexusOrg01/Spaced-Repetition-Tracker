@@ -4,45 +4,52 @@ The active-manifest trigger migration is:
 
 `supabase/migrations/20261114103353_protect_active_nexus_chunk_manifests.sql`
 
-The rollback-only SQL fixture at `supabase/tests/nexus_user_data_chunks_active_manifest.sql` verifies the trigger's sequential behavior. It does not, by itself, prove that the trigger's parent-row lock serializes deletion and publication across concurrent transactions.
+The rollback-only SQL fixture at `supabase/tests/nexus_user_data_chunks_active_manifest.sql` verifies sequential behavior: active deletion is rejected, old revisions and orphans are cleanable, a replacement manifest is protected, and account-deletion cascade remains functional. It does not, by itself, prove that the parent-row lock serializes deletion and publication across concurrent transactions.
 
-## Run the real two-session test
+## Mandatory two-session race proof
 
-Use only the isolated `nexus-sync-staging` project or a local Supabase database with the migration applied. The test requires `psql` and two independent Postgres sessions. Do not use transaction pooler mode (port 6543). For GitHub Actions, use the Supabase shared Session pooler on port 5432: GitHub-hosted runners are IPv4-only, while a Supabase direct `db.<project-ref>.supabase.co` connection is IPv6 by default. A local computer with IPv6 may use the direct connection instead.
+The real concurrency runner is `scripts/test-active-manifest-race.mjs`. It is deliberately restricted to a local Supabase Postgres endpoint on `localhost`, `127.0.0.1`, or `::1`. It refuses every remote database, including both hosted Nexus projects. Do not add a hosted database URL secret for this test.
 
-### Run from GitHub Actions (recommended for phone-only use)
+The PR workflow `.github/workflows/phase34-local-supabase-integration.yml` prepares the disposable local database, applies the selected committed migrations, then invokes the race runner against the local Postgres URL before creating the authenticated browser-test users. The same cleanup step destroys the local database volume after the rest of the protocol tests.
 
-The guarded workflow `.github/workflows/active-manifest-staging-race.yml` runs only when the `run-staging-race-test` label is added to PR #126 from its expected branch in this repository.
+The race runner uses two independent `psql` sessions. It does not depend on `pg_stat_activity`; instead, the first transaction emits a notice only after the parent workspace-row lock is held. The competing session starts after that notice. The test measures the actual DELETE/UPDATE duration and requires at least 2.5 seconds of lock wait while the first transaction deliberately holds its lock for seven seconds.
 
-1. In GitHub, open **Settings → Secrets and variables → Actions**.
-2. Select **New repository secret**.
-3. Set the name to `NEXUS_STAGING_DATABASE_URL`.
-4. In the Supabase project's **Connect** dialog, choose **Session pooler** (not **Direct connection** and not **Transaction pooler**). Copy the complete connection string. It should use a host ending in `.pooler.supabase.com`, username `postgres.xuwfzibxhxzxxupprxsq`, and port `5432`. Keep the exact host supplied by Supabase; do not guess its region or cluster index. Replace the password placeholder and URL-encode any reserved password characters.
-5. Paste that complete string as the secret value. Never use the production connection string, and never put the value in a PR comment, issue, file, or chat.
-6. Save the secret. Then add the `run-staging-race-test` label to PR #126. The workflow will start automatically; open the PR's **Checks** tab to see the result.
+It exercises both execution orders:
 
-The workflow checks out the exact PR revision, installs the PostgreSQL client, and runs the same two-session script. It has a five-minute limit and is guarded to PR #126 and the expected branch. The runner itself rejects the known production project ref and unrecognised remote database hosts, and it fails early with a specific message if GitHub Actions is given the IPv6 direct endpoint. Remove the secret from repository settings when the test is no longer needed.
+1. **Publisher first:** the publisher updates the active manifest while holding the workspace-row lock. Cleanup then tries to delete the previous revision, waits for the publisher, re-reads the now-current pointer under the same lock, and removes only the superseded revision. Assertions verify that the new active revision and its chunk remain present while the old revision becomes cleanable.
+2. **Cleanup first:** cleanup holds the workspace-row lock and attempts to delete the currently active revision. The trigger must reject that deletion with SQLSTATE `55000`. A concurrent publisher must wait for cleanup to commit, then publish its replacement. Assertions verify that the formerly active chunks remain until the new pointer is committed and are cleanable only afterward.
 
-### Run from a computer
+The runner also verifies the final active pointer and per-revision chunk counts, removes its uniquely identified synthetic `auth.users` row through the normal cascade path, and checks that no fixture user, workspace, or chunk rows remain.
 
-Set the database URL in the shell without committing it or placing it in source control:
+## Running locally
+
+Requirements: Node.js 22+, Docker-compatible runtime, Supabase CLI, and `psql`.
+
+From the repository root:
 
 ```sh
-export NEXUS_STAGING_DATABASE_URL='postgresql://...'
-node scripts/test-active-manifest-race-staging.mjs
+node scripts/prepare-phase34-local-supabase.mjs
+cd .build/phase34-local-supabase
+npx supabase start --exclude realtime,storage-api,imgproxy,edge-runtime,logflare,vector,supavisor
+npx supabase db reset
+eval "$(npx supabase status -o env)"
+NEXUS_RACE_DATABASE_URL="$DB_URL" node ../../scripts/test-active-manifest-race.mjs
 ```
 
-The runner launches independent `psql` sessions and exercises both orderings. It does not depend on `pg_stat_activity`: Supabase's shared pooler can make client-session visibility unsuitable for this check. Instead, the first transaction emits a private test notice only after its workspace-row lock has been acquired. The runner then starts the competing session and measures the actual DELETE or UPDATE duration, requiring at least 2.5 seconds of lock wait while the first transaction deliberately holds the lock for seven seconds:
+The local CLI database URL normally uses `127.0.0.1:54322`. The runner uses SSL disabled by default for loopback Postgres unless the connection URL explicitly specifies an SSL mode. Use a direct local Postgres session, not a transaction pooler.
 
-1. Publication locks and updates the workspace manifest first. Stale cleanup must wait, re-read the pointer, and then delete only the superseded revision.
-2. Cleanup locks the workspace row first. A delete against the still-active revision must raise SQLSTATE `55000`; the concurrent publisher must wait until cleanup commits, then publish the replacement.
+After the runner passes, continue with the authenticated two-client harness workflow. When finished manually, stop only this disposable local stack:
 
-The test checks the final active revision and chunk counts, confirms a formerly active revision becomes cleanable only after replacement publication, and removes its synthetic `auth.users` row (which cascades to its workspace and chunks). It then verifies that no fixture rows remain. The SQL-line join and tab-delimited cleanup assertion use actual newline/tab characters.
+```sh
+npx supabase stop --no-backup
+```
 
-Use a database role with permission to create/delete disposable rows in `auth.users`, `public.nexus_user_data`, and `public.nexus_user_data_chunks`, and to inspect `pg_stat_activity`. The runner has a `finally` cleanup path; if the database connection is interrupted during cleanup, inspect and remove only the uniquely named `nexus-active-manifest-race-*@example.invalid` fixture user.
+Do not use `supabase stop --all`.
 
-## CI boundary
+## Safety and scope
 
-The normal PR workflow syntax-checks this runner and the migration contract test asserts that both race orderings, lock-wait observation, production-ref refusal, and cleanup verification remain present. The real database race runs only through the separately guarded staging workflow after the explicit PR label is added and the private staging secret is configured.
-
-This test does not change the migration, enable entity-delta mode, modify application runtime behavior, or authorize production writes.
+- No Supabase login, project linking, hosted project URL, hosted key, or hosted database credential is needed.
+- Never use `nexus-sync-staging` or production for this race test.
+- The runner does not change the trigger migration, enable entity-delta mode, or modify normal application behavior.
+- Temporary data exists only in the disposable local database and is removed by the runner's cleanup path; the workflow also destroys the local database volume even when a test fails.
+- This is a database lock-ordering proof, not the separate large-workspace/two-device lifecycle or physical Android acceptance test.
