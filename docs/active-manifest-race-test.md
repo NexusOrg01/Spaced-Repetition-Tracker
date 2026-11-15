@@ -8,7 +8,7 @@ The rollback-only SQL fixture at `supabase/tests/nexus_user_data_chunks_active_m
 
 ## Run the real two-session test
 
-Use only the isolated `nexus-sync-staging` project or a local Supabase database with the migration applied. The test requires `psql` and a direct Postgres connection or the Supabase session pooler (port 5432). Do not use transaction pooler mode (port 6543).
+Use only the isolated `nexus-sync-staging` project or a local Supabase database with the migration applied. The test requires `psql` and two independent Postgres sessions. Do not use transaction pooler mode (port 6543). For GitHub Actions, use the Supabase shared Session pooler on port 5432: GitHub-hosted runners are IPv4-only, while a Supabase direct `db.<project-ref>.supabase.co` connection is IPv6 by default. A local computer with IPv6 may use the direct connection instead.
 
 ### Run from GitHub Actions (recommended for phone-only use)
 
@@ -17,10 +17,11 @@ The guarded workflow `.github/workflows/active-manifest-staging-race.yml` runs o
 1. In GitHub, open **Settings → Secrets and variables → Actions**.
 2. Select **New repository secret**.
 3. Set the name to `NEXUS_STAGING_DATABASE_URL`.
-4. Paste the direct/session-mode connection string for the isolated `nexus-sync-staging` database (port 5432) as the secret value. Never use the production connection string, and never put the value in a PR comment, issue, file, or chat.
-5. Save the secret. Then add the `run-staging-race-test` label to PR #126. The workflow will start automatically; open the PR's **Checks** tab to see the result.
+4. In the Supabase project's **Connect** dialog, choose **Session pooler** (not **Direct connection** and not **Transaction pooler**). Copy the complete connection string. It should use a host ending in `.pooler.supabase.com`, username `postgres.xuwfzibxhxzxxupprxsq`, and port `5432`. Keep the exact host supplied by Supabase; do not guess its region or cluster index. Replace the password placeholder and URL-encode any reserved password characters.
+5. Paste that complete string as the secret value. Never use the production connection string, and never put the value in a PR comment, issue, file, or chat.
+6. Save the secret. Then add the `run-staging-race-test` label to PR #126. The workflow will start automatically; open the PR's **Checks** tab to see the result.
 
-The workflow checks out the exact PR revision, installs the PostgreSQL client, and runs the same two-session script. It has a five-minute limit and is guarded to PR #126 and the expected branch. The runner itself rejects the known production project ref and unrecognised remote database hosts. Remove the secret from repository settings when the test is no longer needed.
+The workflow checks out the exact PR revision, installs the PostgreSQL client, and runs the same two-session script. It has a five-minute limit and is guarded to PR #126 and the expected branch. The runner itself rejects the known production project ref and unrecognised remote database hosts, and it fails early with a specific message if GitHub Actions is given the IPv6 direct endpoint. Remove the secret from repository settings when the test is no longer needed.
 
 ### Run from a computer
 
