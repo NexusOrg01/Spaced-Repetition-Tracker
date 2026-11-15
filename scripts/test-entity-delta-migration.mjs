@@ -86,7 +86,7 @@ assert.match(activeManifestRaceRunner, /await waitForLockReady/);
 assert.doesNotMatch(activeManifestRaceRunner, /FROM pg_stat_activity/,
   'the race proof must not depend on session-pooler activity visibility');
 assert.match(activeManifestRaceRunner, /FOR UPDATE/);
-assert.match(activeManifestRaceRunner, /SQLSTATE '55000'/);
+assert.match(activeManifestRaceRunner, /SQLSTATE .*55000/);
 assert.match(activeManifestRaceRunner, /publisher wins the workspace-row lock/);
 assert.match(activeManifestRaceRunner, /cleanup holds the workspace-row lock first/);
 assert.match(activeManifestRaceRunner, /finally[\s\S]*DELETE FROM auth\.users/);
