@@ -387,12 +387,11 @@ try {
   assert.match(combinedOutput(firstPair[1]), /NEXUS_RACE_OLD_REVISION_CLEANED=1/);
   const afterFirst = await runSql(
     'verify publisher-first state',
-    "SELECT (SELECT payload ->> 'revisionId' FROM public.nexus_user_data WHERE user_id = " +
-      quoteSql(ownerA) + ") || E'\\t' || " +
-    "(SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = " +
-      quoteSql(ownerA) + ' AND revision_id = ' + quoteSql(revA) + ') || E'\\t' || ' +
-    "(SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = " +
-      quoteSql(ownerA) + ' AND revision_id = ' + quoteSql(revB) + ');'
+    \`SELECT concat_ws(chr(9),
+      (SELECT payload ->> 'revisionId' FROM public.nexus_user_data WHERE user_id = \${quoteSql(ownerA)}),
+      (SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = \${quoteSql(ownerA)} AND revision_id = \${quoteSql(revA)}),
+      (SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = \${quoteSql(ownerA)} AND revision_id = \${quoteSql(revB)})
+    );\`
   );
   assert.equal(afterFirst, revB + '\t0\t1',
     'publisher-first ordering must keep B active, reclaim A, and retain B');
@@ -473,12 +472,11 @@ try {
   assert.match(combinedOutput(thirdPair[1]), /NEXUS_RACE_PUBLICATION_REJECTED=23514/);
   const afterCandidateRace = await runSql(
     'verify incomplete update candidate was not published',
-    "SELECT (SELECT payload ->> 'revisionId' FROM public.nexus_user_data WHERE user_id = " +
-      quoteSql(ownerA) + ") || E'\\t' || " +
-    "(SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = " +
-      quoteSql(ownerA) + ' AND revision_id = ' + quoteSql(revC) + ') || E'\\t' || ' +
-    "(SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = " +
-      quoteSql(ownerA) + ' AND revision_id = ' + quoteSql(revD) + ');'
+    \`SELECT concat_ws(chr(9),
+      (SELECT payload ->> 'revisionId' FROM public.nexus_user_data WHERE user_id = \${quoteSql(ownerA)}),
+      (SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = \${quoteSql(ownerA)} AND revision_id = \${quoteSql(revC)}),
+      (SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = \${quoteSql(ownerA)} AND revision_id = \${quoteSql(revD)})
+    );\`
   );
   assert.equal(afterCandidateRace, revC + '\t1\t0',
     'an incomplete update candidate must not replace the previous active snapshot');
@@ -501,10 +499,10 @@ try {
   assert.match(combinedOutput(fourthPair[1]), /NEXUS_RACE_ACTIVE_DELETE_REJECTED=55000/);
   const afterFirstInsert = await runSql(
     'verify first-write publisher-first state',
-    "SELECT (SELECT payload ->> 'revisionId' FROM public.nexus_user_data WHERE user_id = " +
-      quoteSql(ownerFirstPublish) + ") || E'\\t' || " +
-    "(SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = " +
-      quoteSql(ownerFirstPublish) + ' AND revision_id = ' + quoteSql(revFirstPublish) + ');'
+    \`SELECT concat_ws(chr(9),
+      (SELECT payload ->> 'revisionId' FROM public.nexus_user_data WHERE user_id = \${quoteSql(ownerFirstPublish)}),
+      (SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = \${quoteSql(ownerFirstPublish)} AND revision_id = \${quoteSql(revFirstPublish)})
+    );\`
   );
   assert.equal(afterFirstInsert, revFirstPublish + '\t1',
     'first publication must remain active and retain its candidate chunks');
@@ -529,10 +527,10 @@ try {
   assert.match(combinedOutput(fifthPair[1]), /NEXUS_RACE_PUBLICATION_REJECTED=23514/);
   const afterFirstCleanup = await runSql(
     'verify first-write cleanup-first state',
-    "SELECT (SELECT count(*)::text FROM public.nexus_user_data WHERE user_id = " +
-      quoteSql(ownerFirstCleanup) + ") || E'\\t' || " +
-    "(SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = " +
-      quoteSql(ownerFirstCleanup) + ' AND revision_id = ' + quoteSql(revFirstCleanup) + ');'
+    \`SELECT concat_ws(chr(9),
+      (SELECT count(*)::text FROM public.nexus_user_data WHERE user_id = \${quoteSql(ownerFirstCleanup)}),
+      (SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = \${quoteSql(ownerFirstCleanup)} AND revision_id = \${quoteSql(revFirstCleanup)})
+    );\`
   );
   assert.equal(afterFirstCleanup, '0\t0',
     'cleanup-first ordering must leave no parent manifest and no chunks');
@@ -547,9 +545,11 @@ try {
         'DELETE FROM auth.users WHERE id IN (' + ownerList + ');');
       const leftovers = await runSql(
         'verify fixture account-cascade cleanup',
-        "SELECT (SELECT count(*) FROM auth.users WHERE id IN (" + ownerList + ")) || E'\\t' || " +
-        "(SELECT count(*) FROM public.nexus_user_data WHERE user_id IN (" + ownerList + ")) || E'\\t' || " +
-        "(SELECT count(*) FROM public.nexus_user_data_chunks WHERE user_id IN (" + ownerList + "));"
+        \`SELECT concat_ws(chr(9),
+          (SELECT count(*) FROM auth.users WHERE id IN (\${ownerList})),
+          (SELECT count(*) FROM public.nexus_user_data WHERE user_id IN (\${ownerList})),
+          (SELECT count(*) FROM public.nexus_user_data_chunks WHERE user_id IN (\${ownerList}))
+        );\`
       );
       assert.equal(leftovers, '0\t0\t0',
         'all disposable owners, manifests, and chunks must be removed by the normal account-deletion cascade');
