@@ -418,9 +418,6 @@ try {
     '$race$;',
     'COMMIT;'
   ].join('\n');
-  const publishCAfterActiveDelete = publisherAttemptAfterCleanup(
-    ownerA, stampB, stampC, revC, dataC, '23514'
-  ).replace("EXCEPTION WHEN SQLSTATE '23514' THEN", "EXCEPTION WHEN SQLSTATE '23514' THEN");
   // This publication is expected to succeed, so use a successful writer block.
   const publishCSuccess = [
     'DO $race$',
