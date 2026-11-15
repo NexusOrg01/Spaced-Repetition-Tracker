@@ -7,6 +7,7 @@ SELECT set_config('nexus.test.chunk_owner_b', gen_random_uuid()::text, true);
 SELECT set_config('nexus.test.chunk_active_a', gen_random_uuid()::text, true);
 SELECT set_config('nexus.test.chunk_next_a', gen_random_uuid()::text, true);
 SELECT set_config('nexus.test.chunk_orphan_a', gen_random_uuid()::text, true);
+SELECT set_config('nexus.test.chunk_partial_a', gen_random_uuid()::text, true);
 SELECT set_config('nexus.test.chunk_active_b', gen_random_uuid()::text, true);
 
 INSERT INTO auth.users
@@ -22,15 +23,6 @@ FROM (
     (current_setting('nexus.test.chunk_owner_b')::uuid)
 ) AS owners(owner_id);
 
-INSERT INTO public.nexus_user_data (user_id, payload, updated_at)
-VALUES
-  (current_setting('nexus.test.chunk_owner_a')::uuid,
-   jsonb_build_object('__nexusStorage','chunked-v1','revisionId',current_setting('nexus.test.chunk_active_a')),
-   clock_timestamp()),
-  (current_setting('nexus.test.chunk_owner_b')::uuid,
-   jsonb_build_object('__nexusStorage','chunked-v1','revisionId',current_setting('nexus.test.chunk_active_b')),
-   clock_timestamp());
-
 -- All fixtures are deliberately older than the production cleanup cutoff.
 INSERT INTO public.nexus_user_data_chunks
   (user_id, revision_id, chunk_index, chunk_count, chunk_bytes, chunk_data, created_at)
@@ -38,7 +30,22 @@ VALUES
   (current_setting('nexus.test.chunk_owner_a')::uuid, current_setting('nexus.test.chunk_active_a')::uuid, 0, 1, 1, 'a', clock_timestamp() - interval '8 days'),
   (current_setting('nexus.test.chunk_owner_a')::uuid, current_setting('nexus.test.chunk_next_a')::uuid, 0, 1, 1, 'n', clock_timestamp() - interval '8 days'),
   (current_setting('nexus.test.chunk_owner_a')::uuid, current_setting('nexus.test.chunk_orphan_a')::uuid, 0, 1, 1, 'o', clock_timestamp() - interval '8 days'),
+  (current_setting('nexus.test.chunk_owner_a')::uuid, current_setting('nexus.test.chunk_partial_a')::uuid, 0, 2, 1, 'p', clock_timestamp() - interval '8 days'),
   (current_setting('nexus.test.chunk_owner_b')::uuid, current_setting('nexus.test.chunk_active_b')::uuid, 0, 1, 1, 'b', clock_timestamp() - interval '8 days');
+
+-- The workspace pointer can only be inserted after its full candidate chunk set exists.
+INSERT INTO public.nexus_user_data (user_id, payload, updated_at)
+VALUES
+  (current_setting('nexus.test.chunk_owner_a')::uuid,
+   jsonb_build_object('__nexusStorage','chunked-v1','version',1,
+     'revisionId',current_setting('nexus.test.chunk_active_a'),'chunkCount',1,'totalBytes',1,
+     'sha256','ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb'),
+   clock_timestamp()),
+  (current_setting('nexus.test.chunk_owner_b')::uuid,
+   jsonb_build_object('__nexusStorage','chunked-v1','version',1,
+     'revisionId',current_setting('nexus.test.chunk_active_b'),'chunkCount',1,'totalBytes',1,
+     'sha256','3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d'),
+   clock_timestamp());
 
 SET LOCAL ROLE authenticated;
 SELECT set_config('request.jwt.claim.sub', current_setting('nexus.test.chunk_owner_a'), true);
@@ -53,7 +60,9 @@ DECLARE
   v_owner_a uuid := current_setting('nexus.test.chunk_owner_a')::uuid;
   v_owner_b uuid := current_setting('nexus.test.chunk_owner_b')::uuid;
   v_active_a uuid := current_setting('nexus.test.chunk_active_a')::uuid;
+  v_partial_a uuid := current_setting('nexus.test.chunk_partial_a')::uuid;
   v_blocked boolean := false;
+  v_incomplete boolean := false;
   v_deleted integer := 0;
 BEGIN
   IF current_user <> 'authenticated' OR auth.uid() IS DISTINCT FROM v_owner_a THEN
@@ -74,7 +83,26 @@ BEGIN
     RAISE EXCEPTION 'Authenticated owner deleted or lost chunks referenced by the active manifest.';
   END IF;
 
-  DELETE FROM public.nexus_user_data_chunks
+  BEGIN
+    UPDATE public.nexus_user_data
+       SET payload = jsonb_build_object(
+         '__nexusStorage','chunked-v1','version',1,
+         'revisionId',v_partial_a,'chunkCount',2,'totalBytes',2,
+         'sha256','148de9c5a7a44d19e56cd9ae1a554bf67847afb0c58f6e12fa29ac7ddfca9940'
+       )
+     WHERE user_id = v_owner_a;
+  EXCEPTION WHEN SQLSTATE '23514' THEN
+    v_incomplete := true;
+  END;
+
+  IF NOT v_incomplete OR NOT EXISTS (
+    SELECT 1 FROM public.nexus_user_data
+     WHERE user_id = v_owner_a AND payload ->> 'revisionId' = v_active_a::text
+  ) THEN
+    RAISE EXCEPTION 'An incomplete candidate was published or replaced the active manifest.';
+  END IF;
+
+    DELETE FROM public.nexus_user_data_chunks
    WHERE user_id = v_owner_b
      AND revision_id = current_setting('nexus.test.chunk_active_b')::uuid;
   GET DIAGNOSTICS v_deleted = ROW_COUNT;
@@ -90,7 +118,11 @@ RESET ROLE;
 UPDATE public.nexus_user_data
    SET payload = jsonb_build_object(
      '__nexusStorage','chunked-v1',
-     'revisionId',current_setting('nexus.test.chunk_next_a')
+     'version',1,
+     'revisionId',current_setting('nexus.test.chunk_next_a'),
+     'chunkCount',1,
+     'totalBytes',1,
+     'sha256','1b16b1df538ba12dc3f97edbb85caa7050d46c148134290feba80f8236c83db9'
    )
  WHERE user_id = current_setting('nexus.test.chunk_owner_a')::uuid;
 
