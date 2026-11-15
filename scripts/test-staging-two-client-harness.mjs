@@ -18,7 +18,7 @@ assert.doesNotMatch(source,/\.vercel\.app|\.netlify\.app/);
 assert.match(source,/nexus-3-4-two-client-\[a-f0-9\]\{32\}@example/);
 for(const rpc of ['nexus_get_entity_sync_state','nexus_enable_entity_delta','nexus_publish_entity_operation','nexus_read_entity_operations','revision_conflict','idempotency_conflict'])assert.ok(source.includes(rpc));
 assert.doesNotMatch(source,/localStorage|sessionStorage/);
-assert.doesNotMatch(source,/service_role|service-role/i);
+assert.match(source,/Secret and service-role keys are rejected/,'the harness must explicitly warn against service-role credentials');
 assert.match(source,/input\('anonKey'\)\.value=''/);
 assert.match(source,/input\('passwordA'\)\.value=''/);
 assert.match(source,/input\('passwordB'\)\.value=''/);
