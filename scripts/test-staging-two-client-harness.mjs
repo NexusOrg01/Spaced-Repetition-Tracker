@@ -43,15 +43,18 @@ const raceSource=readFileSync(racePath,'utf8');
 const raceSyntax=spawnSync(process.execPath,['--check',racePath],{encoding:'utf8'});
 assert.equal(raceSyntax.status,0,'active-manifest race runner must parse: '+(raceSyntax.stderr||raceSyntax.stdout));
 assert.match(raceSource,/Refusing every remote database/,'the race runner must reject hosted Supabase targets');
-assert.match(raceSource,/publisher wins the workspace-row lock/,'the race runner must test publisher-first lock ordering');
-assert.match(raceSource,/cleanup holds the workspace-row lock first/,'the race runner must test cleanup-first lock ordering');
+assert.match(raceSource,/NEXUS_PUBLISHER_FIRST_LOCK_HELD/,'the race runner must test publisher-first existing-row ordering');
+assert.match(raceSource,/NEXUS_ACTIVE_DELETE_FIRST_LOCK_HELD/,'the race runner must test active-delete-first existing-row ordering');
+assert.match(raceSource,/NEXUS_CANDIDATE_CLEANUP_FIRST_LOCK_HELD/,'the race runner must test cleanup-first replacement-candidate ordering');
+assert.match(raceSource,/NEXUS_FIRST_WRITE_PUBLISHER_LOCK_HELD/,'the race runner must test publisher-first initial-insert ordering');
+assert.match(raceSource,/NEXUS_FIRST_WRITE_CLEANUP_LOCK_HELD/,'the race runner must test cleanup-first initial-insert ordering');
 assert.match(raceSource,/NEXUS_RACE_OPERATION_MS/,'the race runner must measure the competing lock wait');
 assert.match(raceSource,/MIN_LOCK_WAIT_MS/,'the race runner must assert a material lock wait');
-assert.match(raceSource,/verify disposable fixture cleanup/,'the race runner must verify fixture cleanup');
+assert.match(raceSource,/verify fixture account-cascade cleanup/,'the race runner must verify all disposable fixtures are removed through account deletion cascade');
 assert.match(workflow,/NEXUS_RACE_DATABASE_URL="\$PHASE34_DB_URL" node scripts\/test-active-manifest-race\.mjs/,
   'the local integration workflow must run the race test against its disposable Postgres database');
 assert.doesNotMatch(workflow,/NEXUS_STAGING_DATABASE_URL|run-staging-race-test/,
   'the local workflow must not require a hosted staging secret or label');
-for(const migration of ['20261109052019_chunked_nexus_workspace_snapshots.sql','20261109053246_tighten_nexus_workspace_chunk_limit.sql','20261113095723_nexus_entity_delta_sync.sql','20261113101625_harden_nexus_entity_delta_reads_and_compaction.sql','20261113215301_defer_entity_delta_enablement_until_client_ready.sql','20261113222129_revoke_unwired_entity_delta_rpc_execution.sql','20261114093000_harden_nexus_entity_delta_record_identity.sql','20261114103353_protect_active_nexus_chunk_manifests.sql'])assert.ok(prep.includes(migration));
+for(const migration of ['20261109052019_chunked_nexus_workspace_snapshots.sql','20261109053246_tighten_nexus_workspace_chunk_limit.sql','20261113095723_nexus_entity_delta_sync.sql','20261113101625_harden_nexus_entity_delta_reads_and_compaction.sql','20261113215301_defer_entity_delta_enablement_until_client_ready.sql','20261113222129_revoke_unwired_entity_delta_rpc_execution.sql','20261114093000_harden_nexus_entity_delta_record_identity.sql','20261114103353_protect_active_nexus_chunk_manifests.sql','20261115171500_validate_general_snapshot_candidates.sql'])assert.ok(prep.includes(migration));
 assert.doesNotMatch(prep,/supabase link|--remote|--linked|supabase\.co/);
 console.log('Local authenticated two-client harness syntax and safety-contract checks passed.');
