@@ -87,8 +87,6 @@ assert.match(activeManifestRaceRunner, /cleanup holds the workspace-row lock fir
 assert.match(activeManifestRaceRunner, /finally[\s\S]*DELETE FROM auth\.users/);
 assert.ok(activeManifestRaceRunner.includes("assert.equal(remaining, '0\\\\t0\\\\t0'"),
   'the race runner must verify that its disposable auth, workspace, and chunk rows are removed');
-  'the race runner must verify that its disposable auth, workspace, and chunk rows are removed');
-
 
 assert.match(hardening, /v_revision <> v_next_revision \+ 1/);
 assert.match(hardening, /v_expected_count IS DISTINCT FROM v_count/);
