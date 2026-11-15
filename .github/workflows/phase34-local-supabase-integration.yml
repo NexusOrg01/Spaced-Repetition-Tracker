@@ -8,6 +8,7 @@ on:
       - cloud-sync.js
       - scripts/prepare-phase34-local-supabase.mjs
       - scripts/test-phase34-local-two-client-browser.mjs
+      - scripts/test-active-manifest-race.mjs
       - scripts/test-staging-two-client-harness.mjs
       - scripts/test-entity-delta-client.mjs
       - scripts/test-preview-build-config.mjs
@@ -15,6 +16,7 @@ on:
       - supabase/local-phase34/**
       - supabase/migrations/**
       - supabase/tests/nexus_entity_delta_two_client_*.sql
+      - supabase/tests/nexus_user_data_chunks_active_manifest.sql
   workflow_dispatch:
 
 permissions:
@@ -62,6 +64,12 @@ jobs:
           printf 'PHASE34_API_URL=%s\n' "$API_URL" >> "$GITHUB_ENV"
           printf 'PHASE34_DB_URL=%s\n' "$DB_URL" >> "$GITHUB_ENV"
           printf 'PHASE34_ANON_KEY=%s\n' "$ANON_KEY" >> "$GITHUB_ENV"
+
+      - name: Run both active-manifest concurrency races on disposable local Supabase
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEXUS_RACE_DATABASE_URL="$PHASE34_DB_URL" node scripts/test-active-manifest-race.mjs
 
       - name: Create disposable Auth fixtures and grant test RPCs locally
         working-directory: .build/phase34-local-supabase
