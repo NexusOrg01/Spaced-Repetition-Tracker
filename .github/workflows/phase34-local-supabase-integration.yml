@@ -8,6 +8,7 @@ on:
       - cloud-sync.js
       - scripts/prepare-phase34-local-supabase.mjs
       - scripts/test-phase34-local-two-client-browser.mjs
+      - scripts/test-phase34-large-workspace-lifecycle.mjs
       - scripts/test-active-manifest-race.mjs
       - scripts/test-staging-two-client-harness.mjs
       - scripts/test-entity-delta-client.mjs
@@ -85,16 +86,22 @@ jobs:
             -f test-fixtures/nexus_entity_delta_two_client_setup.sql \
             > "$RUNNER_TEMP/phase34-fixtures.txt"
           mapfile -t fixtures < <(grep -v '^[[:space:]]*$' "$RUNNER_TEMP/phase34-fixtures.txt")
-          test "${#fixtures[@]}" -eq 2
+          test "${#fixtures[@]}" -eq 3
           IFS='|' read -r EMAIL_A PASSWORD_A USER_A STATUS_A <<< "${fixtures[0]}"
           IFS='|' read -r EMAIL_B PASSWORD_B USER_B STATUS_B <<< "${fixtures[1]}"
+          IFS='|' read -r EMAIL_C PASSWORD_C USER_C STATUS_C <<< "${fixtures[2]}"
           test -n "$EMAIL_A" && test -n "$PASSWORD_A" && test -n "$USER_A"
           test -n "$EMAIL_B" && test -n "$PASSWORD_B" && test -n "$USER_B"
+          test -n "$EMAIL_C" && test -n "$PASSWORD_C" && test -n "$USER_C"
           test "$USER_A" != "$USER_B"
+          test "$USER_A" != "$USER_C"
+          test "$USER_B" != "$USER_C"
           echo "::add-mask::$EMAIL_A"
           echo "::add-mask::$PASSWORD_A"
           echo "::add-mask::$EMAIL_B"
           echo "::add-mask::$PASSWORD_B"
+          echo "::add-mask::$EMAIL_C"
+          echo "::add-mask::$PASSWORD_C"
           psql "$DB_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
           GRANT EXECUTE ON FUNCTION public.nexus_get_entity_sync_state() TO authenticated;
           GRANT EXECUTE ON FUNCTION public.nexus_enable_entity_delta(timestamptz) TO authenticated;
@@ -108,6 +115,8 @@ jobs:
             printf 'PHASE34_PASSWORD_A=%s\n' "$PASSWORD_A"
             printf 'PHASE34_EMAIL_B=%s\n' "$EMAIL_B"
             printf 'PHASE34_PASSWORD_B=%s\n' "$PASSWORD_B"
+            printf 'PHASE34_EMAIL_C=%s\n' "$EMAIL_C"
+            printf 'PHASE34_PASSWORD_C=%s\n' "$PASSWORD_C"
           } >> "$GITHUB_ENV"
 
       - name: Install headless Chromium
@@ -138,6 +147,10 @@ jobs:
 
       - name: Run real authenticated A1/A2/B browser protocol test
         run: node scripts/test-phase34-local-two-client-browser.mjs
+
+      - name: Run 26.9 MB two-device offline and stale-compaction lifecycle
+        timeout-minutes: 18
+        run: node scripts/test-phase34-large-workspace-lifecycle.mjs
 
       - name: Revoke RPC access, delete fixtures, verify cleanup and destroy local stack
         if: always()
