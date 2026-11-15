@@ -47,6 +47,13 @@ try {
   const log = await page.locator('#log').innerText();
   assert.match(status, /^PASS — 19 authenticated local integration assertions completed\.$/, log);
 
+  // PASS is set before the async finally block finishes signing out. Wait for
+  // the teardown before asserting that the credential fields have been cleared.
+  await page.waitForFunction(() => {
+    const value = id => document.querySelector('#' + id)?.value;
+    return value('anonKey') === '' && value('passwordA') === '' && value('passwordB') === '';
+  }, null, { timeout: 15000 });
+
   const expected = [
     'Three independent Auth sessions established',
     'A1 and A2 share owner A',
