@@ -90,6 +90,10 @@ assert.match(activeManifestRaceRunner, /SQLSTATE '55000'/);
 assert.match(activeManifestRaceRunner, /publisher wins the workspace-row lock/);
 assert.match(activeManifestRaceRunner, /cleanup holds the workspace-row lock first/);
 assert.match(activeManifestRaceRunner, /finally[\s\S]*DELETE FROM auth\.users/);
+assert.match(activeManifestRaceRunner, /\.join\('\n'\)/,
+  'multi-statement SQL must be joined with real newline characters');
+assert.match(activeManifestRaceRunner, /assert\.equal\(remaining, '0\\t0\\t0'/,
+  'cleanup verification must compare real tab-delimited psql output');
 assert.match(activeManifestRaceRunner, /assert\.equal\(remaining, '0/);
 
 assert.match(hardening, /v_revision <> v_next_revision \+ 1/);
