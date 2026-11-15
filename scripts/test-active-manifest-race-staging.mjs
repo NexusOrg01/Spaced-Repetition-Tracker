@@ -45,7 +45,7 @@ const pgEnv = {
   PGOPTIONS: '-c statement_timeout=20000'
 };
 
-function runSql(label, sql) {
+function runSql(label, sql, applicationName) {
   return new Promise((resolve, reject) => {
     const child = spawn('psql', [
       '-X',
@@ -54,7 +54,7 @@ function runSql(label, sql) {
       '-t',
       '-F', '\t',
       '-c', sql
-    ], { env: pgEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+    ], { env: { ...pgEnv, ...(applicationName ? { PGAPPNAME: applicationName } : {}) }, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8').on('data', value => { stdout += value; });
@@ -70,11 +70,27 @@ function runSql(label, sql) {
   });
 }
 
-async function runConcurrentPair(label, first, second) {
-  const results = await Promise.allSettled([
-    runSql(label + ': first session', first),
-    runSql(label + ': second session', second)
-  ]);
+async function waitForLockWait(applicationName, label) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const waiting = await runSql(label + ': inspect pg_stat_activity',
+      "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = '" + applicationName + "' AND state = 'active' AND wait_event_type = 'Lock');");
+    if (waiting === 't') return;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error(label + ': did not observe the second session waiting on a PostgreSQL lock.');
+}
+
+async function runConcurrentPair(label, first, second, blockedApplicationName, firstApplicationName, secondApplicationName) {
+  const firstPromise = runSql(label + ': first session', first, firstApplicationName);
+  const secondPromise = runSql(label + ': second session', second, secondApplicationName);
+  try {
+    await waitForLockWait(blockedApplicationName, label);
+  } catch (error) {
+    await Promise.allSettled([firstPromise, secondPromise]);
+    throw error;
+  }
+  const results = await Promise.allSettled([firstPromise, secondPromise]);
   const failures = results.filter(result => result.status === 'rejected');
   if (failures.length) {
     throw new AggregateError(failures.map(result => result.reason), label + ' did not complete cleanly.');
@@ -114,7 +130,7 @@ try {
   const publisherFirstSql = [
     'BEGIN;',
     updateManifest(revB),
-    'SELECT pg_sleep(2.0);',
+    'SELECT pg_sleep(4.0);',
     'COMMIT;'
   ].join('\n');
   const cleanupAfterPublisherSql = [
@@ -124,7 +140,10 @@ try {
   const firstResults = await runConcurrentPair(
     'publisher wins the workspace-row lock',
     publisherFirstSql,
-    cleanupAfterPublisherSql
+    cleanupAfterPublisherSql,
+    'nexus-manifest-cleanup-after-publisher',
+    'nexus-manifest-publisher-first',
+    'nexus-manifest-cleanup-after-publisher'
   );
   assert.match(firstResults[0], /UPDATE 1/, 'the first publisher must update exactly one workspace row');
   assert.ok(firstResults[1].includes(revA),
@@ -155,7 +174,7 @@ try {
     '  IF NOT v_blocked THEN',
     "    RAISE EXCEPTION 'Expected active-manifest cleanup to fail with SQLSTATE 55000.';",
     '  END IF;',
-    '  PERFORM pg_sleep(2.0);',
+    '  PERFORM pg_sleep(4.0);',
     'END',
     '$race$;',
     'COMMIT;'
@@ -169,7 +188,10 @@ try {
   const secondResults = await runConcurrentPair(
     'cleanup holds the workspace-row lock first',
     cleanupFirstSql,
-    publisherAfterCleanupSql
+    publisherAfterCleanupSql,
+    'nexus-manifest-publisher-after-cleanup',
+    'nexus-manifest-cleanup-lock-first',
+    'nexus-manifest-publisher-after-cleanup'
   );
   assert.ok(secondResults[0].includes(ownerId), 'the cleanup session must lock the fixture workspace row');
   assert.match(secondResults[1], /UPDATE 1/,
