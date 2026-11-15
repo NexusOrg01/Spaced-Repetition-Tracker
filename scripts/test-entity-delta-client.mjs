@@ -932,6 +932,110 @@ function coordinatorHarness(options={}){
 
 
 
+// P34-01: rebuild a realistic 77,144-topic workspace after a compacted remote snapshot.
+// The device keeps a local offline edit while another device removes 12,032 old topics
+// and updates an unrelated record. Reconciliation must retain the offline work without
+// resurrecting records already removed from the current remote history.
+{
+  const topicCount=77144,historyCount=48000,studyLogCount=24000;
+  const largeState={
+    schema:3,
+    streams:[{id:'large-stream',name:'Commerce'}],
+    subjects:[{id:'large-subject',streamId:'large-stream',name:'Accounting'}],
+    topics:Array.from({length:topicCount},(_,index)=>({
+      id:'large-topic-'+index,subjectId:'large-subject',name:'Topic '+index,
+      reviewCount:index%5,intervalDays:index%30,lastRating:index%5+1,
+      dueDate:'2026-11-12'
+    })),
+    history:Array.from({length:historyCount},(_,index)=>({
+      id:'large-review-'+index,topicId:'large-topic-'+(index%topicCount),
+      reviewedAt:index%2?'2026-11-09':'2026-11-10',rating:index%5+1
+    })),
+    exams:[],settings:{dailyMinutes:90}
+  };
+  const largeFeatures={
+    version:1,journal:[],papers:[],goals:[],
+    studyLogs:Array.from({length:studyLogCount},(_,index)=>({
+      id:'large-log-'+index,date:'2026-11-10',minutes:index%120
+    })),
+    selectedTopicIds:[]
+  };
+  const basePayload={
+    app:'Nexus Spaced Repetition Tracker',schema:4,
+    serverVersion:'large-workspace-snapshot-stamp',
+    __nexusDeltaSync:'entity-delta-v1',
+    state:largeState,featureState:largeFeatures
+  };
+  const localTopics=largeState.topics.map((topic,index)=>
+    index===0?{...topic,notes:'Offline-only local edit'}:topic);
+  localTopics.push({
+    id:'large-offline-topic',subjectId:'large-subject',
+    name:'Created while offline',notes:'Must survive three-way recovery'
+  });
+  const localPayload={
+    ...basePayload,
+    state:{...largeState,topics:localTopics},
+    featureState:largeFeatures
+  };
+
+  const groups=[],deleteCount=12032;
+  for(let offset=0;offset<deleteCount;offset+=1000){
+    const indices=Array.from(
+      {length:Math.min(1000,deleteCount-offset)},
+      (_,index)=>10000+offset+index
+    );
+    const changes=indices.map((topicIndex,ordinal)=>({
+      ordinal,collection:'topics',id:'large-topic-'+topicIndex,operation:'delete'
+    }));
+    if(offset+indices.length===deleteCount){
+      changes.push({
+        ordinal:changes.length,collection:'topics',id:'large-topic-5',
+        operation:'put',position:5,
+        value:{...largeState.topics[5],name:'Renamed by remote device'}
+      });
+    }
+    groups.push({
+      revision:groups.length+1,
+      operation_id:'large-remote-operation-'+(groups.length+1),
+      changes
+    });
+  }
+
+  const prepared=await window.NexusEntityDeltaSync.prepareSnapshotReconciliation(
+    basePayload,localPayload,groups,0,groups.length,undefined,
+    {maxGroups:20,maxBytes:8*1048576}
+  );
+  assert.equal(prepared.ok,true,
+    'large-workspace reconciliation should rebuild the full current remote view before merging');
+  assert.equal(prepared.groupCount,13,
+    'the recovery candidate must consume every contiguous remote operation group');
+  assert.equal(prepared.changeCount,12033,
+    'the recovery candidate must account for every remote delete and update');
+  assert.ok(prepared.bytes>0&&prepared.bytes<8*1048576,
+    'the remote tail must remain within the bounded recovery byte budget');
+  assert.equal(prepared.remotePayload.state.topics.length,topicCount-deleteCount,
+    'the reconstructed remote snapshot must not resurrect any of the 12,032 deleted topics');
+  assert.equal(prepared.payload.state.topics.length,topicCount-deleteCount+1,
+    'the merged workspace must retain the independent offline-created topic');
+  const mergedTopics=new Map(prepared.payload.state.topics.map(topic=>[topic.id,topic]));
+  assert.equal(mergedTopics.get('large-topic-0').notes,'Offline-only local edit',
+    'an unrelated local edit must survive the remote reconstruction');
+  assert.equal(mergedTopics.get('large-topic-5').name,'Renamed by remote device',
+    'an unrelated remote edit must be present in the merged candidate');
+  assert.equal(mergedTopics.has('large-offline-topic'),true,
+    'the offline-created topic must remain in the recovery candidate');
+  assert.equal(mergedTopics.has('large-topic-10000'),false,
+    'a record removed remotely must not be reintroduced by the older local base');
+  assert.equal(mergedTopics.has('large-topic-22031'),false,
+    'the final record in the bounded deletion tail must also remain deleted');
+  assert.equal(prepared.payload.state.history.length,historyCount,
+    'review history must remain intact while the large topic collection is reconciled');
+  assert.equal(prepared.payload.featureState.studyLogs.length,studyLogCount,
+    'Study Hub logs must remain intact while the large workspace is reconciled');
+  assert.equal(prepared.conflicts.length,0,
+    'independent local and remote edits should not create false merge conflicts');
+}
+
 const stagingSupabaseUrl='http://127.0.0.1:54321';
 const stagingFunctionStart=cloudSyncSource.indexOf('async function runStagingEntityDeltaSync(');
 const stagingFunctionEnd=cloudSyncSource.indexOf('\nasync function upload(){',stagingFunctionStart);
