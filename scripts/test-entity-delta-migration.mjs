@@ -14,7 +14,7 @@ const rpcExposureGate = read('supabase/migrations/20261113222129_revoke_unwired_
 const identityHardening = read('supabase/migrations/20261114093000_harden_nexus_entity_delta_record_identity.sql');
 const chunkManifestProtection = read('supabase/migrations/20261114103353_protect_active_nexus_chunk_manifests.sql');
 const chunkManifestDeletionTest = read('supabase/tests/nexus_user_data_chunks_active_manifest.sql');
-const activeManifestRaceRunner = read('scripts/test-active-manifest-race-staging.mjs');
+const activeManifestRaceRunner = read('scripts/test-active-manifest-race.mjs');
 
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_sync_state/);
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_operation_receipts/);
@@ -70,9 +70,12 @@ assert.match(chunkManifestDeletionTest, /Cannot delete chunks referenced by the 
 assert.match(chunkManifestDeletionTest, /ON DELETE CASCADE|auth\.users/);
 assert.match(chunkManifestDeletionTest, /A previous, now-inactive manifest could not be cleaned up/);
 
-assert.match(activeManifestRaceRunner, /NEXUS_STAGING_DATABASE_URL/,
-  'the concurrent race runner must require an explicit staging/local Postgres connection');
-assert.match(activeManifestRaceRunner, /STAGING_PROJECT_REF = 'xuwfzibxhxzxxupprxsq'/);
+assert.match(activeManifestRaceRunner, /NEXUS_RACE_DATABASE_URL/,
+  'the concurrent race runner must accept an explicitly supplied disposable local Postgres connection');
+assert.match(activeManifestRaceRunner, /Refusing every remote database/,
+  'the race runner must reject all hosted database targets');
+assert.doesNotMatch(activeManifestRaceRunner, /NEXUS_STAGING_DATABASE_URL|nexus-sync-staging|\\.supabase\\.co/,
+  'the race runner must not use hosted staging credentials or URLs');
 assert.match(activeManifestRaceRunner, /PRODUCTION_PROJECT_REF = 'txugbdavblpettcnhcxl'/);
 assert.match(activeManifestRaceRunner, /Refusing to run the active-manifest race test against the production Nexus Supabase project/);
 assert.match(activeManifestRaceRunner, /connection\.port === '6543'/,
