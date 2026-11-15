@@ -171,9 +171,10 @@ assert.throws(()=>resolvePreviewConfig({...localEnv,NEXUS_SUPABASE_URL:'https://
 assert.throws(()=>resolvePreviewConfig({...localEnv,NEXUS_SUPABASE_URL:'http://127.0.0.1:54322'}),/loopback port 54321/);
 assert.throws(()=>resolvePreviewConfig({...localEnv,NEXUS_SUPABASE_ANON_KEY:'sb_secret_do_not_accept'}),error=>error.message.includes('secret/service-role keys are forbidden'));
 assert.equal(resolveStagingEntityDeltaEnabled({...previewEnv,VERCEL_GIT_COMMIT_REF:'android/capacitor-multistore-foundation',NEXUS_ENTITY_DELTA_SYNC_STAGING:'true',NEXUS_SUPABASE_URL:'https://xuwfzibxhxzxxupprxsq.supabase.co'},{url:'https://xuwfzibxhxzxxupprxsq.supabase.co',key:previewEnv.NEXUS_SUPABASE_ANON_KEY}),false,'hosted PR previews must never enable Delta against nexus-sync-staging');
-assert.match(renderConfigScript(localConfig,true),/window\\.NEXUS_ENTITY_DELTA_SYNC_STAGING=true/);
-assert.match(renderConfigScript(localConfig,false),/window\\.NEXUS_ENTITY_DELTA_SYNC_STAGING=false/);
-assert.match(renderConfigScript(deltaPreviewConfig,true),/window\\.NEXUS_ENTITY_DELTA_SYNC_STAGING=false/);
-assert.match(renderConfigScript(null,true),/window\\.NEXUS_ENTITY_DELTA_SYNC_STAGING=false/);
+assert.ok(renderConfigScript(localConfig,true).includes('window.NEXUS_ENTITY_DELTA_SYNC_STAGING=true'));
+assert.ok(renderConfigScript(localConfig,false).includes('window.NEXUS_ENTITY_DELTA_SYNC_STAGING=false'));
+const existingStagingConfig={url:'https://xuwfzibxhxzxxupprxsq.supabase.co',key:previewEnv.NEXUS_SUPABASE_ANON_KEY};
+assert.ok(renderConfigScript(existingStagingConfig,true).includes('window.NEXUS_ENTITY_DELTA_SYNC_STAGING=false'));
+assert.ok(renderConfigScript(null,true).includes('window.NEXUS_ENTITY_DELTA_SYNC_STAGING=false'));
 
 console.log('Preview-only Supabase configuration guard tests passed.');
