@@ -29,7 +29,7 @@ assert.equal(syntax.status,0,'local Supabase preparation helper must parse: '+(s
 const browserTestPath=resolve('scripts/test-phase34-local-two-client-browser.mjs');
 const browserSyntax=spawnSync(process.execPath,['--check',browserTestPath],{encoding:'utf8'});
 assert.equal(browserSyntax.status,0,'headless browser test runner must parse: '+(browserSyntax.stderr||browserSyntax.stdout));
-assert.match(readFileSync(browserTestPath,'utf8'),/waitForFunction\\(\\(\\) =>/,'the browser runner must wait for async logout and credential cleanup before asserting it');
+assert.ok(readFileSync(browserTestPath,'utf8').includes('await page.waitForFunction(() => {'),'the browser runner must wait for async logout and credential cleanup before asserting it');
 const workflow=readFileSync(resolve('.github/workflows/phase34-local-supabase-integration.yml'),'utf8');
 assert.match(workflow,/supabase@latest start/,'the integration workflow must start a disposable local Supabase stack');
 assert.match(workflow,/supabase@latest db reset/,'the integration workflow must apply the local migration set');
