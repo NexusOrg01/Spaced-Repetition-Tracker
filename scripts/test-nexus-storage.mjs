@@ -1294,6 +1294,57 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.ok(idb.rangeQueries.some(query=>query.store==='workspaces'&&
     query.lower==='workspace-entity:large-workspace-owner:'+migration.generation+':'),
     'large entity hydration must query only the active owner/generation key range');
+
+  // Apply one complete, maximum-size remote operation page to the same 77,144-topic
+  // workspace. The active entity generation, manifest counts, compatibility mirror
+  // and inbound cursor must commit together, without creating a local outbound group.
+  const largeBaseline=await large.api.initializeWorkspaceEntityDeltaCursor(
+    'large-workspace-owner',0,'large-workspace-verified-snapshot',true
+  );
+  assert.equal(largeBaseline.ok,true,
+    'the large workspace should accept a cursor bound to its verified snapshot baseline');
+  const largeRemoteDeleteChanges=Array.from({length:1000},(_,index)=>({
+    ordinal:index,collection:'topics',id:'large-topic-'+index,operation:'delete'
+  }));
+  const largeRemoteApply=await large.api.applyWorkspaceEntityDeltaGroup(
+    'large-workspace-owner',{
+      revision:1,operation_id:'large-workspace-remote-delete-page',
+      changes:largeRemoteDeleteChanges
+    },0,1
+  );
+  assert.equal(largeRemoteApply.ok,true,
+    'a complete 1,000-change remote page should apply to the large active generation');
+  assert.equal(largeRemoteApply.applied,1000);
+  assert.equal(largeRemoteApply.workspace.state.topics.length,totalTopics-1000);
+  assert.equal(largeRemoteApply.workspace.state.history.length,totalHistory,
+    'remote topic deletion must not remove unrelated review-history records');
+  assert.equal(largeRemoteApply.workspace.featureState.studyLogs.length,totalStudyLogs,
+    'remote topic deletion must not remove Study Hub study-log records');
+  assert.equal(largeRemoteApply.workspace.state.topics[0].id,'large-topic-1000');
+  assert.equal(largeRemoteApply.workspace.state.topics.at(-1).id,'large-topic-77143');
+  assert.equal(largeRemoteApply.cursor.publishRevision,1);
+  assert.equal(largeRemoteApply.cursor.remoteHeadRevision,1);
+  assert.equal(largeRemoteApply.cursor.requiresPull,false);
+  assert.equal(largeRemoteApply.cursor.acknowledgedSequence,0,
+    'inbound remote application must not advance the outbound acknowledgement sequence');
+  const largeManifest=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta')
+    .get('workspace-entities:'+encodeURIComponent('large-workspace-owner'));
+  assert.equal(largeManifest.rowCount,149148-1000,
+    'the entity manifest row count must reflect the remote deletion transaction');
+  assert.equal(largeManifest.counts.topics,totalTopics-1000,
+    'the entity manifest topic count must match the committed remote generation');
+  assert.equal(
+    JSON.parse(large.context.window.localStorage.getItem('recall.study.tracker.v1')).topics.length,
+    totalTopics-1000,
+    'the tracker compatibility mirror must refresh only after the remote entity commit verifies'
+  );
+  const largePendingOutbox=await large.api.readWorkspaceEntityOutboxGroups(
+    'large-workspace-owner',0,1000,4096
+  );
+  assert.equal(largePendingOutbox.snapshotRequired,false);
+  assert.equal(largePendingOutbox.groups.length,0,
+    'remote apply must not echo received operations into the local outbound queue');
+
 }
 
 // The remote-delta publisher must consume only complete, bounded local operation groups.
