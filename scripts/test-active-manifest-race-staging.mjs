@@ -219,24 +219,24 @@ try {
 
 } catch (error) {
   primaryError = error;
-}
-
-if (seeded) {
-  try {
-    await runSql('remove disposable staging auth user and cascading workspace',
-      "DELETE FROM auth.users WHERE id = '" + ownerId + "';");
-    const remainingSql = [
-      "SELECT (SELECT count(*)::text FROM auth.users WHERE id = '" + ownerId + "') || E'\\t' ||",
-      "(SELECT count(*)::text FROM public.nexus_user_data WHERE user_id = '" + ownerId + "') || E'\\t' ||",
-      "(SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = '" + ownerId + "');"
-    ].join('\\n');
-    const remaining = await runSql('verify disposable fixture cleanup', remainingSql);
-    assert.equal(remaining, '0\\t0\\t0', 'the race-test owner and all of its rows must be removed');
-  } catch (cleanupError) {
-    if (primaryError) {
-      throw new AggregateError([primaryError, cleanupError], 'The race test failed and fixture cleanup also failed.');
+} finally {
+  if (seeded) {
+    try {
+      await runSql('remove disposable staging auth user and cascading workspace',
+        "DELETE FROM auth.users WHERE id = '" + ownerId + "';");
+      const remainingSql = [
+        "SELECT (SELECT count(*)::text FROM auth.users WHERE id = '" + ownerId + "') || E'\\t' ||",
+        "(SELECT count(*)::text FROM public.nexus_user_data WHERE user_id = '" + ownerId + "') || E'\\t' ||",
+        "(SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = '" + ownerId + "');"
+      ].join('\\n');
+      const remaining = await runSql('verify disposable fixture cleanup', remainingSql);
+      assert.equal(remaining, '0\\t0\\t0', 'the race-test owner and all of its rows must be removed');
+    } catch (cleanupError) {
+      if (primaryError) {
+        throw new AggregateError([primaryError, cleanupError], 'The race test failed and fixture cleanup also failed.');
+      }
+      throw cleanupError;
     }
-    throw cleanupError;
   }
 }
 
