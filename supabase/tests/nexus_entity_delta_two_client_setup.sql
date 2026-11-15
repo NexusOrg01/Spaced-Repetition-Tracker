@@ -1,5 +1,5 @@
 -- ONE-SHOT TEST FIXTURE: run ONLY against the disposable local Phase 3.4 Supabase project.
--- Creates exactly two confirmed disposable email/password users with empty snapshots.
+-- Creates three confirmed disposable email/password users with empty snapshots.
 -- The returned passwords are for this isolated local test only. Do not reuse them.
 -- Accounts persist until supabase/tests/nexus_entity_delta_two_client_cleanup.sql is run.
 
@@ -13,6 +13,11 @@ WITH credentials AS MATERIALIZED (
     gen_random_uuid(),
     'nexus-3-4-two-client-' || replace(gen_random_uuid()::text, '-', '') || '@example.invalid',
     'Nexus-Staging-' || replace(gen_random_uuid()::text, '-', '') || '!Bb8'
+  UNION ALL
+  SELECT
+    gen_random_uuid(),
+    'nexus-3-4-two-client-' || replace(gen_random_uuid()::text, '-', '') || '@example.invalid',
+    'Nexus-Staging-' || replace(gen_random_uuid()::text, '-', '') || '!Cc7'
 ),
 inserted_users AS (
   INSERT INTO auth.users
