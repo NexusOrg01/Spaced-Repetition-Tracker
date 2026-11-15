@@ -123,8 +123,8 @@ async function waitForLockReady(session, label) {
   });
   try {
     await Promise.race([session.ready, timeout]);
-    // First publication has no parent workspace row to lock. Cover both
-  // publisher-first and cleanup-first orderings using two disposable owners.
+      // First publication has no parent workspace row to lock. Test the two
+  // publisher/cleanup orderings for both first inserts and later updates.
   const firstWritePublisherOwner = randomUUID();
   const firstWriteCleanupOwner = randomUUID();
   const firstWritePublisherRevision = randomUUID();
@@ -141,38 +141,34 @@ async function waitForLockReady(session, label) {
     totalBytes: Buffer.byteLength(chunkData),
     sha256: createHash('sha256').update(chunkData).digest('hex')
   });
-  const firstWritePublisherPayload = sqlJsonb(firstWriteManifest(
-    firstWritePublisherRevision, firstWritePublisherData
-  ));
-  const firstWritePublisherStalePayload = sqlJsonb(firstWriteManifest(
-    firstWritePublisherStaleRevision, firstWritePublisherStaleData
-  ));
-  const firstWriteCleanupPayload = sqlJsonb(firstWriteManifest(
-    firstWriteCleanupRevision, firstWriteCleanupData
-  ));
-  const firstWritePublisherEmail = 'nexus-first-write-publisher-' +
+  const publisherPayload = sqlJsonb(firstWriteManifest(firstWritePublisherRevision, firstWritePublisherData));
+  const staleUpdatePayload = sqlJsonb(firstWriteManifest(firstWritePublisherStaleRevision, firstWritePublisherStaleData));
+  const firstCleanupPayload = sqlJsonb(firstWriteManifest(firstWriteCleanupRevision, firstWriteCleanupData));
+  const publisherEmail = 'nexus-first-write-publisher-' +
     firstWritePublisherOwner.replaceAll('-', '') + '@example.invalid';
-  const firstWriteCleanupEmail = 'nexus-first-write-cleanup-' +
+  const cleanupEmail = 'nexus-first-write-cleanup-' +
     firstWriteCleanupOwner.replaceAll('-', '') + '@example.invalid';
 
   try {
-    const firstWriteSeedSql = [
+    const seedFirstWrite = [
       'BEGIN;',
       "INSERT INTO auth.users (id, aud, role, email, encrypted_password, email_confirmed_at, raw_app_meta_data, raw_user_meta_data, created_at, updated_at) VALUES " +
-        "('" + firstWritePublisherOwner + "', 'authenticated', 'authenticated', '" + firstWritePublisherEmail + "', '', clock_timestamp(), '{}'::jsonb, '{}'::jsonb, clock_timestamp(), clock_timestamp()), " +
-        "('" + firstWriteCleanupOwner + "', 'authenticated', 'authenticated', '" + firstWriteCleanupEmail + "', '', clock_timestamp(), '{}'::jsonb, '{}'::jsonb, clock_timestamp(), clock_timestamp());",
+        "('" + firstWritePublisherOwner + "', 'authenticated', 'authenticated', '" + publisherEmail + "', '', clock_timestamp(), '{}'::jsonb, '{}'::jsonb, clock_timestamp(), clock_timestamp()), " +
+        "('" + firstWriteCleanupOwner + "', 'authenticated', 'authenticated', '" + cleanupEmail + "', '', clock_timestamp(), '{}'::jsonb, '{}'::jsonb, clock_timestamp(), clock_timestamp());",
       "INSERT INTO public.nexus_user_data_chunks (user_id, revision_id, chunk_index, chunk_count, chunk_bytes, chunk_data, created_at) VALUES " +
         "('" + firstWritePublisherOwner + "', '" + firstWritePublisherRevision + "', 0, 1, octet_length('" + firstWritePublisherData + "'), '" + firstWritePublisherData + "', clock_timestamp() - interval '8 days'), " +
         "('" + firstWritePublisherOwner + "', '" + firstWritePublisherStaleRevision + "', 0, 1, octet_length('" + firstWritePublisherStaleData + "'), '" + firstWritePublisherStaleData + "', clock_timestamp() - interval '8 days'), " +
         "('" + firstWriteCleanupOwner + "', '" + firstWriteCleanupRevision + "', 0, 1, octet_length('" + firstWriteCleanupData + "'), '" + firstWriteCleanupData + "', clock_timestamp() - interval '8 days');",
       'COMMIT;'
     ].join('\n');
-    await runSql('seed two disposable first-write owners without workspace rows', firstWriteSeedSql);
+    await runSql('seed two disposable first-write owners without workspace rows', seedFirstWrite);
 
-    const firstWritePublisherFirstSql = [
+    // INSERT wins: after the parent row is created, cleanup must re-read it
+    // after waiting for the advisory lock and refuse to delete the active set.
+    const publisherFirstSql = [
       'BEGIN;',
       "INSERT INTO public.nexus_user_data (user_id, payload, updated_at) VALUES ('" +
-        firstWritePublisherOwner + "', " + firstWritePublisherPayload + ', clock_timestamp());',
+        firstWritePublisherOwner + "', " + publisherPayload + ', clock_timestamp());',
       'DO $race$',
       'BEGIN',
       "  RAISE NOTICE 'NEXUS_FIRST_WRITE_PUBLISHER_LOCK_HELD';",
@@ -181,7 +177,7 @@ async function waitForLockReady(session, label) {
       '$race$;',
       'COMMIT;'
     ].join('\n');
-    const firstWriteCleanupAfterPublisherSql = [
+    const cleanupAfterFirstPublishSql = [
       'DO $race$',
       'DECLARE',
       '  v_started timestamptz;',
@@ -203,34 +199,87 @@ async function waitForLockReady(session, label) {
       'END',
       '$race$;'
     ].join('\n');
-    const firstWritePublisherResults = await runConcurrentPair(
-      'first snapshot publisher acquires the owner lock before cleanup',
-      firstWritePublisherFirstSql,
-      firstWriteCleanupAfterPublisherSql,
+    const publisherFirstResults = await runConcurrentPair(
+      'first insert publishes before candidate cleanup',
+      publisherFirstSql,
+      cleanupAfterFirstPublishSql,
       'NEXUS_FIRST_WRITE_PUBLISHER_LOCK_HELD',
       'nexus-first-snapshot-publisher',
       'nexus-first-snapshot-cleanup-after-publish'
     );
-    assertObservedLockWait(firstWritePublisherResults[1], 'first-write publisher-first cleanup');
-    assert.match(combinedOutput(firstWritePublisherResults[1]), /NEXUS_FIRST_WRITE_ACTIVE_DELETE_REJECTED=55000/,
-      'cleanup must re-read the newly inserted active pointer and preserve its candidate chunks');
-    const firstWritePublisherState = await runSql(
+    assertObservedLockWait(publisherFirstResults[1], 'first-write publisher-first cleanup');
+    assert.match(combinedOutput(publisherFirstResults[1]), /NEXUS_FIRST_WRITE_ACTIVE_DELETE_REJECTED=55000/);
+    const publishedFirstState = await runSql(
       'verify first-write publisher-first state',
       "SELECT (SELECT payload ->> 'revisionId' FROM public.nexus_user_data WHERE user_id = '" +
-        firstWritePublisherOwner + "') || E'\\\\t' || " +
+        firstWritePublisherOwner + "') || E'\\t' || " +
       "(SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = '" +
         firstWritePublisherOwner + "' AND revision_id = '" + firstWritePublisherRevision + "');"
     );
-    assert.equal(firstWritePublisherState, firstWritePublisherRevision + '\t1',
-      'first publication must remain active and retain its complete chunk set');
+    assert.equal(publishedFirstState, firstWritePublisherRevision + '\t1',
+      'first publication must remain active with its complete chunk set');
 
-    // Existing workspace row: cleanup wins and deletes an inactive candidate.
-    // The waiting UPDATE must fail server-side instead of publishing a partial snapshot.
-    const existingCandidateCleanupFirstSql = [
+    // Existing workspace row: cleanup removes an inactive candidate first.
+    // The waiting UPDATE must fail closed, leaving the former snapshot active.
+    const updateCleanupFirstSql = [
       'BEGIN;',
       "DELETE FROM public.nexus_user_data_chunks WHERE user_id = '" +
         firstWritePublisherOwner + "' AND revision_id = '" + firstWritePublisherStaleRevision + "';",
-      'DO $race    const firstWriteCleanupFirstSql = [
+      'DO $race$',
+      'BEGIN',
+      "  RAISE NOTICE 'NEXUS_EXISTING_CANDIDATE_CLEANUP_LOCK_HELD';",
+      '  PERFORM pg_sleep(' + LOCK_HOLD_SECONDS + ');',
+      'END',
+      '$race$;',
+      'COMMIT;'
+    ].join('\n');
+    const updateAfterCleanupSql = [
+      'DO $race$',
+      'DECLARE',
+      '  v_started timestamptz;',
+      '  v_rejected boolean := false;',
+      'BEGIN',
+      '  PERFORM pg_sleep(' + SECOND_SESSION_DELAY_SECONDS + ');',
+      '  v_started := clock_timestamp();',
+      '  BEGIN',
+      '    UPDATE public.nexus_user_data SET payload = ' + staleUpdatePayload +
+        ", updated_at = clock_timestamp() WHERE user_id = '" + firstWritePublisherOwner + "';",
+      "  EXCEPTION WHEN SQLSTATE '23514' THEN",
+      '    v_rejected := true;',
+      '  END;',
+      '  IF NOT v_rejected THEN',
+      "    RAISE EXCEPTION 'An UPDATE published an incomplete snapshot candidate.';",
+      '  END IF;',
+      "  RAISE NOTICE 'NEXUS_EXISTING_CANDIDATE_UPDATE_REJECTED=23514';",
+      "  RAISE NOTICE 'NEXUS_RACE_OPERATION_MS=%', floor(extract(epoch FROM clock_timestamp() - v_started) * 1000);",
+      'END',
+      '$race$;'
+    ].join('\n');
+    const updateRaceResults = await runConcurrentPair(
+      'cleanup wins before an existing workspace candidate update',
+      updateCleanupFirstSql,
+      updateAfterCleanupSql,
+      'NEXUS_EXISTING_CANDIDATE_CLEANUP_LOCK_HELD',
+      'nexus-existing-candidate-cleanup-first',
+      'nexus-existing-candidate-publisher-after-cleanup'
+    );
+    assertObservedLockWait(updateRaceResults[1], 'existing-row cleanup-first update');
+    assert.match(combinedOutput(updateRaceResults[1]), /NEXUS_EXISTING_CANDIDATE_UPDATE_REJECTED=23514/);
+    const updateRaceState = await runSql(
+      'verify existing-row candidate cleanup state',
+      "SELECT (SELECT payload ->> 'revisionId' FROM public.nexus_user_data WHERE user_id = '" +
+        firstWritePublisherOwner + "') || E'\\t' || " +
+      "(SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = '" +
+        firstWritePublisherOwner + "' AND revision_id = '" + firstWritePublisherRevision + "') || E'\\t' || " +
+      "(SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = '" +
+        firstWritePublisherOwner + "' AND revision_id = '" + firstWritePublisherStaleRevision + "');"
+    );
+    assert.equal(updateRaceState, firstWritePublisherRevision + '\t1\t0',
+      'the old active snapshot must remain readable when a replacement candidate was deleted');
+
+    // No-parent cleanup wins: it removes an aged candidate and holds the
+    // advisory lock. The first INSERT must wait and then reject the missing set.
+    const cleanupFirstSql = [
       'BEGIN;',
       "DELETE FROM public.nexus_user_data_chunks WHERE user_id = '" +
         firstWriteCleanupOwner + "' AND revision_id = '" + firstWriteCleanupRevision + "';",
@@ -242,7 +291,7 @@ async function waitForLockReady(session, label) {
       '$race$;',
       'COMMIT;'
     ].join('\n');
-    const firstWritePublisherAfterCleanupSql = [
+    const firstInsertAfterCleanupSql = [
       'DO $race$',
       'DECLARE',
       '  v_started timestamptz;',
@@ -252,7 +301,7 @@ async function waitForLockReady(session, label) {
       '  v_started := clock_timestamp();',
       '  BEGIN',
       "    INSERT INTO public.nexus_user_data (user_id, payload, updated_at) VALUES ('" +
-        firstWriteCleanupOwner + "', " + firstWriteCleanupPayload + ', clock_timestamp());',
+        firstWriteCleanupOwner + "', " + firstCleanupPayload + ', clock_timestamp());',
       "  EXCEPTION WHEN SQLSTATE '23514' THEN",
       '    v_rejected := true;',
       '  END;',
@@ -264,25 +313,24 @@ async function waitForLockReady(session, label) {
       'END',
       '$race$;'
     ].join('\n');
-    const firstWriteCleanupResults = await runConcurrentPair(
-      'first-write cleanup acquires the owner lock before publication',
-      firstWriteCleanupFirstSql,
-      firstWritePublisherAfterCleanupSql,
+    const cleanupFirstResults = await runConcurrentPair(
+      'first insert waits for stale candidate cleanup',
+      cleanupFirstSql,
+      firstInsertAfterCleanupSql,
       'NEXUS_FIRST_WRITE_CLEANUP_LOCK_HELD',
       'nexus-first-snapshot-cleanup-first',
       'nexus-first-snapshot-publisher-after-cleanup'
     );
-    assertObservedLockWait(firstWriteCleanupResults[1], 'first-write cleanup-first publication');
-    assert.match(combinedOutput(firstWriteCleanupResults[1]), /NEXUS_FIRST_WRITE_INCOMPLETE_PUBLICATION_REJECTED=23514/,
-      'publication must fail closed after cleanup removes an unpublished first-write candidate');
-    const firstWriteCleanupState = await runSql(
+    assertObservedLockWait(cleanupFirstResults[1], 'first-write cleanup-first insert');
+    assert.match(combinedOutput(cleanupFirstResults[1]), /NEXUS_FIRST_WRITE_INCOMPLETE_PUBLICATION_REJECTED=23514/);
+    const cleanupFirstState = await runSql(
       'verify first-write cleanup-first state',
       "SELECT (SELECT count(*)::text FROM public.nexus_user_data WHERE user_id = '" +
-        firstWriteCleanupOwner + "') || E'\\\\t' || " +
+        firstWriteCleanupOwner + "') || E'\\t' || " +
       "(SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = '" +
         firstWriteCleanupOwner + "' AND revision_id = '" + firstWriteCleanupRevision + "');"
     );
-    assert.equal(firstWriteCleanupState, '0\\t0',
+    assert.equal(cleanupFirstState, '0\t0',
       'cleanup-first ordering must leave no parent manifest and no candidate chunks');
   } finally {
     const firstWriteOwnerList = "'" + firstWritePublisherOwner + "','" + firstWriteCleanupOwner + "'";
@@ -292,9 +340,9 @@ async function waitForLockReady(session, label) {
       'verify first-write race fixture cascade',
       "SELECT (SELECT count(*) FROM auth.users WHERE id IN (" + firstWriteOwnerList + ")) || E'\\t' || " +
       "(SELECT count(*) FROM public.nexus_user_data WHERE user_id IN (" + firstWriteOwnerList + ")) || E'\\t' || " +
-      "(SELECT count(*) FROM public.nexus_user_data_chunks WHERE user_id IN (" + firstWriteOwnerList + ');'
+      "(SELECT count(*) FROM public.nexus_user_data_chunks WHERE user_id IN (" + firstWriteOwnerList + "));"
     );
-    assert.equal(firstWriteLeftovers, '0\\t0\\t0',
+    assert.equal(firstWriteLeftovers, '0\t0\t0',
       'first-write race owners and chunks must be removed by the normal account-deletion cascade');
   }
 
