@@ -85,7 +85,8 @@ assert.match(activeManifestRaceRunner, /SQLSTATE '55000'/);
 assert.match(activeManifestRaceRunner, /publisher wins the workspace-row lock/);
 assert.match(activeManifestRaceRunner, /cleanup holds the workspace-row lock first/);
 assert.match(activeManifestRaceRunner, /finally[\s\S]*DELETE FROM auth\.users/);
-assert.match(activeManifestRaceRunner, /remaining\)[\s\S]*'0\\t0\\t0'/,
+assert.ok(activeManifestRaceRunner.includes("assert.equal(remaining, '0\\\\t0\\\\t0'"),
+  'the race runner must verify that its disposable auth, workspace, and chunk rows are removed');
   'the race runner must verify that its disposable auth, workspace, and chunk rows are removed');
 
 
