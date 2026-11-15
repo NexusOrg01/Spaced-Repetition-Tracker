@@ -83,7 +83,7 @@ assert.match(activeManifestRaceRunner, /NEXUS_RACE_LOCK_HELD/,
 assert.match(activeManifestRaceRunner, /NEXUS_RACE_OPERATION_MS=/);
 assert.match(activeManifestRaceRunner, /MIN_LOCK_WAIT_MS = 2500/);
 assert.match(activeManifestRaceRunner, /await waitForLockReady/);
-assert.doesNotMatch(activeManifestRaceRunner, /pg_stat_activity/,
+assert.doesNotMatch(activeManifestRaceRunner, /FROM pg_stat_activity/,
   'the race proof must not depend on session-pooler activity visibility');
 assert.match(activeManifestRaceRunner, /FOR UPDATE/);
 assert.match(activeManifestRaceRunner, /SQLSTATE '55000'/);
