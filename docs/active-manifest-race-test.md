@@ -53,3 +53,37 @@ Do not use `supabase stop --all`.
 - The runner does not change the trigger migration, enable entity-delta mode, or modify normal application behavior.
 - Temporary data exists only in the disposable local database and is removed by the runner's cleanup path; the workflow also destroys the local database volume even when a test fails.
 - This is a database lock-ordering proof, not the separate large-workspace/two-device lifecycle or physical Android acceptance test.
+
+## General snapshot writer integrity audit (P34-02)
+
+The general writer path is:
+
+`cloud-sync.js:writeRemoteSnapshot()`
+→ `cloud-chunk-storage.js:writeSnapshot()`
+→ browser-side exact chunk read-back
+→ `backup-restore-utils.js:writeCloudSnapshot()`
+→ conditional `nexus_user_data` manifest insert/update
+→ active-manifest read-back
+→ best-effort stale-chunk cleanup.
+
+The client verifies exact chunk content, per-chunk byte lengths, total UTF-8 bytes, and SHA-256 before publication. The earlier database trigger protected an already-active manifest, but an initial publication has no parent workspace row to lock. A stale unpublished candidate could therefore be removed while the first manifest row was being inserted.
+
+Migration `20261115171500_validate_general_snapshot_candidates.sql` closes that gap:
+
+- A private `BEFORE INSERT OR UPDATE OF payload` trigger validates every `chunked-v1` manifest at the database publication boundary.
+- It checks manifest shape and bounds, then verifies that the candidate has exactly the declared number of unique contiguous chunk indexes, a uniform `chunk_count`, and a byte total matching `totalBytes`.
+- The database does not rebuild the entire potentially 225 MiB payload or repeat SHA-256. The client still performs exact read-back and digest verification; the database independently prevents incomplete or structurally inconsistent candidate sets from becoming active.
+- Publication and cleanup share an owner-scoped transaction advisory lock. Existing workspaces retain the parent-row lock ordering; the advisory lock also serializes the first insert when no parent row exists.
+- Cleanup re-reads the active pointer after it obtains the lock. It rejects deletion when the candidate has become active, and an incomplete first-write candidate is rejected with SQLSTATE `23514` if cleanup won first.
+- Legacy whole-row JSONB snapshots are bypassed by the chunk-manifest validator and retain their existing conditional-write fallback. Account deletion remains allowed through the `auth.users` cascade.
+
+The local Phase 3.4 workflow now runs:
+
+1. The rollback-only `supabase/tests/nexus_user_data_chunks_active_manifest.sql` fixture, including rejection of an intentionally incomplete candidate, preservation of the old active pointer, stale/orphan cleanup, owner isolation, and account cascade.
+2. `scripts/test-active-manifest-race.mjs`, which exercises publisher-first and cleanup-first ordering for existing rows and both first-write orderings on two parent-less owners. It measures actual waiting time and asserts active-pointer/chunk state after each race.
+3. `scripts/test-cloud-chunk-storage.mjs` to retain the legacy snapshot fallback and chunk writer regressions.
+4. `scripts/test-account-deletion.mjs` for account-deletion wiring.
+
+All concurrency tests are restricted to the disposable local Supabase database. The race runner rejects non-loopback database hosts, the production project reference, and transaction-pooler connections. The hosted staging and production projects are not used by this test.
+
+This audit proves server-side publication completeness and the first-write cleanup race. It does not replace the separate P34-03 concurrent-device/stale-device integration, P34-09 physical-device acceptance, or eventual P34-10/P34-11 review gates.
