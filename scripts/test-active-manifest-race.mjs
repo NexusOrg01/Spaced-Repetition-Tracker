@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 const PRODUCTION_PROJECT_REF = 'txugbdavblpettcnhcxl';
 const LOCK_HOLD_SECONDS = 7.0;
@@ -184,9 +184,27 @@ const revD = randomUUID();
 const email = 'nexus-active-manifest-race-' + ownerId.replaceAll('-', '') + '@example.invalid';
 let seeded = false;
 
+const chunkText = revisionId => revisionId === revA ? 'race-A'
+  : revisionId === revB ? 'race-B'
+  : revisionId === revC ? 'race-C'
+  : revisionId === revD ? 'race-D'
+  : null;
+const manifestPayload = revisionId => {
+  const chunk = chunkText(revisionId);
+  if (!chunk) throw new Error('Unknown test revision.');
+  return JSON.stringify({
+    __nexusStorage: 'chunked-v1',
+    version: 1,
+    revisionId,
+    chunkCount: 1,
+    totalBytes: Buffer.byteLength(chunk),
+    sha256: createHash('sha256').update(chunk).digest('hex')
+  });
+};
+const sqlJsonb = value => "'" + value.replace(/'/g, "''") + "'::jsonb";
 const updateManifest = revisionId =>
   "UPDATE public.nexus_user_data " +
-  "SET payload = jsonb_build_object('__nexusStorage', 'chunked-v1', 'revisionId', '" + revisionId + "'), " +
+  "SET payload = " + sqlJsonb(manifestPayload(revisionId)) + ", " +
   "updated_at = clock_timestamp() WHERE user_id = '" + ownerId + "';";
 
 let primaryError;
@@ -195,12 +213,12 @@ try {
     'BEGIN;',
     "INSERT INTO auth.users (id, aud, role, email, encrypted_password, email_confirmed_at, raw_app_meta_data, raw_user_meta_data, created_at, updated_at)",
     "VALUES ('" + ownerId + "', 'authenticated', 'authenticated', '" + email + "', '', clock_timestamp(), '{}'::jsonb, '{}'::jsonb, clock_timestamp(), clock_timestamp());",
-    "INSERT INTO public.nexus_user_data (user_id, payload, updated_at) VALUES ('" + ownerId + "', jsonb_build_object('__nexusStorage', 'chunked-v1', 'revisionId', '" + revA + "'), clock_timestamp());",
     "INSERT INTO public.nexus_user_data_chunks (user_id, revision_id, chunk_index, chunk_count, chunk_bytes, chunk_data, created_at) VALUES " +
       "('" + ownerId + "', '" + revA + "', 0, 1, octet_length('race-A'), 'race-A', clock_timestamp() - interval '8 days'), " +
       "('" + ownerId + "', '" + revB + "', 0, 1, octet_length('race-B'), 'race-B', clock_timestamp() - interval '8 days'), " +
       "('" + ownerId + "', '" + revC + "', 0, 1, octet_length('race-C'), 'race-C', clock_timestamp() - interval '8 days'), " +
       "('" + ownerId + "', '" + revD + "', 0, 1, octet_length('race-D'), 'race-D', clock_timestamp() - interval '8 days');",
+    "INSERT INTO public.nexus_user_data (user_id, payload, updated_at) VALUES ('" + ownerId + "', " + sqlJsonb(manifestPayload(revA)) + ", clock_timestamp());",
     'COMMIT;'
   ].join('\n');
   await runSql('seed disposable owner and four chunk revisions', seedSql);
