@@ -12,7 +12,6 @@ const delta = globalThis.NexusEntityDeltaSync;
 assert.ok(delta && typeof delta.createClient === 'function', 'entity-delta runtime must load');
 const required = [
   'PHASE34_API_URL', 'PHASE34_ANON_KEY',
-  'PHASE34_EMAIL_A', 'PHASE34_PASSWORD_A',
   'PHASE34_EMAIL_B', 'PHASE34_PASSWORD_B',
   'PHASE34_EMAIL_C', 'PHASE34_PASSWORD_C'
 ];
@@ -333,8 +332,8 @@ async function verifyFinalWorkspace(payload) {
 }
 
 const [clientA1, clientA2, clientB] = await Promise.all([
-  signIn(process.env.PHASE34_EMAIL_A, process.env.PHASE34_PASSWORD_A),
-  signIn(process.env.PHASE34_EMAIL_A, process.env.PHASE34_PASSWORD_A),
+  signIn(process.env.PHASE34_EMAIL_C, process.env.PHASE34_PASSWORD_C),
+  signIn(process.env.PHASE34_EMAIL_C, process.env.PHASE34_PASSWORD_C),
   signIn(process.env.PHASE34_EMAIL_B, process.env.PHASE34_PASSWORD_B)
 ]);
 const ownerA = clientA1.user.id;
@@ -347,8 +346,14 @@ check('Three independent authenticated sessions represent two devices and a sepa
 
 const stateA = await rpc(clientA1, 'nexus_get_entity_sync_state');
 const stateB = await rpc(clientB, 'nexus_get_entity_sync_state');
-assert.equal(stateA.mode, 'snapshot');
-assert.equal(stateB.mode, 'snapshot');
+assert.equal(stateA.mode, 'snapshot', 'Fixture C is intentionally untouched by the preceding A1/A2/B protocol test');
+assert.equal(stateB.mode, 'delta', 'Fixture B was used by the preceding A1/A2/B protocol test and must retain its own isolated state');
+assert.equal(Number(stateB.head_revision), 1, 'The prior protocol test should leave exactly one B-owned operation');
+const foreignPage = await rpc(clientB, 'nexus_read_entity_operations', {
+  p_after_revision: 0, p_limit_groups: 50, p_max_bytes: 1048576
+});
+assert.equal(foreignPage.next_revision, 1);
+assert.equal(foreignPage.groups.length, 1);
 const enabled = await rpc(clientA1, 'nexus_enable_entity_delta', {
   p_expected_updated_at: stateA.snapshot_updated_at
 });
@@ -356,8 +361,9 @@ assert.equal(enabled.ok, true);
 assert.equal(enabled.mode, 'delta');
 const baselineState = await rpc(clientA1, 'nexus_get_entity_sync_state');
 const ownerBaseStamp = baselineState.snapshot_updated_at;
-check('Delta is enabled only for disposable owner A; account B remains in snapshot mode',
-  baselineState.mode === 'delta' && (await rpc(clientB, 'nexus_get_entity_sync_state')).mode === 'snapshot');
+check('Clean fixture C is enabled for the large-workspace lifecycle while prior account B retains only its own revision-1 operation',
+  baselineState.mode === 'delta' && Number(baselineState.head_revision) === 0 &&
+  stateB.mode === 'delta' && Number(stateB.head_revision) === 1 && foreignPage.groups.length === 1);
 
 console.log('Building the 77,144-topic / 72,001-history workspace…');
 const { payload: initialPayload, serialized: initialSerialized } = buildLargeWorkspace();
@@ -603,8 +609,8 @@ assert.equal(finalCompaction.complete, true);
 recoveredLocalWorkspace = recovery.payload;
 
 const [clientA1Restart, clientA2Restart] = await Promise.all([
-  signIn(process.env.PHASE34_EMAIL_A, process.env.PHASE34_PASSWORD_A),
-  signIn(process.env.PHASE34_EMAIL_A, process.env.PHASE34_PASSWORD_A)
+  signIn(process.env.PHASE34_EMAIL_C, process.env.PHASE34_PASSWORD_C),
+  signIn(process.env.PHASE34_EMAIL_C, process.env.PHASE34_PASSWORD_C)
 ]);
 assert.equal(clientA1Restart.user.id, ownerA);
 assert.equal(clientA2Restart.user.id, ownerA);
