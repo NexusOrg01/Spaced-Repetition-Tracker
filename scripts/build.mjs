@@ -8,6 +8,11 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = resolve(root, 'dist');
 const LIVE_HOST = 'txugbdavblpettcnhcxl.supabase.co';
 const PREVIEW_BRANCHES = new Set(['feat/account-bound-offline-sync', 'ai-dev/rebuild-commerce-sync-integrity', 'ai-dev/fix-signin-preserve-offline-workspace', 'ai-dev/fix-commerce-pending-overwrite', 'ai-dev/rebuild-explore-curriculum-lifecycle', 'ai-dev/fresh-curriculum-sync-rebuild', 'android/capacitor-multistore-foundation']);
+const LOCAL_PHASE34_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+function isLocalPhase34Url(rawUrl) {
+  try { const url=new URL(String(rawUrl||'').trim()); return url.protocol==='http:'&&LOCAL_PHASE34_HOSTS.has(url.hostname.toLowerCase())&&url.port==='54321'&&!url.username&&!url.password&&!url.search&&!url.hash&&(url.pathname===''||url.pathname==='/'); }
+  catch { return false; }
+}
 
 function isAllowedAnonKey(key) {
   if (key.startsWith('sb_secret_') || key.length < 20) return false;
@@ -21,6 +26,13 @@ function isAllowedAnonKey(key) {
 }
 
 export function resolvePreviewConfig(env) {
+  if(env.NEXUS_PHASE34_LOCAL_TEST==='true'){
+    if(env.VERCEL_ENV||env.CF_PAGES||env.CONTEXT||env.NETLIFY) throw new Error('Local Phase 3.4 credentials may only be used for a local build, never a hosted deployment.');
+    const rawUrl=String(env.NEXUS_SUPABASE_URL||'').trim(),key=String(env.NEXUS_SUPABASE_ANON_KEY||'').trim();
+    if(!rawUrl||!key||!isLocalPhase34Url(rawUrl)) throw new Error('Local Phase 3.4 mode requires the local Supabase API on loopback port 54321 and a local anon/publishable key.');
+    if(!isAllowedAnonKey(key)) throw new Error('Local Phase 3.4 mode accepts only a publishable key or legacy anon JWT; secret/service-role keys are forbidden.');
+    return {url:new URL(rawUrl).origin,key};
+  }
   const allowedVercelPreview = env.VERCEL_ENV === 'preview' && PREVIEW_BRANCHES.has(String(env.VERCEL_GIT_COMMIT_REF || ''));
   // CF_PAGES is normally set by Pages, but some build wrappers omit it. The exact
   // allowlisted Pages branch plus strict separate-project URL/key validation below
@@ -52,18 +64,12 @@ export function resolvePreviewConfig(env) {
 }
 
 export function resolveStagingEntityDeltaEnabled(env, config) {
-  const vercelPreview = env.VERCEL_ENV === 'preview' &&
-    String(env.VERCEL_GIT_COMMIT_REF || '') === 'android/capacitor-multistore-foundation';
-  const netlifyDeployPreview = env.CONTEXT === 'deploy-preview' &&
-    String(env.BRANCH || '') === 'android/capacitor-multistore-foundation';
-  return (vercelPreview || netlifyDeployPreview) &&
-    env.NEXUS_ENTITY_DELTA_SYNC_STAGING === 'true' &&
-    !!config && config.url === 'https://xuwfzibxhxzxxupprxsq.supabase.co';
+  return env.NEXUS_PHASE34_LOCAL_TEST==='true'&&env.NEXUS_ENTITY_DELTA_SYNC_LOCAL==='true'&&
+    !env.VERCEL_ENV&&!env.CF_PAGES&&!env.CONTEXT&&!env.NETLIFY&&!!config&&isLocalPhase34Url(config.url);
 }
 
 export function renderConfigScript(config, enableStagingEntityDelta = false) {
-  const enabled = enableStagingEntityDelta === true && !!config &&
-    config.url === 'https://xuwfzibxhxzxxupprxsq.supabase.co';
+  const enabled = enableStagingEntityDelta === true && !!config && isLocalPhase34Url(config.url);
   return "/* Generated at build time; do not edit or commit project credentials. */\n" +
     "(function(){'use strict';window.NEXUS_ENTITY_DELTA_SYNC_STAGING=" + String(enabled) +
     ";const config=" + JSON.stringify(config) +
@@ -149,9 +155,11 @@ async function copySiteFiles() {
     renderConfigScript(config, stagingEntityDeltaEnabled), 'utf8');
   assert.ok(await readdir(output).then(items => items.includes('index.html')), 'static build must include index.html');
   if (config) {
-    console.log('Built isolated Supabase staging config for the designated Preview branch.');
-    if (stagingEntityDeltaEnabled) {
-      console.log('Explicit Phase 3.4 entity-delta opt-in is enabled for the isolated staging preview.');
+    if(isLocalPhase34Url(config.url)){
+      console.log('Built explicitly opted-in local Phase 3.4 Supabase config. Target is accepted only on loopback.');
+      if(stagingEntityDeltaEnabled) console.log('Local Phase 3.4 entity-delta gate is enabled for this local build only.');
+    }else{
+      console.log('Built isolated Supabase config for the designated Preview branch.');
     }
   } else {
     console.log('Built static Nexus output without injecting staging credentials.');

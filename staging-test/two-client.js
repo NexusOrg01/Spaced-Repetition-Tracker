@@ -1,215 +1,96 @@
 (function(){
 'use strict';
-const LIVE_HOST='spaced-repetition-tracker-delta.vercel.app';
-const STAGING_URL='https://xuwfzibxhxzxxupprxsq.supabase.co';
-const STAGING_PUBLISHABLE_KEY='sb_publishable_UE11M6ghcrdBaRKZUjzsVQ_tOGVc1zw';
-const host=String(location.hostname||'').toLowerCase();
-const previewHost=host.endsWith('.vercel.app')||host.endsWith('.netlify.app');
-const statusNode=document.getElementById('status');
-const logNode=document.getElementById('log');
-const form=document.getElementById('testForm');
-const runButton=document.getElementById('runButton');
-const input=id=>document.getElementById(id);
-const say=value=>{statusNode.textContent=value;};
-const log=value=>{logNode.textContent+=String(value)+'\n';};
-const assert=(condition,message)=>{if(!condition)throw new Error(message);};
-const emailPattern=/^nexus-3-4-two-client-[a-f0-9]{32}@example\.invalid$/;
-const passwordPattern=/^Nexus-Staging-[a-f0-9]{32}![A-Za-z]{2}[0-9]$/;
-
-if(!previewHost||host===LIVE_HOST){
-  form.hidden=true;
-  say('BLOCKED: this test harness is unavailable on the production or non-preview host.');
-  logNode.textContent='No network request was made.';
-  return;
-}
-if(location.protocol!=='https:'){
-  form.hidden=true;
-  say('BLOCKED: HTTPS is required.');
-  return;
-}
-
-function makeSession(email,password){
-  return fetch(STAGING_URL+'/auth/v1/token?grant_type=password',{
-    method:'POST',
-    headers:{apikey:STAGING_PUBLISHABLE_KEY,'Content-Type':'application/json'},
-    body:JSON.stringify({email,password})
-  }).then(async response=>{
-    const body=await response.json().catch(()=>({}));
-    const authDetail=body.msg||body.message||body.error_description||body.error||'No error detail returned';
-    assert(response.ok&&body.access_token&&body.user,'Authentication failed for one disposable fixture account (HTTP '+response.status+'): '+String(authDetail).slice(0,180));
-    return {email,token:body.access_token,user:body.user};
-  });
+const LOCAL_HOSTS=new Set(['localhost','127.0.0.1','::1','[::1]']);
+const statusNode=document.getElementById('status'),logNode=document.getElementById('log'),form=document.getElementById('testForm'),runButton=document.getElementById('runButton');
+const input=id=>document.getElementById(id),say=v=>statusNode.textContent=v,log=v=>{logNode.textContent+=String(v)+'\n';};
+const assert=(ok,msg)=>{if(!ok)throw new Error(msg);};
+const emailPattern=/^nexus-3-4-two-client-[a-f0-9]{32}@example\.invalid$/,passwordPattern=/^Nexus-Staging-[a-f0-9]{32}![A-Za-z]{2}[0-9]$/;
+let activeConfig=null;
+if(!LOCAL_HOSTS.has(String(location.hostname||'').toLowerCase())){form.hidden=true;say('BLOCKED: this harness runs only on localhost. Public Vercel/Netlify previews are disabled.');logNode.textContent='No network request was made.';return;}
+if(!['http:','https:'].includes(location.protocol)){form.hidden=true;say('BLOCKED: an HTTP(S) localhost origin is required.');return;}
+function readLocalConfig(){
+ let parsed;try{parsed=new URL(input('supabaseUrl').value.trim());}catch(_){throw new Error('Enter the local Supabase API URL printed by the CLI status command.');}
+ assert(parsed.protocol==='http:'&&LOCAL_HOSTS.has(parsed.hostname.toLowerCase())&&parsed.port==='54321'&&!parsed.username&&!parsed.password&&!parsed.search&&!parsed.hash&&(parsed.pathname===''||parsed.pathname==='/'),'Backend must be local Supabase on loopback port 54321. Remote projects are rejected.');
+ const key=input('anonKey').value.trim();let allowed=key.startsWith('sb_publishable_')&&key.length>'sb_publishable_'.length+8;
+ if(!allowed){try{allowed=JSON.parse(atob(key.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))).role==='anon';}catch(_){allowed=false;}}
+ assert(allowed,'Use only the local publishable/anon key. Secret and service-role keys are rejected.');
+ return {url:parsed.origin,key};
 }
 async function api(session,path,options){
-  const response=await fetch(STAGING_URL+path,{
-    method:options&&options.method||'GET',
-    headers:{
-      apikey:STAGING_PUBLISHABLE_KEY,
-      Authorization:session&&session.token?'Bearer '+session.token:'Bearer '+STAGING_PUBLISHABLE_KEY,
-      'Content-Type':'application/json',
-      ...(options&&options.headers||{})
-    },
-    body:options&&options.body!==undefined?JSON.stringify(options.body):undefined
-  });
-  const body=await response.json().catch(()=>null);
-  return {ok:response.ok,status:response.status,body};
+ const response=await fetch(activeConfig.url+path,{method:options&&options.method||'GET',headers:{apikey:activeConfig.key,Authorization:session&&session.token?'Bearer '+session.token:'Bearer '+activeConfig.key,'Content-Type':'application/json',...(options&&options.headers||{})},body:options&&options.body!==undefined?JSON.stringify(options.body):undefined});
+ return {ok:response.ok,status:response.status,body:await response.json().catch(()=>null)};
 }
-async function rpc(session,name,args){
-  const result=await api(session,'/rest/v1/rpc/'+name,{method:'POST',body:args||{}});
-  assert(result.ok,'RPC '+name+' failed (HTTP '+result.status+'): '+JSON.stringify(result.body));
-  return result.body;
+async function makeSession(email,password){
+ const response=await fetch(activeConfig.url+'/auth/v1/token?grant_type=password',{method:'POST',headers:{apikey:activeConfig.key,'Content-Type':'application/json'},body:JSON.stringify({email,password})});
+ const body=await response.json().catch(()=>({})),detail=body.msg||body.message||body.error_description||body.error||'No detail';
+ assert(response.ok&&body.access_token&&body.user,'Local fixture authentication failed (HTTP '+response.status+'): '+String(detail).slice(0,180));
+ return {email,token:body.access_token,user:body.user};
 }
-function operation(operationId,collection,id,label){
-  return {
-    p_operation_id:operationId,
-    p_expected_revision:1,
-    p_changes:[{
-      collection,id,operation:'put',position:0,
-      value:{id,name:label,stagingTest:true}
-    }]
-  };
-}
+async function rpc(session,name,args){const r=await api(session,'/rest/v1/rpc/'+name,{method:'POST',body:args||{}});assert(r.ok,'RPC '+name+' failed (HTTP '+r.status+'): '+JSON.stringify(r.body));return r.body;}
 async function run(){
-  const credentials={
-    emailA:input('emailA').value.trim().toLowerCase(),
-    passwordA:input('passwordA').value,
-    emailB:input('emailB').value.trim().toLowerCase(),
-    passwordB:input('passwordB').value
-  };
-  assert(emailPattern.test(credentials.emailA)&&emailPattern.test(credentials.emailB),
-    'Both emails must exactly match the nexus-3-4-two-client-<32 hex>@example.invalid fixture format.');
-  assert(credentials.emailA!==credentials.emailB,'The two accounts must be different.');
-  assert(passwordPattern.test(credentials.passwordA)&&passwordPattern.test(credentials.passwordB),
-    'Passwords must match the generated Nexus-Staging fixture format.');
-  const sessions=[];
-  let passed=0;
-  const check=(name,condition)=>{assert(condition,name);passed++;log('PASS  '+name);};
-  logNode.textContent='';
-  try{
-    say('Signing in to isolated staging fixtures…');
-    const [a1,b]=await Promise.all([
-      makeSession(credentials.emailA,credentials.passwordA),
-      makeSession(credentials.emailB,credentials.passwordB)
-    ]);
-    sessions.push(a1,b);
-    const a2=await makeSession(credentials.emailA,credentials.passwordA);
-    sessions.push(a2);
-    check('Three independent authenticated sessions established',!!a1.token&&!!a2.token&&!!b.token);
-    check('Two device sessions share account A',a1.user.id===a2.user.id);
-    check('Account B has a distinct owner identity',a1.user.id!==b.user.id);
-    check('Client A1 and A2 use independent access tokens',a1.token!==a2.token);
-
-    say('Verifying each isolated snapshot and enabling delta for test accounts…');
-    const [stateA,stateB]=await Promise.all([
-      rpc(a1,'nexus_get_entity_sync_state'),
-      rpc(b,'nexus_get_entity_sync_state')
-    ]);
-    check('Both disposable accounts begin in snapshot mode',stateA.mode==='snapshot'&&stateB.mode==='snapshot');
-    const [enabledA,enabledB]=await Promise.all([
-      rpc(a1,'nexus_enable_entity_delta',{p_expected_updated_at:stateA.snapshot_updated_at}),
-      rpc(b,'nexus_enable_entity_delta',{p_expected_updated_at:stateB.snapshot_updated_at})
-    ]);
-    check('Delta enablement is scoped to both disposable owners',enabledA.ok===true&&enabledA.mode==='delta'&&enabledB.ok===true&&enabledB.mode==='delta');
-
-    say('Publishing independent A and B operations…');
-    const opA='phase34-two-client-a-'+crypto.randomUUID();
-    const opB='phase34-two-client-b-'+crypto.randomUUID();
-    const changeA=[{collection:'topics',id:'two-client-a-'+crypto.randomUUID(),operation:'put',position:0,value:{id:'temporary-a',name:'Client A initial'}}];
-    const changeB=[{collection:'topics',id:'two-client-b-'+crypto.randomUUID(),operation:'put',position:0,value:{id:'temporary-b',name:'Client B initial'}}];
-    changeA[0].value.id=changeA[0].id;
-    changeB[0].value.id=changeB[0].id;
-    const [firstA,firstB]=await Promise.all([
-      rpc(a1,'nexus_publish_entity_operation',{p_operation_id:opA,p_expected_revision:0,p_changes:changeA}),
-      rpc(b,'nexus_publish_entity_operation',{p_operation_id:opB,p_expected_revision:0,p_changes:changeB})
-    ]);
-    check('Independent accounts publish their first operation at revision 1',
-      firstA.ok===true&&firstA.revision===1&&firstB.ok===true&&firstB.revision===1);
-
-    say('Racing two authenticated devices on account A…');
-    const raceA={
-      p_operation_id:'phase34-race-a1-'+crypto.randomUUID(),
-      p_expected_revision:1,
-      p_changes:[{collection:'history',id:'race-a1-'+crypto.randomUUID(),operation:'put',position:0,value:null}]
-    };
-    const raceB={
-      p_operation_id:'phase34-race-a2-'+crypto.randomUUID(),
-      p_expected_revision:1,
-      p_changes:[{collection:'history',id:'race-a2-'+crypto.randomUUID(),operation:'put',position:1,value:null}]
-    };
-    raceA.p_changes[0].value={id:raceA.p_changes[0].id,topicId:'two-client-a',reviewedAt:new Date().toISOString()};
-    raceB.p_changes[0].value={id:raceB.p_changes[0].id,topicId:'two-client-a',reviewedAt:new Date().toISOString()};
-    const raced=await Promise.all([
-      rpc(a1,'nexus_publish_entity_operation',raceA),
-      rpc(a2,'nexus_publish_entity_operation',raceB)
-    ]);
-    const wins=raced.filter(item=>item.ok===true&&!item.replayed);
-    const conflicts=raced.filter(item=>item.ok===false&&item.code==='revision_conflict');
-    check('Same-account concurrent publish yields one commit and one revision conflict',wins.length===1&&conflicts.length===1);
-    const loser=raced[0].ok?{session:a2,request:raceB}:{session:a1,request:raceA};
-    const retryRequest={...loser.request,p_expected_revision:2};
-    const retry=await rpc(loser.session,'nexus_publish_entity_operation',retryRequest);
-    check('Losing device retries the same operation at the next revision',retry.ok===true&&retry.revision===3);
-    const replay=await rpc(loser.session,'nexus_publish_entity_operation',retryRequest);
-    check('Same operation ID and identical retry request returns its original receipt',replay.ok===true&&replay.replayed===true&&replay.revision===3);
-    const mismatch=await rpc(loser.session,'nexus_publish_entity_operation',{
-      ...retryRequest,
-      p_changes:[{collection:'topics',id:'different-id',operation:'put',position:0,value:{id:'different-id'}}]
-    });
-    check('Reusing an operation ID with a different payload is rejected',mismatch.ok===false&&mismatch.code==='idempotency_conflict');
-
-    say('Reading bounded operation pages and checking RLS ownership…');
-    const [pageA,pageB]=await Promise.all([
-      rpc(a1,'nexus_read_entity_operations',{p_after_revision:0,p_limit_groups:50,p_max_bytes:1048576}),
-      rpc(b,'nexus_read_entity_operations',{p_after_revision:0,p_limit_groups:50,p_max_bytes:1048576})
-    ]);
-    const groupsA=Array.isArray(pageA.groups)?pageA.groups:[];
-    const groupsB=Array.isArray(pageB.groups)?pageB.groups:[];
-    const idsA=groupsA.map(group=>group.operation_id);
-    const idsB=groupsB.map(group=>group.operation_id);
-    check('Client A reads three contiguous own revisions only',pageA.mode==='delta'&&pageA.snapshot_required===false&&pageA.next_revision===3&&groupsA.length===3);
-    check('Client B reads only its own independent revision',pageB.mode==='delta'&&pageB.snapshot_required===false&&pageB.next_revision===1&&groupsB.length===1);
-    check('No cross-account operation IDs appear in either page',!idsA.includes(opB)&&!idsB.includes(opA));
-
-    const [rowsA,rowsB,foreignA] = await Promise.all([
-      api(a1,'/rest/v1/nexus_workspace_operations?select=user_id,revision,operation_id&order=revision.asc'),
-      api(b,'/rest/v1/nexus_workspace_operations?select=user_id,revision,operation_id&order=revision.asc'),
-      api(a1,'/rest/v1/nexus_workspace_operations?select=user_id,revision,operation_id&user_id=eq.'+encodeURIComponent(b.user.id))
-    ]);
-    check('Authenticated table reads expose only owner A rows',rowsA.ok&&Array.isArray(rowsA.body)&&rowsA.body.length===3&&rowsA.body.every(row=>row.user_id===a1.user.id));
-    check('Authenticated table reads expose only owner B rows',rowsB.ok&&Array.isArray(rowsB.body)&&rowsB.body.length===1&&rowsB.body.every(row=>row.user_id===b.user.id));
-    check('Owner A cannot select owner B rows by guessing its user ID',foreignA.ok&&Array.isArray(foreignA.body)&&foreignA.body.length===0);
-
-    const denied=await api(a1,'/rest/v1/nexus_workspace_operations',{
-      method:'POST',
-      body:{user_id:a1.user.id,revision:99,ordinal:0,operation_id:'forbidden-direct-write',
-        collection:'topics',entity_id:'forbidden-direct-write',operation:'put',position:0,
-        value:{id:'forbidden-direct-write'}}
-    });
-    check('Authenticated client cannot write directly to immutable operation table',denied.status===401||denied.status===403);
-
-    const [finalA,finalB]=await Promise.all([
-      rpc(a1,'nexus_get_entity_sync_state'),
-      rpc(b,'nexus_get_entity_sync_state')
-    ]);
-    check('Final server heads are isolated (A=3, B=1)',finalA.head_revision===3&&finalB.head_revision===1);
-    say('PASS — '+passed+' authenticated staging assertions completed.');
-    log('Account A final head: '+finalA.head_revision+'; Account B final head: '+finalB.head_revision+'.');
-  }finally{
-    for(const session of sessions){
-      try{await api(session,'/auth/v1/logout',{method:'POST',body:{},headers:{'Content-Type':'application/json'}});}catch(_){}
-    }
-    input('passwordA').value='';
-    input('passwordB').value='';
-  }
+ const sessions=[];
+ try{
+  activeConfig=readLocalConfig();
+  const c={emailA:input('emailA').value.trim().toLowerCase(),passwordA:input('passwordA').value,emailB:input('emailB').value.trim().toLowerCase(),passwordB:input('passwordB').value};
+  assert(emailPattern.test(c.emailA)&&emailPattern.test(c.emailB),'Emails must match the generated nexus-3-4-two-client-<32 hex>@example.invalid format.');
+  assert(c.emailA!==c.emailB,'Accounts A and B must be different.');
+  assert(passwordPattern.test(c.passwordA)&&passwordPattern.test(c.passwordB),'Passwords must match the generated Nexus-Staging fixture format.');
+  let passed=0;const check=(n,v)=>{assert(v,n);passed++;log('PASS  '+n);};
+  logNode.textContent='';say('Signing in to local disposable fixtures…');
+  const [a1,b]=await Promise.all([makeSession(c.emailA,c.passwordA),makeSession(c.emailB,c.passwordB)]);sessions.push(a1,b);
+  const a2=await makeSession(c.emailA,c.passwordA);sessions.push(a2);
+  check('Three independent Auth sessions established',!!a1.token&&!!a2.token&&!!b.token);
+  check('A1 and A2 share owner A',a1.user.id===a2.user.id);
+  check('B has a distinct owner identity',a1.user.id!==b.user.id);
+  check('A1 and A2 have independent access tokens',a1.token!==a2.token);
+  say('Checking snapshot mode and enabling Delta for disposable owners…');
+  const [sa,sb]=await Promise.all([rpc(a1,'nexus_get_entity_sync_state'),rpc(b,'nexus_get_entity_sync_state')]);
+  check('Both accounts begin in snapshot mode',sa.mode==='snapshot'&&sb.mode==='snapshot');
+  const [ea,eb]=await Promise.all([rpc(a1,'nexus_enable_entity_delta',{p_expected_updated_at:sa.snapshot_updated_at}),rpc(b,'nexus_enable_entity_delta',{p_expected_updated_at:sb.snapshot_updated_at})]);
+  check('Delta enablement remains owner-scoped',ea.ok===true&&ea.mode==='delta'&&eb.ok===true&&eb.mode==='delta');
+  say('Publishing independent A and B operations…');
+  const opA='phase34-two-client-a-'+crypto.randomUUID(),opB='phase34-two-client-b-'+crypto.randomUUID();
+  const chA=[{collection:'topics',id:'two-client-a-'+crypto.randomUUID(),operation:'put',position:0,value:{id:'temporary-a',name:'Client A initial'}}];
+  const chB=[{collection:'topics',id:'two-client-b-'+crypto.randomUUID(),operation:'put',position:0,value:{id:'temporary-b',name:'Client B initial'}}];chA[0].value.id=chA[0].id;chB[0].value.id=chB[0].id;
+  const [firstA,firstB]=await Promise.all([rpc(a1,'nexus_publish_entity_operation',{p_operation_id:opA,p_expected_revision:0,p_changes:chA}),rpc(b,'nexus_publish_entity_operation',{p_operation_id:opB,p_expected_revision:0,p_changes:chB})]);
+  check('Independent owners publish revision 1',firstA.ok===true&&firstA.revision===1&&firstB.ok===true&&firstB.revision===1);
+  say('Racing two authenticated devices on owner A…');
+  const ra={p_operation_id:'phase34-race-a1-'+crypto.randomUUID(),p_expected_revision:1,p_changes:[{collection:'history',id:'race-a1-'+crypto.randomUUID(),operation:'put',position:0,value:null}]};
+  const rb={p_operation_id:'phase34-race-a2-'+crypto.randomUUID(),p_expected_revision:1,p_changes:[{collection:'history',id:'race-a2-'+crypto.randomUUID(),operation:'put',position:1,value:null}]};
+  ra.p_changes[0].value={id:ra.p_changes[0].id,topicId:'two-client-a',reviewedAt:new Date().toISOString()};rb.p_changes[0].value={id:rb.p_changes[0].id,topicId:'two-client-a',reviewedAt:new Date().toISOString()};
+  const raced=await Promise.all([rpc(a1,'nexus_publish_entity_operation',ra),rpc(a2,'nexus_publish_entity_operation',rb)]);
+  const wins=raced.filter(x=>x.ok===true&&!x.replayed),conflicts=raced.filter(x=>x.ok===false&&x.code==='revision_conflict');
+  check('Concurrent A publication returns one winner and one revision conflict',wins.length===1&&conflicts.length===1);
+  const loser=raced[0].ok?{session:a2,request:rb}:{session:a1,request:ra},retryRequest={...loser.request,p_expected_revision:2};
+  const retry=await rpc(loser.session,'nexus_publish_entity_operation',retryRequest);
+  check('Losing operation retries at revision 3',retry.ok===true&&retry.revision===3);
+  const replay=await rpc(loser.session,'nexus_publish_entity_operation',retryRequest);
+  check('Same ID and payload replays original receipt',replay.ok===true&&replay.replayed===true&&replay.revision===3);
+  const mismatch=await rpc(loser.session,'nexus_publish_entity_operation',{...retryRequest,p_changes:[{collection:'topics',id:'different-id',operation:'put',position:0,value:{id:'different-id'}}]});
+  check('Same ID with different payload is rejected',mismatch.ok===false&&mismatch.code==='idempotency_conflict');
+  say('Checking bounded reads and owner isolation…');
+  const [pa,pb]=await Promise.all([rpc(a1,'nexus_read_entity_operations',{p_after_revision:0,p_limit_groups:50,p_max_bytes:1048576}),rpc(b,'nexus_read_entity_operations',{p_after_revision:0,p_limit_groups:50,p_max_bytes:1048576})]);
+  const ga=Array.isArray(pa.groups)?pa.groups:[],gb=Array.isArray(pb.groups)?pb.groups:[];
+  check('A reads exactly its three contiguous revisions',pa.mode==='delta'&&pa.snapshot_required===false&&pa.next_revision===3&&ga.length===3);
+  check('B reads only its own revision',pb.mode==='delta'&&pb.snapshot_required===false&&pb.next_revision===1&&gb.length===1);
+  check('No cross-account operation IDs appear',!ga.some(x=>x.operation_id===opB)&&!gb.some(x=>x.operation_id===opA));
+  const [rowsA,rowsB,foreignA]=await Promise.all([
+   api(a1,'/rest/v1/nexus_workspace_operations?select=user_id,revision,operation_id&order=revision.asc'),
+   api(b,'/rest/v1/nexus_workspace_operations?select=user_id,revision,operation_id&order=revision.asc'),
+   api(a1,'/rest/v1/nexus_workspace_operations?select=user_id,revision,operation_id&user_id=eq.'+encodeURIComponent(b.user.id))
+  ]);
+  check('A table reads contain only owner A rows',rowsA.ok&&Array.isArray(rowsA.body)&&rowsA.body.length===3&&rowsA.body.every(x=>x.user_id===a1.user.id));
+  check('B table reads contain only owner B rows',rowsB.ok&&Array.isArray(rowsB.body)&&rowsB.body.length===1&&rowsB.body.every(x=>x.user_id===b.user.id));
+  check('A cannot select B rows by guessing owner ID',foreignA.ok&&Array.isArray(foreignA.body)&&foreignA.body.length===0);
+  const denied=await api(a1,'/rest/v1/nexus_workspace_operations',{method:'POST',body:{user_id:a1.user.id,revision:99,ordinal:0,operation_id:'forbidden-direct-write',collection:'topics',entity_id:'forbidden-direct-write',operation:'put',position:0,value:{id:'forbidden-direct-write'}}});
+  check('Direct operation-table write is denied',denied.status===401||denied.status===403);
+  const [fa,fb]=await Promise.all([rpc(a1,'nexus_get_entity_sync_state'),rpc(b,'nexus_get_entity_sync_state')]);
+  check('Final heads remain isolated (A=3, B=1)',fa.head_revision===3&&fb.head_revision===1);
+  say('PASS — '+passed+' authenticated local integration assertions completed.');
+ }finally{
+  for(const session of sessions){try{await api(session,'/auth/v1/logout',{method:'POST',body:{}});}catch(_){}}
+  activeConfig=null;input('anonKey').value='';input('passwordA').value='';input('passwordB').value='';
+ }
 }
-form.addEventListener('submit',async event=>{
-  event.preventDefault();
-  if(runButton.disabled)return;
-  runButton.disabled=true;
-  say('Running…');
-  logNode.textContent='Starting authenticated two-client staging test.\n';
-  try{await run();}
-  catch(error){say('FAILED — '+String(error&&error.message||error));log('FAIL  '+String(error&&error.message||error));}
-  finally{runButton.disabled=false;}
-});
+form.addEventListener('submit',async event=>{event.preventDefault();if(runButton.disabled)return;runButton.disabled=true;say('Running…');logNode.textContent='Starting authenticated local two-client test.\n';try{await run();}catch(error){say('FAILED — '+String(error&&error.message||error));log('FAIL  '+String(error&&error.message||error));}finally{runButton.disabled=false;}});
 })();

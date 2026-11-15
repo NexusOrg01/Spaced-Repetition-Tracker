@@ -687,8 +687,10 @@ async function runStagingEntityDeltaSync(ownerId,signal){
  const recovery=storage&&typeof storage.readWorkspaceEntityRecovery==='function'
   ?await storage.readWorkspaceEntityRecovery(ownerId):null;
  const recoveryPending=!!(recovery&&recovery.intent);
- const gateOpen=window.NEXUS_ENTITY_DELTA_SYNC_STAGING===true&&
-  isPreviewDeploymentOrigin()&&config().url===STAGING_CONFIG.url;
+ const localHost=['localhost','127.0.0.1','::1','[::1]'].includes(String(location.hostname||'').toLowerCase());
+ let localSupabase=false;
+ try{const localUrl=new URL(config().url);localSupabase=localUrl.protocol==='http:'&&['localhost','127.0.0.1','::1','[::1]'].includes(localUrl.hostname.toLowerCase())&&localUrl.port==='54321'&&!localUrl.username&&!localUrl.password&&!localUrl.search&&!localUrl.hash&&(localUrl.pathname===''||localUrl.pathname==='/');}catch(_){localSupabase=false;}
+ const gateOpen=window.NEXUS_ENTITY_DELTA_SYNC_STAGING===true&&localHost&&localSupabase;
  if(recoveryPending&&!gateOpen)return {blockedRecovery:true,reason:'staging_recovery_journal_pending'};
  if(!gateOpen)return {skipped:true,reason:'staging_delta_gate_closed'};
  const delta=window.NexusEntityDeltaSync,chunkStorage=window.NexusCloudChunkStorage;

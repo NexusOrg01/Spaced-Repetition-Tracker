@@ -156,51 +156,24 @@ assert.doesNotMatch(cloudSyncSource, /(?:redirectTo|emailRedirectTo):\s*['"]http
   'no OAuth callback may be pinned to an old preview or production hostname');
 
 
- // Phase 3.4 is default-off. Only an explicit opt-in on the exact PR preview,
- // targeting the exact isolated Supabase staging project, may open the runtime gate.
- const deltaPreviewEnv = {
-   ...previewEnv,
-   VERCEL_GIT_COMMIT_REF: 'android/capacitor-multistore-foundation',
-   NEXUS_SUPABASE_URL: 'https://xuwfzibxhxzxxupprxsq.supabase.co',
-   NEXUS_ENTITY_DELTA_SYNC_STAGING: 'true'
- };
- const deltaPreviewConfig = resolvePreviewConfig(deltaPreviewEnv);
- assert.equal(resolveStagingEntityDeltaEnabled(deltaPreviewEnv, deltaPreviewConfig), true,
-   'the exact PR preview may opt in only when it targets the isolated Nexus staging project');
- assert.equal(resolveStagingEntityDeltaEnabled({ ...deltaPreviewEnv, NEXUS_ENTITY_DELTA_SYNC_STAGING: 'false' }, deltaPreviewConfig), false,
-   'an explicit false value must keep the delta runtime disabled');
- assert.equal(resolveStagingEntityDeltaEnabled({ ...deltaPreviewEnv, NEXUS_ENTITY_DELTA_SYNC_STAGING: undefined }, deltaPreviewConfig), false,
-   'the absent opt-in must keep the delta runtime disabled');
- assert.equal(resolveStagingEntityDeltaEnabled({ ...deltaPreviewEnv, VERCEL_ENV: 'production' }, deltaPreviewConfig), false,
-   'production builds must never open the staging delta runtime');
- assert.equal(resolveStagingEntityDeltaEnabled({ ...deltaPreviewEnv, VERCEL_GIT_COMMIT_REF: 'main' }, deltaPreviewConfig), false,
-   'other Vercel branches must never open the staging delta runtime');
- assert.equal(resolveStagingEntityDeltaEnabled({
-   ...deltaPreviewEnv, NEXUS_SUPABASE_URL: 'https://txugbdavblpettcnhcxl.supabase.co'
- }, { url: 'https://txugbdavblpettcnhcxl.supabase.co', key: deltaPreviewEnv.NEXUS_SUPABASE_ANON_KEY }), false,
-   'the delta runtime must reject the production Supabase project');
- assert.equal(resolveStagingEntityDeltaEnabled({
-   ...deltaPreviewEnv, NEXUS_SUPABASE_URL: 'https://other-staging.supabase.co'
- }, { url: 'https://other-staging.supabase.co', key: deltaPreviewEnv.NEXUS_SUPABASE_ANON_KEY }), false,
-   'the delta runtime must reject an unrelated staging project');
- const netlifyDeltaPreviewEnv = {
-   ...deltaPreviewEnv,
-   VERCEL_ENV: undefined,
-   VERCEL_GIT_COMMIT_REF: undefined,
-   CONTEXT: 'deploy-preview',
-   BRANCH: 'android/capacitor-multistore-foundation'
- };
- assert.equal(resolveStagingEntityDeltaEnabled(netlifyDeltaPreviewEnv, deltaPreviewConfig), true,
-   'the exact Netlify deploy preview may use the same explicit isolated-staging opt-in');
- assert.equal(resolveStagingEntityDeltaEnabled({ ...netlifyDeltaPreviewEnv, CONTEXT: 'production' }, deltaPreviewConfig), false,
-   'Netlify production must never open the staging delta runtime');
- assert.match(renderConfigScript(deltaPreviewConfig, true), /window\.NEXUS_ENTITY_DELTA_SYNC_STAGING=true/,
-   'the generated preview bootstrap must inject the enabled runtime gate');
- assert.match(renderConfigScript(deltaPreviewConfig, false), /window\.NEXUS_ENTITY_DELTA_SYNC_STAGING=false/,
-   'the generated bootstrap must default the runtime gate to false');
- assert.match(renderConfigScript(deltaPreviewConfig), /window\.NEXUS_ENTITY_DELTA_SYNC_STAGING=false/,
-   'omitting the runtime opt-in must preserve the default-off gate');
- assert.match(renderConfigScript(null, true), /window\.NEXUS_ENTITY_DELTA_SYNC_STAGING=false/,
-   'a missing Supabase config must prevent the runtime gate from opening');
+// Phase 3.4 Delta is opt-in only for an explicitly local disposable backend.
+const localAnonKey='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0';
+const localEnv={NEXUS_PHASE34_LOCAL_TEST:'true',NEXUS_ENTITY_DELTA_SYNC_LOCAL:'true',NEXUS_SUPABASE_URL:'http://127.0.0.1:54321',NEXUS_SUPABASE_ANON_KEY:localAnonKey};
+const localConfig=resolvePreviewConfig(localEnv);
+assert.deepEqual(localConfig,{url:'http://127.0.0.1:54321',key:localAnonKey},'local Phase 3.4 builds accept only loopback Supabase');
+assert.equal(resolveStagingEntityDeltaEnabled(localEnv,localConfig),true,'both explicit local flags open the local Delta gate');
+assert.equal(resolveStagingEntityDeltaEnabled({...localEnv,NEXUS_ENTITY_DELTA_SYNC_LOCAL:'false'},localConfig),false,'false local opt-in leaves the gate closed');
+assert.equal(resolveStagingEntityDeltaEnabled({...localEnv,VERCEL_ENV:'preview'},localConfig),false,'hosted Vercel previews cannot open the local gate');
+assert.equal(resolveStagingEntityDeltaEnabled({...localEnv,CF_PAGES:'1'},localConfig),false,'hosted Pages cannot open the local gate');
+assert.throws(()=>resolvePreviewConfig({...localEnv,VERCEL_ENV:'preview'}),/only be used for a local build/);
+assert.throws(()=>resolvePreviewConfig({...localEnv,CONTEXT:'deploy-preview'}),/only be used for a local build/);
+assert.throws(()=>resolvePreviewConfig({...localEnv,NEXUS_SUPABASE_URL:'https://xuwfzibxhxzxxupprxsq.supabase.co'}),/loopback port 54321/);
+assert.throws(()=>resolvePreviewConfig({...localEnv,NEXUS_SUPABASE_URL:'http://127.0.0.1:54322'}),/loopback port 54321/);
+assert.throws(()=>resolvePreviewConfig({...localEnv,NEXUS_SUPABASE_ANON_KEY:'sb_secret_do_not_accept'}),/secret\\/service-role keys are forbidden/);
+assert.equal(resolveStagingEntityDeltaEnabled({...previewEnv,VERCEL_GIT_COMMIT_REF:'android/capacitor-multistore-foundation',NEXUS_ENTITY_DELTA_SYNC_STAGING:'true',NEXUS_SUPABASE_URL:'https://xuwfzibxhxzxxupprxsq.supabase.co'},{url:'https://xuwfzibxhxzxxupprxsq.supabase.co',key:previewEnv.NEXUS_SUPABASE_ANON_KEY}),false,'hosted PR previews must never enable Delta against nexus-sync-staging');
+assert.match(renderConfigScript(localConfig,true),/window\\.NEXUS_ENTITY_DELTA_SYNC_STAGING=true/);
+assert.match(renderConfigScript(localConfig,false),/window\\.NEXUS_ENTITY_DELTA_SYNC_STAGING=false/);
+assert.match(renderConfigScript(deltaPreviewConfig,true),/window\\.NEXUS_ENTITY_DELTA_SYNC_STAGING=false/);
+assert.match(renderConfigScript(null,true),/window\\.NEXUS_ENTITY_DELTA_SYNC_STAGING=false/);
 
 console.log('Preview-only Supabase configuration guard tests passed.');

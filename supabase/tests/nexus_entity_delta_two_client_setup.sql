@@ -1,6 +1,6 @@
--- ONE-SHOT TEST FIXTURE: run ONLY against nexus-sync-staging.
+-- ONE-SHOT TEST FIXTURE: run ONLY against the disposable local Phase 3.4 Supabase project.
 -- Creates exactly two confirmed disposable email/password users with empty snapshots.
--- The returned passwords are for this isolated staging test only. Do not reuse them.
+-- The returned passwords are for this isolated local test only. Do not reuse them.
 -- Accounts persist until supabase/tests/nexus_entity_delta_two_client_cleanup.sql is run.
 
 WITH credentials AS MATERIALIZED (

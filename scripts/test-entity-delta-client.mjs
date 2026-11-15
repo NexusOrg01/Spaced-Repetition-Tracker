@@ -932,7 +932,7 @@ function coordinatorHarness(options={}){
 
 
 
-const stagingSupabaseUrl='https://xuwfzibxhxzxxupprxsq.supabase.co';
+const stagingSupabaseUrl='http://127.0.0.1:54321';
 const stagingFunctionStart=cloudSyncSource.indexOf('async function runStagingEntityDeltaSync(');
 const stagingFunctionEnd=cloudSyncSource.indexOf('\nasync function upload(){',stagingFunctionStart);
 assert.ok(stagingFunctionStart>=0&&stagingFunctionEnd>stagingFunctionStart,
@@ -940,7 +940,7 @@ assert.ok(stagingFunctionStart>=0&&stagingFunctionEnd>stagingFunctionStart,
 const stagingFunctionSource=cloudSyncSource.slice(stagingFunctionStart,stagingFunctionEnd);
 
 function makeStagingRuntimeHarness({
-  gate=false,preview=true,stagingUrl=stagingSupabaseUrl,recoveryIntent=null,
+  gate=false,localOrigin=true,stagingUrl=stagingSupabaseUrl,recoveryIntent=null,
   syncResult={ok:true,publishedCount:1},recoveryResult={ok:true,recovered:true},
   missingChunkStorage=false
 }={}){
@@ -1005,7 +1005,8 @@ function makeStagingRuntimeHarness({
     window,client,session:{user:{id:'account-A'}},localStorage,OWNER_KEY:'owner-key',
     STAGING_CONFIG:{url:stagingSupabaseUrl,key:'staging-test-key'},
     config:()=>({url:stagingUrl}),
-    isPreviewDeploymentOrigin:()=>preview,
+    location:{hostname:localOrigin?'127.0.0.1':'deploy-preview-126--nexussrt.netlify.app'},
+    URL,
     snapshot:()=>payload,
     sameWorkspace:()=>true,
     normalizeState:value=>({...value}),
@@ -1033,16 +1034,16 @@ assert.equal(pendingClosedResult.blockedRecovery,true,
 assert.equal(pendingClosedResult.reason,'staging_recovery_journal_pending');
 assert.equal(pendingClosedGate.calls.createClient,0);
 
-const nonPreviewGate=makeStagingRuntimeHarness({gate:true,preview:false});
+const nonPreviewGate=makeStagingRuntimeHarness({gate:true,localOrigin:false});
 assert.equal((await nonPreviewGate.run('account-A',stagingSignal)).skipped,true,
-  'the runtime gate must reject a production origin even when the build flag is true');
+  'the runtime gate must reject a public preview origin even when the local build flag is true');
 assert.equal(nonPreviewGate.calls.createClient,0);
 
 const wrongProjectGate=makeStagingRuntimeHarness({
-  gate:true,stagingUrl:'https://unrelated-staging.supabase.co'
+  gate:true,stagingUrl:'https://xuwfzibxhxzxxupprxsq.supabase.co'
 });
 assert.equal((await wrongProjectGate.run('account-A',stagingSignal)).skipped,true,
-  'the runtime gate must reject any Supabase project other than the isolated staging project');
+  'the runtime gate must reject the existing hosted staging project when the app is local');
 assert.equal(wrongProjectGate.calls.createClient,0);
 
 const incompleteDependencies=makeStagingRuntimeHarness({gate:true,missingChunkStorage:true});

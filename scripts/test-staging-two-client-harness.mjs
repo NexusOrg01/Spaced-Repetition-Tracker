@@ -2,40 +2,26 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import vm from 'node:vm';
-
 const html=readFileSync(resolve('staging-test/two-client.html'),'utf8');
-assert.match(html,/<script src="\.\/two-client\.js" defer><\/script>/,'the harness must load its external same-origin script');
+assert.match(html,/<script src="\.\/two-client\.js" defer><\/script>/);
+for(const id of ['supabaseUrl','anonKey','emailA','passwordA','emailB','passwordB'])assert.match(html,new RegExp('id="'+id+'"'));
+assert.match(html,/LOCAL ONLY/);
 const source=readFileSync(resolve('staging-test/two-client.js'),'utf8');
-new vm.Script(source,{filename:'staging-test/two-client.html'});
-
-assert.match(source,/spaced-repetition-tracker-delta\.vercel\.app/,
-  'the production Nexus hostname must be explicitly blocked');
-assert.match(source,/host===LIVE_HOST/,
-  'the production hostname must be rejected even though it is a vercel.app host');
-assert.match(source,/host\.endsWith\('\.vercel\.app'\).*host\.endsWith\('\.netlify\.app'\)/,
-  'only preview hosting providers may run the harness');
-assert.match(source,/https:\/\/xuwfzibxhxzxxupprxsq\.supabase\.co/,
-  'the harness must target the isolated staging Supabase project');
-assert.doesNotMatch(source,/https:\/\/txugbdavblpettcnhcxl\.supabase\.co/,
-  'the harness must not target production Supabase');
-assert.match(source,/nexus-3-4-two-client-\[a-f0-9\]\{32\}@example/,
-  'only disposable test email identities may be accepted');
-assert.match(source,/nexus_get_entity_sync_state/);
-assert.match(source,/nexus_enable_entity_delta/);
-assert.match(source,/nexus_publish_entity_operation/);
-assert.match(source,/nexus_read_entity_operations/);
-assert.match(source,/revision_conflict/);
-assert.match(source,/idempotency_conflict/);
-assert.match(source,/const retryRequest=\{\.\.\.loser\.request,p_expected_revision:2\}/,
-  'the retry request must be captured as the canonical idempotency payload');
-assert.match(source,/rpc\(loser\.session,'nexus_publish_entity_operation',retryRequest\);[\s\S]*?rpc\(loser\.session,'nexus_publish_entity_operation',retryRequest\)/,
-  'idempotent replay must resend the exact same request object as the successful retry');
-assert.doesNotMatch(source,/localStorage|sessionStorage/,'credentials must not be persisted in browser storage');
-assert.doesNotMatch(source,/service_role|service-role/i,
-  'the browser harness must not contain service-role credentials');
-assert.match(source,/input\('passwordA'\)\.value=''/,
-  'password A must be cleared after the run');
-assert.match(source,/input\('passwordB'\)\.value=''/,
-  'password B must be cleared after the run');
-
-console.log('Authenticated two-client staging harness syntax and safety-contract checks passed.');
+new vm.Script(source,{filename:'staging-test/two-client.js'});
+assert.match(source,/LOCAL_HOSTS/);
+assert.match(source,/parsed\.port==='54321'/);
+assert.match(source,/parsed\.protocol==='http:'/);
+assert.match(source,/payload\.role==='anon'/);
+assert.doesNotMatch(source,/https:\/\/(?:xuwfzibxhxzxxupprxsq|txugbdavblpettcnhcxl)\.supabase\.co/);
+assert.doesNotMatch(source,/\.vercel\.app|\.netlify\.app/);
+assert.match(source,/nexus-3-4-two-client-\[a-f0-9\]\{32\}@example/);
+for(const rpc of ['nexus_get_entity_sync_state','nexus_enable_entity_delta','nexus_publish_entity_operation','nexus_read_entity_operations','revision_conflict','idempotency_conflict'])assert.ok(source.includes(rpc));
+assert.doesNotMatch(source,/localStorage|sessionStorage/);
+assert.doesNotMatch(source,/service_role|service-role/i);
+assert.match(source,/input\('anonKey'\)\.value=''/);
+assert.match(source,/input\('passwordA'\)\.value=''/);
+assert.match(source,/input\('passwordB'\)\.value=''/);
+const prep=readFileSync(resolve('scripts/prepare-phase34-local-supabase.mjs'),'utf8');
+for(const migration of ['20261109052019_chunked_nexus_workspace_snapshots.sql','20261109053246_tighten_nexus_workspace_chunk_limit.sql','20261113095723_nexus_entity_delta_sync.sql','20261113101625_harden_nexus_entity_delta_reads_and_compaction.sql','20261113215301_defer_entity_delta_enablement_until_client_ready.sql','20261113222129_revoke_unwired_entity_delta_rpc_execution.sql','20261114093000_harden_nexus_entity_delta_record_identity.sql','20261114103353_protect_active_nexus_chunk_manifests.sql'])assert.ok(prep.includes(migration));
+assert.doesNotMatch(prep,/supabase link|--remote|--linked|supabase\.co/);
+console.log('Local authenticated two-client harness syntax and safety-contract checks passed.');

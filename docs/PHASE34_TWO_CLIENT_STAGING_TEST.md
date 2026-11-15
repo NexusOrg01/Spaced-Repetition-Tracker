@@ -1,24 +1,49 @@
-# Phase 3.4 authenticated two-client staging test
+# Phase 3.4 authenticated two-client test — local disposable Supabase
 
-This is an operator-run integration test for the isolated Supabase project **nexus-sync-staging** only. It uses real Supabase Auth password sessions and the staging REST/RPC endpoints. It does not use service-role credentials, touch production, or turn on the application's normal entity-delta feature gate.
+**Scope:** local-only authenticated protocol integration for PR #126  
+**Repository branch:** android/capacitor-multistore-foundation  
+**Cost:** no hosted Supabase project or development branch is created  
+**Hosted project safety:** never connect to nexus-spaced-repetition or nexus-sync-staging.
+
+This replaces the former hosted-staging browser runbook. The old harness hardcoded the existing staging URL; the current harness refuses every public preview origin and accepts only a local Supabase API on loopback port 54321.
 
 ## Safety boundary
 
-- Confirm the target project is **nexus-sync-staging** (**xuwfzibxhxzxxupprxsq**), never **nexus-spaced-repetition**.
-- Keep PR #126 on **android/capacitor-multistore-foundation**.
-- The web harness is **staging-test/two-client.html**. It blocks the production Nexus hostname and all non-preview origins, uses only the hard-coded staging Supabase project, requires two reserved **@example.invalid** disposable accounts, and keeps credentials in form memory only.
-- Do not set **NEXUS_ENTITY_DELTA_SYNC_STAGING** in Vercel or Netlify. The normal app gate stays false.
-- The SQL GRANT below is temporary and global to the **authenticated** database role on staging. Run it immediately before the test, keep the window short, and run the REVOKE immediately after the test (including after a failed run). No migration adds these grants.
+- Run only from a local Nexus checkout on your computer.
+- The disposable stack is built in .build/phase34-local-supabase, outside the repository's normal supabase/migrations chain.
+- The helper copies a test-only nexus_user_data baseline and eight relevant chunk/entity-delta migrations into the temporary Supabase project. It omits the historical syllabus migrations and staging-only permissions migration because those have environment-specific prerequisites and are unrelated to Phase 3.4.
+- No supabase login, supabase link, --remote, --linked, hosted project URL, or hosted API key is required or permitted.
+- Public Vercel and Netlify previews are blocked by the harness. Their generated Delta feature gate remains false, including when the old staging opt-in is set.
+- The normal production gate remains false. Local Delta mode requires NEXUS_PHASE34_LOCAL_TEST=true and NEXUS_ENTITY_DELTA_SYNC_LOCAL=true, a loopback API URL on port 54321, and a loopback browser origin.
+- Never paste a service-role or secret key into the harness. It accepts only a publishable key or legacy anon JWT.
+- Test identities exist only in the disposable local database and must be deleted before stopping it.
 
-## 1. Create disposable accounts
+## 1. Prepare the local disposable Supabase project
 
-Run **supabase/tests/nexus_entity_delta_two_client_setup.sql** once in the staging SQL editor. It creates two confirmed email/password users, their matching `auth.identities` email-provider rows, empty version-4 compatibility snapshots, and outputs the two emails/passwords. Use only those credentials in the preview harness. The reserved prefix is **nexus-3-4-two-client-**.
+Requirements: Node.js 20+, Docker Desktop or another Docker-compatible runtime, and sufficient memory. Supabase recommends at least 7 GB RAM for the full stack. The CLI and local stack are free; compute is local to your computer.
 
-Do not use personal accounts, real email addresses, or an existing staging account.
+From the repository root:
 
-## 2. Temporarily expose the RPCs to authenticated test sessions
+~~~bash
+node scripts/prepare-phase34-local-supabase.mjs
+cd .build/phase34-local-supabase
+npx supabase start --exclude realtime,storage-api,imgproxy,edge-runtime,logflare,vector,supavisor
+npx supabase status
+~~~
 
-Run this SQL against staging immediately before the browser test:
+The helper initializes a clean local CLI project, copies a test-only baseline and the eight relevant committed migrations, and copies fixture SQL into test-fixtures/. It does not copy data from either hosted project. Do not run db reset --remote or link this temporary project to an organization.
+
+The default local API is http://127.0.0.1:54321; Studio is normally http://127.0.0.1:54323. Copy the API URL and anon key from supabase status. Do not use the service-role key.
+
+## 2. Create the disposable Auth users
+
+Open local Studio's SQL Editor and run test-fixtures/nexus_entity_delta_two_client_setup.sql.
+
+It creates two confirmed email/password Auth users, their email identities, and empty snapshot workspaces. Copy the returned emails and passwords. The reserved email prefix is nexus-3-4-two-client-.
+
+## 3. Temporarily grant the six RPCs — local database only
+
+Run in local Studio immediately before the browser harness:
 
 ~~~sql
 GRANT EXECUTE ON FUNCTION public.nexus_get_entity_sync_state() TO authenticated;
@@ -29,32 +54,42 @@ GRANT EXECUTE ON FUNCTION public.nexus_publish_entity_snapshot(bigint,timestampt
 GRANT EXECUTE ON FUNCTION public.nexus_compact_entity_operations(integer) TO authenticated;
 ~~~
 
-The test itself uses only state-read, enable, publish and bounded-read RPCs. Snapshot publication and compaction are granted only to mirror the full six-function rollout permission set already reviewed in the rollback-only authenticated SQL probe; do not call them from this harness.
+These temporary grants are needed because the committed migrations intentionally revoke browser-role execution by default. They exist only in the throwaway local database. Never run this SQL against either hosted project.
 
-## 3. Run the authenticated test on a PR preview
+## 4. Run the authenticated three-session harness
 
-Open the PR preview and navigate to **/staging-test/two-client.html**. Enter both disposable credentials and run the test.
+From the repository root, build the static site and serve it on loopback.
 
-The harness establishes three independent Auth sessions:
-- Client A1 and Client A2 sign into the same disposable account from separate sessions (two-device concurrency).
-- Client B signs into a different disposable account (owner isolation).
+macOS/Linux:
 
-Assertions include:
-- both users start in snapshot mode and are independently enabled;
-- A and B publish without crossing account state;
-- two same-account publishers racing at one expected revision produce exactly one commit and one revision_conflict;
-- the losing operation retries at the next revision, and an identical retry replays its original receipt;
-- reusing an operation ID with a different request hash is rejected;
-- bounded readers see only each owner's contiguous operation groups;
-- owner-filtered table reads cannot reveal the other user's rows;
-- authenticated clients cannot write directly to the immutable operation table;
-- final heads are A=3 and B=1.
+~~~bash
+NEXUS_PHASE34_LOCAL_TEST=true NEXUS_ENTITY_DELTA_SYNC_LOCAL=true \
+NEXUS_SUPABASE_URL=http://127.0.0.1:54321 \
+NEXUS_SUPABASE_ANON_KEY='<local anon key from supabase status>' \
+node scripts/build.mjs
+python3 -m http.server 4173 --bind 127.0.0.1 --directory dist
+~~~
 
-A pass here proves authenticated PostgREST/RPC behavior and server-side two-client concurrency for disposable accounts. It does not by itself prove the production app's IndexedDB journal, UI reconciliation, device persistence, Android WebView, or physical two-device performance. Those remain separate gates.
+PowerShell:
 
-## 4. Revoke RPC access immediately
+~~~powershell
+$env:NEXUS_PHASE34_LOCAL_TEST='true'
+$env:NEXUS_ENTITY_DELTA_SYNC_LOCAL='true'
+$env:NEXUS_SUPABASE_URL='http://127.0.0.1:54321'
+$env:NEXUS_SUPABASE_ANON_KEY='<local anon key from supabase status>'
+node scripts/build.mjs
+py -m http.server 4173 --bind 127.0.0.1 --directory dist
+~~~
 
-Run this against staging as soon as the harness completes, whether it passed or failed:
+Open http://127.0.0.1:4173/staging-test/two-client.html. Enter the local API URL, local anon key, and the two disposable accounts.
+
+The harness establishes A1 and A2 sessions for the same owner and B for a different owner. It checks independent tokens, snapshot mode, owner-scoped enablement, independent publishing, a concurrent revision race, retry, exact idempotent replay, mismatched-payload rejection, bounded reads, RLS owner isolation, direct operation-table write denial, and final heads A=3/B=1.
+
+It signs out all created sessions and clears the anon-key/password fields in finally, including on test failure. This proves the authenticated PostgREST/RPC contract, not the later 26.9 MB app lifecycle or Android acceptance matrix.
+
+## 5. Revoke grants and delete fixture accounts — even after a failed run
+
+In local Studio, run:
 
 ~~~sql
 REVOKE EXECUTE ON FUNCTION public.nexus_get_entity_sync_state() FROM PUBLIC, anon, authenticated;
@@ -65,17 +100,22 @@ REVOKE EXECUTE ON FUNCTION public.nexus_publish_entity_snapshot(bigint,timestamp
 REVOKE EXECUTE ON FUNCTION public.nexus_compact_entity_operations(integer) FROM PUBLIC, anon, authenticated;
 ~~~
 
-Then verify all six signatures have **has_function_privilege(..., 'authenticated', 'EXECUTE') = false**, and that pre-existing accounts remain in **snapshot** mode.
+Then run test-fixtures/nexus_entity_delta_two_client_cleanup.sql.
 
-## 5. Delete disposable accounts and verify cleanup
+Verify no reserved-prefix Auth users remain, no Delta-mode test workspace remains, operation and receipt tables are empty, and all six RPCs are non-executable by PUBLIC, anon and authenticated.
 
-Run **supabase/tests/nexus_entity_delta_two_client_cleanup.sql**. The reserved-prefix filter is intentionally narrow; deleting each Auth user cascades to their workspace snapshots, chunks, sync state, operation rows and receipts.
+Only after cleanup, remove the local throwaway database volume:
 
-Finally verify:
-- no **nexus-3-4-two-client-%@example.invalid** user remains;
-- no delta-mode account remains;
-- no operation or receipt row remains for either deleted test owner;
-- all six RPCs are non-executable by **PUBLIC**, **anon**, and **authenticated**;
-- pre-existing workspace and chunk counts return to their pre-test values.
+~~~bash
+npx supabase stop --no-backup
+~~~
 
-Do not mark this gate complete unless both the authenticated browser run and post-cleanup verification are recorded in docs/entity-delta-sync-status.md.
+This command destroys only the local disposable stack's persisted Docker volumes. Do not use supabase stop --all.
+
+## 6. Record evidence
+
+Record the CLI version, exact PR SHA, migration application output, assertion results, post-revoke privileges, and post-cleanup counts in docs/entity-delta-sync-status.md. Do not mark the authenticated two-client gate complete until the run passes.
+
+## Limits
+
+This is a scoped Phase 3.4 backend fixture, not a full replica of every historical production object or project setting. Hosted advisors, hosted quotas, OAuth provider configuration, and network/deployment behavior remain separate checks.
