@@ -78,8 +78,13 @@ assert.match(activeManifestRaceRunner, /Refusing to run the active-manifest race
 assert.match(activeManifestRaceRunner, /connection\.port === '6543'/,
   'the race runner must reject transaction-pooler connections that cannot guarantee independent sessions');
 assert.match(activeManifestRaceRunner, /Promise\.allSettled/);
-assert.match(activeManifestRaceRunner, /pg_stat_activity[\s\S]*wait_event_type = 'Lock'/,
-  'the race runner must observe an actual database lock wait, not rely only on timing');
+assert.match(activeManifestRaceRunner, /NEXUS_RACE_LOCK_HELD/,
+  'the competing session must start only after the first transaction has acquired the workspace-row lock');
+assert.match(activeManifestRaceRunner, /NEXUS_RACE_OPERATION_MS=/);
+assert.match(activeManifestRaceRunner, /MIN_LOCK_WAIT_MS = 2500/);
+assert.match(activeManifestRaceRunner, /await waitForLockReady/);
+assert.doesNotMatch(activeManifestRaceRunner, /pg_stat_activity/,
+  'the race proof must not depend on session-pooler activity visibility');
 assert.match(activeManifestRaceRunner, /FOR UPDATE/);
 assert.match(activeManifestRaceRunner, /SQLSTATE '55000'/);
 assert.match(activeManifestRaceRunner, /publisher wins the workspace-row lock/);
