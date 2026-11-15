@@ -12,7 +12,8 @@ const migrations=[
 '20261113215301_defer_entity_delta_enablement_until_client_ready.sql',
 '20261113222129_revoke_unwired_entity_delta_rpc_execution.sql',
 '20261114093000_harden_nexus_entity_delta_record_identity.sql',
-'20261114103353_protect_active_nexus_chunk_manifests.sql'
+'20261114103353_protect_active_nexus_chunk_manifests.sql',
+'20261115171500_validate_general_snapshot_candidates.sql'
 ];
 await rm(target,{recursive:true,force:true});
 await mkdir(target,{recursive:true});
