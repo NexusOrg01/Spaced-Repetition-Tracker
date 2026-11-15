@@ -81,7 +81,7 @@ class RestQuery {
   abortSignal(signal) { this.signal = signal; return this; }
   async execute() {
     const url = new URL('/rest/v1/' + this.table, API);
-    if (this.method === 'GET' || this.method === 'DELETE' || this.method === 'PATCH') {
+    if (this.method === 'GET' || this.method === 'DELETE' || this.method === 'PATCH' || this.prefer.includes('return=representation')) {
       url.searchParams.set('select', this.fields);
     }
     for (const [key, op, value] of this.filters) {
@@ -321,8 +321,9 @@ async function verifyFinalWorkspace(payload) {
   assert.ok(!payload.state.subjects.some(row => row.id === 'subject-3'));
   assert.ok(!topics.some(row => row.subjectId === 'subject-3'));
   assert.ok(!history.some(row => row.subjectId === 'subject-3'));
+  const topicIds = new Set(topics.map(row => row.id));
   for (let i = 0; i < LARGE_DELETE_COUNT; i++) {
-    assert.ok(!topics.some(row => row.id === 'topic-' + String(i).padStart(6, '0')),
+    assert.ok(!topicIds.has('topic-' + String(i).padStart(6, '0')),
       'Deleted topic must not be resurrected: ' + i);
   }
   assert.ok(history.some(row => row.id === 'history-000240'),
@@ -511,10 +512,12 @@ check('A1 publishes a verified replacement snapshot and compacts the old operati
   compactedPublication.verified === true && compactionCleanup.complete === true &&
   remainingOpsAfterCompaction.data.length === 0 && remainingReceiptsAfterCompaction.data.length === 0);
 
-const remoteTailTopic = compactedWorkspace.payload.state.topics[50001];
+const remoteTailTopic = compactedWorkspace.payload.state.topics.find(row => row.id === 'topic-050001');
+assert.ok(remoteTailTopic, 'The independent topic edited by both devices must remain after the large deletion');
+const remoteTailPosition = compactedWorkspace.payload.state.topics.findIndex(row => row.id === remoteTailTopic.id);
 const remoteTailChanges = [
   {
-    collection: 'topics', id: remoteTailTopic.id, operation: 'put', position: 50001,
+    collection: 'topics', id: remoteTailTopic.id, operation: 'put', position: remoteTailPosition,
     value: { ...remoteTailTopic, name: 'Remote title after compaction' }
   },
   {
