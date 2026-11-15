@@ -858,10 +858,47 @@
         if(digest!==intent.candidateDigest)
           return {ok:false,snapshotRequired:true,reason:'staged_recovery_candidate_digest_mismatch'};
         await assertOwner(owner);
-        // A lost publication response is retried against the exact same expected
-        // head/stamp. The snapshot writer must verify the active payload idempotently.
-        const publication=await publisher(owner,candidate,intent.expectedHeadRevision,intent.baseUpdatedAt,
-          recoveryOptions.signal||null);
+        let publication=null,snapshotReused=false;
+        // A stale device may reconnect after another device has already published and
+        // compacted the exact merged workspace. In that case, reuse the verified
+        // current snapshot instead of publishing an identical snapshot with a new
+        // timestamp. Repeated identical publications would make the other device
+        // stale again and could create an endless recovery/checkpoint loop.
+        if(prepared&&prepared.snapshotRevision===prepared.expectedHeadRevision&&
+           prepared.compactedThroughRevision>=prepared.snapshotRevision&&
+           prepared.remotePayload&&typeof sameWorkspace==='function'&&
+           await sameWorkspace(candidate,prepared.remotePayload)){
+          const latestStateResult=await client.rpc('nexus_get_entity_sync_state');
+          if(latestStateResult.error)return unavailable('remote_state_recheck_before_snapshot_reuse_failed',{
+            retryable:true,errorCode:String(latestStateResult.error.code||'unknown')
+          });
+          await assertOwner(owner);
+          const latestState=latestStateResult.data;
+          if(!latestState||latestState.mode!=='delta'||
+             latestState.snapshot_updated_at!==prepared.snapshotUpdatedAt||
+             Number(latestState.snapshot_revision)!==Number(prepared.snapshotRevision)||
+             Number(latestState.head_revision)!==Number(prepared.expectedHeadRevision)||
+             Number(latestState.compacted_through_revision)<Number(prepared.snapshotRevision)){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'remote_snapshot_changed_before_reuse'};
+          }
+          publication={
+            verified:true,alreadyPublished:true,
+            updated_at:prepared.snapshotUpdatedAt,
+            snapshotRevision:prepared.snapshotRevision,
+            headRevision:prepared.expectedHeadRevision,
+            compactedThroughRevision:Number(latestState.compacted_through_revision),
+            storageMode:'verified-existing-snapshot',
+            compaction:{ok:true,complete:true,pending:false,alreadyCompacted:true,
+              compactedThroughRevision:Number(latestState.compacted_through_revision),rounds:0}
+          };
+          snapshotReused=true;
+        }else{
+          // A lost publication response is retried against the exact same expected
+          // head/stamp. The snapshot writer must verify the active payload idempotently.
+          publication=await publisher(owner,candidate,intent.expectedHeadRevision,intent.baseUpdatedAt,
+            recoveryOptions.signal||null);
+        }
         if(!publication||publication.verified!==true||
            Number(publication.snapshotRevision)!==Number(intent.expectedHeadRevision)||
            typeof publication.updated_at!=='string'||!publication.updated_at)
@@ -895,6 +932,7 @@
             errorCode:String(error&&error.code||'unknown')};}
         }
         return {ok:true,recovered:true,alreadyCommitted:!!committed.alreadyCommitted,
+          snapshotReused,snapshotPublished:!snapshotReused,
           generation:active.generation,snapshotRevision:publication.snapshotRevision,
           headRevision:publication.headRevision,cursor:cursorResult.cursor,
           compaction:publication.compaction||null,
