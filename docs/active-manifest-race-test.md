@@ -32,12 +32,12 @@ export NEXUS_STAGING_DATABASE_URL='postgresql://...'
 node scripts/test-active-manifest-race-staging.mjs
 ```
 
-The runner launches independent `psql` sessions, checks `pg_stat_activity` for a real lock wait, and exercises both orderings:
+The runner launches independent `psql` sessions and exercises both orderings. It does not depend on `pg_stat_activity`: Supabase's shared pooler can make client-session visibility unsuitable for this check. Instead, the first transaction emits a private test notice only after its workspace-row lock has been acquired. The runner then starts the competing session and measures the actual DELETE or UPDATE duration, requiring at least 2.5 seconds of lock wait while the first transaction deliberately holds the lock for seven seconds:
 
 1. Publication locks and updates the workspace manifest first. Stale cleanup must wait, re-read the pointer, and then delete only the superseded revision.
 2. Cleanup locks the workspace row first. A delete against the still-active revision must raise SQLSTATE `55000`; the concurrent publisher must wait until cleanup commits, then publish the replacement.
 
-The test checks the final active revision and chunk counts, confirms a formerly active revision becomes cleanable only after replacement publication, and removes its synthetic `auth.users` row (which cascades to its workspace and chunks). It then verifies that no fixture rows remain.
+The test checks the final active revision and chunk counts, confirms a formerly active revision becomes cleanable only after replacement publication, and removes its synthetic `auth.users` row (which cascades to its workspace and chunks). It then verifies that no fixture rows remain. The SQL-line join and tab-delimited cleanup assertion use actual newline/tab characters.
 
 Use a database role with permission to create/delete disposable rows in `auth.users`, `public.nexus_user_data`, and `public.nexus_user_data_chunks`, and to inspect `pg_stat_activity`. The runner has a `finally` cleanup path; if the database connection is interrupted during cleanup, inspect and remove only the uniquely named `nexus-active-manifest-race-*@example.invalid` fixture user.
 
