@@ -23,6 +23,9 @@ if (host.includes(PRODUCTION_PROJECT_REF) || username.includes(PRODUCTION_PROJEC
 if (!localDatabase && !identifiesStaging) {
   throw new Error('Refusing an unrecognised database host. Use nexus-sync-staging or a local Supabase database.');
 }
+if (process.env.GITHUB_ACTIONS === 'true' && host.startsWith('db.') && !localDatabase) {
+  throw new Error('GitHub Actions runners use an IPv4-only network. Use the Supabase shared Session pooler connection string (host ending in .pooler.supabase.com, port 5432), not the direct db.<project-ref>.supabase.co endpoint.');
+}
 if (connection.port === '6543') {
   throw new Error('Transaction-pooler connections cannot hold the two independent test transactions. Use the direct or session-mode Postgres connection.');
 }
@@ -111,6 +114,7 @@ const updateManifest = revisionId =>
   "SET payload = jsonb_build_object('__nexusStorage', 'chunked-v1', 'revisionId', '" + revisionId + "'), " +
   "updated_at = clock_timestamp() WHERE user_id = '" + ownerId + "';";
 
+let primaryError;
 try {
   const seedSql = [
     'BEGIN;',
@@ -213,17 +217,28 @@ try {
   assert.ok(staleCleanup.includes(revC),
     'the formerly active C revision must become cleanable only after D is published');
 
-  console.log('Active-manifest concurrency race test passed: publisher-first and cleanup-first orderings.');
-} finally {
-  if (seeded) {
+} catch (error) {
+  primaryError = error;
+}
+
+if (seeded) {
+  try {
     await runSql('remove disposable staging auth user and cascading workspace',
       "DELETE FROM auth.users WHERE id = '" + ownerId + "';");
+    const remainingSql = [
+      "SELECT (SELECT count(*)::text FROM auth.users WHERE id = '" + ownerId + "') || E'\\t' ||",
+      "(SELECT count(*)::text FROM public.nexus_user_data WHERE user_id = '" + ownerId + "') || E'\\t' ||",
+      "(SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = '" + ownerId + "');"
+    ].join('\\n');
+    const remaining = await runSql('verify disposable fixture cleanup', remainingSql);
+    assert.equal(remaining, '0\\t0\\t0', 'the race-test owner and all of its rows must be removed');
+  } catch (cleanupError) {
+    if (primaryError) {
+      throw new AggregateError([primaryError, cleanupError], 'The race test failed and fixture cleanup also failed.');
+    }
+    throw cleanupError;
   }
-  const remainingSql = [
-    "SELECT (SELECT count(*)::text FROM auth.users WHERE id = '" + ownerId + "') || E'\\t' ||",
-    "(SELECT count(*)::text FROM public.nexus_user_data WHERE user_id = '" + ownerId + "') || E'\\t' ||",
-    "(SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = '" + ownerId + "');"
-  ].join('\n');
-  const remaining = await runSql('verify disposable fixture cleanup', remainingSql);
-  assert.equal(remaining, '0\t0\t0', 'the race-test owner and all of its rows must be removed');
 }
+
+if (primaryError) throw primaryError;
+console.log('Active-manifest concurrency race test passed: publisher-first and cleanup-first orderings; disposable fixture cleanup verified.');
