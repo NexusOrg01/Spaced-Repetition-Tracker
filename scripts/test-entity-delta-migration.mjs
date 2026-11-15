@@ -13,6 +13,7 @@ const enablementGate = read('supabase/migrations/20261113215301_defer_entity_del
 const rpcExposureGate = read('supabase/migrations/20261113222129_revoke_unwired_entity_delta_rpc_execution.sql');
 const identityHardening = read('supabase/migrations/20261114093000_harden_nexus_entity_delta_record_identity.sql');
 const chunkManifestProtection = read('supabase/migrations/20261114103353_protect_active_nexus_chunk_manifests.sql');
+const generalSnapshotIntegrity = read('supabase/migrations/20261115171500_validate_general_snapshot_candidates.sql');
 const chunkManifestDeletionTest = read('supabase/tests/nexus_user_data_chunks_active_manifest.sql');
 const activeManifestRaceRunner = read('scripts/test-active-manifest-race.mjs');
 
@@ -70,19 +71,41 @@ assert.match(chunkManifestDeletionTest, /Cannot delete chunks referenced by the 
 assert.match(chunkManifestDeletionTest, /ON DELETE CASCADE|auth\.users/);
 assert.match(chunkManifestDeletionTest, /A previous, now-inactive manifest could not be cleaned up/);
 
+assert.match(generalSnapshotIntegrity, /CREATE OR REPLACE FUNCTION nexus_private\.validate_chunked_nexus_snapshot_candidate\(\)/);
+assert.match(generalSnapshotIntegrity, /BEFORE INSERT OR UPDATE OF payload ON public\.nexus_user_data/);
+assert.match(generalSnapshotIntegrity, /pg_catalog\.pg_advisory_xact_lock/);
+assert.match(generalSnapshotIntegrity, /v_chunk_rows <> v_chunk_count/);
+assert.match(generalSnapshotIntegrity, /v_chunk_bytes <> v_total_bytes/);
+assert.match(generalSnapshotIntegrity, /v_min_chunk_index IS DISTINCT FROM 0/);
+assert.match(generalSnapshotIntegrity, /v_max_chunk_index IS DISTINCT FROM v_chunk_count - 1/);
+assert.match(generalSnapshotIntegrity, /SELECT workspace\.payload[\s\S]*FOR UPDATE/);
+assert.match(generalSnapshotIntegrity, /SELECT workspace\.payload[\s\S]*OLD\.user_id/);
+
+assert.ok(chunkManifestDeletionTest.includes('BEGIN;') &&
+  chunkManifestDeletionTest.trimEnd().endsWith('ROLLBACK;'),
+  'Active-manifest SQL fixtures must be rollback-only.');
+assert.match(chunkManifestDeletionTest, /SET LOCAL ROLE authenticated/);
+assert.match(chunkManifestDeletionTest, /chunk_partial_a/);
+assert.match(chunkManifestDeletionTest, /An incomplete candidate was published or replaced the active manifest/);
+assert.match(chunkManifestDeletionTest, /A previous, now-inactive manifest could not be cleaned up/);
+assert.match(chunkManifestDeletionTest, /ON DELETE CASCADE|auth\.users/);
+
 assert.match(activeManifestRaceRunner, /NEXUS_RACE_DATABASE_URL/,
   'the concurrent race runner must accept an explicitly supplied disposable local Postgres connection');
 assert.match(activeManifestRaceRunner, /Refusing every remote database/,
   'the race runner must reject all hosted database targets');
-assert.doesNotMatch(activeManifestRaceRunner, /NEXUS_STAGING_DATABASE_URL|nexus-sync-staging|\\.supabase\\.co/,
+assert.doesNotMatch(activeManifestRaceRunner, /NEXUS_STAGING_DATABASE_URL|nexus-sync-staging|\\\.supabase\\\.co/,
   'the race runner must not use hosted staging credentials or URLs');
 assert.match(activeManifestRaceRunner, /PRODUCTION_PROJECT_REF = 'txugbdavblpettcnhcxl'/);
-assert.match(activeManifestRaceRunner, /Refusing to run the active-manifest race test against the production Nexus Supabase project/);
+assert.match(activeManifestRaceRunner, /Refusing to run the snapshot-manifest race test against the production Nexus Supabase project/);
 assert.match(activeManifestRaceRunner, /connection\.port === '6543'/,
   'the race runner must reject transaction-pooler connections that cannot guarantee independent sessions');
 assert.match(activeManifestRaceRunner, /Promise\.allSettled/);
-assert.match(activeManifestRaceRunner, /NEXUS_RACE_LOCK_HELD/,
-  'the competing session must start only after the first transaction has acquired the workspace-row lock');
+assert.match(activeManifestRaceRunner, /NEXUS_PUBLISHER_FIRST_LOCK_HELD/);
+assert.match(activeManifestRaceRunner, /NEXUS_ACTIVE_DELETE_FIRST_LOCK_HELD/);
+assert.match(activeManifestRaceRunner, /NEXUS_CANDIDATE_CLEANUP_FIRST_LOCK_HELD/);
+assert.match(activeManifestRaceRunner, /NEXUS_FIRST_WRITE_PUBLISHER_LOCK_HELD/);
+assert.match(activeManifestRaceRunner, /NEXUS_FIRST_WRITE_CLEANUP_LOCK_HELD/);
 assert.match(activeManifestRaceRunner, /NEXUS_RACE_OPERATION_MS=/);
 assert.match(activeManifestRaceRunner, /MIN_LOCK_WAIT_MS = 2500/);
 assert.match(activeManifestRaceRunner, /await waitForLockReady/);
@@ -90,14 +113,15 @@ assert.doesNotMatch(activeManifestRaceRunner, /FROM pg_stat_activity/,
   'the race proof must not depend on session-pooler activity visibility');
 assert.match(activeManifestRaceRunner, /FOR UPDATE/);
 assert.match(activeManifestRaceRunner, /SQLSTATE .*55000/);
-assert.match(activeManifestRaceRunner, /publisher wins the workspace-row lock/);
-assert.match(activeManifestRaceRunner, /cleanup holds the workspace-row lock first/);
+assert.match(activeManifestRaceRunner, /publisher acquires the workspace row before old-revision cleanup/);
+assert.match(activeManifestRaceRunner, /cleanup removes an unpublished update candidate before manifest publication/);
 assert.match(activeManifestRaceRunner, /finally[\s\S]*DELETE FROM auth\.users/);
 assert.match(activeManifestRaceRunner, /\.join\('\\n'\)/,
   'multi-statement SQL must be joined with real newline characters');
-assert.match(activeManifestRaceRunner, /assert\.equal\(remaining, '0\\t0\\t0'/,
-  'cleanup verification must compare real tab-delimited psql output');
-assert.match(activeManifestRaceRunner, /assert\.equal\(remaining, '0/);
+assert.match(activeManifestRaceRunner, /concat_ws\(chr\(9\)/,
+  'the runner should verify tab-separated database state without fragile SQL string concatenation');
+assert.match(activeManifestRaceRunner, /assert\.equal\(leftovers, '0\\t0\\t0'/,
+  'cleanup verification must compare tab-delimited psql output');
 
 assert.match(hardening, /v_revision <> v_next_revision \+ 1/);
 assert.match(hardening, /v_expected_count IS DISTINCT FROM v_count/);
