@@ -668,9 +668,18 @@ assert.equal(foreignSnapshotRows.error, null);
 assert.equal(foreignChunkRows.error, null);
 assert.equal(foreignSnapshotRows.data.length, 0);
 assert.equal(foreignChunkRows.data.length, 0);
-assert.equal((await rpc(clientB, 'nexus_get_entity_sync_state')).mode, 'snapshot');
-check('Account B cannot read A snapshot/chunks and remains outside Delta mode',
-  foreignSnapshotRows.data.length === 0 && foreignChunkRows.data.length === 0);
+const finalForeignState = await rpc(clientB, 'nexus_get_entity_sync_state');
+assert.equal(finalForeignState.mode, 'delta');
+assert.equal(Number(finalForeignState.head_revision), 1);
+const finalForeignPage = await rpc(clientB, 'nexus_read_entity_operations', {
+  p_after_revision: 0, p_limit_groups: 50, p_max_bytes: 1048576
+});
+assert.equal(finalForeignPage.groups.length, 1);
+assert.equal(finalForeignPage.groups[0].operation_id.startsWith('phase34-two-client-b-'), true);
+check('Account B cannot read C snapshot/chunks and retains only its own unchanged revision-1 operation',
+  foreignSnapshotRows.data.length === 0 && foreignChunkRows.data.length === 0 &&
+  finalForeignState.mode === 'delta' && Number(finalForeignState.head_revision) === 1 &&
+  finalForeignPage.groups.length === 1);
 
 console.log('PASS — ' + checks.length + ' large-workspace two-device lifecycle assertions completed.');
 console.log('Evidence: ' + JSON.stringify({
