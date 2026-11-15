@@ -33,6 +33,6 @@ const fixtures=join(target,'test-fixtures');await mkdir(fixtures,{recursive:true
 for(const f of ['nexus_entity_delta_two_client_setup.sql','nexus_entity_delta_two_client_cleanup.sql'])await cp(join(root,'supabase','tests',f),join(fixtures,f));
 await writeFile(join(target,'README.txt'),['Disposable local Nexus Phase 3.4 Supabase project.','Generated directory; safe to delete after cleanup.','Not linked to a hosted project.','Start: npx supabase start --exclude realtime,storage-api,imgproxy,edge-runtime,logflare,vector,supavisor','Status: npx supabase status','Cleanup: revoke RPC grants, delete fixture users, then npx supabase stop --no-backup'].join('\n')+'\n','utf8');
 console.log('Prepared local Supabase project in .build/phase34-local-supabase');
-console.log('Only the Phase 3.4 baseline and eight relevant migrations were copied.');
+console.log('Only the Phase 3.4 baseline and nine relevant migrations were copied.');
 console.log('No hosted Supabase project was linked or contacted.');
 console.log('Next: cd .build/phase34-local-supabase && npx supabase start --exclude realtime,storage-api,imgproxy,edge-runtime,logflare,vector,supavisor');
