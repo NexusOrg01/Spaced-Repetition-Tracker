@@ -160,7 +160,7 @@ async function waitForLockReady(session, label) {
         "('" + firstWritePublisherOwner + "', '" + firstWritePublisherRevision + "', 0, 1, octet_length('" + firstWritePublisherData + "'), '" + firstWritePublisherData + "', clock_timestamp() - interval '8 days'), " +
         "('" + firstWriteCleanupOwner + "', '" + firstWriteCleanupRevision + "', 0, 1, octet_length('" + firstWriteCleanupData + "'), '" + firstWriteCleanupData + "', clock_timestamp() - interval '8 days');",
       'COMMIT;'
-    ].join('\\n');
+    ].join('\n');
     await runSql('seed two disposable first-write owners without workspace rows', firstWriteSeedSql);
 
     const firstWritePublisherFirstSql = [
@@ -174,7 +174,7 @@ async function waitForLockReady(session, label) {
       'END',
       '$race$;',
       'COMMIT;'
-    ].join('\\n');
+    ].join('\n');
     const firstWriteCleanupAfterPublisherSql = [
       'DO $race$',
       'DECLARE',
@@ -196,7 +196,7 @@ async function waitForLockReady(session, label) {
       "  RAISE NOTICE 'NEXUS_RACE_OPERATION_MS=%', floor(extract(epoch FROM clock_timestamp() - v_started) * 1000);",
       'END',
       '$race$;'
-    ].join('\\n');
+    ].join('\n');
     const firstWritePublisherResults = await runConcurrentPair(
       'first snapshot publisher acquires the owner lock before cleanup',
       firstWritePublisherFirstSql,
@@ -215,7 +215,7 @@ async function waitForLockReady(session, label) {
       "(SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = '" +
         firstWritePublisherOwner + "' AND revision_id = '" + firstWritePublisherRevision + "');"
     );
-    assert.equal(firstWritePublisherState, firstWritePublisherRevision + '\\t1',
+    assert.equal(firstWritePublisherState, firstWritePublisherRevision + '\t1',
       'first publication must remain active and retain its complete chunk set');
 
     const firstWriteCleanupFirstSql = [
@@ -229,7 +229,7 @@ async function waitForLockReady(session, label) {
       'END',
       '$race$;',
       'COMMIT;'
-    ].join('\\n');
+    ].join('\n');
     const firstWritePublisherAfterCleanupSql = [
       'DO $race$',
       'DECLARE',
@@ -251,7 +251,7 @@ async function waitForLockReady(session, label) {
       "  RAISE NOTICE 'NEXUS_RACE_OPERATION_MS=%', floor(extract(epoch FROM clock_timestamp() - v_started) * 1000);",
       'END',
       '$race$;'
-    ].join('\\n');
+    ].join('\n');
     const firstWriteCleanupResults = await runConcurrentPair(
       'first-write cleanup acquires the owner lock before publication',
       firstWriteCleanupFirstSql,
@@ -278,9 +278,9 @@ async function waitForLockReady(session, label) {
       'DELETE FROM auth.users WHERE id IN (' + firstWriteOwnerList + ');');
     const firstWriteLeftovers = await runSql(
       'verify first-write race fixture cascade',
-      'SELECT (SELECT count(*) FROM auth.users WHERE id IN (' + firstWriteOwnerList + ')) || E\\'\\\\t\\' || ' +
-      '(SELECT count(*) FROM public.nexus_user_data WHERE user_id IN (' + firstWriteOwnerList + ')) || E\\'\\\\t\\' || ' +
-      '(SELECT count(*) FROM public.nexus_user_data_chunks WHERE user_id IN (' + firstWriteOwnerList + '));'
+      "SELECT (SELECT count(*) FROM auth.users WHERE id IN (" + firstWriteOwnerList + ")) || E'\\t' || " +
+      "(SELECT count(*) FROM public.nexus_user_data WHERE user_id IN (" + firstWriteOwnerList + ")) || E'\\t' || " +
+      "(SELECT count(*) FROM public.nexus_user_data_chunks WHERE user_id IN (" + firstWriteOwnerList + ');'
     );
     assert.equal(firstWriteLeftovers, '0\\t0\\t0',
       'first-write race owners and chunks must be removed by the normal account-deletion cascade');
