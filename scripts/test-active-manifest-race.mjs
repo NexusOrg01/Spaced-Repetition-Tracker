@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 const PRODUCTION_PROJECT_REF = 'txugbdavblpettcnhcxl';
 const LOCK_HOLD_SECONDS = 4.0;
 const SECOND_SESSION_DELAY_SECONDS = 0.35;
-const MIN_LOCK_WAIT_MS = 2000;
+const MIN_LOCK_WAIT_MS = 2500;
 const READY_TIMEOUT_MS = 20000;
 const databaseUrl = process.env.NEXUS_RACE_DATABASE_URL;
 
