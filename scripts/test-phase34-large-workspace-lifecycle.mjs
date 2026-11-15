@@ -1,0 +1,688 @@
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { webcrypto } from 'node:crypto';
+
+const require = createRequire(import.meta.url);
+if (!globalThis.crypto) globalThis.crypto = webcrypto;
+const chunkStorage = require('../cloud-chunk-storage.js');
+const merge = require('../workspace-sync-merge.js');
+require('../entity-delta-sync.js');
+
+const delta = globalThis.NexusEntityDeltaSync;
+assert.ok(delta && typeof delta.createClient === 'function', 'entity-delta runtime must load');
+const required = [
+  'PHASE34_API_URL', 'PHASE34_ANON_KEY',
+  'PHASE34_EMAIL_A', 'PHASE34_PASSWORD_A',
+  'PHASE34_EMAIL_B', 'PHASE34_PASSWORD_B',
+  'PHASE34_EMAIL_C', 'PHASE34_PASSWORD_C'
+];
+for (const name of required) assert.ok(process.env[name], 'Missing ephemeral local-test variable: ' + name);
+
+const apiUrl = new URL(process.env.PHASE34_API_URL);
+assert.equal(apiUrl.protocol, 'http:');
+assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(apiUrl.hostname));
+assert.equal(apiUrl.port, '54321');
+assert.equal(apiUrl.username, '');
+assert.equal(apiUrl.password, '');
+assert.equal(apiUrl.search, '');
+assert.equal(apiUrl.hash, '');
+
+const API = apiUrl.origin;
+const ANON = process.env.PHASE34_ANON_KEY;
+const TARGET_BYTES = 26900000;
+const INITIAL_TOPICS = 77144;
+const INITIAL_HISTORY = 72001;
+const LARGE_DELETE_COUNT = 12032;
+const SUBJECT_THREE_TOPICS = 240;
+const SUBJECT_THREE_HISTORY = 240;
+const checks = [];
+const check = (name, condition) => {
+  assert.ok(condition, name);
+  checks.push(name);
+  console.log('PASS  ' + name);
+};
+const fail = (message, extra) => {
+  const error = new Error(message + (extra ? ': ' + JSON.stringify(extra) : ''));
+  return error;
+};
+
+class RestQuery {
+  constructor(client, table) {
+    this.client = client;
+    this.table = table;
+    this.method = 'GET';
+    this.fields = '*';
+    this.filters = [];
+    this.orders = [];
+    this.body = undefined;
+    this.start = null;
+    this.end = null;
+    this.maxRows = null;
+    this.prefer = [];
+  }
+  select(fields = '*') {
+    this.fields = fields;
+    if (this.method !== 'GET') this.prefer.push('return=representation');
+    return this;
+  }
+  insert(rows) { this.method = 'POST'; this.body = rows; return this; }
+  update(values) { this.method = 'PATCH'; this.body = values; return this; }
+  delete() { this.method = 'DELETE'; return this; }
+  eq(key, value) { this.filters.push([key, 'eq', value]); return this; }
+  neq(key, value) { this.filters.push([key, 'neq', value]); return this; }
+  lt(key, value) { this.filters.push([key, 'lt', value]); return this; }
+  in(key, values) { this.filters.push([key, 'in', values]); return this; }
+  order(key, options = {}) {
+    this.orders.push(key + '.' + (options.ascending === false ? 'desc' : 'asc'));
+    return this;
+  }
+  range(start, end) { this.start = start; this.end = end; return this; }
+  limit(value) { this.maxRows = value; return this; }
+  abortSignal(signal) { this.signal = signal; return this; }
+  async execute() {
+    const url = new URL('/rest/v1/' + this.table, API);
+    if (this.method === 'GET' || this.method === 'DELETE' || this.method === 'PATCH') {
+      url.searchParams.set('select', this.fields);
+    }
+    for (const [key, op, value] of this.filters) {
+      const encoded = op === 'in' ? 'in.(' + value.join(',') + ')' : op + '.' + String(value);
+      url.searchParams.append(key, encoded);
+    }
+    if (this.orders.length) url.searchParams.set('order', this.orders.join(','));
+    if (this.maxRows !== null) url.searchParams.set('limit', String(this.maxRows));
+    const headers = {
+      apikey: ANON,
+      Authorization: 'Bearer ' + this.client.token,
+      'Content-Type': 'application/json'
+    };
+    if (this.prefer.length) headers.Prefer = [...new Set(this.prefer)].join(',');
+    if (this.start !== null) {
+      headers.Range = this.start + '-' + this.end;
+      headers['Range-Unit'] = 'items';
+    }
+    const response = await fetch(url, {
+      method: this.method,
+      headers,
+      body: this.body === undefined ? undefined : JSON.stringify(this.body),
+      signal: this.signal
+    });
+    const raw = await response.text();
+    let data = null;
+    if (raw) {
+      try { data = JSON.parse(raw); } catch { data = raw; }
+    }
+    if (!response.ok) {
+      return { data: null, error: { status: response.status, code: data?.code || '', message: data?.message || String(raw).slice(0, 300) } };
+    }
+    return { data, error: null };
+  }
+  async maybeSingle() {
+    const result = await this.execute();
+    if (result.error) return result;
+    const rows = Array.isArray(result.data) ? result.data : result.data ? [result.data] : [];
+    if (rows.length > 1) return { data: null, error: { code: 'MULTIPLE_ROWS', message: 'Expected at most one row.' } };
+    return { data: rows[0] || null, error: null };
+  }
+  then(resolve, reject) { return this.execute().then(resolve, reject); }
+}
+
+function makeClient(token, user) {
+  const client = {
+    token,
+    user,
+    auth: {
+      async getUser() {
+        const response = await fetch(API + '/auth/v1/user', {
+          headers: { apikey: ANON, Authorization: 'Bearer ' + token }
+        });
+        const data = await response.json().catch(() => null);
+        return response.ok
+          ? { data: { user: data }, error: null }
+          : { data: { user: null }, error: { code: 'AUTH_' + response.status } };
+      }
+    },
+    async rpc(name, args = {}) {
+      const response = await fetch(API + '/rest/v1/rpc/' + name, {
+        method: 'POST',
+        headers: {
+          apikey: ANON,
+          Authorization: 'Bearer ' + token,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(args)
+      });
+      const raw = await response.text();
+      let data = null;
+      if (raw) {
+        try { data = JSON.parse(raw); } catch { data = raw; }
+      }
+      return response.ok
+        ? { data, error: null }
+        : { data: null, error: { status: response.status, code: data?.code || '', message: data?.message || String(raw).slice(0, 300) } };
+    },
+    from(table) { return new RestQuery(client, table); }
+  };
+  return client;
+}
+
+async function signIn(email, password) {
+  const response = await fetch(API + '/auth/v1/token?grant_type=password', {
+    method: 'POST',
+    headers: { apikey: ANON, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password })
+  });
+  const data = await response.json().catch(() => ({}));
+  assert.ok(response.ok && data.access_token && data.user,
+    'Local disposable Auth sign-in failed (HTTP ' + response.status + '): ' +
+    String(data.msg || data.message || data.error_description || data.error || 'unknown').slice(0, 180));
+  return makeClient(data.access_token, data.user);
+}
+
+async function rpc(client, name, args = {}) {
+  const result = await client.rpc(name, args);
+  if (result.error) throw fail('RPC ' + name + ' failed', result.error);
+  return result.data;
+}
+
+async function readSnapshotRow(client, ownerId) {
+  const result = await client.from('nexus_user_data')
+    .select('payload,updated_at')
+    .eq('user_id', ownerId)
+    .maybeSingle();
+  if (result.error) throw fail('Could not read the owner snapshot row', result.error);
+  assert.ok(result.data && result.data.payload && result.data.updated_at,
+    'The owner snapshot row must exist');
+  return result.data;
+}
+
+async function readAllGroups(client, afterRevision, expectedHead) {
+  const groups = [];
+  let after = afterRevision;
+  let pages = 0;
+  while (after < expectedHead) {
+    const page = await rpc(client, 'nexus_read_entity_operations', {
+      p_after_revision: after,
+      p_limit_groups: 100,
+      p_max_bytes: 1048576
+    });
+    assert.equal(page.mode, 'delta');
+    assert.equal(page.snapshot_required, false, 'The active cursor must remain inside retention');
+    assert.ok(Array.isArray(page.groups) && page.groups.length > 0, 'A non-empty contiguous page is required');
+    assert.ok(page.next_revision > after, 'The remote reader must make revision progress');
+    groups.push(...page.groups);
+    after = page.next_revision;
+    pages++;
+    assert.ok(pages <= 1000, 'Remote group pagination must be bounded');
+  }
+  assert.equal(after, expectedHead);
+  return { groups, pages };
+}
+
+async function publishOperation(client, operationId, expectedRevision, changes) {
+  const result = await rpc(client, 'nexus_publish_entity_operation', {
+    p_operation_id: operationId,
+    p_expected_revision: expectedRevision,
+    p_changes: changes
+  });
+  return result;
+}
+
+async function compactUntilComplete(client, ownerId, floor) {
+  let totalOperations = 0;
+  let totalReceipts = 0;
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const result = await chunkStorage.compactDeltaOperations(client, ownerId, floor);
+    assert.equal(result.ok, true, 'Bounded compaction call must succeed: ' + JSON.stringify(result));
+    totalOperations += Number(result.deletedOperations) || 0;
+    totalReceipts += Number(result.deletedReceipts) || 0;
+    if (result.complete === true) {
+      return { ...result, deletedOperations: totalOperations, deletedReceipts: totalReceipts, calls: attempt + 1 };
+    }
+  }
+  throw fail('Bounded compaction did not converge within 12 calls');
+}
+
+function buildLargeWorkspace() {
+  const topics = [];
+  for (let i = 0; i < INITIAL_TOPICS; i++) {
+    const subjectId = i >= INITIAL_TOPICS - SUBJECT_THREE_TOPICS
+      ? 'subject-3'
+      : i < Math.floor((INITIAL_TOPICS - SUBJECT_THREE_TOPICS) / 2) ? 'subject-1' : 'subject-2';
+    topics.push({
+      id: 'topic-' + String(i).padStart(6, '0'),
+      subjectId,
+      name: 'Topic ' + String(i).padStart(6, '0'),
+      notes: 'n'.repeat(100)
+    });
+  }
+  const history = [];
+  for (let i = 0; i < INITIAL_HISTORY; i++) {
+    const isSubjectThree = i < SUBJECT_THREE_HISTORY;
+    const topicIndex = isSubjectThree
+      ? INITIAL_TOPICS - SUBJECT_THREE_TOPICS + i
+      : (20000 + (i % 40000));
+    history.push({
+      id: 'history-' + String(i).padStart(6, '0'),
+      topicId: 'topic-' + String(topicIndex).padStart(6, '0'),
+      subjectId: isSubjectThree ? 'subject-3' : (topicIndex < Math.floor((INITIAL_TOPICS - SUBJECT_THREE_TOPICS) / 2) ? 'subject-1' : 'subject-2'),
+      reviewedAt: '2026-01-01',
+      rating: 3,
+      note: 'review-record'
+    });
+  }
+  const payload = {
+    app: 'Nexus Spaced Repetition Tracker',
+    schema: 4,
+    exportedAt: '2026-11-16T03:00:00.000Z',
+    __nexusDeltaSync: 'entity-delta-v1',
+    state: {
+      streams: [{ id: 'stream-1', name: 'General' }],
+      subjects: [
+        { id: 'subject-1', streamId: 'stream-1', name: 'Subject One' },
+        { id: 'subject-2', streamId: 'stream-1', name: 'Subject Two' },
+        { id: 'subject-3', streamId: 'stream-1', name: 'Subject Three' }
+      ],
+      topics,
+      history,
+      exams: [],
+      settings: { theme: 'dark' }
+    },
+    featureState: {
+      journal: [],
+      papers: [],
+      goals: [],
+      studyLogs: [],
+      settings: { dailyMinutes: 90 }
+    }
+  };
+  let serialized = JSON.stringify(payload);
+  const currentBytes = Buffer.byteLength(serialized, 'utf8');
+  assert.ok(currentBytes < TARGET_BYTES, 'Fixture seed must remain below the 26.9 MB target before padding: ' + currentBytes);
+  const padding = TARGET_BYTES - currentBytes;
+  const each = Math.floor(padding / topics.length);
+  let remainder = padding % topics.length;
+  for (const topic of topics) {
+    const amount = each + (remainder > 0 ? 1 : 0);
+    if (remainder > 0) remainder--;
+    if (amount) topic.notes += 'x'.repeat(amount);
+  }
+  serialized = JSON.stringify(payload);
+  assert.equal(Buffer.byteLength(serialized, 'utf8'), TARGET_BYTES,
+    'The fixture must be exactly 26,900,000 UTF-8 bytes');
+  return { payload, serialized };
+}
+
+async function verifyFinalWorkspace(payload) {
+  const topics = payload.state.topics;
+  const history = payload.state.history;
+  assert.equal(topics.length, INITIAL_TOPICS - LARGE_DELETE_COUNT - SUBJECT_THREE_TOPICS);
+  assert.equal(history.length, INITIAL_HISTORY - SUBJECT_THREE_HISTORY);
+  assert.equal(payload.state.subjects.length, 2);
+  assert.ok(!payload.state.subjects.some(row => row.id === 'subject-3'));
+  assert.ok(!topics.some(row => row.subjectId === 'subject-3'));
+  assert.ok(!history.some(row => row.subjectId === 'subject-3'));
+  for (let i = 0; i < LARGE_DELETE_COUNT; i++) {
+    assert.ok(!topics.some(row => row.id === 'topic-' + String(i).padStart(6, '0')),
+      'Deleted topic must not be resurrected: ' + i);
+  }
+  assert.ok(history.some(row => row.id === 'history-000240'),
+    'Unrelated history must survive the complete subject deletion');
+  assert.ok(topics.some(row => row.id === 'topic-050000'),
+    'Unrelated topic must survive large deletion and subject cascade');
+}
+
+const [clientA1, clientA2, clientB] = await Promise.all([
+  signIn(process.env.PHASE34_EMAIL_A, process.env.PHASE34_PASSWORD_A),
+  signIn(process.env.PHASE34_EMAIL_A, process.env.PHASE34_PASSWORD_A),
+  signIn(process.env.PHASE34_EMAIL_B, process.env.PHASE34_PASSWORD_B)
+]);
+const ownerA = clientA1.user.id;
+const ownerB = clientB.user.id;
+assert.equal(clientA2.user.id, ownerA, 'A1 and A2 must share one owner');
+assert.notEqual(ownerA, ownerB, 'Account B must remain isolated');
+assert.notEqual(clientA1.token, clientA2.token, 'The two devices need independent Auth sessions');
+check('Three independent authenticated sessions represent two devices and a separate account',
+  !!clientA1.token && !!clientA2.token && !!clientB.token);
+
+const stateA = await rpc(clientA1, 'nexus_get_entity_sync_state');
+const stateB = await rpc(clientB, 'nexus_get_entity_sync_state');
+assert.equal(stateA.mode, 'snapshot');
+assert.equal(stateB.mode, 'snapshot');
+const enabled = await rpc(clientA1, 'nexus_enable_entity_delta', {
+  p_expected_updated_at: stateA.snapshot_updated_at
+});
+assert.equal(enabled.ok, true);
+assert.equal(enabled.mode, 'delta');
+const baselineState = await rpc(clientA1, 'nexus_get_entity_sync_state');
+const ownerBaseStamp = baselineState.snapshot_updated_at;
+check('Delta is enabled only for disposable owner A; account B remains in snapshot mode',
+  baselineState.mode === 'delta' && (await rpc(clientB, 'nexus_get_entity_sync_state')).mode === 'snapshot');
+
+console.log('Building the 77,144-topic / 72,001-history workspace…');
+const { payload: initialPayload, serialized: initialSerialized } = buildLargeWorkspace();
+assert.equal(Buffer.byteLength(initialSerialized, 'utf8'), TARGET_BYTES);
+const initialPublication = await chunkStorage.writeDeltaSnapshot(
+  clientA1, ownerA, initialPayload, Number(baselineState.head_revision), ownerBaseStamp
+);
+assert.equal(initialPublication.verified, true);
+assert.equal(initialPublication.verifiedChunks, true);
+assert.equal(initialPublication.manifest.totalBytes, TARGET_BYTES);
+assert.equal(initialPublication.manifest.chunkCount, 103);
+const initialRow = await readSnapshotRow(clientA1, ownerA);
+const initialDownloaded = await chunkStorage.readSnapshot(clientA2, ownerA, initialRow.payload);
+assert.equal(initialRow.updated_at, initialPublication.updated_at);
+assert.equal(initialDownloaded.state.topics.length, INITIAL_TOPICS);
+assert.equal(initialDownloaded.state.history.length, INITIAL_HISTORY);
+assert.equal(await merge.sameAsync(initialPayload, initialDownloaded), true);
+const initialStamp = initialRow.updated_at;
+check('Client A publishes the exact 26.9 MB snapshot as 103 verified chunks',
+  initialPublication.manifest.totalBytes === TARGET_BYTES && initialPublication.manifest.chunkCount === 103);
+check('Client A2 independently downloads, reconstructs, hashes and verifies all 77,144 topics and 72,001 history rows',
+  initialDownloaded.state.topics.length === INITIAL_TOPICS && initialDownloaded.state.history.length === INITIAL_HISTORY);
+
+const topicA = initialDownloaded.state.topics[50000];
+const topicB = initialDownloaded.state.topics[50001];
+const editA = {
+  collection: 'topics', id: topicA.id, operation: 'put', position: 50000,
+  value: { ...topicA, name: 'Client A concurrent edit' }
+};
+const editB = {
+  collection: 'topics', id: topicB.id, operation: 'put', position: 50001,
+  value: { ...topicB, name: 'Client B concurrent edit' }
+};
+const operationA = 'phase34-large-a-' + crypto.randomUUID();
+const operationB = 'phase34-large-b-' + crypto.randomUUID();
+const raced = await Promise.all([
+  publishOperation(clientA1, operationA, 0, [editA]),
+  publishOperation(clientA2, operationB, 0, [editB])
+]);
+const winners = raced.filter(result => result.ok === true && result.replayed !== true);
+const losers = raced.filter(result => result.ok === false && result.code === 'revision_conflict');
+assert.equal(winners.length, 1, 'Exactly one concurrent writer must win');
+assert.equal(losers.length, 1, 'Exactly one concurrent writer must receive a revision conflict');
+const loserIndex = raced[0].ok ? 1 : 0;
+const loserClient = loserIndex === 0 ? clientA1 : clientA2;
+const loserOperation = loserIndex === 0 ? operationA : operationB;
+const loserChange = loserIndex === 0 ? editA : editB;
+const retry = await publishOperation(loserClient, loserOperation, 1, [loserChange]);
+assert.equal(retry.ok, true);
+assert.equal(retry.revision, 2);
+check('Simultaneous A1/A2 edits produce one CAS winner and one explicit revision conflict',
+  winners.length === 1 && losers.length === 1);
+check('The losing device retries the same operation id successfully at revision 2',
+  retry.ok === true && retry.revision === 2);
+
+const concurrentRead = await readAllGroups(clientA1, 0, 2);
+const concurrentRemote = delta.reconstructRemoteSnapshot(
+  initialPayload, concurrentRead.groups, 0, 2, { maxBytes: 8 * 1048576 }
+);
+assert.equal(concurrentRemote.ok, true);
+const offlineWorkspace = structuredClone(concurrentRemote.payload);
+offlineWorkspace.state.topics[50000].notes = 'offline edit on device A2';
+offlineWorkspace.state.topics[50001].name = 'Offline title wins locally';
+offlineWorkspace.featureState.journal.push({
+  id: 'journal-offline-001', title: 'Offline device journal', createdAt: '2026-11-16'
+});
+check('Device A2 retains an offline edit and an offline journal entry without publishing either',
+  offlineWorkspace.state.topics[50000].notes === 'offline edit on device A2' &&
+  offlineWorkspace.featureState.journal.length === 1);
+
+let revision = 2;
+const deletionIds = Array.from({ length: LARGE_DELETE_COUNT }, (_, i) =>
+  'topic-' + String(i).padStart(6, '0'));
+let deletionGroups = 0;
+for (let offset = 0; offset < deletionIds.length; offset += 1000) {
+  const changes = deletionIds.slice(offset, offset + 1000).map(id => ({
+    collection: 'topics', id, operation: 'delete'
+  }));
+  const result = await publishOperation(
+    clientA1,
+    'phase34-large-delete-' + String(deletionGroups).padStart(2, '0') + '-' + crypto.randomUUID(),
+    revision,
+    changes
+  );
+  assert.equal(result.ok, true, 'Large topic-deletion group must publish at revision ' + (revision + 1));
+  revision = result.revision;
+  deletionGroups++;
+}
+assert.equal(deletionGroups, 13);
+const subjectThreeChanges = [];
+for (let i = INITIAL_TOPICS - SUBJECT_THREE_TOPICS; i < INITIAL_TOPICS; i++) {
+  subjectThreeChanges.push({
+    collection: 'topics',
+    id: 'topic-' + String(i).padStart(6, '0'),
+    operation: 'delete'
+  });
+}
+for (let i = 0; i < SUBJECT_THREE_HISTORY; i++) {
+  subjectThreeChanges.push({
+    collection: 'history',
+    id: 'history-' + String(i).padStart(6, '0'),
+    operation: 'delete'
+  });
+}
+subjectThreeChanges.push({ collection: 'subjects', id: 'subject-3', operation: 'delete' });
+const subjectDelete = await publishOperation(
+  clientA1, 'phase34-large-subject-delete-' + crypto.randomUUID(), revision, subjectThreeChanges
+);
+assert.equal(subjectDelete.ok, true);
+revision = subjectDelete.revision;
+check('More than 12,000 topic deletions publish as 13 bounded complete groups',
+  LARGE_DELETE_COUNT === 12032 && deletionGroups === 13);
+check('Complete subject deletion covers all 240 owned topics, 240 reviews and the subject row',
+  subjectDelete.ok === true && subjectThreeChanges.length === 481);
+
+const beforeCompaction = await readAllGroups(clientA1, 0, revision);
+const compactedWorkspace = delta.reconstructRemoteSnapshot(
+  initialPayload, beforeCompaction.groups, 0, revision, { maxBytes: 16 * 1048576 }
+);
+assert.equal(compactedWorkspace.ok, true);
+await verifyFinalWorkspace(compactedWorkspace.payload);
+check('Remote reconstruction preserves 64,872 topics and 71,761 unrelated history records',
+  compactedWorkspace.payload.state.topics.length === 64872 &&
+  compactedWorkspace.payload.state.history.length === 71761);
+check('No deleted topic or deleted subject-owned review is resurrected',
+  !compactedWorkspace.payload.state.topics.some(row => row.subjectId === 'subject-3') &&
+  !compactedWorkspace.payload.state.history.some(row => row.subjectId === 'subject-3'));
+
+const beforeSnapshotState = await rpc(clientA1, 'nexus_get_entity_sync_state');
+const compactedPublication = await chunkStorage.writeDeltaSnapshot(
+  clientA1, ownerA, compactedWorkspace.payload,
+  Number(beforeSnapshotState.head_revision), beforeSnapshotState.snapshot_updated_at
+);
+assert.equal(compactedPublication.verified, true);
+assert.equal(compactedPublication.snapshotRevision, revision);
+assert.equal(compactedPublication.compactedThroughRevision, revision);
+const compactionCleanup = await compactUntilComplete(clientA1, ownerA, revision);
+assert.equal(compactionCleanup.complete, true);
+const afterCompactionState = await rpc(clientA1, 'nexus_get_entity_sync_state');
+assert.equal(Number(afterCompactionState.snapshot_revision), revision);
+assert.equal(Number(afterCompactionState.compacted_through_revision), revision);
+assert.equal(Number(afterCompactionState.head_revision), revision);
+const remainingOpsAfterCompaction = await clientA1.from('nexus_workspace_operations')
+  .select('revision').eq('user_id', ownerA);
+const remainingReceiptsAfterCompaction = await clientA1.from('nexus_workspace_operation_receipts')
+  .select('revision').eq('user_id', ownerA);
+if (remainingOpsAfterCompaction.error) throw fail('Could not verify operation cleanup', remainingOpsAfterCompaction.error);
+if (remainingReceiptsAfterCompaction.error) throw fail('Could not verify receipt cleanup', remainingReceiptsAfterCompaction.error);
+assert.equal(remainingOpsAfterCompaction.data.length, 0);
+assert.equal(remainingReceiptsAfterCompaction.data.length, 0);
+check('A1 publishes a verified replacement snapshot and compacts the old operation history through revision ' + revision,
+  compactedPublication.verified === true && compactionCleanup.complete === true &&
+  remainingOpsAfterCompaction.data.length === 0 && remainingReceiptsAfterCompaction.data.length === 0);
+
+const remoteTailTopic = compactedWorkspace.payload.state.topics[50001];
+const remoteTailChanges = [
+  {
+    collection: 'topics', id: remoteTailTopic.id, operation: 'put', position: 50001,
+    value: { ...remoteTailTopic, name: 'Remote title after compaction' }
+  },
+  {
+    collection: 'journal', id: 'journal-remote-001', operation: 'put',
+    position: compactedWorkspace.payload.featureState.journal.length,
+    value: { id: 'journal-remote-001', title: 'Remote post-compaction journal', createdAt: '2026-11-16' }
+  }
+];
+const tailOne = await publishOperation(
+  clientA1, 'phase34-large-tail-1-' + crypto.randomUUID(), revision, [remoteTailChanges[0]]
+);
+assert.equal(tailOne.ok, true);
+revision = tailOne.revision;
+const tailTwo = await publishOperation(
+  clientA1, 'phase34-large-tail-2-' + crypto.randomUUID(), revision, [remoteTailChanges[1]]
+);
+assert.equal(tailTwo.ok, true);
+revision = tailTwo.revision;
+check('Server advances with a contiguous two-revision Delta tail while A2 remains stale below the compaction floor',
+  revision === Number(afterCompactionState.snapshot_revision) + 2 &&
+  Number(afterCompactionState.compacted_through_revision) < revision);
+
+let recoveredLocalWorkspace = offlineWorkspace;
+const recoveryClient = delta.createClient({
+  enabled: true,
+  client: clientA2,
+  getActiveOwner: async () => ownerA,
+  getLocalOwner: async () => ownerA,
+  getLocalBase: async () => ({ ...initialDownloaded, serverVersion: initialStamp }),
+  getLocalWorkspace: async () => recoveredLocalWorkspace,
+  getPendingSnapshot: async () => null,
+  sameWorkspace: async (left, right) => merge.sameAsync(left, right),
+  mergeWorkspace: (base, local, remote) => merge.mergeAsync(base, local, remote),
+  readRemoteSnapshot: async ownerId => {
+    assert.equal(ownerId, ownerA);
+    const row = await readSnapshotRow(clientA2, ownerA);
+    const payload = await chunkStorage.readSnapshot(clientA2, ownerA, row.payload);
+    return { payload, updated_at: row.updated_at };
+  }
+});
+const recovery = await recoveryClient.prepareConflictRecovery(ownerA, {
+  maxGroups: 100,
+  maxBytes: 16 * 1048576
+});
+assert.equal(recovery.ok, true, 'Stale-device snapshot reconstruction and three-way merge must succeed: ' + JSON.stringify(recovery));
+assert.equal(recovery.baselineAdvanced, true);
+assert.equal(recovery.snapshotRevision, Number(afterCompactionState.snapshot_revision));
+assert.equal(recovery.expectedHeadRevision, revision);
+assert.equal(recovery.groupCount, 2);
+assert.equal(recovery.throughRevision, revision);
+assert.equal(recovery.remotePayload.state.topics.length, 64872);
+assert.equal(recovery.remotePayload.state.history.length, 71761);
+assert.equal(recovery.payload.state.topics.length, 64872);
+assert.equal(recovery.payload.state.history.length, 71761);
+assert.equal(recovery.payload.state.topics.find(row => row.id === 'topic-050000').notes,
+  'offline edit on device A2');
+assert.equal(recovery.payload.state.topics.find(row => row.id === 'topic-050001').name,
+  'Offline title wins locally');
+assert.ok(recovery.conflicts.length > 0, 'Concurrent same-field edit must be archived as a conflict');
+assert.ok(recovery.remotePayload.featureState.journal.some(row => row.id === 'journal-remote-001'));
+assert.ok(recovery.payload.featureState.journal.some(row => row.id === 'journal-remote-001'));
+assert.ok(recovery.payload.featureState.journal.some(row => row.id === 'journal-offline-001'));
+await verifyFinalWorkspace(recovery.payload);
+check('Stale A2 reconstructs the compacted snapshot plus both contiguous tail groups and merges offline edits',
+  recovery.baselineAdvanced === true && recovery.groupCount === 2 &&
+  recovery.throughRevision === revision && recovery.payload.state.topics.length === 64872);
+check('Three-way recovery preserves the offline edit, local conflict winner and both independent journal additions',
+  recovery.payload.state.topics.find(row => row.id === 'topic-050000').notes === 'offline edit on device A2' &&
+  recovery.payload.state.topics.find(row => row.id === 'topic-050001').name === 'Offline title wins locally' &&
+  recovery.payload.featureState.journal.some(row => row.id === 'journal-offline-001') &&
+  recovery.payload.featureState.journal.some(row => row.id === 'journal-remote-001') &&
+  recovery.conflicts.length > 0);
+
+const beforeRecoveryState = await rpc(clientA2, 'nexus_get_entity_sync_state');
+const recoveredPublication = await chunkStorage.writeDeltaSnapshot(
+  clientA2, ownerA, recovery.payload,
+  Number(beforeRecoveryState.head_revision), beforeRecoveryState.snapshot_updated_at
+);
+assert.equal(recoveredPublication.verified, true);
+assert.equal(recoveredPublication.snapshotRevision, revision);
+const finalCompaction = await compactUntilComplete(clientA2, ownerA, revision);
+assert.equal(finalCompaction.complete, true);
+recoveredLocalWorkspace = recovery.payload;
+
+const [clientA1Restart, clientA2Restart] = await Promise.all([
+  signIn(process.env.PHASE34_EMAIL_A, process.env.PHASE34_PASSWORD_A),
+  signIn(process.env.PHASE34_EMAIL_A, process.env.PHASE34_PASSWORD_A)
+]);
+assert.equal(clientA1Restart.user.id, ownerA);
+assert.equal(clientA2Restart.user.id, ownerA);
+const [rowA1Restart, rowA2Restart] = await Promise.all([
+  readSnapshotRow(clientA1Restart, ownerA),
+  readSnapshotRow(clientA2Restart, ownerA)
+]);
+const [workspaceA1Restart, workspaceA2Restart] = await Promise.all([
+  chunkStorage.readSnapshot(clientA1Restart, ownerA, rowA1Restart.payload),
+  chunkStorage.readSnapshot(clientA2Restart, ownerA, rowA2Restart.payload)
+]);
+assert.equal(rowA1Restart.updated_at, rowA2Restart.updated_at);
+assert.equal(await merge.sameAsync(workspaceA1Restart, workspaceA2Restart), true);
+assert.equal(await merge.sameAsync(workspaceA2Restart, recoveredLocalWorkspace), true);
+await verifyFinalWorkspace(workspaceA1Restart);
+check('Both restarted devices download the same verified final workspace and compare equal',
+  await merge.sameAsync(workspaceA1Restart, workspaceA2Restart));
+
+const finalState = await rpc(clientA1Restart, 'nexus_get_entity_sync_state');
+assert.equal(Number(finalState.head_revision), revision);
+assert.equal(Number(finalState.snapshot_revision), revision);
+assert.equal(Number(finalState.compacted_through_revision), revision);
+const emptyTail = await rpc(clientA1Restart, 'nexus_read_entity_operations', {
+  p_after_revision: revision, p_limit_groups: 100, p_max_bytes: 1048576
+});
+assert.equal(emptyTail.mode, 'delta');
+assert.equal(emptyTail.snapshot_required, false);
+assert.equal(emptyTail.next_revision, revision);
+assert.equal(emptyTail.groups.length, 0);
+const stableRecoveryClient = delta.createClient({
+  enabled: true,
+  client: clientA2Restart,
+  getActiveOwner: async () => ownerA,
+  getLocalOwner: async () => ownerA,
+  getLocalBase: async () => ({ ...workspaceA2Restart, serverVersion: rowA2Restart.updated_at }),
+  getLocalWorkspace: async () => workspaceA2Restart,
+  getPendingSnapshot: async () => null,
+  sameWorkspace: async (left, right) => merge.sameAsync(left, right),
+  mergeWorkspace: (base, local, remote) => merge.mergeAsync(base, local, remote),
+  readRemoteSnapshot: async () => ({ payload: workspaceA2Restart, updated_at: rowA2Restart.updated_at })
+});
+const stableRecovery = await stableRecoveryClient.prepareConflictRecovery(ownerA, { maxGroups: 100 });
+assert.equal(stableRecovery.ok, true);
+assert.equal(stableRecovery.groupCount, 0);
+assert.equal(stableRecovery.throughRevision, revision);
+check('Post-restart synchronization is idle with no residual Delta tail or repeated snapshot-recovery loop',
+  emptyTail.groups.length === 0 && stableRecovery.groupCount === 0 &&
+  Number(finalState.compacted_through_revision) === revision);
+
+const foreignSnapshotRows = await clientB.from('nexus_user_data')
+  .select('user_id').eq('user_id', ownerA);
+const foreignChunkRows = await clientB.from('nexus_user_data_chunks')
+  .select('chunk_index').eq('user_id', ownerA).eq('revision_id', rowA2Restart.payload.revisionId);
+assert.equal(foreignSnapshotRows.error, null);
+assert.equal(foreignChunkRows.error, null);
+assert.equal(foreignSnapshotRows.data.length, 0);
+assert.equal(foreignChunkRows.data.length, 0);
+assert.equal((await rpc(clientB, 'nexus_get_entity_sync_state')).mode, 'snapshot');
+check('Account B cannot read A snapshot/chunks and remains outside Delta mode',
+  foreignSnapshotRows.data.length === 0 && foreignChunkRows.data.length === 0);
+
+console.log('PASS — ' + checks.length + ' large-workspace two-device lifecycle assertions completed.');
+console.log('Evidence: ' + JSON.stringify({
+  ownerA,
+  initialBytes: TARGET_BYTES,
+  initialChunks: initialPublication.manifest.chunkCount,
+  initialTopics: INITIAL_TOPICS,
+  initialHistory: INITIAL_HISTORY,
+  concurrentRevision: 2,
+  deletedTopics: LARGE_DELETE_COUNT,
+  subjectThreeDeletedTopics: SUBJECT_THREE_TOPICS,
+  subjectThreeDeletedHistory: SUBJECT_THREE_HISTORY,
+  deletionGroups,
+  preCompactionRevision: Number(afterCompactionState.snapshot_revision),
+  staleDeviceCursorRevision: 2,
+  recoveryTailGroups: recovery.groupCount,
+  recoveryTailThroughRevision: recovery.throughRevision,
+  finalRevision: revision,
+  finalTopics: workspaceA1Restart.state.topics.length,
+  finalHistory: workspaceA1Restart.state.history.length,
+  conflictCount: recovery.conflicts.length,
+  cleanupCalls: compactionCleanup.calls + finalCompaction.calls,
+  checks: checks.length
+}));
