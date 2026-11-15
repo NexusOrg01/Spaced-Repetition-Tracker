@@ -65,11 +65,15 @@ jobs:
           printf 'PHASE34_DB_URL=%s\n' "$DB_URL" >> "$GITHUB_ENV"
           printf 'PHASE34_ANON_KEY=%s\n' "$ANON_KEY" >> "$GITHUB_ENV"
 
-      - name: Run both active-manifest concurrency races on disposable local Supabase
+      - name: Run general snapshot candidate integrity and fallback tests
         shell: bash
         run: |
           set -euo pipefail
+          node --check scripts/test-active-manifest-race.mjs
+          psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 -f supabase/tests/nexus_user_data_chunks_active_manifest.sql
           NEXUS_RACE_DATABASE_URL="$PHASE34_DB_URL" node scripts/test-active-manifest-race.mjs
+          node scripts/test-cloud-chunk-storage.mjs
+          node scripts/test-account-deletion.mjs
 
       - name: Create disposable Auth fixtures and grant test RPCs locally
         working-directory: .build/phase34-local-supabase
