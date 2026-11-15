@@ -285,10 +285,16 @@ try {
     'DO $race$',
     'DECLARE',
     '  v_started timestamptz;',
+    '  v_updated integer;',
     'BEGIN',
     '  PERFORM pg_sleep(' + SECOND_SESSION_DELAY_SECONDS + ');',
     '  v_started := clock_timestamp();',
     '  ' + updateManifest(revD),
+    '  GET DIAGNOSTICS v_updated = ROW_COUNT;',
+    '  IF v_updated <> 1 THEN',
+    "    RAISE EXCEPTION 'Expected publisher to update exactly one workspace row; updated %.', v_updated;",
+    '  END IF;',
+    "  RAISE NOTICE 'NEXUS_RACE_PUBLISHER_UPDATED=%', v_updated;",
     "  RAISE NOTICE 'NEXUS_RACE_OPERATION_MS=%', floor(extract(epoch FROM clock_timestamp() - v_started) * 1000);",
     'END',
     '$race$;'
@@ -304,8 +310,8 @@ try {
   assert.ok(combinedOutput(secondResults[0]).includes(ownerId),
     'the cleanup session must lock the fixture workspace row');
   assertObservedLockWait(secondResults[1], 'cleanup-first publisher');
-  assert.match(combinedOutput(secondResults[1]), /UPDATE 1/,
-    'the waiting publisher must complete after the lock-holding cleanup transaction commits');
+  assert.match(combinedOutput(secondResults[1]), /NEXUS_RACE_PUBLISHER_UPDATED=1/,
+    'the waiting publisher must update exactly one workspace row after the lock-holding cleanup transaction commits');
 
   const afterCleanupFirstSql = [
     "SELECT (SELECT payload ->> 'revisionId' FROM public.nexus_user_data WHERE user_id = '" + ownerId + "') || E'\\t' ||",
