@@ -388,9 +388,9 @@ try {
   const afterFirst = await runSql(
     'verify publisher-first state',
     `SELECT concat_ws(chr(9),
-      (SELECT payload ->> 'revisionId' FROM public.nexus_user_data WHERE user_id = \${quoteSql(ownerA)}),
-      (SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = \${quoteSql(ownerA)} AND revision_id = \${quoteSql(revA)}),
-      (SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = \${quoteSql(ownerA)} AND revision_id = \${quoteSql(revB)})
+      (SELECT payload ->> 'revisionId' FROM public.nexus_user_data WHERE user_id = ${quoteSql(ownerA)}),
+      (SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = ${quoteSql(ownerA)} AND revision_id = ${quoteSql(revA)}),
+      (SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = ${quoteSql(ownerA)} AND revision_id = ${quoteSql(revB)})
     );`
   );
   assert.equal(afterFirst, revB + '\t0\t1',
@@ -473,9 +473,9 @@ try {
   const afterCandidateRace = await runSql(
     'verify incomplete update candidate was not published',
     `SELECT concat_ws(chr(9),
-      (SELECT payload ->> 'revisionId' FROM public.nexus_user_data WHERE user_id = \${quoteSql(ownerA)}),
-      (SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = \${quoteSql(ownerA)} AND revision_id = \${quoteSql(revC)}),
-      (SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = \${quoteSql(ownerA)} AND revision_id = \${quoteSql(revD)})
+      (SELECT payload ->> 'revisionId' FROM public.nexus_user_data WHERE user_id = ${quoteSql(ownerA)}),
+      (SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = ${quoteSql(ownerA)} AND revision_id = ${quoteSql(revC)}),
+      (SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = ${quoteSql(ownerA)} AND revision_id = ${quoteSql(revD)})
     );`
   );
   assert.equal(afterCandidateRace, revC + '\t1\t0',
@@ -500,8 +500,8 @@ try {
   const afterFirstInsert = await runSql(
     'verify first-write publisher-first state',
     `SELECT concat_ws(chr(9),
-      (SELECT payload ->> 'revisionId' FROM public.nexus_user_data WHERE user_id = \${quoteSql(ownerFirstPublish)}),
-      (SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = \${quoteSql(ownerFirstPublish)} AND revision_id = \${quoteSql(revFirstPublish)})
+      (SELECT payload ->> 'revisionId' FROM public.nexus_user_data WHERE user_id = ${quoteSql(ownerFirstPublish)}),
+      (SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = ${quoteSql(ownerFirstPublish)} AND revision_id = ${quoteSql(revFirstPublish)})
     );`
   );
   assert.equal(afterFirstInsert, revFirstPublish + '\t1',
@@ -528,8 +528,8 @@ try {
   const afterFirstCleanup = await runSql(
     'verify first-write cleanup-first state',
     `SELECT concat_ws(chr(9),
-      (SELECT count(*)::text FROM public.nexus_user_data WHERE user_id = \${quoteSql(ownerFirstCleanup)}),
-      (SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = \${quoteSql(ownerFirstCleanup)} AND revision_id = \${quoteSql(revFirstCleanup)})
+      (SELECT count(*)::text FROM public.nexus_user_data WHERE user_id = ${quoteSql(ownerFirstCleanup)}),
+      (SELECT count(*)::text FROM public.nexus_user_data_chunks WHERE user_id = ${quoteSql(ownerFirstCleanup)} AND revision_id = ${quoteSql(revFirstCleanup)})
     );`
   );
   assert.equal(afterFirstCleanup, '0\t0',
@@ -546,9 +546,9 @@ try {
       const leftovers = await runSql(
         'verify fixture account-cascade cleanup',
         `SELECT concat_ws(chr(9),
-          (SELECT count(*) FROM auth.users WHERE id IN (\${ownerList})),
-          (SELECT count(*) FROM public.nexus_user_data WHERE user_id IN (\${ownerList})),
-          (SELECT count(*) FROM public.nexus_user_data_chunks WHERE user_id IN (\${ownerList}))
+          (SELECT count(*) FROM auth.users WHERE id IN (${ownerList})),
+          (SELECT count(*) FROM public.nexus_user_data WHERE user_id IN (${ownerList})),
+          (SELECT count(*) FROM public.nexus_user_data_chunks WHERE user_id IN (${ownerList}))
         );`
       );
       assert.equal(leftovers, '0\t0\t0',
