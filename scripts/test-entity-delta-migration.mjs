@@ -14,6 +14,7 @@ const rpcExposureGate = read('supabase/migrations/20261113222129_revoke_unwired_
 const identityHardening = read('supabase/migrations/20261114093000_harden_nexus_entity_delta_record_identity.sql');
 const chunkManifestProtection = read('supabase/migrations/20261114103353_protect_active_nexus_chunk_manifests.sql');
 const chunkManifestDeletionTest = read('supabase/tests/nexus_user_data_chunks_active_manifest.sql');
+const activeManifestRaceRunner = read('scripts/test-active-manifest-race-staging.mjs');
 
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_sync_state/);
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_operation_receipts/);
@@ -68,6 +69,24 @@ assert.match(chunkManifestDeletionTest, /SET LOCAL ROLE authenticated/);
 assert.match(chunkManifestDeletionTest, /Cannot delete chunks referenced by the active Nexus workspace manifest|55000/);
 assert.match(chunkManifestDeletionTest, /ON DELETE CASCADE|auth\.users/);
 assert.match(chunkManifestDeletionTest, /A previous, now-inactive manifest could not be cleaned up/);
+
+assert.match(activeManifestRaceRunner, /NEXUS_STAGING_DATABASE_URL/,
+  'the concurrent race runner must require an explicit staging/local Postgres connection');
+assert.match(activeManifestRaceRunner, /STAGING_PROJECT_REF = 'xuwfzibxhxzxxupprxsq'/);
+assert.match(activeManifestRaceRunner, /PRODUCTION_PROJECT_REF = 'txugbdavblpettcnhcxl'/);
+assert.match(activeManifestRaceRunner, /Refusing to run the active-manifest race test against the production Nexus Supabase project/);
+assert.match(activeManifestRaceRunner, /connection\.port === '6543'/,
+  'the race runner must reject transaction-pooler connections that cannot guarantee independent sessions');
+assert.match(activeManifestRaceRunner, /Promise\.allSettled/);
+assert.match(activeManifestRaceRunner, /pg_stat_activity[\s\S]*wait_event_type = 'Lock'/,
+  'the race runner must observe an actual database lock wait, not rely only on timing');
+assert.match(activeManifestRaceRunner, /FOR UPDATE/);
+assert.match(activeManifestRaceRunner, /SQLSTATE '55000'/);
+assert.match(activeManifestRaceRunner, /publisher wins the workspace-row lock/);
+assert.match(activeManifestRaceRunner, /cleanup holds the workspace-row lock first/);
+assert.match(activeManifestRaceRunner, /finally[\s\S]*DELETE FROM auth\.users/);
+assert.match(activeManifestRaceRunner, /remaining\)[\s\S]*'0\\t0\\t0'/,
+  'the race runner must verify that its disposable auth, workspace, and chunk rows are removed');
 
 
 assert.match(hardening, /v_revision <> v_next_revision \+ 1/);
