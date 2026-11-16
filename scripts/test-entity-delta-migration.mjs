@@ -23,7 +23,7 @@ assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_operati
 assert.match(schema, /ALTER TABLE public\.nexus_workspace_operations ENABLE ROW LEVEL SECURITY/);
 assert.match(schema, /USING \(\(SELECT auth\.uid\(\)\) = user_id\)/);
 assert.match(schema, /REVOKE ALL PRIVILEGES ON TABLE[\s\S]*FROM PUBLIC, anon, authenticated/);
-assert.match(schema, /GRANT EXECUTE ON FUNCTION public\.nexus_publish_entity_operation[\s\S]*TO authenticated/);
+assert.doesNotMatch(schema, /GRANT EXECUTE ON FUNCTION/, 'the initial migration must not expose privileged Delta RPCs to browser roles');
 assert.match(schema, /extensions\.digest/);
 assert.match(schema, /p_expected_revision <> v_state\.head_revision/);
 assert.match(schema, /CREATE OR REPLACE FUNCTION public\.nexus_publish_entity_snapshot/);
@@ -41,6 +41,12 @@ const gatedRpcSignatures = [
   'public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb)',
   'public.nexus_compact_entity_operations(integer)'
 ];
+for (const signature of gatedRpcSignatures) {
+  assert.ok(schema.includes(`REVOKE ALL ON FUNCTION ${signature} FROM PUBLIC, anon, authenticated;`),
+    `initial migration must keep browser execution revoked for ${signature}`);
+}
+assert.doesNotMatch(schema, /GRANT EXECUTE ON FUNCTION/,
+  'the initial migration must not grant any browser-executable Delta RPC');
 for (const signature of gatedRpcSignatures) {
   assert.ok(rpcExposureGate.includes(`REVOKE EXECUTE ON FUNCTION ${signature} FROM PUBLIC, anon, authenticated;`),
     `unwired SECURITY DEFINER RPC ${signature} must not be executable by browser roles`);
