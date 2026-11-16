@@ -443,3 +443,43 @@ The current branch corrects this before source freeze:
 Production Supabase `nexus-spaced-repetition` (`txugbdavblpettcnhcxl`) was accessed read-only on 16 November 2026. Only three older migration versions are recorded; all eight existing workspace rows remain legacy JSONB snapshots. No Phase 3.4 workspace tables or `nexus_private` schema exist in production. Owner-scoped RLS/privileges on `nexus_user_data` were confirmed. No production migration, schema, data, Auth setting, RLS/permission, or live deployment change was made. Backup/PITR readiness remains unverified.
 
 **Boundary:** OPS-01 production rollout planning is a post-merge gate. This pre-freeze audit does not authorize or perform production migrations. PR #126 remains open and Draft; no merge was performed.
+
+
+## P34-06 final source freeze and P34-07 exact-head validation — 2026-11-16
+
+**Frozen application/migration source SHA:** `df2dde8a8c21b91a00bfe120a6c557cf14025603`  
+**Branch:** `android/capacitor-multistore-foundation` · **PR:** [#126](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/pull/126)
+
+P34-02 through P34-05 were independently revalidated against the current code, tests and disposable local backend before freezing:
+
+- General snapshot writer integrity, incomplete candidate rejection, both lock orderings for existing rows and first-write races, stale revision cleanup and Auth deletion cascade passed.
+- Chunk storage passed UTF-8 splitting, 27 MB chunking, read-back/hash verification, bounded orphan cleanup, active-manifest protection, legacy compatibility, CAS conflict, corruption and interrupted-upload tests.
+- The authenticated two-device protocol completed 19/19 assertions with separate A1/A2 device sessions for one owner and a separate owner B.
+- The large-workspace lifecycle completed 18/18 assertions: 26,900,000 bytes, 103 verified chunks, 77,144 topics and 72,001 history records; simultaneous edits/CAS retry; 12,032 topic deletions in 13 bounded groups; subject deletion covering 240 topics and 240 history rows; compaction through revision 16; stale-device recovery through two tail groups to revision 18; restart equality and owner isolation.
+- Application-layer tests separately cover backup/restore and atomic rollback, CSV import/export, A→B→A account handoff, pending recovery-journal restart/deletion, owner-specific outbox cleanup, account deletion safety and reset/replacement Undo. The local Auth/Chromium workflow provides the corresponding live Auth, RLS, RPC and owner-isolation backend checks; these are intentionally separate test layers rather than one monolithic UI flow.
+- The entity-delta replay fingerprint hardening remains in the source. Hosted/preview Delta remains gated; snapshot/chunk is the only normal hosted protocol.
+
+### Source-freeze security corrections
+
+- The first Delta migration explicitly revokes all six privileged SECURITY DEFINER RPCs from `PUBLIC`, `anon` and `authenticated` immediately when they are created. It contains no browser-role `GRANT EXECUTE`, closing the temporary exposure window present in the earlier migration sequence.
+- `scripts/test-entity-delta-migration.mjs` enforces the first-migration revocations and rejects any `GRANT EXECUTE` in that migration.
+- The pre-migration production compatibility bridge is in `cloud-sync.js`: a missing chunk table can only trigger a bounded legacy JSONB fallback for a still-legacy workspace. Known chunk manifests never downgrade; oversized payloads keep local data/outbox state and pause cloud writes with an explicit message until OPS-01.
+- The PR diff secret-pattern review found no private keys or matching GitHub/AWS/Slack/Google/Stripe/SendGrid tokens and no hardcoded service-role assignments. One JWT-shaped value remains in `scripts/test-preview-build-config.mjs`; it is a local anonymous-role test fixture, not a service/production credential.
+- Preview/build checks enforce the loopback-only local test gate, reject service-role credentials, and keep hosted previews isolated from production Supabase.
+
+### P34-07 exact-head validation — frozen source SHA
+
+- [Comprehensive Web/PWA validation #1547](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43919814358) — **success**. Includes syntax/catalogue, privacy/account-deletion pages, Edge Function typecheck, PWA manifest/install integration, preview build/configuration, backup/restore, offline queue, workspace merge, cloud sync/runtime, account isolation/deletion, security, service worker and Undo.
+- [Disposable local Supabase + authenticated Chromium integration #72](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43919814405) — **success**. Includes migration application on a fresh local database, general snapshot writer/race/fallback tests, account-deletion checks, 19/19 authenticated protocol assertions, 18/18 large-workspace lifecycle assertions and unconditional cleanup.
+- Cleanup revoked all six temporary RPC grants; removed synthetic Auth fixtures, operations and receipts; verified zero residual Delta-mode rows; and destroyed the disposable local Supabase stack.
+- Vercel preview [is READY for the frozen SHA](https://spaced-repetition-tracker-7iyuz1dju-recall-ed03.vercel.app/).
+- Netlify PR preview [is READY for the frozen SHA](https://deploy-preview-126--nexussrt.netlify.app/).
+
+### Scope and remaining gates
+
+- **PR #126 delivery scope is Web/PWA only.** F-Droid, APK builds/signing, Android physical-device acceptance and store distribution/release are excluded and must not be used as PR #126 merge blockers.
+- P34-09 remains Web/PWA accepted only; no Android physical acceptance is claimed.
+- PR #126 remains open and Draft; no merge was performed.
+- OPS-01 production rollout remains a post-merge gate. Production backup/PITR restore readiness is still unverified and must be confirmed before production migrations. The production database remains unmodified.
+- The 225 MiB maximum-capacity certification target has not been benchmarked; the current 26.9 MB/103-chunk lifecycle is demonstrated evidence, not a 225 MiB certification.
+- The 2 MiB compatibility ceiling is intentionally temporary. Any production workspace exceeding it will remain locally safe but cannot cloud-sync until OPS-01 installs the chunk schema.
