@@ -395,3 +395,15 @@ Exact-head validation:
 - Added regression cases that supply branch/URL metadata alone for Cloudflare, Vercel and Netlify. The tests require both credential resolution to throw and the local Delta gate to remain false.
 - Severity: **Medium — closed in P34-05**. This was a static-gate edge case discovered during audit; no evidence was found that local credentials had actually been injected into a hosted preview.
 - Re-run the preview configuration test and full PR validation on the resulting exact head before treating the fix as accepted.
+
+
+### 16 November 2026 — P34-05 exact-head acceptance
+
+**Status: COMPLETE — automated integration acceptance passed.** Tested application source head: `842d151909abd6550f34eefb77b2006a83cdcb0e`.
+
+- Updated exact-head Validate curriculum catalogue workflow [#1528](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43804741707): **success**. This includes the preview configuration/build guard tests (including provider-marker-only cases), backup/restore, account-switch safety, workspace Undo, and the full regression chain.
+- Updated exact-head Phase 3.4 local authenticated two-client workflow [#53](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43804741734): **success**. General snapshot writer integrity and active-manifest race tests passed; cloud chunk storage passed; authenticated A1/A2/B protocol passed **19/19**; 26.9 MB / 103-chunk / 77,144-topic lifecycle passed **18/18**.
+- Final cleanup passed. Three disposable Auth users were deleted; operation rows, receipts, Delta-mode rows and leaked browser-role RPC grants were each verified at zero; the disposable local Supabase stack was stopped. No hosted staging or production Supabase was used.
+- The provider-marker-only local-credential bypass is now closed and regression-tested. **Open Critical: 0. Open High: 0.**
+- Snapshot/chunk fallback remains authoritative. Delta remains off for hosted previews and production. Physical Android/low-memory acceptance remains P34-09.
+- PR #126 remains open and draft. No production/live changes, merge, APK build or production deployment occurred.

@@ -178,3 +178,11 @@ The local-only guard must reject deployment metadata even if a wrapper omits the
 - Also cover `CF_PAGES_URL` and `VERCEL_URL` without their companion flags.
 
 For each case, the build must reject local credentials and `resolveStagingEntityDeltaEnabled` must return false. This protects hosted previews even when a provider's build wrapper omits one environment variable. The current regression coverage is in `scripts/test-preview-build-config.mjs`.
+
+
+#### Exact-head P34-05 execution result
+
+- Tested source commit: `842d151909abd6550f34eefb77b2006a83cdcb0e`.
+- Local Supabase integration workflow [#53](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43804741734): **success** — 19/19 authenticated protocol assertions, 18/18 large-workspace lifecycle assertions, and cleanup verified zero users, operations, receipts, Delta-mode rows and leaked RPC grants.
+- Full validation workflow [#1528](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43804741707): **success** — preview gate, build, backup/restore, account switch, Undo and regression chain passed.
+- The P34-05 acceptance gate is satisfied: zero unresolved Critical/High findings, snapshot fallback preserved, hosted local-Delta gate closed, and local disposable fixtures fully cleaned.
