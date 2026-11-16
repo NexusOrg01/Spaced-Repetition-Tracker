@@ -181,22 +181,26 @@ async function verifySnapshotChunks(client,userId,manifest,serialized,ranges,sig
  }
  if(expectedIndex!==manifest.chunkCount)throw fail('Cloud chunk upload could not be fully verified. The previous published snapshot is unchanged and the pending local snapshot is preserved.');
 }
-async function cleanupOldChunks(client,userId,activeRevisionId,signal){
+async function cleanupOldChunksWithDetails(client,userId,activeRevisionId,signal){
  const cutoff=new Date(Date.now()-CLEANUP_AGE_MS).toISOString();
- let query=client.from(TABLE).select('id')
-  .eq('user_id',userId).lt('created_at',cutoff)
-  .neq('revision_id',activeRevisionId)
-  .order('created_at',{ascending:true}).limit(CLEANUP_BATCH_SIZE);
+ let query=client.from(TABLE).select('id').eq('user_id',userId).lt('created_at',cutoff)
+  .neq('revision_id',activeRevisionId).order('created_at',{ascending:true}).limit(CLEANUP_BATCH_SIZE+1);
  query=attachAbortSignal(query,signal);
  const selected=await query;
  if(selected&&selected.error)throw selected.error;
- const ids=(selected&&selected.data||[]).map(row=>row&&row.id).filter(Boolean);
- if(!ids.length)return 0;
+ const candidates=(selected&&selected.data||[]).filter(row=>row&&row.id);
+ const backlogPending=candidates.length>CLEANUP_BATCH_SIZE;
+ const ids=candidates.slice(0,CLEANUP_BATCH_SIZE).map(row=>row.id);
+ if(!ids.length)return {deletedCount:0,backlogPending:false};
  let deletion=client.from(TABLE).delete().eq('user_id',userId).in('id',ids);
  deletion=attachAbortSignal(deletion,signal);
  const removed=await deletion;
  if(removed&&removed.error)throw removed.error;
- return ids.length;
+ return {deletedCount:ids.length,backlogPending};
+}
+async function cleanupOldChunks(client,userId,activeRevisionId,signal){
+ const result=await cleanupOldChunksWithDetails(client,userId,activeRevisionId,signal);
+ return result.deletedCount;
 }
 async function writeSnapshot(client,userId,payload,expectedStamp,stamp,backupUtils,serializedOverride,signal){
  if(!client||typeof userId!=='string'||!userId||!payload||!payload.state||
@@ -250,9 +254,10 @@ async function writeSnapshot(client,userId,payload,expectedStamp,stamp,backupUti
   const conflict=fail('The cloud snapshot publication could not be verified. The local pending snapshot remains preserved.','NEXUS_CLOUD_CONFLICT');
   throw conflict;
  }
- try{await cleanupOldChunks(client,userId,revisionId,signal);}
- catch(error){if(root&&root.console)root.console.warn('Old Nexus cloud snapshot chunks could not be cleaned up; the active snapshot remains verified.',error);}
- return {manifest,payload,updated_at:published.data.updated_at||stamp,verifiedChunks:true,storageMode:'chunked'};
+ let cleanupDeletedCount=0,cleanupBacklogMayRemain=false,cleanupFailed=false;
+ try{const result=await cleanupOldChunksWithDetails(client,userId,revisionId,signal);cleanupDeletedCount=result.deletedCount;cleanupBacklogMayRemain=result.backlogPending;}
+ catch(error){cleanupFailed=true;if(root&&root.console)root.console.warn('Old Nexus cloud snapshot chunks could not be cleaned up; the active snapshot remains verified.',error);}
+ return {manifest,payload,updated_at:published.data.updated_at||stamp,verifiedChunks:true,storageMode:'chunked',cleanupDeletedCount,cleanupBacklogMayRemain,cleanupFailed};
 }
 
 
@@ -477,15 +482,16 @@ async function writeDeltaSnapshot(client,userId,payload,expectedHeadRevision,exp
   if(rpcFailure)throw rpcFailure;
   throw verificationError;
  }
+ let cleanupDeletedCount=0,cleanupBacklogMayRemain=false,cleanupFailed=false;
  if(manifest){
-  try{await cleanupOldChunks(client,userId,manifest.revisionId,signal);}
-  catch(error){if(root&&root.console)root.console.warn('Old Nexus delta snapshot chunks could not be cleaned up; the newly published snapshot remains verified.',error);}
+  try{const result=await cleanupOldChunksWithDetails(client,userId,manifest.revisionId,signal);cleanupDeletedCount=result.deletedCount;cleanupBacklogMayRemain=result.backlogPending;}
+  catch(error){cleanupFailed=true;if(root&&root.console)root.console.warn('Old Nexus delta snapshot chunks could not be cleaned up; the newly published snapshot remains verified.',error);}
  }
  const compaction=await compactPublishedDeltaOperations(client,userId,expectedHead,signal);
  return {payload:verified.payload,manifest,updated_at:verified.updated_at,
   headRevision:verified.headRevision,snapshotRevision:verified.snapshotRevision,
   compactedThroughRevision:verified.compactedThroughRevision,
-  verifiedChunks:!!manifest,storageMode:manifest?'chunked':'jsonb',verified:true,compaction};
+  verifiedChunks:!!manifest,storageMode:manifest?'chunked':'jsonb',verified:true,compaction,cleanupDeletedCount,cleanupBacklogMayRemain,cleanupFailed};
 }
 
 return {
@@ -494,6 +500,6 @@ return {
  writeDeltaSnapshot,
  compactDeltaOperations:(client,userId,expectedFloor,signal)=>
   compactPublishedDeltaOperations(client,userId,expectedFloor,signal),
- cleanupOldChunks
+ cleanupOldChunks,cleanupOldChunksWithDetails,MAX_CHUNKS,CLEANUP_AGE_MS,CLEANUP_BATCH_SIZE
 };
 });

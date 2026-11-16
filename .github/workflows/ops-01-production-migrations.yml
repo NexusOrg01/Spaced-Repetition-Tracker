@@ -1,0 +1,116 @@
+name: OPS-01 protected production migration runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Choose a dry run (default) or apply the exact OPS-01 migration set"
+        required: true
+        type: choice
+        default: dry-run
+        options:
+          - dry-run
+          - apply
+      confirmation:
+        description: "For apply only, enter exactly: APPLY-OPS-01-TO-PRODUCTION"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nexus-ops01-production-migrations
+  cancel-in-progress: false
+
+jobs:
+  ops01:
+    if: github.ref == 'refs/heads/main'
+    name: "OPS-01 production migration \${{ inputs.operation }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: nexus-production-migrations
+    env:
+      SUPABASE_ACCESS_TOKEN: \${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: \${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_REF: txugbdavblpettcnhcxl
+      OPS01_OPERATION: \${{ inputs.operation }}
+      OPS01_CONFIRMATION: \${{ inputs.confirmation }}
+    steps:
+      - name: Check out reviewed main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate exact OPS-01 migration allowlist
+        run: node scripts/ops01-migration-guard.mjs
+      - name: Install pinned Supabase CLI v3.0.0
+        run: npm install --global supabase@3.0.0
+      - name: Verify operator secrets and immutable target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_ACCESS_TOKEN"
+          test -n "$SUPABASE_DB_PASSWORD"
+          test "$SUPABASE_PROJECT_REF" = "txugbdavblpettcnhcxl"
+          if [[ "$OPS01_OPERATION" != "dry-run" && "$OPS01_OPERATION" != "apply" ]]; then
+            echo "Unsupported operation." >&2
+            exit 1
+          fi
+          if [[ "$OPS01_OPERATION" == "apply" && "$OPS01_CONFIRMATION" != "APPLY-OPS-01-TO-PRODUCTION" ]]; then
+            echo "Apply requires the exact typed confirmation phrase." >&2
+            exit 1
+          fi
+          supabase --version
+      - name: Read production migration history
+        shell: bash
+        run: |
+          set -euo pipefail
+          supabase migration list --remote="$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD" | tee "$RUNNER_TEMP/ops01-migrations-before.txt"
+          node scripts/ops01-migration-guard.mjs --remote-file "$RUNNER_TEMP/ops01-migrations-before.txt"
+      - name: Preview exact pending migration set (no database writes)
+        shell: bash
+        run: |
+          set -euo pipefail
+          supabase db push --dry-run --remote="$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD" | tee "$RUNNER_TEMP/ops01-dry-run.txt"
+          node scripts/ops01-migration-guard.mjs --remote-file "$RUNNER_TEMP/ops01-migrations-before.txt" --dry-run-file "$RUNNER_TEMP/ops01-dry-run.txt"
+      - name: Apply reviewed OPS-01 migrations
+        if: inputs.operation == 'apply'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The only hosted write in this workflow. The protected GitHub
+          # environment must have required reviewers configured before it is usable.
+          supabase db push --yes --remote="$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
+      - name: Verify migration history after apply
+        if: inputs.operation == 'apply'
+        shell: bash
+        run: |
+          set -euo pipefail
+          supabase migration list --remote="$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD" | tee "$RUNNER_TEMP/ops01-migrations-after.txt"
+          node scripts/ops01-migration-guard.mjs --remote-file "$RUNNER_TEMP/ops01-migrations-after.txt" --assert-complete
+      - name: Verify production schema and default-off Delta state (read only)
+        if: inputs.operation == 'apply'
+        shell: bash
+        run: |
+          set -euo pipefail
+          supabase db query --file supabase/ops-01-post-migration-verification.sql --remote="$SUPABASE_PROJECT_REF" --read-only --output json > "$RUNNER_TEMP/ops01-verification.json"
+          cat "$RUNNER_TEMP/ops01-verification.json"
+          node scripts/ops01-migration-guard.mjs --verify-file "$RUNNER_TEMP/ops01-verification.json"
+      - name: Upload operator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ops01-\${{ inputs.operation }}-evidence
+          path: |
+            \${{ runner.temp }}/ops01-migrations-before.txt
+            \${{ runner.temp }}/ops01-dry-run.txt
+            \${{ runner.temp }}/ops01-migrations-after.txt
+            \${{ runner.temp }}/ops01-verification.json
+          if-no-files-found: ignore
+          retention-days: 30

@@ -38,10 +38,66 @@ function syncDiag(stage,payload,extra){
  if(!SYNC_DIAG_ENABLED)return;
  try{const rows=JSON.parse(localStorage.getItem(SYNC_DIAG_KEY)||'[]');rows.push({at:new Date().toISOString(),stage,...(payload?{workspace:syncDiagSummary(payload)}:{}),...(extra||{})});localStorage.setItem(SYNC_DIAG_KEY,JSON.stringify(rows.slice(-80)));}catch(_){}
 }
-function downloadSyncDiagnostics(){
+
+function summarizeSyncOperationalState(input={}){
+ const count=v=>v===null||v===undefined||v===''?null:(Number.isSafeInteger(Number(v))&&Number(v)>=0?Math.min(Number(v),100000000):null);
+ const phase=['prepared','staged','published'].includes(input.recoveryPhase)?input.recoveryPhase:'none';
+ const mode=['legacy','chunked'].includes(input.storageMode)?input.storageMode:'unknown';
+ const publish=count(input.publishRevision),head=count(input.lastKnownServerHeadRevision);
+ return {
+  compatibilityQueue:{pendingSnapshot:input.pendingSnapshot===true,localSequence:count(input.localSequence),archivedSnapshotCount:count(input.archivedSnapshotCount)||0},
+  entityOutbox:{available:input.outboxAvailable===true,pendingChangeCountObserved:count(input.pendingChangeCountObserved),hasMore:input.outboxHasMore===true,exactCount:input.outboxExactCount===true,snapshotRequired:input.outboxSnapshotRequired===true},
+  deltaCursor:{available:input.cursorAvailable===true,devicePublishRevision:publish,acknowledgedSequence:count(input.acknowledgedSequence),lastKnownServerHeadRevision:head,behindLastKnownHead:publish!==null&&head!==null?head>publish:null,remoteHeadIsLive:false},
+  revisionConflictEventsLast80:count(input.revisionConflictEvents)||0,mergedRecordConflictsLast80:count(input.mergedRecordConflicts)||0,snapshotRecoveryEventsLast80:count(input.snapshotRecoveryEvents)||0,
+  snapshotStorage:{mode,lastObservedChunkCount:count(input.chunkCount),lastObservedPayloadUtf8Bytes:count(input.payloadUtf8Bytes),lastObservedAt:typeof input.chunkObservedAt==='string'?input.chunkObservedAt:null},
+  recoveryJournal:{present:phase!=='none',phase,locked:input.recoveryLocked===true},
+  maintenance:{compactionPending:typeof input.compactionPending==='boolean'?input.compactionPending:null,cleanupPending:typeof input.cleanupPending==='boolean'?input.cleanupPending:null,cleanupDeletedCount:count(input.cleanupDeletedCount),cleanupBacklogMayRemain:input.cleanupBacklogMayRemain===true,cleanupFailureObserved:input.cleanupFailureObserved===true},
+  localStorage:{indexedDbEnabled:input.indexedDbEnabled===true,pendingStorageEntries:count(input.pendingStorageEntries),syncErrorPresent:input.syncErrorPresent===true,recoveryLockPresent:input.recoveryLocked===true}
+ };
+}
+async function collectSyncOperationalDiagnostics(){
+ const owner=session&&session.user&&session.user.id?session.user.id:'',queue=window.NexusOfflineSyncQueue,storage=window.NexusStorage;
+ const events=(()=>{try{const v=JSON.parse(localStorage.getItem(SYNC_DIAG_KEY)||'[]');return Array.isArray(v)?v.slice(-80):[];}catch(_){return [];}})();
+ let pending=null,queueSummary=null,conflictCount=0,cursor=null,outbox=null,recovery=null,statusValue=null;
+ if(owner&&queue){
+  try{pending=queue.getPending(localStorage,owner);}catch(_){}
+  try{queueSummary=queue.summary(localStorage,owner);}catch(_){}
+  try{const rows=queue.getConflictHistory(localStorage,owner);conflictCount=Array.isArray(rows)?rows.reduce((n,r)=>n+(Array.isArray(r&&r.conflicts)?r.conflicts.length:0),0):0;}catch(_){}
+ }
+ if(owner&&storage){
+  try{statusValue=typeof storage.getStatus==='function'?storage.getStatus():null;}catch(_){}
+  try{const r=typeof storage.readWorkspaceEntityDeltaCursor==='function'?await storage.readWorkspaceEntityDeltaCursor(owner):null;
+   if(r&&r.ok&&r.exists===true&&r.cursor){cursor=r.cursor;if(typeof storage.readWorkspaceEntityOutboxGroups==='function')outbox=await storage.readWorkspaceEntityOutboxGroups(owner,Number(cursor.acknowledgedSequence)||0,1000,1048576);}}catch(_){}
+  try{recovery=typeof storage.readWorkspaceEntityRecovery==='function'?await storage.readWorkspaceEntityRecovery(owner):null;}catch(_){}
+ }
+ const chunkEvent=[...events].reverse().find(r=>r&&(r.stage==='cloud-read'||r.stage==='cloud-write-complete')&&Number.isSafeInteger(r.chunkCount)&&r.chunkCount>=0);
+ const deltaEvent=[...events].reverse().find(r=>r&&r.stage==='delta-sync-result');
+ const revisionConflicts=events.filter(r=>r&&r.stage==='cloud-write-error'&&r.errorCode==='NEXUS_CLOUD_CONFLICT').length;
+ const mergeConflicts=events.reduce((n,r)=>n+(r&&r.stage==='workspace-merge-complete'?Math.max(0,Number(r.conflictCount)||0):0),0);
+ const recoveries=events.filter(r=>r&&/snapshot-recovery|conflict-recovery/i.test(String(r.stage||''))).length;
+ const intent=recovery&&recovery.intent,compaction=deltaEvent&&deltaEvent.compactionPending,cleanup=deltaEvent&&deltaEvent.cleanupPending;
+ const lastCleanup=events.findLast?events.findLast(r=>r&&r.cleanupDeletedCount!==undefined):[...events].reverse().find(r=>r&&r.cleanupDeletedCount!==undefined);
+ return summarizeSyncOperationalState({
+  pendingSnapshot:!!pending,localSequence:pending&&pending.localSequence,archivedSnapshotCount:queueSummary&&queueSummary.archivedForOwner,
+  outboxAvailable:!!outbox&&!outbox.unavailable,pendingChangeCountObserved:outbox&&outbox.changeCount,outboxHasMore:outbox&&outbox.hasMore,
+  outboxExactCount:!!outbox&&!outbox.hasMore&&!outbox.snapshotRequired&&!outbox.unavailable,outboxSnapshotRequired:outbox&&outbox.snapshotRequired,
+  cursorAvailable:!!cursor,publishRevision:cursor&&cursor.publishRevision,acknowledgedSequence:cursor&&cursor.acknowledgedSequence,lastKnownServerHeadRevision:cursor&&cursor.remoteHeadRevision,
+  revisionConflictEvents:revisionConflicts+Math.min(conflictCount,100000),mergedRecordConflicts:mergeConflicts,snapshotRecoveryEvents:recoveries,
+  storageMode:lastRemoteStorageMode,chunkCount:chunkEvent&&chunkEvent.chunkCount,payloadUtf8Bytes:chunkEvent&&chunkEvent.payloadUtf8Bytes,chunkObservedAt:chunkEvent&&chunkEvent.at,
+  recoveryPhase:intent&&intent.phase,recoveryLocked:!!(statusValue&&statusValue.entityRecoveryLocked),
+  compactionPending:typeof compaction==='boolean'?compaction:null,cleanupPending:typeof cleanup==='boolean'?cleanup:null,
+  cleanupDeletedCount:lastCleanup&&lastCleanup.cleanupDeletedCount,cleanupBacklogMayRemain:lastCleanup&&lastCleanup.cleanupBacklogMayRemain===true,
+  cleanupFailureObserved:lastCleanup&&lastCleanup.cleanupFailed===true,indexedDbEnabled:!!(statusValue&&statusValue.enabled),
+  pendingStorageEntries:statusValue&&statusValue.pendingEntries,syncErrorPresent:!!(statusValue&&(statusValue.lastError||statusValue.entitySyncError||statusValue.startupError))
+ });
+}
+async function downloadSyncDiagnostics(){
  if(!SYNC_DIAG_ENABLED)return;
- let events=[];try{events=JSON.parse(localStorage.getItem(SYNC_DIAG_KEY)||'[]');}catch(_){}
- const report={app:'Nexus sync diagnostic',schema:3,generatedAt:new Date().toISOString(),note:'Contains stage names, aggregate workspace record counts, timings and safe error codes/messages. It does not contain account identifiers, credentials, topic names or study content.',events};
+ let events=[];try{events=JSON.parse(localStorage.getItem(SYNC_DIAG_KEY)||'[]');if(!Array.isArray(events))events=[];}catch(_){}
+ const operational=await collectSyncOperationalDiagnostics();
+ const report={app:'Nexus sync diagnostic',schema:4,generatedAt:new Date().toISOString(),
+  note:'Privacy-preserving local export. Includes aggregate counts and sync state only; excludes account IDs, email, credentials, topic names, study content, operation IDs, recovery digests and conflict values. Delta server head is the last locally observed value, not a live remote query.',
+  workspace:syncDiagSummary(diagnosticWorkspace()),operational,events:events.slice(-80)};
  const blob=new Blob([JSON.stringify(report,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');
  link.href=url;link.download='nexus-sync-diagnostics.json';document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
 }
@@ -185,7 +241,7 @@ async function fetchRemote(userId,knownWrite,signal){
   lastRemoteStorageMode='legacy';
   if(remote)remote={...remote,storageMode:'legacy'};
  }
-  syncDiag('cloud-read',remote&&remote.payload,{hasPayload:!!(remote&&remote.payload),hasUpdatedAt:!!(remote&&remote.updated_at),durationMs,storageMode:remote&&remote.storageMode||'empty'});
+  syncDiag('cloud-read',remote&&remote.payload,{hasPayload:!!(remote&&remote.payload),hasUpdatedAt:!!(remote&&remote.updated_at),durationMs,storageMode:remote&&remote.storageMode||'empty',chunkCount:remote&&remote.chunkManifest&&remote.chunkManifest.chunkCount||null,payloadUtf8Bytes:remote&&remote.chunkManifest&&remote.chunkManifest.totalBytes||null});
   return remote;
  }catch(error){
   if(scope&&scope.timedOut())throw syncTimeoutError();
@@ -208,7 +264,7 @@ async function writeRemoteSnapshot(userId,payload,expectedStamp,stamp,signal){
   if(chunks&&(lastRemoteStorageMode==='chunked'||serializedBytes>=chunks.CHUNK_THRESHOLD_BYTES)){
    try{
     const result=await chunks.writeSnapshot(client,userId,payload,expectedStamp,stamp,window.NexusBackupRestoreUtils,serialized,signal);
-    syncDiag('cloud-write-complete',payload,{durationMs:Date.now()-startedAt,storageMode:'chunked',chunkCount:result.manifest.chunkCount,payloadUtf8Bytes:result.manifest.totalBytes});
+    syncDiag('cloud-write-complete',payload,{durationMs:Date.now()-startedAt,storageMode:'chunked',chunkCount:result.manifest.chunkCount,payloadUtf8Bytes:result.manifest.totalBytes,cleanupDeletedCount:result.cleanupDeletedCount,cleanupBacklogMayRemain:result.cleanupBacklogMayRemain===true,cleanupFailed:result.cleanupFailed===true});
     return result;
    }catch(error){
     // Production can receive the Web build before OPS-01 installs the chunk table.
@@ -772,9 +828,11 @@ async function runStagingEntityDeltaSync(ownerId,signal){
     {intentId:metadata.intentId,candidateDigest:metadata.candidateDigest})
  });
  if(recoveryPending){
+   syncDiag('snapshot-recovery-start',null,{reason:'resume-existing-journal'});
    const resumed=await makeClient.publishConflictRecovery(ownerId,{
     signal,maxGroups:100,maxBytes:8*1048576
    });
+   syncDiag('snapshot-recovery-complete',null,{ok:!!(resumed&&resumed.ok===true),resumed:true});
    return resumed||{ok:false,retryable:true,reason:'staging_recovery_resume_failed'};
   }
   let result=await makeClient.synchronize(ownerId,{signal,maxRounds:20,maxGroups:20,maxBytes:1048576});
@@ -790,9 +848,11 @@ async function runStagingEntityDeltaSync(ownerId,signal){
    result.reason==='local_and_remote_changes_overlap'||
    result.reason==='local_and_remote_changes_overlap_after_partial_publish'));
  if(needsRecovery){
+  syncDiag('snapshot-recovery-start',null,{reason:'conflict-or-snapshot-required'});
   const recovered=await makeClient.publishConflictRecovery(ownerId,{
    signal,maxGroups:100,maxBytes:8*1048576
   });
+  syncDiag('snapshot-recovery-complete',null,{ok:!!(recovered&&recovered.ok===true),resumed:false});
   if(recovered&&recovered.ok===true)return recovered;
   return recovered||{ok:false,retryable:true,reason:'staging_conflict_recovery_failed'};
  }
@@ -813,6 +873,21 @@ async function upload(){
   if(authError)throw new Error('Supabase could not verify the active login before cloud write: '+authError.message);
   if(!authData.user||authData.user.id!==uploadUserId||!session||session.user.id!==uploadUserId)throw new Error('The active Google/account session changed or could not be verified. Cloud write paused to protect the other account. Sign in again and retry.');
   const deltaResult=await runStagingEntityDeltaSync(uploadUserId,uploadScope.signal);
+   if(deltaResult){
+    const compaction=deltaResult.snapshotCompaction||deltaResult.compaction||(deltaResult.recovery&&deltaResult.recovery.compaction)||null;
+    const compactionPending=compaction&&typeof compaction.pending==='boolean'?compaction.pending:
+     (compaction&&typeof compaction.completed==='boolean'?!compaction.completed:null);
+    const cleanupPending=typeof deltaResult.cleanupPending==='boolean'?deltaResult.cleanupPending:
+     (compaction&&typeof compaction.cleanupPending==='boolean'?compaction.cleanupPending:
+      (compaction&&compaction.cleanup&&typeof compaction.cleanup.pending==='boolean'?compaction.cleanup.pending:null));
+    syncDiag('delta-sync-result',null,{skipped:deltaResult.skipped===true,ok:deltaResult.ok===true,
+     appliedCount:Number.isSafeInteger(deltaResult.appliedCount)?deltaResult.appliedCount:null,
+     publishedCount:Number.isSafeInteger(deltaResult.publishedCount)?deltaResult.publishedCount:null,
+     acknowledgedCount:Number.isSafeInteger(deltaResult.acknowledgedCount)?deltaResult.acknowledgedCount:null,
+     rounds:Number.isSafeInteger(deltaResult.rounds)?deltaResult.rounds:null,compactionPending,cleanupPending,
+     cleanupDeletedCount:Number.isSafeInteger(deltaResult.cleanupDeletedCount)?deltaResult.cleanupDeletedCount:
+      (compaction&&Number.isSafeInteger(compaction.deletedOperations)?compaction.deletedOperations:null)});
+   }
   if(deltaResult.blockedRecovery){
    status('Recovery paused');
    say('A previous staging entity-delta recovery is still pending. The legacy snapshot writer has been paused to protect the candidate and local data. Resume it only on this Vercel/Netlify preview with the staging Supabase project and the explicit staging opt-in.');

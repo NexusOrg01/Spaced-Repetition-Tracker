@@ -299,10 +299,11 @@ for(let index=0;index<205;index++)retentionCloud.chunks.push({
  chunk_index:0,chunk_count:1,chunk_bytes:1,chunk_data:'orphan',created_at:staleCreatedAt});
 retentionCloud.chunks.push({id:'other-owner-orphan',user_id:OWNER_B,revision_id:'other-owner-revision',
  chunk_index:0,chunk_count:1,chunk_bytes:1,chunk_data:'other-owner',created_at:staleCreatedAt});
-const firstCleanup=await chunks.cleanupOldChunks(retentionCloud,OWNER_A,'retained-active-revision');
-assert.equal(firstCleanup,200,'a cleanup pass must be capped at the configured 200-row batch');
+const firstCleanup=await chunks.cleanupOldChunksWithDetails(retentionCloud,OWNER_A,'retained-active-revision');
+assert.deepEqual(firstCleanup,{deletedCount:200,backlogPending:true},
+ 'cleanup should delete at most 200 stale rows and signal a possible backlog when a 201st row exists');
 assert.deepEqual(retentionCloud.chunkDeleteBatchSizes,[200]);
-assert.deepEqual(retentionCloud.chunkSelectLimits,[200]);
+assert.deepEqual(retentionCloud.chunkSelectLimits,[201]);
 assert.equal(retentionCloud.chunks.filter(row=>row.user_id===OWNER_A&&row.revision_id!=='retained-active-revision').length,5,
  'the first pass must leave excess stale rows for a later retry');
 assert.ok(retentionCloud.chunks.some(row=>row.id==='retained-active-chunk'),
@@ -310,7 +311,7 @@ assert.ok(retentionCloud.chunks.some(row=>row.id==='retained-active-chunk'),
 const secondCleanup=await chunks.cleanupOldChunks(retentionCloud,OWNER_A,'retained-active-revision');
 assert.equal(secondCleanup,5,'a subsequent pass must finish the stale backlog');
 assert.deepEqual(retentionCloud.chunkDeleteBatchSizes,[200,5]);
-assert.deepEqual(retentionCloud.chunkSelectLimits,[200,200]);
+assert.deepEqual(retentionCloud.chunkSelectLimits,[201,201], 'a later bounded probe should establish that the remaining backlog has cleared');
 assert.deepEqual(retentionCloud.chunks.map(row=>row.id).sort(),
  ['other-owner-orphan','retained-active-chunk'].sort(),
  'retention cleanup must preserve the active revision and rows belonging to other users');

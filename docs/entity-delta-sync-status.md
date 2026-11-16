@@ -483,3 +483,20 @@ P34-02 through P34-05 were independently revalidated against the current code, t
 - OPS-01 production rollout remains a post-merge gate. Production backup/PITR restore readiness is still unverified and must be confirmed before production migrations. The production database remains unmodified.
 - The 225 MiB maximum-capacity certification target has not been benchmarked; the current 26.9 MB/103-chunk lifecycle is demonstrated evidence, not a 225 MiB certification.
 - The 2 MiB compatibility ceiling is intentionally temporary. Any production workspace exceeding it will remain locally safe but cannot cloud-sync until OPS-01 installs the chunk schema.
+
+
+### 17 November 2026 — post-merge reconciliation and Phase 3.5 controls
+
+This is the authoritative post-merge status. Earlier entries in this file that describe PR #126 as open/draft or describe the pre-merge feature gate are historical checkpoints and are superseded by the merge and evidence below.
+
+- PR #126 was squash-merged into `main`. Merge commit: `61c10a97be3759512daef759b8978287785d9012`. The PR #126 status and pre-merge validation notes above are historical.
+- Phase 3.4 full-scale local-Supabase lifecycle CI remains valid evidence: the 26.9 MB fixture (77,144 topics and 72,001 review-history rows) exercised two-client sync, recovery, compaction, stale-device reconstruction and account isolation. It does not establish physical-device acceptance or 225 MiB end-to-end capacity.
+- Production OPS-01 is still pending. The latest read-only inspection recorded only the three original baseline migrations; no OPS-01 migrations have been applied by this status update. Production has not received a Delta enablement, RPC grant or schema write. The snapshot path remains active and Delta remains default-off.
+- The one authorized Phase 3.5 PR adds bounded UTF-8 partition benchmark evidence at 1/27/64/128/225 MiB; the report explicitly labels these as partitioner-only results. The 225 MiB transport ceiling is not a supported browser/device capacity claim.
+- The same PR expands the user-initiated local diagnostic export with bounded outbox, last-observed cursor, recovery-journal, conflict, chunk/size and cleanup/compaction indicators. It sends no telemetry and excludes account/content identifiers and conflict values.
+- Chunk cleanup remains owner-scoped, excludes the active manifest, waits at least seven days, and deletes at most 200 rows per pass. The new detail result probes 201 rows to signal a possible backlog without unbounded scans. The legacy cleanup helper retains its numeric return contract.
+- Retention/recovery guidance is recorded in `docs/phase35-capacity-diagnostics-retention.md`. Pending operations and receipts remain until safely compactable at/below a verified snapshot floor. Device cursors, incomplete recovery journals and completion receipts have no age-based deletion. User conflict archives are count-bounded (10 per owner); offline queue archive is count-bounded (1,000 entries).
+- Backup/restore safeguard was explicitly waived by the user and has not been performed as part of this PR. Physical Android/device acceptance remains deferred by user instruction. P35-04 therefore remains provisional and must not be marked as a 100% scaling sign-off.
+- OPS-01 uses a protected, manual-only workflow and exact versioned migration allowlist. Its creation is not a production migration run. It requires environment reviewers/secrets to be configured and an explicit separate operator run; Delta stays off even after migrations until separate acceptance.
+
+No live Nexus deployment or production Supabase data was changed by the PR work.
