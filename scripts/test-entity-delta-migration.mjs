@@ -1,0 +1,152 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const read = relativePath => readFileSync(path.join(root, relativePath), 'utf8');
+
+const schema = read('supabase/migrations/20261113095723_nexus_entity_delta_sync.sql');
+const hardening = read('supabase/migrations/20261113101625_harden_nexus_entity_delta_reads_and_compaction.sql');
+const integration = read('supabase/tests/nexus_entity_delta_sync.sql');
+const enablementGate = read('supabase/migrations/20261113215301_defer_entity_delta_enablement_until_client_ready.sql');
+const rpcExposureGate = read('supabase/migrations/20261113222129_revoke_unwired_entity_delta_rpc_execution.sql');
+const identityHardening = read('supabase/migrations/20261114093000_harden_nexus_entity_delta_record_identity.sql');
+const chunkManifestProtection = read('supabase/migrations/20261114103353_protect_active_nexus_chunk_manifests.sql');
+const generalSnapshotIntegrity = read('supabase/migrations/20261115171500_validate_general_snapshot_candidates.sql');
+const chunkManifestDeletionTest = read('supabase/tests/nexus_user_data_chunks_active_manifest.sql');
+const activeManifestRaceRunner = read('scripts/test-active-manifest-race.mjs');
+
+assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_sync_state/);
+assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_operation_receipts/);
+assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_operations/);
+assert.match(schema, /ALTER TABLE public\.nexus_workspace_operations ENABLE ROW LEVEL SECURITY/);
+assert.match(schema, /USING \(\(SELECT auth\.uid\(\)\) = user_id\)/);
+assert.match(schema, /REVOKE ALL PRIVILEGES ON TABLE[\s\S]*FROM PUBLIC, anon, authenticated/);
+assert.doesNotMatch(schema, /GRANT EXECUTE ON FUNCTION/, 'the initial migration must not expose privileged Delta RPCs to browser roles');
+assert.match(schema, /extensions\.digest/);
+assert.match(schema, /p_expected_revision <> v_state\.head_revision/);
+assert.match(schema, /CREATE OR REPLACE FUNCTION public\.nexus_publish_entity_snapshot/);
+assert.match(schema, /CREATE OR REPLACE FUNCTION public\.nexus_guard_chunked_snapshot_update/);
+assert.match(schema, /v_delta_mode[\s\S]*NEW\.payload ->> '__nexusDeltaSync' IS DISTINCT FROM 'entity-delta-v1'/,
+  'delta-mode JSONB snapshot writes must preserve the entity-delta marker');
+assert.match(enablementGate, /REVOKE EXECUTE ON FUNCTION public\.nexus_enable_entity_delta\(timestamptz\)[\s\S]*FROM PUBLIC, anon, authenticated/);
+assert.match(enablementGate, /until the web entity-delta publisher, reader, compaction, and recovery gates are complete/);
+
+const gatedRpcSignatures = [
+  'public.nexus_get_entity_sync_state()',
+  'public.nexus_enable_entity_delta(timestamptz)',
+  'public.nexus_publish_entity_operation(text,bigint,jsonb)',
+  'public.nexus_read_entity_operations(bigint,integer,integer)',
+  'public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb)',
+  'public.nexus_compact_entity_operations(integer)'
+];
+for (const signature of gatedRpcSignatures) {
+  assert.ok(schema.includes(`REVOKE ALL ON FUNCTION ${signature} FROM PUBLIC, anon, authenticated;`),
+    `initial migration must keep browser execution revoked for ${signature}`);
+}
+assert.doesNotMatch(schema, /GRANT EXECUTE ON FUNCTION/,
+  'the initial migration must not grant any browser-executable Delta RPC');
+for (const signature of gatedRpcSignatures) {
+  assert.ok(rpcExposureGate.includes(`REVOKE EXECUTE ON FUNCTION ${signature} FROM PUBLIC, anon, authenticated;`),
+    `unwired SECURITY DEFINER RPC ${signature} must not be executable by browser roles`);
+}
+assert.match(rpcExposureGate, /BEGIN;[\s\S]*COMMIT;/);
+assert.doesNotMatch(rpcExposureGate, /GRANT EXECUTE ON FUNCTION/);
+
+assert.match(identityHardening, /ADD CONSTRAINT nexus_workspace_operations_entity_identity_check/);
+assert.match(identityHardening, /collection = 'trackerMeta' AND entity_id = 'tracker' AND operation = 'put'/);
+assert.match(identityHardening, /collection = 'featureMeta' AND entity_id = 'features' AND operation = 'put'/);
+assert.match(identityHardening, /COALESCE\([\s\S]*jsonb_typeof\(value -> 'id'\) = 'string'[\s\S]*value ->> 'id' = entity_id/);
+assert.match(identityHardening, /VALIDATE CONSTRAINT nexus_workspace_operations_entity_identity_check/);
+assert.doesNotMatch(identityHardening, /GRANT EXECUTE ON FUNCTION/);
+
+assert.match(chunkManifestProtection, /CREATE SCHEMA IF NOT EXISTS nexus_private/);
+assert.match(chunkManifestProtection, /SECURITY DEFINER[\s\S]*SET search_path = ''/);
+assert.match(chunkManifestProtection, /FROM auth\.users[\s\S]*RETURN OLD/);
+assert.match(chunkManifestProtection, /public\.nexus_user_data AS workspace[\s\S]*FOR UPDATE/);
+assert.match(chunkManifestProtection, /OLD\.revision_id::text/);
+assert.match(chunkManifestProtection, /BEFORE DELETE ON public\.nexus_user_data_chunks/);
+assert.match(chunkManifestProtection, /REVOKE ALL ON FUNCTION nexus_private\.guard_active_nexus_chunk_delete\(\)[\s\S]*FROM PUBLIC, anon, authenticated/);
+assert.doesNotMatch(chunkManifestProtection, /GRANT (?:USAGE|EXECUTE)/);
+assert.ok(chunkManifestDeletionTest.includes('BEGIN;') &&
+  chunkManifestDeletionTest.trimEnd().endsWith('ROLLBACK;'),
+  'Active-manifest SQL fixtures must be rollback-only.');
+assert.match(chunkManifestDeletionTest, /SET LOCAL ROLE authenticated/);
+assert.match(chunkManifestDeletionTest, /Cannot delete chunks referenced by the active Nexus workspace manifest|55000/);
+assert.match(chunkManifestDeletionTest, /ON DELETE CASCADE|auth\.users/);
+assert.match(chunkManifestDeletionTest, /A previous, now-inactive manifest could not be cleaned up/);
+
+assert.match(generalSnapshotIntegrity, /CREATE OR REPLACE FUNCTION nexus_private\.validate_chunked_nexus_snapshot_candidate\(\)/);
+assert.match(generalSnapshotIntegrity, /BEFORE INSERT OR UPDATE OF payload ON public\.nexus_user_data/);
+assert.match(generalSnapshotIntegrity, /pg_catalog\.pg_advisory_xact_lock/);
+assert.match(generalSnapshotIntegrity, /v_chunk_rows <> v_chunk_count/);
+assert.match(generalSnapshotIntegrity, /v_chunk_bytes <> v_total_bytes/);
+assert.match(generalSnapshotIntegrity, /v_min_chunk_index IS DISTINCT FROM 0/);
+assert.match(generalSnapshotIntegrity, /v_max_chunk_index IS DISTINCT FROM v_chunk_count - 1/);
+assert.match(generalSnapshotIntegrity, /SELECT workspace\.payload[\s\S]*FOR UPDATE/);
+assert.match(generalSnapshotIntegrity, /SELECT workspace\.payload[\s\S]*OLD\.user_id/);
+
+assert.ok(chunkManifestDeletionTest.includes('BEGIN;') &&
+  chunkManifestDeletionTest.trimEnd().endsWith('ROLLBACK;'),
+  'Active-manifest SQL fixtures must be rollback-only.');
+assert.match(chunkManifestDeletionTest, /SET LOCAL ROLE authenticated/);
+assert.match(chunkManifestDeletionTest, /chunk_partial_a/);
+assert.match(chunkManifestDeletionTest, /An incomplete candidate was published or replaced the active manifest/);
+assert.match(chunkManifestDeletionTest, /A previous, now-inactive manifest could not be cleaned up/);
+assert.match(chunkManifestDeletionTest, /ON DELETE CASCADE|auth\.users/);
+
+assert.match(activeManifestRaceRunner, /NEXUS_RACE_DATABASE_URL/,
+  'the concurrent race runner must accept an explicitly supplied disposable local Postgres connection');
+assert.match(activeManifestRaceRunner, /Refusing every remote database/,
+  'the race runner must reject all hosted database targets');
+assert.doesNotMatch(activeManifestRaceRunner, /NEXUS_STAGING_DATABASE_URL|nexus-sync-staging|\\\.supabase\\\.co/,
+  'the race runner must not use hosted staging credentials or URLs');
+assert.match(activeManifestRaceRunner, /PRODUCTION_PROJECT_REF = 'txugbdavblpettcnhcxl'/);
+assert.match(activeManifestRaceRunner, /Refusing to run the snapshot-manifest race test against the production Nexus Supabase project/);
+assert.match(activeManifestRaceRunner, /connection\.port === '6543'/,
+  'the race runner must reject transaction-pooler connections that cannot guarantee independent sessions');
+assert.match(activeManifestRaceRunner, /Promise\.allSettled/);
+assert.match(activeManifestRaceRunner, /NEXUS_PUBLISHER_FIRST_LOCK_HELD/);
+assert.match(activeManifestRaceRunner, /NEXUS_ACTIVE_DELETE_FIRST_LOCK_HELD/);
+assert.match(activeManifestRaceRunner, /NEXUS_CANDIDATE_CLEANUP_FIRST_LOCK_HELD/);
+assert.match(activeManifestRaceRunner, /NEXUS_FIRST_WRITE_PUBLISHER_LOCK_HELD/);
+assert.match(activeManifestRaceRunner, /NEXUS_FIRST_WRITE_CLEANUP_LOCK_HELD/);
+assert.match(activeManifestRaceRunner, /NEXUS_RACE_OPERATION_MS=/);
+assert.match(activeManifestRaceRunner, /MIN_LOCK_WAIT_MS = 2500/);
+assert.match(activeManifestRaceRunner, /await waitForLockReady/);
+assert.doesNotMatch(activeManifestRaceRunner, /FROM pg_stat_activity/,
+  'the race proof must not depend on session-pooler activity visibility');
+assert.match(activeManifestRaceRunner, /FOR UPDATE/);
+assert.match(activeManifestRaceRunner, /SQLSTATE .*55000/);
+assert.match(activeManifestRaceRunner, /publisher acquires the workspace row before old-revision cleanup/);
+assert.match(activeManifestRaceRunner, /cleanup removes an unpublished update candidate before manifest publication/);
+assert.match(activeManifestRaceRunner, /finally[\s\S]*DELETE FROM auth\.users/);
+assert.match(activeManifestRaceRunner, /\.join\('\\n'\)/,
+  'multi-statement SQL must be joined with real newline characters');
+assert.match(activeManifestRaceRunner, /concat_ws\(chr\(9\)/,
+  'the runner should verify tab-separated database state without fragile SQL string concatenation');
+assert.match(activeManifestRaceRunner, /assert\.equal\(leftovers, '0\\t0\\t0'/,
+  'cleanup verification must compare tab-delimited psql output');
+
+assert.match(hardening, /v_revision <> v_next_revision \+ 1/);
+assert.match(hardening, /v_expected_count IS DISTINCT FROM v_count/);
+assert.match(hardening, /v_group_bytes := octet_length\(v_group::text\)/);
+assert.match(hardening, /deleted_receipts/);
+assert.match(hardening, /NOT EXISTS \([\s\S]*public\.nexus_workspace_operations/);
+assert.match(hardening, /DROP INDEX IF EXISTS public\.nexus_workspace_operations_owner_revision_idx/);
+assert.match(hardening, /COMMIT;/);
+
+assert.ok(integration.includes('BEGIN;') && integration.trimEnd().endsWith('ROLLBACK;'), 'The staging integration SQL must wrap all fixtures in a rollback-only transaction.');
+assert.match(integration, /auth\.users/);
+assert.match(integration, /nexus_enable_entity_delta/);
+assert.match(integration, /nexus_publish_entity_operation/);
+assert.match(integration, /nexus_read_entity_operations/);
+assert.match(integration, /incomplete_operation_group/);
+assert.match(integration, /revision_gap/);
+assert.match(integration, /nexus_publish_entity_snapshot/);
+assert.match(integration, /nexus_compact_entity_operations/);
+assert.match(integration, /UPDATE public\.nexus_user_data[\s\S]*payload = payload - '__nexusDeltaSync'[\s\S]*SQLSTATE '55000'/,
+  'the rollback-only integration fixture must exercise a legacy snapshot downgrade attempt');
+
+console.log('Nexus entity-delta migration and staging-test contract checks passed.');

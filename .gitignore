@@ -11,3 +11,6 @@
 node_modules/
 .DS_Store
 *.log
+
+# Reconstructed from the committed, SHA-256-verified Android npm lock source
+android/package-lock.json

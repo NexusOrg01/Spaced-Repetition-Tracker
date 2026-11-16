@@ -1,0 +1,1 @@
+Offline-first study tracker with FSRS spaced repetition and optional cloud sync

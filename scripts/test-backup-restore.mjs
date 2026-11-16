@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
 const require = createRequire(import.meta.url);
 const {
   validateBackupState,
@@ -251,5 +253,168 @@ await assert.rejects(
   writeCloudSnapshot(racedInsert.client, 'user-1', { state: {} }, null, 'new-stamp'),
   error => error.code === 'NEXUS_CLOUD_CONFLICT'
 );
+
+
+const studyHubSource=readFileSync(new URL('../study-hub.js',import.meta.url),'utf8');
+const exportStart=studyHubSource.indexOf('  function csvCellHub(v){');
+const exportEnd=studyHubSource.indexOf('  function parseCsvHub(text){',exportStart);
+assert.ok(exportStart>=0&&exportEnd>exportStart,'Study Hub CSV export functions must remain testable');
+const exportedFiles=[],exportMessages=[];
+const exportSandbox={
+ window:{NexusBackupRestoreUtils:{csvCell}},
+ fsState:{selectedTopicIds:['topic-export']},
+ state:{topics:[{
+  id:'topic-export',name:'Demand, supply',notes:'=1+1',lastReviewed:'2026-05-01',
+  lastRating:5,dueDate:'2026-05-08',reviewCount:4
+ }]},
+ today:()=> '2026-11-16',
+ subjectDisplay:()=>({stream:'Commerce',subject:'Economics'}),
+ status:()=> 'due',
+ downloadBlob:(filename,text,type)=>exportedFiles.push({filename,text,type}),
+ notify:message=>exportMessages.push(String(message))
+};
+vm.runInNewContext(
+ studyHubSource.slice(exportStart,exportEnd)+'\nthis.runHubExport=exportHubCsv;',
+ exportSandbox
+);
+exportSandbox.runHubExport('selected');
+assert.equal(exportedFiles.length,1,'selected-topic CSV export must generate one download');
+assert.equal(exportedFiles[0].filename,'nexus-selected-topics-2026-11-16.csv');
+assert.equal(exportedFiles[0].type,'text/csv;charset=utf-8');
+const exportedRows=parseCsv(exportedFiles[0].text);
+assert.deepEqual(exportedRows[0],[
+ 'Stream','Subject','Topic','Notes','Last reviewed','Last rating','Next due','Review count','Status'
+]);
+assert.equal(exportedRows[1][0],'Commerce');
+assert.equal(exportedRows[1][1],'Economics');
+assert.equal(exportedRows[1][2],'Demand, supply');
+assert.equal(exportedRows[1][3],"'=1+1",
+ 'CSV export must neutralize spreadsheet-formula-leading notes');
+assert.equal(exportedRows[1][7],'4');
+assert.deepEqual(exportMessages,['Study Hub CSV exported.']);
+
+const importStart=exportEnd;
+const importEnd=studyHubSource.indexOf('  function backupPayload(){',importStart);
+assert.ok(importEnd>importStart,'Study Hub CSV import function must remain testable');
+const importState={
+ streams:[{id:'stream-commerce',name:'Commerce'}],
+ subjects:[{id:'subject-economics',name:'Economics',streamId:'stream-commerce',order:0}],
+ topics:[{id:'topic-demand',name:'Demand',subjectId:'subject-economics',notes:'existing'}],
+ history:[],exams:[],settings:{}
+};
+const featureState={journal:[{id:'journal-existing'}],papers:[],goals:[],studyLogs:[]};
+const importCommits=[],importMessages=[];
+let generatedId=0,projectionRebuilds=0,cloudSchedules=0,renderCount=0;
+const saveStatus={textContent:'',style:{}};
+const importSandbox={
+ window:{
+  NexusBackupRestoreUtils:{parseCsv,commitLocalStorageAtomically:()=>true},
+  NexusStorageKey:'tracker-storage-key',
+  NexusWorkspaceEntityRevisionEntry:()=>({key:'entity-revision',value:'rev-import'}),
+  NexusOfflineSyncQueue:{
+   commitWorkspace(storage,entries,payload,options){
+    importCommits.push({entries,payload,options});
+   }
+  },
+  NexusGetFeatureState:()=>featureState,
+  NexusRebuildEntityProjection:async()=>{projectionRebuilds++;},
+  NexusCloudSync:{schedule(){cloudSchedules++;}}
+ },
+ state:importState,fsState:featureState,localStorage:{},
+ clone:value=>JSON.parse(JSON.stringify(value)),
+ fid:()=> 'generated-'+(++generatedId),
+ today:()=> '2026-11-16',
+ safeDate:value=>/^\\d{4}-\\d{2}-\\d{2}$/.test(String(value||'')),
+ $:id=>id==='saveStatus'?saveStatus:null,
+ notify:message=>importMessages.push(String(message)),
+ renderAll:()=>{renderCount++;},
+ console:{warn(){},error(){}},
+ alert:message=>{throw new Error(String(message));}
+};
+vm.createContext(importSandbox);
+vm.runInContext(
+ studyHubSource.slice(importStart,importEnd)+'\nthis.runHubImport=importTopicCsv;',
+ importSandbox
+);
+const importCsv=[
+ 'Stream,Subject,Topic,Notes,Last reviewed,Last rating,Next due,Interval days,Review count',
+ 'Commerce,Economics,Demand,duplicate,2026-05-01,4,2026-05-08,7,5',
+ 'Commerce,Economics,Supply,"quoted, note",2026-05-02,4,2026-05-09,7,6',
+ 'Arts,Accounting,Double entry,=1+1,invalid-date,9,invalid-date,999,100001',
+ ',,,missing topic,,,,'
+].join('\n');
+await importSandbox.runHubImport({
+ name:'topics.csv',size:importCsv.length,text:async()=>importCsv
+});
+assert.equal(importCommits.length,1,'valid CSV import must commit one atomic workspace transaction');
+const committed=importCommits[0];
+assert.equal(committed.options.returnOperationPayload,false);
+assert.deepEqual(Array.from(committed.entries,entry=>entry.key).sort(),['entity-revision','tracker-storage-key']);
+assert.equal(committed.payload.state.streams.length,2);
+assert.equal(committed.payload.state.subjects.length,2);
+assert.equal(committed.payload.state.topics.length,3);
+const importedSupply=committed.payload.state.topics.find(topic=>topic.name==='Supply');
+assert.ok(importedSupply,'CSV import must add the non-duplicate topic');
+assert.equal(importedSupply.subjectId,'subject-economics',
+ 'CSV import must preserve the existing stream/subject relationship');
+assert.equal(importedSupply.notes,'quoted, note');
+const importedAccounting=committed.payload.state.topics.find(topic=>topic.name==='Double entry');
+assert.ok(importedAccounting,'CSV import must create a new topic for a new stream/subject');
+const importedSubject=committed.payload.state.subjects.find(subject=>subject.id===importedAccounting.subjectId);
+assert.equal(importedSubject.name,'Accounting');
+assert.equal(committed.payload.state.streams.find(stream=>stream.id===importedSubject.streamId).name,'Arts');
+assert.equal(importedAccounting.lastRating,null,'out-of-range CSV ratings must be discarded');
+assert.equal(importedAccounting.lastReviewed,'','invalid review dates must be discarded');
+assert.equal(importedAccounting.dueDate,'','invalid due dates must be discarded');
+assert.equal(importedAccounting.intervalDays,365,'CSV interval values must be bounded');
+assert.equal(importedAccounting.reviewCount,100000,'CSV review counts must be bounded');
+assert.deepEqual(committed.payload.featureState,featureState,
+ 'CSV import must preserve the current Study Hub feature state');
+assert.equal(projectionRebuilds,1);
+assert.equal(cloudSchedules,1);
+assert.equal(renderCount,1);
+assert.equal(saveStatus.textContent,'Saved on this device');
+assert.deepEqual(importMessages,['CSV import complete: 2 added, 1 duplicates skipped, 1 invalid rows skipped.']);
+
+const commitsBeforeInvalid=importCommits.length;
+await assert.rejects(
+ importSandbox.runHubImport({name:'duplicate-headers.csv',size:20,text:async()=>'Topic,Topic\nA,B'}),
+ /duplicate column names/
+);
+assert.equal(importCommits.length,commitsBeforeInvalid,
+ 'invalid CSV headers must fail before changing or queueing workspace data');
+await assert.rejects(
+ importSandbox.runHubImport({name:'too-large.csv',size:5*1024*1024+1,text:async()=>''}),
+ /5 MiB or smaller/
+);
+assert.equal(importCommits.length,commitsBeforeInvalid,
+ 'oversized CSV input must be rejected before a workspace transaction');
+
+const backupStart=studyHubSource.indexOf('  function backupPayload(){');
+const backupEnd=studyHubSource.indexOf('  window.NexusCreateBackupPayload=backupPayload;',backupStart);
+assert.ok(backupStart>=0&&backupEnd>backupStart,'full Study Hub JSON backup payload builder must remain testable');
+const backupTracker={streams:[{id:'s'}],subjects:[{id:'sub'}],topics:[{id:'t'}],history:[],exams:[],settings:{}};
+const backupFeatures={journal:[{id:'j'}],papers:[{id:'p'}],goals:[{id:'g'}],studyLogs:[{id:'l'}]};
+const backupSandbox={
+ state:backupTracker,fsState:backupFeatures,localStorage:{getItem:key=>key==='nexus.cloud.last-user-id'?'account-a':null},
+ window:{
+  NexusRepairCurriculumState:value=>value,
+  NexusOfflineSyncQueue:{summary:()=>({pendingForOwner:true,localSequence:7,archivedForOwner:1})}
+ },
+ Date
+};
+vm.createContext(backupSandbox);
+vm.runInContext(
+ studyHubSource.slice(backupStart,backupEnd)+'\nthis.buildHubBackup=backupPayload;',
+ backupSandbox
+);
+const fullBackupPayload=backupSandbox.buildHubBackup();
+assert.equal(fullBackupPayload.schema,4);
+assert.deepEqual(JSON.parse(JSON.stringify(fullBackupPayload.state)),backupTracker);
+assert.deepEqual(JSON.parse(JSON.stringify(fullBackupPayload.featureState)),backupFeatures);
+assert.equal(fullBackupPayload.syncMetadata.accountBoundQueueExcluded,true);
+assert.equal(fullBackupPayload.syncMetadata.pendingForOwner,true);
+assert.equal(Object.hasOwn(fullBackupPayload,'pending'),false,
+ 'the portable backup must not embed the account-bound offline queue');
 
 console.log('Backup/restore safety tests passed.');

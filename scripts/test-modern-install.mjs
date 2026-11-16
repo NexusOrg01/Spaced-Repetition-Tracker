@@ -7,6 +7,11 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const html = readFileSync(resolve(root, 'index.html'), 'utf8');
 const core = readFileSync(resolve(root, 'app-core.js'), 'utf8');
 const bootstrap = readFileSync(resolve(root, 'nexus-app-bootstrap.js'), 'utf8');
+assert.match(html, /<button[^>]*id="installBtn"/i,
+  'the hosted web/PWA source must retain its header Install button');
+assert.ok(!html.includes('nexus-android-native-install-controls'),
+  'the native-only install hiding rule must not leak into web/PWA source');
+
 
 assert.match(html, /<install\b[^>]*id="nexusBrowserInstall"/i,
   'the install dialog must expose the browser-recognizable HTML install element for the current PWA');

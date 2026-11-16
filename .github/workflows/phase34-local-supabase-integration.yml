@@ -1,0 +1,207 @@
+name: Phase 3.4 local authenticated two-client integration
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/phase34-local-supabase-integration.yml
+      - cloud-sync.js
+      - scripts/prepare-phase34-local-supabase.mjs
+      - scripts/test-phase34-local-two-client-browser.mjs
+      - scripts/test-phase34-large-workspace-lifecycle.mjs
+      - scripts/test-active-manifest-race.mjs
+      - scripts/test-staging-two-client-harness.mjs
+      - scripts/test-entity-delta-client.mjs
+      - scripts/test-preview-build-config.mjs
+      - scripts/test-android-build.mjs
+      - staging-test/**
+      - supabase/local-phase34/**
+      - supabase/migrations/**
+      - supabase/tests/nexus_entity_delta_two_client_*.sql
+      - supabase/tests/nexus_user_data_chunks_active_manifest.sql
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase34-local-supabase-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  authenticated-local-two-client:
+    name: Authenticated local Supabase + Chromium
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out PR source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql-client
+
+      - name: Prepare isolated local Supabase project
+        run: node scripts/prepare-phase34-local-supabase.mjs
+
+      - name: Start disposable local Supabase and apply migrations
+        working-directory: .build/phase34-local-supabase
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes supabase@latest start --exclude realtime,storage-api,imgproxy,edge-runtime,logflare,vector,supavisor
+          npx --yes supabase@latest db reset
+          eval "$(npx --yes supabase@latest status -o env)"
+          test -n "${API_URL:-}"
+          test -n "${DB_URL:-}"
+          test -n "${ANON_KEY:-}"
+          echo "::add-mask::$DB_URL"
+          echo "::add-mask::$ANON_KEY"
+          printf 'PHASE34_API_URL=%s\n' "$API_URL" >> "$GITHUB_ENV"
+          printf 'PHASE34_DB_URL=%s\n' "$DB_URL" >> "$GITHUB_ENV"
+          printf 'PHASE34_ANON_KEY=%s\n' "$ANON_KEY" >> "$GITHUB_ENV"
+
+      - name: Run general snapshot candidate integrity and fallback tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check scripts/test-active-manifest-race.mjs
+          psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 -f supabase/tests/nexus_user_data_chunks_active_manifest.sql
+          NEXUS_RACE_DATABASE_URL="$PHASE34_DB_URL" node scripts/test-active-manifest-race.mjs
+          node scripts/test-cloud-chunk-storage.mjs
+          node scripts/test-account-deletion.mjs
+
+      - name: Create disposable Auth fixtures and grant test RPCs locally
+        working-directory: .build/phase34-local-supabase
+        shell: bash
+        run: |
+          set -euo pipefail
+          eval "$(npx --yes supabase@latest status -o env)"
+          psql "$DB_URL" -X -v ON_ERROR_STOP=1 -qAt -F '|' \
+            -f test-fixtures/nexus_entity_delta_two_client_setup.sql \
+            > "$RUNNER_TEMP/phase34-fixtures.txt"
+          mapfile -t fixtures < <(grep -v '^[[:space:]]*$' "$RUNNER_TEMP/phase34-fixtures.txt")
+          test "${#fixtures[@]}" -eq 3
+          IFS='|' read -r EMAIL_A PASSWORD_A USER_A STATUS_A <<< "${fixtures[0]}"
+          IFS='|' read -r EMAIL_B PASSWORD_B USER_B STATUS_B <<< "${fixtures[1]}"
+          IFS='|' read -r EMAIL_C PASSWORD_C USER_C STATUS_C <<< "${fixtures[2]}"
+          test -n "$EMAIL_A" && test -n "$PASSWORD_A" && test -n "$USER_A"
+          test -n "$EMAIL_B" && test -n "$PASSWORD_B" && test -n "$USER_B"
+          test -n "$EMAIL_C" && test -n "$PASSWORD_C" && test -n "$USER_C"
+          test "$USER_A" != "$USER_B"
+          test "$USER_A" != "$USER_C"
+          test "$USER_B" != "$USER_C"
+          echo "::add-mask::$EMAIL_A"
+          echo "::add-mask::$PASSWORD_A"
+          echo "::add-mask::$EMAIL_B"
+          echo "::add-mask::$PASSWORD_B"
+          echo "::add-mask::$EMAIL_C"
+          echo "::add-mask::$PASSWORD_C"
+          psql "$DB_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+          GRANT EXECUTE ON FUNCTION public.nexus_get_entity_sync_state() TO authenticated;
+          GRANT EXECUTE ON FUNCTION public.nexus_enable_entity_delta(timestamptz) TO authenticated;
+          GRANT EXECUTE ON FUNCTION public.nexus_publish_entity_operation(text,bigint,jsonb) TO authenticated;
+          GRANT EXECUTE ON FUNCTION public.nexus_read_entity_operations(bigint,integer,integer) TO authenticated;
+          GRANT EXECUTE ON FUNCTION public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb) TO authenticated;
+          GRANT EXECUTE ON FUNCTION public.nexus_compact_entity_operations(integer) TO authenticated;
+          SQL
+          {
+            printf 'PHASE34_EMAIL_A=%s\n' "$EMAIL_A"
+            printf 'PHASE34_PASSWORD_A=%s\n' "$PASSWORD_A"
+            printf 'PHASE34_EMAIL_B=%s\n' "$EMAIL_B"
+            printf 'PHASE34_PASSWORD_B=%s\n' "$PASSWORD_B"
+            printf 'PHASE34_EMAIL_C=%s\n' "$EMAIL_C"
+            printf 'PHASE34_PASSWORD_C=%s\n' "$PASSWORD_C"
+          } >> "$GITHUB_ENV"
+
+      - name: Install headless Chromium
+        run: |
+          npm install --no-save --no-package-lock playwright@1.56.1
+          npx playwright install --with-deps chromium
+
+      - name: Build and serve the localhost-only Nexus harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEXUS_PHASE34_LOCAL_TEST=true \
+          NEXUS_ENTITY_DELTA_SYNC_LOCAL=true \
+          NEXUS_SUPABASE_URL="$PHASE34_API_URL" \
+          NEXUS_SUPABASE_ANON_KEY="$PHASE34_ANON_KEY" \
+            node scripts/build.mjs
+          python3 -m http.server 4173 --bind 127.0.0.1 --directory dist \
+            > "$RUNNER_TEMP/phase34-http.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/phase34-http.pid"
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail http://127.0.0.1:4173/staging-test/two-client.html >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/phase34-http.log"
+          exit 1
+
+      - name: Run real authenticated A1/A2/B browser protocol test
+        run: node scripts/test-phase34-local-two-client-browser.mjs
+
+      - name: Run 26.9 MB two-device offline and stale-compaction lifecycle
+        timeout-minutes: 18
+        run: node scripts/test-phase34-large-workspace-lifecycle.mjs
+
+      - name: Revoke RPC access, delete fixtures, verify cleanup and destroy local stack
+        if: always()
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -d .build/phase34-local-supabase/supabase ]]; then
+            cd .build/phase34-local-supabase
+            trap 'timeout 120s npx --yes supabase@latest stop --no-backup || true' EXIT
+            if [[ -n "${PHASE34_DB_URL:-}" ]]; then
+              psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+          REVOKE EXECUTE ON FUNCTION public.nexus_get_entity_sync_state() FROM PUBLIC, anon, authenticated;
+          REVOKE EXECUTE ON FUNCTION public.nexus_enable_entity_delta(timestamptz) FROM PUBLIC, anon, authenticated;
+          REVOKE EXECUTE ON FUNCTION public.nexus_publish_entity_operation(text,bigint,jsonb) FROM PUBLIC, anon, authenticated;
+          REVOKE EXECUTE ON FUNCTION public.nexus_read_entity_operations(bigint,integer,integer) FROM PUBLIC, anon, authenticated;
+          REVOKE EXECUTE ON FUNCTION public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb) FROM PUBLIC, anon, authenticated;
+          REVOKE EXECUTE ON FUNCTION public.nexus_compact_entity_operations(integer) FROM PUBLIC, anon, authenticated;
+          SQL
+              psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 \
+                -f test-fixtures/nexus_entity_delta_two_client_cleanup.sql
+              remaining_users="$(psql "$PHASE34_DB_URL" -X -At -v ON_ERROR_STOP=1 \
+                -c "SELECT count(*) FROM auth.users WHERE email LIKE 'nexus-3-4-two-client-%@example.invalid'")"
+              remaining_operations="$(psql "$PHASE34_DB_URL" -X -At -v ON_ERROR_STOP=1 \
+                -c "SELECT count(*) FROM public.nexus_workspace_operations")"
+              remaining_receipts="$(psql "$PHASE34_DB_URL" -X -At -v ON_ERROR_STOP=1 \
+                -c "SELECT count(*) FROM public.nexus_workspace_operation_receipts")"
+              remaining_delta="$(psql "$PHASE34_DB_URL" -X -At -v ON_ERROR_STOP=1 \
+                -c "SELECT count(*) FROM public.nexus_workspace_sync_state WHERE mode='delta'")"
+              leaked_grants="$(psql "$PHASE34_DB_URL" -X -At -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT count(*)
+          FROM unnest(ARRAY[
+            'public.nexus_get_entity_sync_state()',
+            'public.nexus_enable_entity_delta(timestamp with time zone)',
+            'public.nexus_publish_entity_operation(text,bigint,jsonb)',
+            'public.nexus_read_entity_operations(bigint,integer,integer)',
+            'public.nexus_publish_entity_snapshot(bigint,timestamp with time zone,jsonb)',
+            'public.nexus_compact_entity_operations(integer)'
+          ]::text[]) AS signatures(signature)
+          WHERE has_function_privilege('anon', signature, 'EXECUTE')
+             OR has_function_privilege('authenticated', signature, 'EXECUTE');
+          SQL
+          )"
+              test "$remaining_users" = "0"
+              test "$remaining_operations" = "0"
+              test "$remaining_receipts" = "0"
+              test "$remaining_delta" = "0"
+              test "$leaked_grants" = "0"
+              echo "PASS — disposable users and Delta rows removed; RPC grants revoked; local database verified clean."
+            else
+              echo "Local Supabase did not reach the point where a database URL was exported; no test fixture was created."
+            fi
+          fi

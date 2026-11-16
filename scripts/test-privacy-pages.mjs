@@ -10,7 +10,7 @@ for (const [label, source] of [['privacy policy', privacy], ['deletion page', de
   assert.ok(source.includes('nexusorg.contact01@gmail.com'), label + ' must publish the approved support/privacy contact');
 }
 for (const phrase of [
-  'Effective date: 3 November 2026',
+  'Effective date: 8 November 2026',
   'offline',
   'IndexedDB',
   'Supabase',
@@ -24,6 +24,14 @@ for (const phrase of [
 ]) {
   assert.ok(privacy.toLowerCase().includes(phrase.toLowerCase()), 'privacy policy must cover: ' + phrase);
 }
+assert.ok(privacy.includes('Web/PWA edition') && privacy.includes('Android APK edition'),
+  'privacy policy must explain the separate web/PWA and Android APK data handling paths');
+assert.ok(privacy.includes('Vercel Web Analytics') && privacy.includes('excludes Vercel Web Analytics'),
+  'privacy policy must disclose that analytics is included in the web/PWA build and excluded from Android');
+assert.ok(privacy.includes('Android document picker') && privacy.includes('Android share sheet'),
+  'privacy policy must explain Android-native file selection and export behavior');
+assert.ok(privacy.includes("app's private on-device storage") && privacy.includes('browser profile'),
+  'privacy policy must distinguish Android app storage from browser storage');
 assert.ok(privacy.includes('./delete-account.html'), 'privacy policy must link to the account-deletion instructions');
 assert.ok(privacy.includes('does not currently include in-app advertising'), 'privacy policy must disclose the current no-advertising position');
 assert.ok(deletion.includes('Nexus account deletion request'), 'deletion page must state the email subject to use');

@@ -10,7 +10,17 @@ const policy = require('../cloud-sync-recovery.js');
 const cloud = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
 const index = readFileSync(resolve(root, 'index.html'), 'utf8');
 const bootstrap = readFileSync(resolve(root, 'nexus-app-bootstrap.js'), 'utf8');
+const chunks = readFileSync(resolve(root, 'cloud-chunk-storage.js'), 'utf8');
+const backup = readFileSync(resolve(root, 'backup-restore-utils.js'), 'utf8');
 
+assert.ok(cloud.includes('SYNC_REQUEST_TIMEOUT_MS=180000')&&cloud.includes('createSyncAbortScope')&&cloud.includes('NEXUS_CLOUD_TIMEOUT'),
+  'cloud reads and uploads must have a finite abort deadline so the UI cannot remain Syncing forever');
+assert.ok(cloud.includes('query=attachAbortSignal(query,activeSignal)')&&chunks.includes('function attachAbortSignal(query,signal)')&&backup.includes("typeof query.abortSignal === 'function'"),
+  'snapshot reads, chunk upload/readback, and legacy snapshot writes must propagate AbortSignal when supported');
+assert.ok(cloud.includes('!pendingForUser&&!(remote&&remote.payload)')&&cloud.includes('unassigned offline workspace and a separate pending snapshot'),
+  'first-login guest data and a separate account-bound pending snapshot must not bypass the explicit conflict gate');
+assert.ok(cloud.includes('if(initializing&&hasQueuedSession){queuedSession=newSession||null;hasQueuedSession=true;}')&&cloud.includes('const nextSession=queuedSession||session||null;')&&cloud.includes('nextSession.user.id===lastUserId&&ready')&&cloud.includes('if(uid!==lastUserId||!ready)initializeSession(newSession)'),
+  'the latest auth event must replace a stale queued session and duplicate same-user initialization must be skipped');
 assert.equal(policy.retryDelay(0), 1500, 'the first transient retry should be delayed rather than spun');
 assert.equal(policy.retryDelay(1), 3000, 'retry delay should back off after repeated failures');
 assert.equal(policy.retryDelay(8), 300000, 'retry backoff must have a five-minute cap');
@@ -65,7 +75,7 @@ assert.ok(cloud.includes("else if(pendingAutomaticallySynced){say('Offline work 
   'automatic recovery must retain the verified post-upload revision for the next conditional write');
 assert.ok(cloud.includes("status('Cloud conflict')") && cloud.includes('queue.acknowledge(localStorage,uploadUserId,pending.operationId'),
   'conflicts pause and only verified uploads acknowledge the queued operation');
-assert.ok(cloud.includes('const latest=await fetchRemote(uploadUserId)') &&
+assert.ok(cloud.includes('const latest=await fetchRemote(uploadUserId,null,uploadScope.signal)') &&
   cloud.includes('sameWorkspace(latest.payload,attemptedPayload)') &&
   cloud.includes('queue.rememberBase(localStorage,uploadUserId,latest.payload,lastRemoteStamp)') &&
   cloud.includes('interrupted write was safely acknowledged'),
@@ -76,10 +86,12 @@ assert.ok(cloud.includes('sameWorkspace(remote.payload,pending.payload)') &&
   'pending reconciliation must ignore export metadata and compare the actual workspace contents');
 assert.ok(cloud.includes('nextCloudStamp(pending.baseServerVersion)') && cloud.includes('nextCloudStamp(priorStamp)'),
   'every cloud revision write must advance strictly beyond the compared revision, including same-millisecond writes');
-assert.ok(cloud.includes('const normalizedBase=savedBase?normalizeWorkspacePayload(savedBase):null') &&
+assert.ok(cloud.includes('const normalizedBase=savedBase?normalizeWorkspacePayload({...savedBase,schema:4}):null') &&
   cloud.includes('const normalizedLocal=normalizeWorkspacePayload(pending.payload)') &&
-  cloud.includes('const normalizedRemote=normalizeWorkspacePayload(remote.payload)'),
-  'three-way comparisons must use the same normalized schema on both sides and the saved base');
+  cloud.includes('const normalizedRemote=normalizeWorkspacePayload(remote.payload,true)') &&
+  cloud.includes('Number(payload.schema)>=4') &&
+  cloud.includes('NexusNormalizeFeatureState(Object.prototype.hasOwnProperty.call(payload'),
+  'current-schema local/base state must stay reference-backed, while legacy/remote states and all feature sections use the canonical merge schema');
 assert.ok(cloud.includes('function assertStableRecordIds(payload)') && cloud.includes('assertStableRecordIds(payload);'),
   'records must be checked for stable IDs before normalization can generate replacements and accidentally duplicate them');
 assert.ok(cloud.includes('if(localStorage.getItem(OWNER_KEY)===uploadUserId&&session&&session.user.id===uploadUserId)retryReconcileAfterConflict=true;'),
