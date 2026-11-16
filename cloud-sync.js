@@ -828,11 +828,11 @@ async function runStagingEntityDeltaSync(ownerId,signal){
     {intentId:metadata.intentId,candidateDigest:metadata.candidateDigest})
  });
  if(recoveryPending){
-   syncDiag('snapshot-recovery-start',null,{reason:'resume-existing-journal'});
+   if(typeof syncDiag==='function')syncDiag('snapshot-recovery-start',null,{reason:'resume-existing-journal'});
    const resumed=await makeClient.publishConflictRecovery(ownerId,{
     signal,maxGroups:100,maxBytes:8*1048576
    });
-   syncDiag('snapshot-recovery-complete',null,{ok:!!(resumed&&resumed.ok===true),resumed:true});
+   if(typeof syncDiag==='function')syncDiag('snapshot-recovery-complete',null,{ok:!!(resumed&&resumed.ok===true),resumed:true});
    return resumed||{ok:false,retryable:true,reason:'staging_recovery_resume_failed'};
   }
   let result=await makeClient.synchronize(ownerId,{signal,maxRounds:20,maxGroups:20,maxBytes:1048576});
@@ -848,11 +848,11 @@ async function runStagingEntityDeltaSync(ownerId,signal){
    result.reason==='local_and_remote_changes_overlap'||
    result.reason==='local_and_remote_changes_overlap_after_partial_publish'));
  if(needsRecovery){
-  syncDiag('snapshot-recovery-start',null,{reason:'conflict-or-snapshot-required'});
+  if(typeof syncDiag==='function')syncDiag('snapshot-recovery-start',null,{reason:'conflict-or-snapshot-required'});
   const recovered=await makeClient.publishConflictRecovery(ownerId,{
    signal,maxGroups:100,maxBytes:8*1048576
   });
-  syncDiag('snapshot-recovery-complete',null,{ok:!!(recovered&&recovered.ok===true),resumed:false});
+  if(typeof syncDiag==='function')syncDiag('snapshot-recovery-complete',null,{ok:!!(recovered&&recovered.ok===true),resumed:false});
   if(recovered&&recovered.ok===true)return recovered;
   return recovered||{ok:false,retryable:true,reason:'staging_conflict_recovery_failed'};
  }
