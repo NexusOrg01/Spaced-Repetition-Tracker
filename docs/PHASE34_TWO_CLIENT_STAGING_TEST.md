@@ -119,3 +119,50 @@ Record the CLI version, exact PR SHA, migration application output, assertion re
 ## Limits
 
 This is a scoped Phase 3.4 backend fixture, not a full replica of every historical production object or project setting. Hosted advisors, hosted quotas, OAuth provider configuration, and network/deployment behavior remain separate checks.
+
+
+## 7. P34-05 cross-stage integration findings audit
+
+Use this section after P34-02 (general snapshot writer integrity), P34-03 (large-workspace concurrent-device integration), and P34-04 (real Delta lifecycle) have recorded evidence. Audit only the existing PR #126 branch `android/capacitor-multistore-foundation`; do not create another branch or PR.
+
+### Required evidence set
+
+1. **Snapshot writer and active-manifest safety (P34-02)**
+   - Run the rollback-only active-manifest SQL test and the two-session race runner against the disposable local database.
+   - Cover both publisher-first and cleanup-first lock orderings, incomplete candidate rejection, active-pointer preservation, snapshot fallback, retention cleanup, and account-deletion cascade.
+   - Run the cloud chunk-storage and account-deletion regressions.
+
+2. **Concurrent-device lifecycle (P34-03)**
+   - Run the authenticated A1/A2/B protocol using independent sessions.
+   - Run the 26.9 MB / 103-chunk / 77,144-topic lifecycle: concurrent publication conflict/retry, large deletions, complete subject deletion, compaction, stale-device offline edits, reconnect/recovery, restart equality, and second-owner isolation.
+   - Verify cleanup removes all disposable users and leaves zero operation rows, receipts, and Delta-mode rows.
+
+3. **Cross-path application lifecycle (P34-04)**
+   - Run the backup/restore and Undo lifecycle regressions.
+   - Verify CSV import/export quoting, multiline cells, formula neutralization, row/column/field bounds, relationship preservation, and atomic workspace commit.
+   - Verify JSON backup contains tracker + Study Hub data but excludes the account-bound offline queue.
+   - Verify reset and JSON REPLACE Undo restore both tracker and Study Hub state and refresh the Study Hub.
+   - Verify account switch/restart, deletion cleanup, and snapshot-only compatibility remain covered by the current regression chain.
+
+4. **Hosted-preview and local-Delta boundary**
+   - Run `node scripts/test-preview-build-config.mjs` and the static build.
+   - Local Delta may open only with both explicit local flags, a loopback API on port 54321, and a loopback browser origin.
+   - Verify Vercel, Netlify and Cloudflare deployment contexts reject local-test mode; hosted preview config must not enable Delta against `nexus-sync-staging`; production Supabase URLs and secret/service-role keys must be rejected.
+   - Never connect the public preview harness to hosted Supabase. Never use hosted staging or production for disposable fixtures.
+
+### Execution and acceptance
+
+The CI orchestrator is `.github/workflows/phase34-local-supabase-integration.yml`. It creates a fresh local Supabase project, applies the selected migrations, provisions reserved-prefix test identities, runs the database race and authenticated browser/lifecycle tests, revokes temporary grants, verifies cleanup, and destroys the local stack. Use that workflow rather than pointing a public preview at a hosted database.
+
+For each finding, record severity, reproduction, impact, root cause, fix, regression test and exact tested commit. Distinguish product defects from test-fixture defects and from intentionally deferred physical-device checks. Record failed test attempts and the correction that made the test valid; do not silently weaken assertions.
+
+P34-05 is acceptable only when there are no unresolved Critical or High integration findings, affected regression tests pass on the exact PR head, snapshot fallback remains available, hosted previews cannot open the local Delta gate, and local fixture cleanup succeeds. Keep the Delta gate off for hosted/production use. Physical Android/low-memory acceptance remains P34-09.
+
+### Latest P34-05 audit evidence — 16 November 2026
+
+- Exact PR #126 head: `aba9a5a835d5d4da805f5bfcc24a8c7f3c35008e`.
+- Phase 3.4 local authenticated two-client workflow [#51](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43801433771): **success**. All setup, migration, race/integrity, chunk, deletion, A1/A2/B protocol, large-workspace lifecycle and cleanup steps passed.
+- Validate curriculum catalogue workflow [#1526](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43801433827): **success**. Backup/restore, preview-gate, build, regression and Undo checks passed.
+- Findings: the active-manifest cleanup race and Study Hub workspace-Undo omission are closed; the duplicate-current-snapshot recovery issue is closed; the remaining two P34-04 test-fixture corrections are test-only and closed. Open Critical: 0. Open High: 0.
+- Exact-head Netlify PR preview check: **success** — https://deploy-preview-126--nexussrt.netlify.app/
+- PR #126 remains open/draft. No hosted disposable-data test, production/live operation, merge, APK build, or production deployment was performed.
