@@ -133,3 +133,21 @@ The source correction does not rewrite the already-applied staging migration his
 ### Production rollout boundary
 
 The nine shared migrations remain a **post-merge OPS-01 rollout task**. No production migration has been applied or dry-run against production. The production baseline is now known, but backups/PITR still need verification, and an explicit production execution approval must be obtained at the OPS-01 gate. Do not apply migrations from this preflight.
+
+
+## Web/PWA compatibility before production schema rollout — 2026-11-16
+
+**Validated source SHA:** `df2dde8a8c21b91a00bfe120a6c557cf14025603`.
+
+Read-only production inspection found one existing legacy JSONB workspace above the 1 MiB client chunk threshold: the largest current production payload is 1,635,656 bytes. Production does not yet have `public.nexus_user_data_chunks`. A Web build that attempted an unconditional chunk write would therefore fail for that existing workspace if the app were deployed before OPS-01.
+
+The PR #126 Web client now handles this transition safely:
+
+- The normal chunk writer remains the default for payloads at/above the 1 MiB threshold and for workspaces already known to use chunked storage.
+- If Supabase specifically reports the chunk table missing (`42P01` or `PGRST205`, including a matching schema-cache error), and the current workspace is still legacy JSONB, the writer falls back to the existing compare-and-swap `nexus_user_data` JSONB writer only when the serialized payload is at most 2 MiB.
+- It never downgrades a known chunked manifest. Permission-denied, network and unrelated chunk errors do not trigger the fallback.
+- A payload above 2 MiB is not sent through the legacy JSONB path. Nexus displays a database-upgrade-required status, keeps the current account ready, and retains the pending local snapshot without a retry loop.
+
+Regression coverage is in `scripts/test-cloud-sync-runtime.mjs`: a 1.7 MB workspace is verified through the legacy conditional writer when the chunk table is absent; a payload exceeding the 2 MiB compatibility ceiling is rejected without changing the remote revision or clearing its local pending queue. The main validation workflow #1547 passed on the exact source SHA.
+
+This is a compatibility bridge, not a substitute for OPS-01. Production's eight existing workspaces currently fit inside this bound, but workspaces above 2 MiB will remain locally preserved and cloud-sync-paused until the post-merge production chunk-storage migration is applied. No production migration, data, schema, RLS, permission, Auth setting or deployment was changed.
