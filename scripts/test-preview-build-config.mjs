@@ -171,6 +171,21 @@ assert.throws(()=>resolvePreviewConfig({...localEnv,NEXUS_SUPABASE_URL:'https://
 assert.throws(()=>resolvePreviewConfig({...localEnv,NEXUS_SUPABASE_URL:'http://127.0.0.1:54322'}),/loopback port 54321/);
 assert.throws(()=>resolvePreviewConfig({...localEnv,NEXUS_SUPABASE_ANON_KEY:'sb_secret_do_not_accept'}),error=>error.message.includes('secret/service-role keys are forbidden'));
 assert.equal(resolveStagingEntityDeltaEnabled({...previewEnv,VERCEL_GIT_COMMIT_REF:'android/capacitor-multistore-foundation',NEXUS_ENTITY_DELTA_SYNC_STAGING:'true',NEXUS_SUPABASE_URL:'https://xuwfzibxhxzxxupprxsq.supabase.co'},{url:'https://xuwfzibxhxzxxupprxsq.supabase.co',key:previewEnv.NEXUS_SUPABASE_ANON_KEY}),false,'hosted PR previews must never enable Delta against nexus-sync-staging');
+
+for (const deploymentMarker of [
+  {CF_PAGES_BRANCH:'android/capacitor-multistore-foundation'},
+  {CF_PAGES_URL:'nexus-preview.pages.dev'},
+  {VERCEL_GIT_COMMIT_REF:'android/capacitor-multistore-foundation'},
+  {VERCEL_URL:'nexus-preview.vercel.app'},
+  {DEPLOY_PRIME_URL:'https://deploy-preview-126--nexussrt.netlify.app'}
+]) {
+  assert.throws(()=>resolvePreviewConfig({...localEnv,...deploymentMarker}),
+    /only be used for a local build/,
+    'provider deployment metadata alone must reject local Delta credentials');
+  assert.equal(resolveStagingEntityDeltaEnabled({...localEnv,...deploymentMarker},localConfig),false,
+    'provider deployment metadata alone must keep the local Delta gate closed');
+}
+
 assert.ok(renderConfigScript(localConfig,true).includes('window.NEXUS_ENTITY_DELTA_SYNC_STAGING=true'));
 assert.ok(renderConfigScript(localConfig,false).includes('window.NEXUS_ENTITY_DELTA_SYNC_STAGING=false'));
 const existingStagingConfig={url:'https://xuwfzibxhxzxxupprxsq.supabase.co',key:previewEnv.NEXUS_SUPABASE_ANON_KEY};

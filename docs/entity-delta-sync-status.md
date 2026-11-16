@@ -386,3 +386,12 @@ Exact-head validation:
 - Hosted staging was not used for disposable integration data. The Phase 3.4 protocol and lifecycle ran against the disposable local Supabase project; cleanup revoked temporary RPC grants and removed its fixtures.
 - Physical Android/Capacitor and low-memory device verification remains deferred to P34-09. It is a separate release/physical-acceptance gate, not an unresolved P34-05 automated integration defect.
 - No production Nexus, production Supabase, production deployment, merge, APK build, or live rollout was performed. PR #126 remains open and draft.
+
+
+### 16 November 2026 — P34-05 preview-marker hardening
+
+- The cross-stage audit found a fail-open edge in the local-only build guard: it rejected provider flags such as `CF_PAGES` and `VERCEL_ENV`, but did not independently reject deployment metadata such as `CF_PAGES_BRANCH`, `VERCEL_GIT_COMMIT_REF`, or `DEPLOY_PRIME_URL` when a build wrapper omitted the companion provider flag.
+- Hardened `scripts/build.mjs` with a shared hosted-deployment detector used by both local credential resolution and the Delta enablement decision. Any Vercel, Cloudflare Pages, or Netlify deployment marker now blocks local Phase 3.4 credentials and keeps Delta disabled.
+- Added regression cases that supply branch/URL metadata alone for Cloudflare, Vercel and Netlify. The tests require both credential resolution to throw and the local Delta gate to remain false.
+- Severity: **Medium — closed in P34-05**. This was a static-gate edge case discovered during audit; no evidence was found that local credentials had actually been injected into a hosted preview.
+- Re-run the preview configuration test and full PR validation on the resulting exact head before treating the fix as accepted.

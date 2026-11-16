@@ -166,3 +166,15 @@ P34-05 is acceptable only when there are no unresolved Critical or High integrat
 - Findings: the active-manifest cleanup race and Study Hub workspace-Undo omission are closed; the duplicate-current-snapshot recovery issue is closed; the remaining two P34-04 test-fixture corrections are test-only and closed. Open Critical: 0. Open High: 0.
 - Exact-head Netlify PR preview check: **success** — https://deploy-preview-126--nexussrt.netlify.app/
 - PR #126 remains open/draft. No hosted disposable-data test, production/live operation, merge, APK build, or production deployment was performed.
+
+
+### P34-05 follow-up — provider-marker-only preview environments
+
+The local-only guard must reject deployment metadata even if a wrapper omits the provider's companion flag. Test at least these single-marker cases while both local Phase 3.4 flags and a loopback URL/key are present:
+
+- `CF_PAGES_BRANCH` without `CF_PAGES`.
+- `VERCEL_GIT_COMMIT_REF` without `VERCEL_ENV`.
+- `DEPLOY_PRIME_URL` without `NETLIFY` or `CONTEXT`.
+- Also cover `CF_PAGES_URL` and `VERCEL_URL` without their companion flags.
+
+For each case, the build must reject local credentials and `resolveStagingEntityDeltaEnabled` must return false. This protects hosted previews even when a provider's build wrapper omits one environment variable. The current regression coverage is in `scripts/test-preview-build-config.mjs`.

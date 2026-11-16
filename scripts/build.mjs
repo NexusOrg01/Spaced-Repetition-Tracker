@@ -14,6 +14,14 @@ function isLocalPhase34Url(rawUrl) {
   catch { return false; }
 }
 
+function isHostedDeploymentEnvironment(env) {
+  return Boolean(
+    env.VERCEL || env.VERCEL_ENV || env.VERCEL_URL || env.VERCEL_GIT_COMMIT_REF ||
+    env.CF_PAGES || env.CF_PAGES_BRANCH || env.CF_PAGES_URL ||
+    env.NETLIFY || env.CONTEXT || env.DEPLOY_URL || env.DEPLOY_PRIME_URL
+  );
+}
+
 function isAllowedAnonKey(key) {
   if (key.startsWith('sb_secret_') || key.length < 20) return false;
   if (key.startsWith('sb_publishable_')) return key.length > 'sb_publishable_'.length + 8;
@@ -27,7 +35,7 @@ function isAllowedAnonKey(key) {
 
 export function resolvePreviewConfig(env) {
   if(env.NEXUS_PHASE34_LOCAL_TEST==='true'){
-    if(env.VERCEL_ENV||env.CF_PAGES||env.CONTEXT||env.NETLIFY) throw new Error('Local Phase 3.4 credentials may only be used for a local build, never a hosted deployment.');
+    if(isHostedDeploymentEnvironment(env)) throw new Error('Local Phase 3.4 credentials may only be used for a local build, never a hosted deployment.');
     const rawUrl=String(env.NEXUS_SUPABASE_URL||'').trim(),key=String(env.NEXUS_SUPABASE_ANON_KEY||'').trim();
     if(!rawUrl||!key||!isLocalPhase34Url(rawUrl)) throw new Error('Local Phase 3.4 mode requires the local Supabase API on loopback port 54321 and a local anon/publishable key.');
     if(!isAllowedAnonKey(key)) throw new Error('Local Phase 3.4 mode accepts only a publishable key or legacy anon JWT; secret/service-role keys are forbidden.');
@@ -65,7 +73,7 @@ export function resolvePreviewConfig(env) {
 
 export function resolveStagingEntityDeltaEnabled(env, config) {
   return env.NEXUS_PHASE34_LOCAL_TEST==='true'&&env.NEXUS_ENTITY_DELTA_SYNC_LOCAL==='true'&&
-    !env.VERCEL_ENV&&!env.CF_PAGES&&!env.CONTEXT&&!env.NETLIFY&&!!config&&isLocalPhase34Url(config.url);
+    !isHostedDeploymentEnvironment(env)&&!!config&&isLocalPhase34Url(config.url);
 }
 
 export function renderConfigScript(config, enableStagingEntityDelta = false) {
