@@ -928,6 +928,36 @@
     });
   }
 
+  function stableEntityOperationJson(value){
+    if(Array.isArray(value))return '['+value.map(stableEntityOperationJson).join(',')+']';
+    if(value&&typeof value==='object'){
+      return '{'+Object.keys(value).sort().map(key=>
+        JSON.stringify(key)+':'+stableEntityOperationJson(value[key])).join(',')+'}';
+    }
+    return JSON.stringify(value);
+  }
+
+  async function fingerprintEntityOperation(changes){
+    const payload=changes.map(change=>({
+      collection:change.collection,id:change.id,operation:change.operation,
+      position:change.position,
+      ...(change.operation==='put'?{value:change.value}:{})
+    }));
+    let normalizedJson;
+    try{normalizedJson=JSON.parse(JSON.stringify(payload));}
+    catch(_){throw new Error('Entity-delta changes must be JSON-compatible before an idempotency fingerprint can be created.');}
+    const canonical=stableEntityOperationJson(normalizedJson);
+    const cryptoApi=root&&root.crypto,Encoder=root&&root.TextEncoder;
+    if(!cryptoApi||!cryptoApi.subtle||typeof cryptoApi.subtle.digest!=='function'||
+       typeof Encoder!=='function'){
+      throw new Error('Secure SHA-256 support is unavailable; entity-delta writes are paused.');
+    }
+    const digest=await cryptoApi.subtle.digest('SHA-256',new Encoder().encode(canonical));
+    let fingerprint='';
+    for(const byte of new Uint8Array(digest))fingerprint+=byte.toString(16).padStart(2,'0');
+    return fingerprint;
+  }
+
   async function writeWorkspaceEntityChanges(ownerId,changes,options={}){
     const owner=entityOwnerKey(ownerId);
     if(entityRemovalOwners.has(owner))throw new Error('This account workspace is being permanently deleted.');
@@ -963,6 +993,7 @@
       Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)
     ));
     if(!operationId||operationId.length>160)throw new Error('A valid idempotency operation ID is required.');
+    const payloadFingerprint=await fingerprintEntityOperation(normalized);
     const manifestKey=entityManifestKey(owner),sequenceKey=entitySequenceKey(owner);
     const markerKey=entityOperationKey(owner,operationId);
     return transaction([WORKSPACES,'migrationMeta','outbox'],'readwrite',(tx,set)=>{
@@ -1013,7 +1044,7 @@
         meta.put({key:sequenceKey,ownerId:owner,value:next,updatedAt:timestamp()});
         outbox.put({key:markerKey,ownerId:owner,generation:manifest.activeGeneration,
           kind:'operation-marker',operationId,firstSequence,lastSequence:next,
-          count:normalized.length,createdAt:timestamp()});
+          count:normalized.length,payloadFingerprint,createdAt:timestamp()});
         // Index the idempotency marker by its final sequence so acknowledgement
         // can remove only markers covered by the confirmed page.
         outbox.put({key:entityOperationSequenceKey(owner,next,operationId),ownerId,
@@ -1058,9 +1089,12 @@
             return;
           }
           if(marker.generation===manifest.activeGeneration){
-            if(count!==normalized.length){
-              // Reusing an idempotency key for a different-sized operation is not a
-              // valid replay. Fail closed rather than silently reporting old work.
+            if(count!==normalized.length||typeof marker.payloadFingerprint!=='string'||
+               !/^[a-f0-9]{64}$/.test(marker.payloadFingerprint)||
+               marker.payloadFingerprint!==payloadFingerprint){
+              // An operation ID is an idempotency key for the entire normalized
+              // payload, not merely its change count. Older markers without a digest
+              // fail closed so they cannot authorize a different same-sized replay.
               try{tx.abort();}catch(_){}
               return;
             }
