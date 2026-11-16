@@ -252,7 +252,8 @@ const workspaceUndoSandbox={
    workspaceUndoEvents.push({type:'restore-feature-state',options});
    currentFeatures=JSON.parse(JSON.stringify(value));return true;
   },
-  NexusUndoCascadeDelete(){return false;}
+  NexusUndoCascadeDelete(){return false;},
+  NexusRenderHub(){workspaceUndoEvents.push('render-hub');}
  },
  armUndo(text){workspaceUndoEvents.push({type:'arm',text});},
  clearTimeout(){},clearUndoPresentation(){workspaceUndoEvents.push('clear-presentation');},
@@ -284,5 +285,7 @@ assert.ok(restoredFeatureEvent&&restoredFeatureEvent.options.persist===false&&re
 const workspaceSaveEvent=workspaceUndoEvents.find(event=>event&&event.type==='save');
 assert.ok(workspaceSaveEvent&&workspaceSaveEvent.options.replaceEntities===true,
  'Undo must persist the combined restored workspace through entity replacement');
+assert.ok(workspaceUndoEvents.includes('render-hub'),
+ 'Undo must refresh the Study Hub after restoring its in-memory records');
 
 console.log('Undo lifecycle tests passed: 15-second expiry, Undo-only notification, feature restoration, all four Study Hub delete types, and bounded stream-cascade entity tombstones.');
