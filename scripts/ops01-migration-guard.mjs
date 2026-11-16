@@ -18,9 +18,9 @@ export const OPS01_MIGRATIONS=Object.freeze([
  '20261115171500_validate_general_snapshot_candidates.sql'
 ]);
 export const PRODUCTION_BASELINE=Object.freeze(['20261010174818','20261012033747','20261012034918']);
-const versions=OPS01_MIGRATIONS.map(name=>name.match(/^\\d{8,14}(?=_)/)[0]);
+const versions=OPS01_MIGRATIONS.map(name=>name.match(/^\d{8,14}(?=_)/)[0]);
 export function validateLocalMigrationSet(names){
- const actual=names.filter(name=>/^\\d{8,14}_.+\\.sql$/.test(name)).sort();
+ const actual=names.filter(name=>/^\d{8,14}_.+\.sql$/.test(name)).sort();
  const expected=[...OPS01_MIGRATIONS].sort();
  assert.deepEqual(actual,expected,'supabase/migrations must contain exactly the reviewed OPS-01 migration allowlist');
  assert.equal(new Set(actual).size,expected.length,'Duplicate migration files are not permitted');
@@ -28,11 +28,11 @@ export function validateLocalMigrationSet(names){
 }
 export function parseRemoteMigrationVersions(text){
  const found=[];
- for(const line of String(text).split(/\\r?\\n/)){
+ for(const line of String(text).split(/\r?\n/)){
   const columns=line.split('│');
   if(columns.length<3)continue;
   const version=columns[1].trim();
-  if(/^\\d{8,14}$/.test(version))found.push(version);
+  if(/^\d{8,14}$/.test(version))found.push(version);
  }
  return [...new Set(found)].sort();
 }
@@ -40,13 +40,13 @@ export function validateRemoteMigrationSet(remoteVersions,{complete=false}={}){
  const allowed=new Set([...PRODUCTION_BASELINE,...versions]);
  const unknown=remoteVersions.filter(v=>!allowed.has(v));
  assert.deepEqual(unknown,[],'Remote migration history contains an unreviewed version; aborting');
- for(const baseline of PRODUCTION_BASELINE)assert.ok(remoteVersions.includes(baseline),`Required production baseline migration ${baseline} is missing`);
+ for(const baseline of PRODUCTION_BASELINE)assert.ok(remoteVersions.includes(baseline),'Required production baseline migration '+baseline+' is missing');
  const pending=versions.filter(v=>!remoteVersions.includes(v));
  if(complete)assert.deepEqual(pending,[],'Not all OPS-01 migrations are recorded as applied remotely');
  return {applied:versions.length-pending.length,pending};
 }
 export function parseDryRunVersions(text){
- return [...new Set((String(text).match(/(?<!\\d)\\d{8,14}(?!\\d)/g)||[]))].sort();
+ return [...new Set((String(text).match(/(?<!\d)\d{8,14}(?!\d)/g)||[]))].sort();
 }
 export function validateDryRun(remoteVersions,dryRunText){
  const remote=validateRemoteMigrationSet(remoteVersions);
@@ -64,7 +64,7 @@ export function validateBackupRestoreEvidenceRef(value,{required=false}={}){
   if(required)throw new Error('Production apply requires a verified backup/restore evidence reference. Complete a full backup and isolated restore before applying migrations.');
   return null;
  }
- assert.match(reference,/^NEXUS-DR-\\d{8}-[A-Z0-9]{4,12}$/,'Backup/restore evidence reference must use NEXUS-DR-YYYYMMDD-XXXX format.');
+ assert.match(reference,/^NEXUS-DR-\d{8}-[A-Z0-9]{4,12}$/,'Backup/restore evidence reference must use NEXUS-DR-YYYYMMDD-XXXX format.');
  return reference;
 }
 export function validateVerificationOutput(text){
@@ -72,7 +72,7 @@ export function validateVerificationOutput(text){
   'snapshot_candidate_validation_trigger_present','sync_state_rls_enabled','receipts_rls_enabled',
   'operations_rls_enabled','sync_state_matches_workspace_count','zero_delta_mode_workspaces',
   'delta_rpc_browser_grants_revoked','private_schema_browser_usage_revoked','six_delta_rpcs_present'];
- for(const key of required)assert.match(text,new RegExp('"'+key+'"\\\\s*:\\\\s*true'),`Post-migration verification failed: ${key}`);
+ for(const key of required)assert.match(text,new RegExp('"'+key+'"\\s*:\\s*true'),'Post-migration verification failed: '+key);
  return {verified:required.length};
 }
 function readOption(name){const i=process.argv.indexOf(name);return i>=0?process.argv[i+1]:null;}
