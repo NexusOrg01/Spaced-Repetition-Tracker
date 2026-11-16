@@ -349,7 +349,7 @@ await importSandbox.runHubImport({
 assert.equal(importCommits.length,1,'valid CSV import must commit one atomic workspace transaction');
 const committed=importCommits[0];
 assert.equal(committed.options.returnOperationPayload,false);
-assert.deepEqual(committed.entries.map(entry=>entry.key).sort(),['entity-revision','tracker-storage-key']);
+assert.deepEqual(Array.from(committed.entries,entry=>entry.key).sort(),['entity-revision','tracker-storage-key']);
 assert.equal(committed.payload.state.streams.length,2);
 assert.equal(committed.payload.state.subjects.length,2);
 assert.equal(committed.payload.state.topics.length,3);
