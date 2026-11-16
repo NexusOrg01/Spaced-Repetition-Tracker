@@ -664,18 +664,15 @@ BEGIN
 END;
 $function$;
 
-REVOKE ALL ON FUNCTION public.nexus_get_entity_sync_state() FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.nexus_enable_entity_delta(timestamptz) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.nexus_publish_entity_operation(text,bigint,jsonb) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.nexus_read_entity_operations(bigint,integer,integer) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.nexus_compact_entity_operations(integer) FROM PUBLIC, anon;
-
-GRANT EXECUTE ON FUNCTION public.nexus_get_entity_sync_state() TO authenticated;
-GRANT EXECUTE ON FUNCTION public.nexus_enable_entity_delta(timestamptz) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.nexus_publish_entity_operation(text,bigint,jsonb) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.nexus_read_entity_operations(bigint,integer,integer) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.nexus_compact_entity_operations(integer) TO authenticated;
+-- These SECURITY DEFINER RPCs remain server-internal until a separately
+-- reviewed client rollout enables them. Revoke the default PUBLIC grant and
+-- explicitly deny both browser roles in the very first migration so there is
+-- no temporary exposure window between migrations.
+REVOKE ALL ON FUNCTION public.nexus_get_entity_sync_state() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.nexus_enable_entity_delta(timestamptz) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.nexus_publish_entity_operation(text,bigint,jsonb) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.nexus_read_entity_operations(bigint,integer,integer) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.nexus_compact_entity_operations(integer) FROM PUBLIC, anon, authenticated;
 
 COMMIT;
