@@ -626,7 +626,7 @@
     const restoredCascade=window.NexusUndoCascadeDelete?window.NexusUndoCascadeDelete({persist:false,render:false}):false;
     const persisted=save({replaceEntities:true});
     renderAll();
-    if(restoredCascade&&window.NexusRenderHub)window.NexusRenderHub();
+    if((restoredCascade||pending.kind==='workspace-reference')&&window.NexusRenderHub)window.NexusRenderHub();
     clearUndoPresentation();
     if(!persisted)notify('Undo was applied on this device, but saving failed. Export a backup before closing.');
   }
