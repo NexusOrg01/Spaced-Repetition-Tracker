@@ -340,3 +340,49 @@ The same successful run also supplies the authenticated protocol evidence listed
 - Cleanup passed: all three disposable Auth users were deleted; operation rows, receipts, and Delta-mode sync-state rows were verified at zero; temporary browser-role RPC grants were revoked; and the local Supabase stack was stopped with no backup. No hosted staging or production Supabase endpoint was used.
 - The exact PR preview check passed: [Netlify PR preview](https://deploy-preview-126--nexussrt.netlify.app/). The public preview remains static/offline for this test; the localhost-only test harness does not connect to hosted Supabase.
 - **Remaining boundary:** this is an automated two-session/local-Supabase integration result, not physical Android/Capacitor device verification. Physical acceptance remains deferred to P34-09 after P34-01 through P34-08. PR #126 remains open and draft; no merge, production deployment, production configuration change, or production data operation was performed.
+
+
+### 16 November 2026 — P34-04 lifecycle acceptance and P34-05 integration findings audit
+
+**Verified source:** PR #126, branch `android/capacitor-multistore-foundation`, exact head `aba9a5a835d5d4da805f5bfcc24a8c7f3c35008e`. PR remains open and draft.
+
+#### P34-04 — Complete real Delta lifecycle
+
+**Status: COMPLETE — explicitly accepted by the project owner.** The six scoped lifecycle areas were accepted: portable JSON backup/restore; Study Hub CSV import/export; workspace reset and JSON replacement with Undo; account isolation/switch/restart; account-deletion cleanup; and compatibility with snapshot-only clients. Physical Android/low-memory device acceptance is excluded from P34-04 and remains in P34-09.
+
+The code-level issue found during this work was that workspace replacement Undo restored tracker collections but did not capture/restore the Study Hub feature state. The fix now captures the pre-replacement tracker and Study Hub state together, arms Undo only after the atomic replacement/reset commit succeeds, restores both before the atomic save, and refreshes the Study Hub after Undo.
+
+Relevant commits on this branch:
+- `d862a26362e0d3f2dbf789cdcc82f3700b52929e` — capture Study Hub state in workspace Undo.
+- `47ef15331a9f38fd16dbff8dc6c6c4046725dc75` — arm Undo for JSON REPLACE and workspace reset.
+- `d8d160b9d16f8ff834e9e5f3567e33488bb12a5d` — refresh Study Hub after workspace Undo.
+- `dbcf2bbce6dbf9bdcbf25def10c1dff081370d56` — add tracker + Study Hub replacement Undo regression coverage.
+- `ce7bd239f4e1f74a4d72442204eed3f38434f4f0` — add CSV import/export and portable backup-payload tests.
+- `5baf84b870fc71d5de22428cb8c50030f55a60d5` and `aba9a5a835d5d4da805f5bfcc24a8c7f3c35008e` — correct test-only cross-realm array and newline-fixture assumptions.
+
+Exact-head validation:
+- Validate curriculum catalogue workflow [#1526](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43801433827) passed. Its full validation step passed the backup/restore, offline queue, merge, large-workspace rendering, entity-delta migration/client, cloud recovery/chunk storage/runtime, workspace isolation, account deletion, security, regression, service-worker, and Undo lifecycle checks. The isolated preview configuration test and static build also passed.
+- Phase 3.4 local authenticated two-client workflow [#51](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43801433771) passed every step: disposable local Supabase setup/migrations, general snapshot candidate integrity and fallback, active-manifest race, chunk storage, account deletion, authenticated A1/A2/B browser protocol, 26.9 MB large-workspace lifecycle, and final cleanup.
+- The P34-03 lifecycle assertions passed 18/18; the authenticated protocol passed 19/19. Cleanup verified zero disposable users, operation rows, receipts, Delta-mode rows and leaked browser-role RPC grants before destroying the local stack.
+
+#### P34-05 — Resolve integration findings
+
+**Status: COMPLETE for the automated integration acceptance scope.** The cross-stage findings were consolidated and classified below. Historical defects listed as closed are not current open findings.
+
+| Severity | Finding | Disposition |
+|---|---|---|
+| Critical — closed | A publisher/cleanup race could otherwise allow cleanup to target the currently active chunk manifest during publication. | Fixed by locking/re-reading the owning workspace row and rejecting deletion of the active revision. The local two-session race test covers both publisher-first and cleanup-first orderings and passed in workflow #51. |
+| High — closed | Workspace replacement/reset Undo omitted Study Hub feature data, risking loss of journal, papers, goals or study logs when Undo was used. | Fixed in the commits listed above. `scripts/test-undo-lifecycle.mjs` verifies both tracker and Study Hub restoration, atomic persistence and Hub rerender; exact-head validation passed. |
+| Medium — closed | Recovery could attempt to publish a snapshot that was already current, creating unnecessary repeat work. | Fixed by `062c67b9d884c01f9b23d707a314cc3bf7a1de56`. The P34-03 recovery test ended with zero remaining Delta groups and no repeated recovery loop. |
+| Low — closed, test-only | P34-04 tests compared arrays created in a separate VM realm and used literal escaped newline sequences in CSV fixtures. | Corrected assertions with `Array.from(...)` and fixtures with actual newline characters. No runtime data-path change was required for these test-harness corrections. |
+
+**Open Critical findings: 0. Open High findings: 0.** No unresolved automated account-isolation, active-manifest, recovery, retention, or snapshot-fallback defect was identified in the P34-02/P34-03/P34-04 evidence reviewed for this audit.
+
+#### Safety and remaining boundary
+
+- Snapshot/chunk compatibility remains the authoritative fallback. Delta is not enabled for ordinary users or hosted previews.
+- Local Delta activation requires both `NEXUS_PHASE34_LOCAL_TEST=true` and `NEXUS_ENTITY_DELTA_SYNC_LOCAL=true`, a loopback Supabase API on port 54321, and a loopback browser origin. The build rejects local-test mode in Vercel/Netlify/Cloudflare deployment contexts, rejects non-loopback local-test URLs, and rejects secret/service-role keys.
+- The exact-head preview configuration test passed. The current PR Netlify deploy-preview status is successful for this head: [open preview](https://deploy-preview-126--nexussrt.netlify.app/). The public preview is static/offline for the local Delta protocol; never use the public two-client harness to connect to hosted Supabase.
+- Hosted staging was not used for disposable integration data. The Phase 3.4 protocol and lifecycle ran against the disposable local Supabase project; cleanup revoked temporary RPC grants and removed its fixtures.
+- Physical Android/Capacitor and low-memory device verification remains deferred to P34-09. It is a separate release/physical-acceptance gate, not an unresolved P34-05 automated integration defect.
+- No production Nexus, production Supabase, production deployment, merge, APK build, or live rollout was performed. PR #126 remains open and draft.
