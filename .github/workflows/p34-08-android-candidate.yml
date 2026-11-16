@@ -1,0 +1,176 @@
+name: P34-08 frozen-source Android candidate
+
+on:
+  push:
+    branches:
+      - android/capacitor-multistore-foundation
+    paths:
+      - .github/workflows/p34-08-android-candidate.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p34-08-android-candidate
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build final Android candidate from P34-06 freeze
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      P34_06_SOURCE_SHA: 8228b0c5b223b89575339b0243a2e452d3137d3c
+      NEXUS_ANDROID_CLOUD_MODE: staging
+    steps:
+      - name: Check out the exact P34-06 frozen source
+        uses: actions/checkout@v4
+        with:
+          ref: 8228b0c5b223b89575339b0243a2e452d3137d3c
+          fetch-depth: 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: android/package-lock-source/*.b64
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: false
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install pinned Android SDK 36
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Check out pinned esbuild source
+        uses: actions/checkout@v4
+        with:
+          repository: evanw/esbuild
+          ref: 609683d892977362a0f99026cb74b96263d728a9
+          path: .build/esbuild
+
+      - name: Check out pinned golang.org/x/sys source
+        uses: actions/checkout@v4
+        with:
+          repository: golang/sys
+          ref: c0bba94af5f85fbad9f6dc2e04ed5b8fac9696cf
+          path: .build/golang-x-sys
+
+      - name: Verify frozen source and capture initial build provenance
+        env:
+          WORKFLOW_TRIGGER_SHA: \${{ github.sha }}
+          WORKFLOW_RUN_ID: \${{ github.run_id }}
+          WORKFLOW_RUN_NUMBER: \${{ github.run_number }}
+          WORKFLOW_REF: \${{ github.ref }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$P34_06_SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+          mkdir -p android/build/reports/p34-08
+          {
+            echo "task=P34-08"
+            echo "application_source_sha=$actual"
+            echo "application_source_tree=$(git rev-parse 'HEAD^{tree}')"
+            echo "workflow_trigger_sha=$WORKFLOW_TRIGGER_SHA"
+            echo "workflow_run_id=$WORKFLOW_RUN_ID"
+            echo "workflow_run_number=$WORKFLOW_RUN_NUMBER"
+            echo "workflow_ref=$WORKFLOW_REF"
+            echo "android_cloud_mode=$NEXUS_ANDROID_CLOUD_MODE"
+            echo "source_worktree_clean_before_build=true"
+            echo "node=$(node --version)"
+            echo "npm=$(npm --version)"
+            echo "go=$(go version)"
+            echo "java:"
+            java -version 2>&1
+            echo "gradle:"
+            ./android/gradlew --version 2>&1
+          } > android/build/reports/p34-08/build-provenance.txt
+
+      - name: Build Android-local web assets and sync native project
+        env:
+          ESBUILD_SOURCE_DIR: .build/esbuild
+          GO_SYS_SOURCE_DIR: .build/golang-x-sys
+          NEXUS_ESBUILD_BINARY: .build/bin/esbuild
+          NEXUS_ANDROID_CLOUD_MODE: staging
+        run: npm run android:sync:fdroid
+
+      - name: Generate npm dependency and licence inventories
+        run: npm run android:sbom
+
+      - name: Verify Android asset isolation, OAuth callback and native printing
+        run: npm run test:android
+
+      - name: Resolve strict Gradle dependencies and build both APK variants
+        working-directory: android
+        run: |
+          set -euo pipefail
+          mkdir -p build/reports/fdroid-dependencies
+          ./gradlew --no-daemon --stacktrace --dependency-verification strict buildEnvironment :app:buildEnvironment > build/reports/fdroid-dependencies/fdroid-build-environment.txt
+          ./gradlew --no-daemon --stacktrace --dependency-verification strict :app:dependencies --configuration fdroidDebugRuntimeClasspath > build/reports/fdroid-dependencies/fdroid-debug-runtime.txt
+          ./gradlew --no-daemon --stacktrace --dependency-verification strict :app:dependencies --configuration fdroidReleaseRuntimeClasspath > build/reports/fdroid-dependencies/fdroid-release-runtime.txt
+          if grep -Eiq 'com[.]google[.]android[.]gms|com[.]google[.]firebase|firebase-analytics|play-services' build/reports/fdroid-dependencies/fdroid-debug-runtime.txt build/reports/fdroid-dependencies/fdroid-release-runtime.txt; then
+            echo "Unexpected Google Play Services/Firebase dependency found in the F-Droid runtime." >&2
+            exit 1
+          fi
+          ./gradlew --no-daemon --stacktrace --dependency-verification strict assembleFdroidDebug assembleFdroidRelease
+          git -C .. diff --exit-code -- android/gradle/verification-metadata.xml
+
+      - name: Generate Gradle/Maven dependency licence inventory
+        run: node scripts/write-android-gradle-license-inventory.mjs
+
+      - name: Package Android-local assets, verify APK outputs and write SHA-256 records
+        run: |
+          set -euo pipefail
+          assets="android/app/src/main/assets/public"
+          test -s "$assets/index.html"
+          test -s "$assets/vendor/supabase.js"
+          test -s "$assets/nexus-android-bridge.js"
+          test ! -e "$assets/.build"
+          report="android/build/reports/p34-08"
+          mkdir -p "$report"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -cf - -C android/app/src/main/assets public | gzip -n > "$report/android-local-web-assets.tar.gz"
+          find "$assets" -type f -printf '%P\n' | LC_ALL=C sort > "$report/android-local-web-assets-file-list.txt"
+          echo "asset_file_count=$(find "$assets" -type f | wc -l | tr -d ' ')" >> "$report/build-provenance.txt"
+          echo "asset_bytes=$(du -sb "$assets" | cut -f1)" >> "$report/build-provenance.txt"
+          mapfile -t apks < <(find android/app/build/outputs/apk/fdroid/debug android/app/build/outputs/apk/fdroid/release -maxdepth 1 -type f -name '*.apk' -print | LC_ALL=C sort)
+          test "\${#apks[@]}" -eq 2
+          sha256sum "\${apks[@]}" | tee "$report/apk-sha256.txt"
+          {
+            echo "apk_count=\${#apks[@]}"
+            printf 'apk=%s\n' "\${apks[@]}"
+            echo "android_local_asset_archive_sha256=$(sha256sum "$report/android-local-web-assets.tar.gz" | cut -d ' ' -f1)"
+            echo "npm_license_inventory=android/build/reports/third-party/npm-dependencies.json"
+            echo "gradle_license_inventory=android/build/reports/third-party/gradle-licenses.json"
+            echo "gradle_dependency_reports=android/build/reports/fdroid-dependencies/"
+            echo "asset_archive=$report/android-local-web-assets.tar.gz"
+            echo "apk_checksums=$report/apk-sha256.txt"
+          } >> "$report/build-provenance.txt"
+
+      - name: Upload P34-08 final Android candidate and evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-p34-08-final-android-candidate
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            android/app/build/outputs/apk/fdroid/debug/*.apk
+            android/app/build/outputs/apk/fdroid/release/*.apk
+            android/build/reports/p34-08/*
+            android/build/reports/fdroid-dependencies/*.txt
+            android/build/reports/third-party/*
+            android/gradle/verification-metadata.xml
