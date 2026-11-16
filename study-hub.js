@@ -1994,6 +1994,7 @@
         {state:nextState,featureState:nextFeatures},
         {archivePending:mode==='REPLACE',reason:'manual-restore-replace',returnOperationPayload:false});
       committed=true;
+      if(mode==='REPLACE')window.NexusStartUndoWorkspaceReplace?.('Backup replaced.');
       state=nextState;
       fsState=nextFeatures;
       await window.NexusRebuildEntityProjection?.();
@@ -2264,6 +2265,7 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
       const revisionEntry=window.NexusWorkspaceEntityRevisionEntry?.(owner);
       if(revisionEntry)entries.push(revisionEntry);
       queue.commitWorkspace(localStorage,entries,{state:resetState,featureState:resetFeatures},{archivePending:true,reason:'manual-reset',returnOperationPayload:false});
+      window.NexusStartUndoWorkspaceReplace?.('Workspace reset.');
       state=resetState;fsState=resetFeatures;
       if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(resetFeatures.fsrsSettings,{syncFeature:false,persist:false});
       focusGoalCacheKey='';focusStart=null;focusPausedAt=null;focusTopicId='';focusSubjectId='';
