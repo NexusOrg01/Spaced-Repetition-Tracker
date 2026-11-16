@@ -3,7 +3,7 @@
 **Revalidated:** 2026-11-16  
 **Repository branch:** `android/capacitor-multistore-foundation`  
 **Hosted staging project:** `nexus-sync-staging` (`xuwfzibxhxzxxupprxsq`)  
-**Production project:** `nexus-spaced-repetition` (`txugbdavblpettcnhcxl`) — not accessed
+**Production project:** `nexus-spaced-repetition` (`txugbdavblpettcnhcxl`) — read-only inspected 2026-11-16; no production schema, data, migration, Auth setting, or deployment was changed
 
 This record compares the timestamped migration files on PR #126 with the hosted staging migration history and live schema. Integration tests use a separate disposable local Supabase instance. Hosted staging is not used for disposable fixtures.
 
@@ -73,6 +73,63 @@ The staging security advisor returned one separate Auth configuration warning: l
 - Keep the recovered staging-only permission migration in `supabase/staging-migrations/`, not `supabase/migrations/`, so a normal shared migration push cannot pick it up accidentally.
 - Keep Delta RPC execution revoked and all existing workspaces in snapshot mode until the separately gated client rollout is reviewed. Snapshot/chunk compatibility remains authoritative.
 - Do not use hosted staging or production for disposable test identities or race fixtures. Use the disposable local Phase 3.4 Supabase workflow.
-- This migration was applied only to isolated hosted staging. Do not infer that the production migration baseline, schema, backup or PITR readiness has been verified.
+- The shared Phase 3.4 chain is applied only to isolated hosted staging. Production was inspected read-only on 2026-11-16: its baseline and schema are now inventoried, but no Phase 3.4 migration is applied there. Production backup/PITR restore readiness remains unverified.
 
-No production project, production schema, production data, or live Nexus deployment was accessed or changed.
+Production Supabase was accessed read-only on 2026-11-16. No production migration, schema/data/RLS/permission/Auth-setting change, live deployment, or PR merge was performed.
+
+
+## Production baseline — read-only inspection, 2026-11-16
+
+Project: `nexus-spaced-repetition` (`txugbdavblpettcnhcxl`), region `ap-south-1`, PostgreSQL 17.11, project status `ACTIVE_HEALTHY`.
+
+### Production migration history
+
+Only these three migrations are recorded in production:
+
+| Version | Name |
+| --- | --- |
+| `20261010174818` | `create_nexus_user_data` |
+| `20261012033747` | `revoke_unneeded_client_privileges` |
+| `20261012034918` | `revoke_unused_client_delete_nexus_backup` |
+
+None of the nine shared Phase 3.4 migrations is recorded in production. The staging-only `20261024065138_align_staging_nexus_user_data_permissions.sql` remains excluded from the production sequence.
+
+### Production workspace schema and data shape
+
+Production currently has `public.nexus_user_data`, `public.nexus_syllabus_requests`, and `public.nexus_syllabus_votes`. It does **not** have `nexus_user_data_chunks`, `nexus_workspace_sync_state`, `nexus_workspace_operations`, `nexus_workspace_operation_receipts`, or the `nexus_private` schema.
+
+Read-only aggregate checks observed:
+
+- 8 existing workspace rows.
+- All 8 payloads are JSON objects in the legacy snapshot representation.
+- 0 chunked manifests and 0 Delta protocol markers.
+- Largest observed payload: 1,635,656 bytes.
+- The existing `nexus_user_data` relation occupies approximately 892,928 bytes.
+
+No workspace payloads or user identifiers were exported for this inventory.
+
+### Production access-control and advisor observations
+
+- `public.nexus_user_data` has RLS enabled with owner-scoped SELECT, INSERT and UPDATE policies. The `authenticated` role has those three table privileges; it has no DELETE privilege. `anon` has no table privileges on the Nexus workspace table.
+- The two existing syllabus tables have RLS enabled but no policies. Supabase reports these as informational `rls_enabled_no_policy` findings; they were not changed.
+- The production Auth advisor reports leaked-password protection disabled. The performance advisor reports an unindexed foreign key on `nexus_syllabus_votes.user_id` and two unused syllabus-table indexes. These are pre-existing, outside the Phase 3.4 workspace rollout scope, and were not changed.
+- The production Health Advisor returned no findings.
+- The production database has `pgcrypto` installed.
+- Backup/PITR retention and restore-point readiness were not exposed through the available database connector and remain unverified. Verify them in the Supabase dashboard before a future production migration.
+
+### Migration-order security correction on PR #126
+
+The first version of `20261113095723_nexus_entity_delta_sync.sql` granted the six privileged Delta RPC functions to `authenticated`, relying on later migrations to revoke them. A fresh production migration sequence would therefore have had an intermediate interval where browser clients could call those RPCs.
+
+That window has been removed in the current PR branch:
+
+- The initial Delta migration now explicitly revokes all six RPCs from `PUBLIC`, `anon`, and `authenticated`; it contains no browser-role `GRANT EXECUTE`.
+- `scripts/test-entity-delta-migration.mjs` asserts the initial migration is safe on its own.
+- Exact-head validation #1543 and local Supabase integration #68 passed on source SHA `7ff0d3d27af03d00928f3b67a5a0a3ef85006409`.
+- The staging database's current final state was rechecked read-only: all six Delta RPCs are non-executable by PUBLIC, anon and authenticated; all five workspace tables have RLS enabled; four existing staging workspaces remain in snapshot mode; operation/receipt tables are empty; and `nexus_private` is unavailable to browser roles.
+
+The source correction does not rewrite the already-applied staging migration history. The clean local CI database applies the corrected initial migration from scratch and verifies the permissions before running its temporary, rollback/cleanup-protected authenticated RPC tests.
+
+### Production rollout boundary
+
+The nine shared migrations remain a **post-merge OPS-01 rollout task**. No production migration has been applied or dry-run against production. The production baseline is now known, but backups/PITR still need verification, and an explicit production execution approval must be obtained at the OPS-01 gate. Do not apply migrations from this preflight.
