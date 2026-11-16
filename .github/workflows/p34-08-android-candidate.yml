@@ -71,15 +71,15 @@ jobs:
 
       - name: Verify frozen source and capture initial build provenance
         env:
-          WORKFLOW_TRIGGER_SHA: \${{ github.sha }}
-          WORKFLOW_RUN_ID: \${{ github.run_id }}
-          WORKFLOW_RUN_NUMBER: \${{ github.run_number }}
-          WORKFLOW_REF: \${{ github.ref }}
+          WORKFLOW_TRIGGER_SHA: ${{ github.sha }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_RUN_NUMBER: ${{ github.run_number }}
+          WORKFLOW_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           actual="$(git rev-parse HEAD)"
           test "$actual" = "$P34_06_SOURCE_SHA"
-          test -z "$(git status --porcelain)"
+          test -z "$(git status --porcelain --untracked-files=no)"
           mkdir -p android/build/reports/p34-08
           {
             echo "task=P34-08"
@@ -90,7 +90,7 @@ jobs:
             echo "workflow_run_number=$WORKFLOW_RUN_NUMBER"
             echo "workflow_ref=$WORKFLOW_REF"
             echo "android_cloud_mode=$NEXUS_ANDROID_CLOUD_MODE"
-            echo "source_worktree_clean_before_build=true"
+            echo "tracked_source_worktree_clean_before_build=true"
             echo "node=$(node --version)"
             echo "npm=$(npm --version)"
             echo "go=$(go version)"
@@ -147,11 +147,11 @@ jobs:
           echo "asset_file_count=$(find "$assets" -type f | wc -l | tr -d ' ')" >> "$report/build-provenance.txt"
           echo "asset_bytes=$(du -sb "$assets" | cut -f1)" >> "$report/build-provenance.txt"
           mapfile -t apks < <(find android/app/build/outputs/apk/fdroid/debug android/app/build/outputs/apk/fdroid/release -maxdepth 1 -type f -name '*.apk' -print | LC_ALL=C sort)
-          test "\${#apks[@]}" -eq 2
-          sha256sum "\${apks[@]}" | tee "$report/apk-sha256.txt"
+          test "${#apks[@]}" -eq 2
+          sha256sum "${apks[@]}" | tee "$report/apk-sha256.txt"
           {
-            echo "apk_count=\${#apks[@]}"
-            printf 'apk=%s\n' "\${apks[@]}"
+            echo "apk_count=${#apks[@]}"
+            printf 'apk=%s\n' "${apks[@]}"
             echo "android_local_asset_archive_sha256=$(sha256sum "$report/android-local-web-assets.tar.gz" | cut -d ' ' -f1)"
             echo "npm_license_inventory=android/build/reports/third-party/npm-dependencies.json"
             echo "gradle_license_inventory=android/build/reports/third-party/gradle-licenses.json"
