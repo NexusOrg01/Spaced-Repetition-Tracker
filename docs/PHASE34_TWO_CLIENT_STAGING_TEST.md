@@ -186,3 +186,28 @@ For each case, the build must reject local credentials and `resolveStagingEntity
 - Local Supabase integration workflow [#53](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43804741734): **success** — 19/19 authenticated protocol assertions, 18/18 large-workspace lifecycle assertions, and cleanup verified zero users, operations, receipts, Delta-mode rows and leaked RPC grants.
 - Full validation workflow [#1528](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43804741707): **success** — preview gate, build, backup/restore, account switch, Undo and regression chain passed.
 - The P34-05 acceptance gate is satisfied: zero unresolved Critical/High findings, snapshot fallback preserved, hosted local-Delta gate closed, and local disposable fixtures fully cleaned.
+
+
+## Exact-head revalidation — 16 November 2026
+
+Tested PR source SHA: `7ff0d3d27af03d00928f3b67a5a0a3ef85006409`.
+
+- [Validate curriculum catalogue #1543](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43915856312) — success. The workflow passed the entity-delta migration contract and client integration tests, preview-configuration guard, static build, IndexedDB/recovery, backup/restore, offline queue, workspace merge, large-workspace, cloud-sync, account-isolation/deletion, security-header, service-worker and Undo tests.
+- [Phase 3.4 local authenticated two-client integration #68](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43915856373) — success. It created a disposable local Supabase project, applied the local baseline and nine shared migrations, ran general snapshot writer/race and fallback tests, chunk storage and account-deletion checks, executed the authenticated A1/A2/B Chromium test (**19/19**) and the large-workspace lifecycle (**18/18**), then revoked all six RPC grants, deleted test users and verified zero residual operations, receipts, Delta-mode rows and browser-role grants before destroying the local stack.
+
+The large-workspace lifecycle evidence is distinct from P34-01: it covers a 26,900,000-byte/103-chunk/77,144-topic/72,001-history initial workspace, concurrent device edits and retry, 12,032 bounded topic deletions, one full subject deletion, compaction to revision 16, stale-device offline recovery through revisions 17–18, restart equality and second-owner isolation.
+
+The main validation run separately covers backup/restore, CSV, A→B→A account handoff, pending offline snapshots, durable recovery-journal restart and deletion cleanup, JSON replacement/reset Undo, Study Hub Undo, and account-deletion safety wiring.
+
+### Migration security correction
+
+The initial Delta migration on this source SHA no longer grants browser execution to the six privileged Delta RPCs. It explicitly revokes from `PUBLIC`, `anon`, and `authenticated` at creation time. The static contract test checks the initial migration itself, avoiding the temporary grant window that would otherwise exist before the later revocation migration. The local CI applies this corrected migration on a fresh database; temporary authenticated test grants are used only inside the disposable local integration job and are revoked during its unconditional cleanup.
+
+### Current preview and database boundaries
+
+- [Netlify exact-head PR preview](https://deploy-preview-126--nexussrt.netlify.app/) — ready for source SHA `7ff0d3d27af03d00928f3b67a5a0a3ef85006409`.
+- [Vercel exact-head preview](https://spaced-repetition-tracker-qaytaoput-recall-ed03.vercel.app/) — READY for the same source SHA.
+- Hosted staging was inspected read-only after the local CI run; its nine shared migrations plus one staging-only permission alignment entry remain present. Four existing workspaces remain snapshot mode; no operation/receipt rows remain; private guard functions are inaccessible to browser roles; all six Delta RPCs remain revoked.
+- Production was inspected read-only on 16 November 2026. Its migration history still contains only three pre-Phase-3.4 migrations and its eight existing workspaces remain JSONB snapshots. No production schema, data, migration, Auth setting or permission was changed.
+
+Keep the hosted previews offline/static for Delta protocol tests. Do not submit production or hosted staging URLs/credentials to the local-only harness.
