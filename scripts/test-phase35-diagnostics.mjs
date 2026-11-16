@@ -8,7 +8,7 @@ const end=source.indexOf('\nasync function collectSyncOperationalDiagnostics()',
 assert.ok(start>=0&&end>start,'diagnostic summary helper must be present');
 const data={pendingSnapshot:true,localSequence:17,archivedSnapshotCount:2,outboxAvailable:true,pendingChangeCountObserved:1000,outboxHasMore:true,outboxExactCount:false,cursorAvailable:true,publishRevision:8,acknowledgedSequence:77,lastKnownServerHeadRevision:11,revisionConflictEvents:3,mergedRecordConflicts:2,snapshotRecoveryEvents:1,storageMode:'chunked',chunkCount:103,payloadUtf8Bytes:26900000,chunkObservedAt:'2026-11-16T10:00:00.000Z',recoveryPhase:'staged',recoveryLocked:true,compactionPending:true,cleanupPending:true,cleanupDeletedCount:200,cleanupBacklogMayRemain:true,cleanupFailureObserved:false,indexedDbEnabled:true,pendingStorageEntries:4,syncErrorPresent:false};
 const sandbox={result:null};vm.createContext(sandbox);
-vm.runInContext(source.slice(start,end)+'\nresult=summarizeSyncOperationalState('+JSON.stringify(data)+')',{filename:'sync-diagnostic-summary-test.js'});
+vm.runInContext(source.slice(start,end)+'\nresult=summarizeSyncOperationalState('+JSON.stringify(data)+')',sandbox,{filename:'sync-diagnostic-summary-test.js'});
 const report=JSON.parse(JSON.stringify(sandbox.result));
 assert.equal(report.compatibilityQueue.pendingSnapshot,true);
 assert.equal(report.entityOutbox.pendingChangeCountObserved,1000);
