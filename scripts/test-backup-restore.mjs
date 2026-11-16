@@ -342,7 +342,7 @@ const importCsv=[
  'Commerce,Economics,Supply,"quoted, note",2026-05-02,4,2026-05-09,7,6',
  'Arts,Accounting,Double entry,=1+1,invalid-date,9,invalid-date,999,100001',
  ',,,missing topic,,,,'
-].join('\\n');
+].join('\n');
 await importSandbox.runHubImport({
  name:'topics.csv',size:importCsv.length,text:async()=>importCsv
 });
@@ -378,7 +378,7 @@ assert.deepEqual(importMessages,['CSV import complete: 2 added, 1 duplicates ski
 
 const commitsBeforeInvalid=importCommits.length;
 await assert.rejects(
- importSandbox.runHubImport({name:'duplicate-headers.csv',size:20,text:async()=>'Topic,Topic\\nA,B'}),
+ importSandbox.runHubImport({name:'duplicate-headers.csv',size:20,text:async()=>'Topic,Topic\nA,B'}),
  /duplicate column names/
 );
 assert.equal(importCommits.length,commitsBeforeInvalid,
