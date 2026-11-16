@@ -90,8 +90,125 @@ assert.ok(appCore.includes('async function renderTopics()')&&
   appCore.includes('selectTopKCooperative(source,historyVisibleLimit'),
   'Topics and History must use cooperative, cancellable scans rather than blocking full-array top-K loops');
 assert.ok(appCore.includes('document.querySelector(\'.view.active\')?.id===\'view-topics\'')&&
+  appCore.includes('document.body.classList.contains(\'danger-mode\')&&!$(\'dangerZoneStandalone\').hidden')&&
   appCore.includes('document.querySelector(\'.view.active\')?.id===\'view-history\''),
-  'outdated list scans must cancel when the user navigates away');
+  'outdated list scans must cancel when the user navigates away, while the standalone Danger Zone history remains an active render target');
+
+const openDangerZoneStart=studyHub.indexOf('function openDangerZone(){');
+const closeDangerZoneStart=studyHub.indexOf('function closeDangerZone()',openDangerZoneStart);
+assert.ok(openDangerZoneStart>=0&&closeDangerZoneStart>openDangerZoneStart,'the Danger Zone standalone entry points must remain available');
+const openDangerZoneSource=studyHub.slice(openDangerZoneStart,closeDangerZoneStart);
+const visibleBeforeRender=openDangerZoneSource.indexOf("$('dangerZoneStandalone').hidden=false;");
+const modeBeforeRender=openDangerZoneSource.indexOf("document.body.classList.add('danger-mode')");
+const renderAfterVisible=openDangerZoneSource.indexOf('renderHistory();');
+assert.ok(visibleBeforeRender>=0&&modeBeforeRender>visibleBeforeRender&&renderAfterVisible>modeBeforeRender,
+  'the Danger Zone must become the active visible render target before review history scanning starts');
+
+// Exercise the actual history renderer against a large synthetic review log. The screen
+// is a standalone panel, not a .view.active tab, matching the real application DOM.
+const historyRendererStart=appCore.indexOf('function compareHistoryRows(a,b){');
+const historyRendererEnd=appCore.indexOf('let structureRenderSequence=0;',historyRendererStart);
+assert.ok(historyRendererStart>=0&&historyRendererEnd>historyRendererStart,'the complete review-history renderer must be available for regression coverage');
+const historyRendererSource=appCore.slice(historyRendererStart,historyRendererEnd);
+const historyRecordCount=72001;
+const historyRows=Array.from({length:historyRecordCount},(_,index)=>({
+  id:'review-'+String(index).padStart(6,'0'),
+  topicName:'Topic '+index,
+  streamName:'Commerce',
+  subjectName:'Accounting',
+  streamId:'stream-1',
+  subjectId:'subject-1',
+  reviewedAt:'2026-11-10',
+  dueDate:'2026-11-15',
+  intervalDays:5,
+  rating:(index%5)+1,
+  note:''
+}));
+const makeHistoryElement=()=>({value:'',textContent:'',innerHTML:'',hidden:false,children:[]});
+const historyElements={
+  historySearch:makeHistoryElement(),
+  historyStreamFilter:Object.assign(makeHistoryElement(),{value:'ALL'}),
+  historySubjectFilter:Object.assign(makeHistoryElement(),{value:'ALL'}),
+  dangerZoneStandalone:makeHistoryElement(),
+  viewHistory:makeHistoryElement(),
+  historyCountLabel:makeHistoryElement(),
+  historyPagination:makeHistoryElement(),
+  historyInsights:makeHistoryElement()
+};
+const historyListElement={
+  _html:'',
+  children:[],
+  get innerHTML(){return this._html;},
+  set innerHTML(value){this._html=String(value);this.children=this._html?[{}]:[];}
+};
+historyElements.historyList=historyListElement;
+let historyRenderYields=0;
+const historySandbox={
+  window:{},
+  state:{
+    history:historyRows,
+    subjects:[{id:'subject-1',name:'Accounting',streamId:'stream-1'}],
+    streams:[{id:'stream-1',name:'Commerce'}]
+  },
+  historyVisibleLimit:100,
+  historyInsightsDirty:true,
+  dangerMode:true,
+  afterYield:null,
+  setTimeout(callback){
+    historyRenderYields++;
+    if(historySandbox.afterYield)historySandbox.afterYield(historyRenderYields);
+    return setTimeout(callback,0);
+  },
+  document:{
+    body:{classList:{contains(name){return name==='danger-mode'&&historySandbox.dangerMode;}}},
+    querySelector(){return {id:'view-setup'};}
+  },
+  $(id){return historyElements[id==='view-history'?'viewHistory':id];},
+  RATING_LABELS:{1:'Again',2:'Hard',3:'Good',4:'Very good',5:'Easy'},
+  esc(value){return String(value??'');},
+  fmtDate(value){return String(value||'—');},
+  renderHistoryInsights(){historyElements.historyInsights.innerHTML='History insights rendered';},
+  console
+};
+historyElements.dangerZoneStandalone.hidden=false;
+vm.createContext(historySandbox);
+vm.runInContext(appCore.slice(helperStart,helperEnd),historySandbox,{filename:'history-selection-helpers.js'});
+vm.runInContext(historyRendererSource,historySandbox,{filename:'danger-zone-history-renderer.js'});
+assert.equal(typeof historySandbox.renderHistory,'function','the actual renderHistory function must execute in the test harness');
+await historySandbox.renderHistory();
+assert.ok(historyElements.historyList.innerHTML.includes('history-entry'),
+  'the standalone Danger Zone must render saved records from a 72,001-entry history source');
+assert.ok(!historyElements.historyList.innerHTML.includes('Loading review history'),
+  'the Danger Zone must replace the loading placeholder after a successful large-history scan');
+assert.ok(historyElements.historyCountLabel.textContent.includes('Showing 100 of 72001 matching records'),
+  'the Danger Zone must report the full matching-record count while rendering a bounded page');
+assert.ok(historyRenderYields>=Math.ceil(historyRecordCount/400)-1,
+  'large Danger Zone history scans must remain cooperative and yield between bounded batches');
+assert.ok(historyElements.historyInsights.innerHTML.includes('rendered'),
+  'history insights must render after the standalone record list is completed');
+
+// Closing the standalone surface during a cooperative scan must cancel stale DOM work.
+// Reopening it must run a fresh scan and recover the rows.
+historyElements.historyList.innerHTML='';
+historySandbox.afterYield=yieldCount=>{
+  if(yieldCount===1){
+    historySandbox.dangerMode=false;
+    historyElements.dangerZoneStandalone.hidden=true;
+  }
+};
+historyRenderYields=0;
+await historySandbox.renderHistory();
+assert.equal(historyRenderYields,1,'a closed Danger Zone must cancel the history scan at the first cooperative yield');
+assert.ok(!historyElements.historyList.innerHTML.includes('history-entry'),
+  'a cancelled hidden-screen render must not publish stale history rows');
+historySandbox.afterYield=null;
+historySandbox.dangerMode=true;
+historyElements.dangerZoneStandalone.hidden=false;
+historyElements.historyList.innerHTML='';
+historyRenderYields=0;
+await historySandbox.renderHistory();
+assert.ok(historyElements.historyList.innerHTML.includes('history-entry'),
+  'reopening the Danger Zone must recover and render the complete saved review history');
 assert.ok(appCore.includes('renderStructureList(topicCountsBySubject)')&&
   appCore.includes('topicCountsBySubject.set(topic.subjectId'),
   'the structure tree must reuse the topic counts collected during the Topics scan');

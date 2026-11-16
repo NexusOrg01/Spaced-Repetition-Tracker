@@ -1791,7 +1791,7 @@
     }
     window.scrollTo({top:0,behavior:'auto'});
   }
-  function openDangerZone(){if(document.body.classList.contains('danger-mode'))return;renderHistory();$('dangerZoneStandalone').hidden=false;document.body.classList.add('danger-mode');window.scrollTo({top:0,behavior:'auto'});}
+  function openDangerZone(){if(document.body.classList.contains('danger-mode'))return;$('dangerZoneStandalone').hidden=false;document.body.classList.add('danger-mode');window.scrollTo({top:0,behavior:'auto'});renderHistory();}
   function closeDangerZone(){document.body.classList.remove('danger-mode');$('dangerZoneStandalone').hidden=true;window.scrollTo({top:0,behavior:'auto'});}
   function globalSearchMarkup(q){
     const query=String(q||'').trim().toLocaleLowerCase();

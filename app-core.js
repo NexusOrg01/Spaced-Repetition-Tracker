@@ -929,7 +929,8 @@
   async function renderHistory(){
     const renderId=++historyRenderSequence,source=state.history;
     const isCurrent=()=>renderId===historyRenderSequence&&source===state.history&&
-      document.querySelector('.view.active')?.id==='view-history';
+      ((document.body.classList.contains('danger-mode')&&!$('dangerZoneStandalone').hidden)||
+       document.querySelector('.view.active')?.id==='view-history');
     const q=$('historySearch').value.trim().toLocaleLowerCase(),streamId=$('historyStreamFilter').value,subjectId=$('historySubjectFilter').value;
     const subjectById=new Map(state.subjects.map(x=>[String(x.id),x])),subjectByName=new Map(state.subjects.map(x=>[String(x.name),x]));
     const streamById=new Map(state.streams.map(x=>[String(x.id),x])),streamByName=new Map(state.streams.map(x=>[String(x.name),x]));
