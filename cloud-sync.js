@@ -192,6 +192,13 @@ async function fetchRemote(userId,knownWrite,signal){
   throw error;
  }finally{if(scope)scope.clear();}
 }
+const MAX_LEGACY_COMPATIBILITY_SNAPSHOT_BYTES=2*1024*1024;
+function isMissingChunkStorageTableError(error){
+ const code=String(error&&error.code||'');
+ const message=String(error&&error.message||'');
+ return code==='42P01'||code==='PGRST205'||
+  (/nexus_user_data_chunks/i.test(message)&&/(schema cache|does not exist|undefined table|could not find)/i.test(message));
+}
 async function writeRemoteSnapshot(userId,payload,expectedStamp,stamp,signal){
  const startedAt=Date.now();
  try{
@@ -199,9 +206,28 @@ async function writeRemoteSnapshot(userId,payload,expectedStamp,stamp,signal){
   const serialized=JSON.stringify(payload);
   const serializedBytes=chunks?chunks.utf8ByteLength(serialized):(typeof TextEncoder==='function'?new TextEncoder().encode(serialized).length:serialized.length);
   if(chunks&&(lastRemoteStorageMode==='chunked'||serializedBytes>=chunks.CHUNK_THRESHOLD_BYTES)){
-   const result=await chunks.writeSnapshot(client,userId,payload,expectedStamp,stamp,window.NexusBackupRestoreUtils,serialized,signal);
-   syncDiag('cloud-write-complete',payload,{durationMs:Date.now()-startedAt,storageMode:'chunked',chunkCount:result.manifest.chunkCount,payloadUtf8Bytes:result.manifest.totalBytes});
-   return result;
+   try{
+    const result=await chunks.writeSnapshot(client,userId,payload,expectedStamp,stamp,window.NexusBackupRestoreUtils,serialized,signal);
+    syncDiag('cloud-write-complete',payload,{durationMs:Date.now()-startedAt,storageMode:'chunked',chunkCount:result.manifest.chunkCount,payloadUtf8Bytes:result.manifest.totalBytes});
+    return result;
+   }catch(error){
+    // Production can receive the Web build before OPS-01 installs the chunk table.
+    // Keep ordinary legacy JSONB workspaces writable during that interval. Never
+    // downgrade a known chunked workspace, and never silently push a payload too
+    // large for the conservative legacy compatibility ceiling.
+    const canUseLegacyFallback=lastRemoteStorageMode!=='chunked'&&
+     payload&&payload.__nexusStorage!=='chunked-v1'&&
+     isMissingChunkStorageTableError(error);
+    if(!canUseLegacyFallback)throw error;
+    if(serializedBytes>MAX_LEGACY_COMPATIBILITY_SNAPSHOT_BYTES){
+     const unavailable=new Error('This Supabase database has not received the Nexus chunk-storage upgrade yet. This workspace is too large for safe legacy cloud storage. Your local data and pending changes remain preserved; cloud sync can resume after the database upgrade.');
+     unavailable.code='NEXUS_CHUNK_STORAGE_NOT_READY';
+     throw unavailable;
+    }
+    const legacy=await window.NexusBackupRestoreUtils.writeCloudSnapshot(client,userId,payload,expectedStamp,stamp,signal);
+    syncDiag('cloud-write-complete',payload,{durationMs:Date.now()-startedAt,storageMode:'legacy-schema-compatibility',payloadUtf8Bytes:serializedBytes,chunkStorageUnavailable:true});
+    return legacy;
+   }
   }
   const result=await window.NexusBackupRestoreUtils.writeCloudSnapshot(client,userId,payload,expectedStamp,stamp,signal);
   syncDiag('cloud-write-complete',payload,{durationMs:Date.now()-startedAt,storageMode:'legacy',payloadUtf8Bytes:serializedBytes});
