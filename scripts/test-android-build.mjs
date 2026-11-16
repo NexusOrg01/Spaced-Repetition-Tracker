@@ -406,4 +406,34 @@ assert.ok(bootstrap.includes('NexusAndroidBridge') && bootstrap.includes('isNati
 assert.ok(read('dist/app-core.js').includes('shareTextFile'));
 assert.ok(read('dist/study-hub.js').includes('shareTextFile'));
 
+// The scaling implementation is shared between the browser/PWA and F-Droid APK.
+// Android may add native adapters to app-core, Study Hub and cloud sync, but it must
+// not fork or omit the storage, merge, recovery, queue, chunk and curriculum modules.
+const sharedScalingRuntimeAssets = [
+  'nexus-storage.js',
+  'offline-sync-queue.js',
+  'workspace-sync-merge.js',
+  'cloud-chunk-storage.js',
+  'entity-delta-sync.js',
+  'curriculum-integrity.js',
+  'workspace-isolation-guard.js',
+  'backup-restore-utils.js',
+  'cloud-sync-recovery.js',
+  'fsrs-bundle.js'
+];
+for (const asset of sharedScalingRuntimeAssets) {
+  assert.equal(read('dist/' + asset), read(asset),
+    'The Android/F-Droid bundle must package the exact shared scaling module: ' + asset);
+}
+for (const [file, markers] of [
+  ['dist/app-core.js', ['window.NexusStartUndoFeatureArrayDelete', 'function undo()']],
+  ['dist/study-hub.js', ['function deleteStudyHubRecord', 'window.NexusRestoreFeatureArray']],
+  ['dist/cloud-sync.js', ['chunks.writeSnapshot', 'NexusWorkspaceSyncMerge']]
+]) {
+  const bundled = read(file);
+  for (const feature of markers) {
+    assert.ok(bundled.includes(feature), 'The Android bundle dropped shared behaviour ' + feature + ' from ' + file);
+  }
+}
+
 console.log('Android bundle, F-Droid npm dependency licences (' + packageLicenses.size + ' packages), cloud guards, native features and F-Droid-only checks passed.');

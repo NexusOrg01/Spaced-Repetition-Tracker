@@ -13,6 +13,7 @@ on:
       - scripts/test-staging-two-client-harness.mjs
       - scripts/test-entity-delta-client.mjs
       - scripts/test-preview-build-config.mjs
+      - scripts/test-android-build.mjs
       - staging-test/**
       - supabase/local-phase34/**
       - supabase/migrations/**
