@@ -157,7 +157,8 @@ const historySandbox={
   setTimeout(callback){
     historyRenderYields++;
     if(historySandbox.afterYield)historySandbox.afterYield(historyRenderYields);
-    return setTimeout(callback,0);
+    Promise.resolve().then(callback);
+    return historyRenderYields;
   },
   document:{
     body:{classList:{contains(name){return name==='danger-mode'&&historySandbox.dangerMode;}}},
