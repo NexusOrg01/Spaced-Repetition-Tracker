@@ -46,7 +46,7 @@ export function validateRemoteMigrationSet(remoteVersions,{complete=false}={}){
  return {applied:versions.length-pending.length,pending};
 }
 export function parseDryRunVersions(text){
- return [...new Set((String(text).match(/\b\d{8,14}\b/g)||[]))].sort();
+ return [...new Set((String(text).match(/(?<!\d)\d{8,14}(?!\d)/g)||[]))].sort();
 }
 export function validateDryRun(remoteVersions,dryRunText){
  const remote=validateRemoteMigrationSet(remoteVersions);
