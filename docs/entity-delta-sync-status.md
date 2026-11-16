@@ -407,3 +407,39 @@ Exact-head validation:
 - The provider-marker-only local-credential bypass is now closed and regression-tested. **Open Critical: 0. Open High: 0.**
 - Snapshot/chunk fallback remains authoritative. Delta remains off for hosted previews and production. Physical Android/low-memory acceptance remains P34-09.
 - PR #126 remains open and draft. No production/live changes, merge, APK build or production deployment occurred.
+
+
+### 16 November 2026 — P34-02 to P34-05 independent revalidation and pre-freeze security correction
+
+**Revalidation source SHA:** `7ff0d3d27af03d00928f3b67a5a0a3ef85006409`  
+**Branch:** `android/capacitor-multistore-foundation` · **PR:** [#126](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/pull/126)
+
+The user-confirmed P34-02, P34-03, P34-04 and P34-05 completion claims were independently checked against current source, tests and exact-head CI before beginning P34-06.
+
+- **P34-02 — general snapshot integrity:** Local Supabase tests passed. The two-session runner proved publisher-first and cleanup-first ordering for existing workspaces and first-write inserts, rejected incomplete candidates, verified stale-revision cleanup and account-deletion cascade, and measured the blocking lock waits. Chunk-storage regressions passed for UTF-8 splitting, 27 MB chunking, read-back/integrity verification, active-manifest protection, bounded orphan cleanup, legacy snapshot compatibility, CAS conflicts, corruption and interrupted-upload recovery.
+- **P34-03 — remaining concurrent-device lifecycle:** Local authenticated A1/A2/B browser protocol passed **19/19** assertions. The large-workspace lifecycle passed **18/18** assertions using 26,900,000 bytes, 103 chunks, 77,144 topics and 72,001 history rows. It verified a concurrent CAS winner/conflict/retry, 12,032 topic deletions in 13 groups, 240-topic/240-history subject deletion, compaction to revision 16, stale-device offline edits, recovery through two tail groups to revision 18, restart equality, and owner B isolation.
+- **P34-04 — application lifecycle:** The exact-head main validation ran the backup/restore and JSON payload checks, CSV import/export and validation, atomic restore rollback, A→B→A cloud runtime/account-isolation scenarios, durable storage/recovery-journal restart tests, deletion of an account with a pending recovery intent, account-specific outbox/entity cleanup, account-deletion security wiring, and tracker/Study Hub Undo tests. The local Supabase/Chromium workflow separately verified real Auth sessions, RLS/owner isolation, RPC authorization, and database account-deletion cascade. These checks are split between focused application/storage tests and the disposable local backend; they are not represented as one monolithic UI journey.
+- **P34-05 — integration findings:** The preview-only credential gate, migration contract, client/cloud-sync integration, main regression suite, and disposable database cleanup all passed. No unresolved Critical or High integration finding was identified in the reviewed P34-02 through P34-05 scope. Snapshot/chunk compatibility remains the default; Delta is still gated and is not enabled for normal users or hosted previews.
+
+Exact-head workflows:
+
+- [Validate curriculum catalogue #1543](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43915856312) — **success**. Includes preview configuration/build, storage/recovery, backup/restore, offline queue, workspace merge, large-workspace, cloud-sync, account isolation/deletion, security, service-worker and Undo regression checks.
+- [Local authenticated Supabase + two-client integration #68](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43915856373) — **success**. Includes general snapshot integrity/race tests, chunk storage, account deletion checks, 19 authenticated browser assertions, 18 large-workspace lifecycle assertions and final local fixture/RPC-grant cleanup.
+- Local cleanup verified zero disposable users, operation rows, receipt rows and Delta-mode rows; all six browser-role RPC grants were revoked; the local Supabase stack was destroyed.
+
+#### P34-06 pre-freeze security finding — corrected
+
+A targeted migration review found that the original first Delta migration temporarily granted all six privileged `SECURITY DEFINER` RPCs to `authenticated`, with later migrations revoking them. That was unsafe as a fresh-production migration sequence because there would be a permission-exposure interval between migration commits.
+
+The current branch corrects this before source freeze:
+
+- Initial migration correction: commit `cab65fbe44ac16edededd4fe194b0f34c4ddc26c`.
+- Regression-contract correction: commit `7ff0d3d27af03d00928f3b67a5a0a3ef85006409`.
+- The initial migration now revokes all six functions from `PUBLIC`, `anon`, and `authenticated`; the static migration test rejects any `GRANT EXECUTE` in that migration.
+- The updated exact-head CI passed. Final staging ACL checks also confirmed that all six RPCs are non-executable by browser roles.
+
+#### Read-only production baseline
+
+Production Supabase `nexus-spaced-repetition` (`txugbdavblpettcnhcxl`) was accessed read-only on 16 November 2026. Only three older migration versions are recorded; all eight existing workspace rows remain legacy JSONB snapshots. No Phase 3.4 workspace tables or `nexus_private` schema exist in production. Owner-scoped RLS/privileges on `nexus_user_data` were confirmed. No production migration, schema, data, Auth setting, RLS/permission, or live deployment change was made. Backup/PITR readiness remains unverified.
+
+**Boundary:** OPS-01 production rollout planning is a post-merge gate. This pre-freeze audit does not authorize or perform production migrations. PR #126 remains open and Draft; no merge was performed.
