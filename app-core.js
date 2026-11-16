@@ -518,7 +518,11 @@
   }
   function startUndoWorkspaceReplace(text){
     if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
-    undoState={kind:'workspace-reference',value:state};
+    // A workspace replacement changes both tracker data and Study Hub data.
+    // Capture both before the caller swaps either in-memory workspace so Undo
+    // restores one coherent workspace rather than only the tracker collections.
+    undoState={kind:'workspace-reference',value:state,
+      featureState:typeof window.NexusGetFeatureState==='function'?window.NexusGetFeatureState():null};
     armUndo(text);
   }
   function startUndoEntityEdit(text,collection,item,fields){
@@ -559,6 +563,7 @@
   window.NexusStartUndoTopicBatch=startUndoTopicBatch;
   window.NexusUndoLastAction=()=>undo();
   window.NexusHasPendingUndo=()=>Boolean(undoState);
+  window.NexusStartUndoWorkspaceReplace=startUndoWorkspaceReplace;
   window.NexusStartUndoFeatureArrayDelete=(collection,previous)=>{
     if(!['studyLogs','papers','journal','goals'].includes(collection)||!Array.isArray(previous))return false;
     if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
@@ -609,6 +614,11 @@
         clearUndoPresentation();
         notify('Undo could not restore this Study Hub record. Export a backup and reload before continuing.');
         return;
+      }
+    }else if(pending.kind==='workspace-reference'){
+      state=pending.value;
+      if(pending.featureState&&typeof window.NexusSetFeatureState==='function'){
+        window.NexusSetFeatureState(pending.featureState,{persist:false,render:false});
       }
     }else if(pending.kind==='topic-batch-edit'){
       state=pending.value;for(const change of pending.changes)Object.assign(change.topic,change.before);
