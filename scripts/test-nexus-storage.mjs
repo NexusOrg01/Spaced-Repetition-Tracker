@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { webcrypto } from 'node:crypto';
+import { TextEncoder } from 'node:util';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -192,6 +194,8 @@ function makeWindow(nativeStorage, indexedDB) {
     document: { getElementById: () => null },
     console,
     setTimeout,
+    crypto:webcrypto,
+    TextEncoder,
     IDBKeyRange:{bound(lower,upper){return {lower,upper};}}
   };
 }
@@ -500,6 +504,22 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     boundedOutboxQueries[1].lower.endsWith(':seq:0000000000000002'),
     'paged outbox reads must use sequence-key ranges instead of scanning older owner records');
   const outboxRows=idb.databases.get('nexus-workspace-v1').stores.get('outbox');
+  const operationMarkerKey='workspace-entity-change:'+encodeURIComponent('entity-owner-a')+
+    ':op:'+encodeURIComponent('entity-op-review-001');
+  const operationMarker=outboxRows.get(operationMarkerKey);
+  assert.match(operationMarker.payloadFingerprint,/^[a-f0-9]{64}$/,
+    'operation markers must store a SHA-256 fingerprint of their normalized payload');
+  const mismatchedReplay=clone(changes);
+  mismatchedReplay[0].value.name='A different same-count payload';
+  await assert.rejects(loaded.api.writeWorkspaceEntityChanges('entity-owner-a',mismatchedReplay,op),
+    'reusing an operation ID for a different same-count payload must fail closed');
+  const afterRejectedReplay=await loaded.api.readWorkspaceEntities('entity-owner-a');
+  assert.equal(afterRejectedReplay.state.topics[1].name,'Bank reconciliation — updated',
+    'a rejected idempotency-key collision must not overwrite entity records');
+  assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)).length,2,
+    'a rejected idempotency-key collision must not append outbox events');
+  assert.equal((await loaded.api.writeWorkspaceEntityChanges('entity-owner-a',changes,op)).replayed,true,
+    'the original payload must remain a valid replay after a mismatched payload is rejected');
   // Simulate an existing client that wrote only the original idempotency marker,
   // before the sequence-indexed marker was introduced.
   for(const [key,row] of outboxRows.entries()){
