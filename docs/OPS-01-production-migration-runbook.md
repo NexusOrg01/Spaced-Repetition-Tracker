@@ -16,16 +16,42 @@ The workflow declares this environment but cannot create or prove its reviewer p
 
 ## Mandatory backup and isolated-restore gate
 
-**Production apply is blocked until a fresh, full database backup has been restored successfully into a separate recovery project.** The earlier record of a backup-safeguard waiver is superseded for final rollout execution.
+**Production apply is blocked until a fresh, complete and restorable database recovery set has been restored successfully into a separate recovery environment.** The earlier record of a backup-safeguard waiver is superseded for final rollout execution.
+
+### Supabase export scope — important
+
+Do **not** treat a plain `supabase db dump` as a complete Supabase project backup:
+
+- The Supabase CLI dump excludes Supabase-managed schemas such as `auth`, `storage` and extension-managed schemas by default.
+- A default dump is schema-only: it does not include table data or custom roles unless the corresponding options are requested.
+- Database dumps do not include the actual files stored through the Supabase Storage API; those objects need their own backup if the project uses Storage.
+
+See the official [Supabase CLI `db dump` reference](https://supabase.com/docs/reference/cli/supabase-db-dump) and [Supabase Database Backups guide](https://supabase.com/docs/guides/platform/backups).
+
+For Nexus, the recovery set must cover, at minimum:
+
+1. The application schema, functions, triggers, indexes, RLS policies, grants and required extensions.
+2. All application table data, including every `public.nexus_user_data` row and its workspace payload.
+3. Required custom database roles and privilege/default-privilege state.
+4. The Auth user identities referenced by Nexus workspace rows, preserving the exact user UUIDs and the identity/account relationships needed to keep the workspace foreign keys valid.
+5. Any project configuration or Storage objects that the application actually depends on.
+
+The Auth identity item is a hard gate: a public-schema-only export that omits the corresponding `auth.users` identities is not a successful Nexus restore, even if the eight workspace rows themselves were copied. Do not assume that copying user emails or user metadata is equivalent to restoring the original Auth identities. Use a supported, reviewed method for preserving/reconstructing those identities in the isolated recovery environment and prove that every restored `nexus_user_data.user_id` resolves to the expected Auth user. Do not attempt undocumented direct writes to Supabase-managed Auth tables.
+
+### Required recovery procedure
 
 Before an apply run:
 
-1. Create a fresh database-level export covering the application schema and required data, including all current workspace rows and the Auth identities referenced by them. Record the production project ref and exact backup timestamp.
-2. Store the backup encrypted at rest in an off-repository, access-controlled location. Do not upload the raw database dump, credentials, connection strings or user workspace content to GitHub Actions artifacts or PR comments.
-3. Restore that export into a separate isolated recovery project. Never test a restore over production or hosted staging.
-4. Verify the restored schema, migration baseline, workspace row count, all workspace payloads, Auth user references, foreign-key relationships and key table row counts. Record the backup SHA-256, recovery-project ref, restore timestamp, verification queries and result in a restricted audit record.
-5. Assign a reference in the exact format `NEXUS-DR-YYYYMMDD-XXXX` (for example, `NEXUS-DR-20261117-AB12`). The reference is a pointer to the protected evidence, not proof by itself.
-6. The protected GitHub environment reviewer must inspect the referenced evidence and independently confirm the isolated restore succeeded before approving an apply run.
+1. Create a fresh export/recovery set. Explicitly account for the CLI exclusions above; capture application schema, table data and custom roles separately where required, and separately preserve Auth identities and Storage objects using supported methods.
+2. Record the production project ref, exact backup timestamp, export commands/methods, tool versions, file inventory and SHA-256 checksums.
+3. Store the recovery set encrypted at rest in an off-repository, access-controlled location. Do not upload raw database dumps, Auth records, credentials, connection strings or user workspace content to GitHub Actions artifacts or PR comments.
+4. Restore the recovery set into a separate isolated recovery project/environment. Never test a restore over production or hosted staging.
+5. Verify the restored migration baseline, schema objects, all eight currently recorded Nexus workspace rows, every workspace payload, exact Auth user UUID references, foreign-key relationships, policies/permissions and required table row counts. If Storage is used, verify the objects independently.
+6. Record the recovery project/environment ref, restore timestamp, verification queries/results and any deviations in a restricted audit record. Confirm the recovered application can read the preserved workspaces using the restored account identities.
+7. Assign a reference in the exact format `NEXUS-DR-YYYYMMDD-XXXX` (for example, `NEXUS-DR-20261117-AB12`). The reference is a pointer to the protected evidence, not proof by itself.
+8. The protected GitHub environment reviewer must inspect the referenced evidence and independently confirm the isolated restore succeeded before approving an apply run.
+
+**Stop condition:** If the team cannot preserve and restore the original Auth user identities and their workspace ownership relationships through a supported method, the backup gate remains blocked. Do not apply the production migrations until an adequate recovery method is demonstrated.
 
 The workflow enforces a non-empty, format-checked evidence reference for `apply`. The human environment approval is the actual evidence-review gate; the typed reference cannot prove that a backup exists or is restorable.
 
