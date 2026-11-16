@@ -925,6 +925,12 @@ async function upload(){
    status('Staging delta sync paused');
    say('Staging entity-delta sync could not complete safely. Your local workspace and recovery journal were preserved. The legacy snapshot writer was not used. Review the preview diagnostics before retrying.');
   }
+  else if(e&&e.code==='NEXUS_CHUNK_STORAGE_NOT_READY'){
+   // The authenticated account and its local workspace remain valid. Pause only
+   // the oversized cloud write until the database schema rollout is complete.
+   status('Cloud storage upgrade required');
+   say(e.message);
+  }
   else{ready=false;status('Sync error');say('Cloud upload failed or could not be verified. Local data and the pending snapshot are preserved. Nexus will retry automatically when the connection is available.');scheduleRetry();}
   console.error('Nexus cloud sync failed',e);
  }finally{uploadScope.clear();syncing=false;if(retryReconcileAfterConflict){retryReconcileAfterConflict=false;setTimeout(()=>{const activeConnect=connectPromise;if(activeConnect)activeConnect.then(()=>connect());else connect();},0);}if(pendingSync){pendingSync=false;if(ready)schedule();else scheduleRetry();}}
