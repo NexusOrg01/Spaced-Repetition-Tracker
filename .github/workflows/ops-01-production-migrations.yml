@@ -15,6 +15,10 @@ on:
         description: "For apply only, enter exactly: APPLY-OPS-01-TO-PRODUCTION"
         required: false
         type: string
+      backup_restore_evidence_ref:
+        description: "For apply only, enter a verified evidence ID: NEXUS-DR-YYYYMMDD-XXXX. Do not paste backup URLs, credentials, or backup contents."
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -37,6 +41,7 @@ jobs:
       SUPABASE_PROJECT_REF: txugbdavblpettcnhcxl
       OPS01_OPERATION: ${{ inputs.operation }}
       OPS01_CONFIRMATION: ${{ inputs.confirmation }}
+      OPS01_BACKUP_RESTORE_EVIDENCE_REF: ${{ inputs.backup_restore_evidence_ref }}
     steps:
       - name: Check out reviewed main branch
         uses: actions/checkout@v4
@@ -51,7 +56,7 @@ jobs:
         run: node scripts/ops01-migration-guard.mjs
       - name: Install pinned Supabase CLI v3.0.0
         run: npm install --global supabase@3.0.0
-      - name: Verify operator secrets and immutable target
+      - name: Verify operator secrets, immutable target and recovery evidence
         shell: bash
         run: |
           set -euo pipefail
@@ -62,9 +67,21 @@ jobs:
             echo "Unsupported operation." >&2
             exit 1
           fi
-          if [[ "$OPS01_OPERATION" == "apply" && "$OPS01_CONFIRMATION" != "APPLY-OPS-01-TO-PRODUCTION" ]]; then
-            echo "Apply requires the exact typed confirmation phrase." >&2
-            exit 1
+          if [[ "$OPS01_OPERATION" == "apply" ]]; then
+            if [[ "$OPS01_CONFIRMATION" != "APPLY-OPS-01-TO-PRODUCTION" ]]; then
+              echo "Apply requires the exact typed confirmation phrase." >&2
+              exit 1
+            fi
+            node scripts/ops01-migration-guard.mjs \
+              --require-backup-restore-evidence \
+              --backup-restore-evidence-ref "$OPS01_BACKUP_RESTORE_EVIDENCE_REF"
+            {
+              echo "## OPS-01 recovery gate"
+              echo ""
+              echo "- Backup/restore evidence reference: `$OPS01_BACKUP_RESTORE_EVIDENCE_REF`"
+              echo "- The protected environment reviewer must inspect the referenced evidence and independently confirm that the backup was restored into an isolated recovery project before approving this job."
+              echo "- The evidence reference is an operator-supplied pointer, not proof by itself."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
           supabase --version
       - name: Read production migration history
