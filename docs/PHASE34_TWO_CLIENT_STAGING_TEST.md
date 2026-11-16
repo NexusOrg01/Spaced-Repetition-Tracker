@@ -11,7 +11,7 @@ This replaces the former hosted-staging browser runbook. The old harness hardcod
 
 - Run only from a local Nexus checkout on your computer.
 - The disposable stack is built in .build/phase34-local-supabase, outside the repository's normal supabase/migrations chain.
-- The helper copies a test-only nexus_user_data baseline and eight relevant chunk/entity-delta migrations into the temporary Supabase project. It omits the historical syllabus migrations and staging-only permissions migration because those have environment-specific prerequisites and are unrelated to Phase 3.4.
+- The helper copies a test-only nexus_user_data baseline and nine relevant chunk/entity-delta migrations, including the 20261115171500 general snapshot-candidate validator into the temporary Supabase project. It omits the historical syllabus migrations and staging-only permissions migration because those have environment-specific prerequisites and are unrelated to Phase 3.4.
 - No supabase login, supabase link, --remote, --linked, hosted project URL, or hosted API key is required or permitted.
 - Public Vercel and Netlify previews are blocked by the harness. Their generated Delta feature gate remains false, including when the old staging opt-in is set.
 - The normal production gate remains false. Local Delta mode requires NEXUS_PHASE34_LOCAL_TEST=true and NEXUS_ENTITY_DELTA_SYNC_LOCAL=true, a loopback API URL on port 54321, and a loopback browser origin.
@@ -31,7 +31,7 @@ npx supabase start --exclude realtime,storage-api,imgproxy,edge-runtime,logflare
 npx supabase status
 ~~~
 
-The helper initializes a clean local CLI project, copies a test-only baseline and the eight relevant committed migrations, and copies fixture SQL into test-fixtures/. It does not copy data from either hosted project. Do not run db reset --remote or link this temporary project to an organization.
+The helper initializes a clean local CLI project, copies a test-only baseline and the nine relevant committed migrations, and copies fixture SQL into test-fixtures/. It does not copy data from either hosted project. Do not run db reset --remote or link this temporary project to an organization.
 
 The default local API is http://127.0.0.1:54321; Studio is normally http://127.0.0.1:54323. Copy the API URL and anon key from supabase status. Do not use the service-role key.
 
