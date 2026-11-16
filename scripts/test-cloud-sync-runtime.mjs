@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { webcrypto } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,7 +8,9 @@ import vm from 'node:vm';
 
 const require = createRequire(import.meta.url);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+globalThis.crypto ||= webcrypto;
 const backup = require('../backup-restore-utils.js');
+const cloudChunks = require('../cloud-chunk-storage.js');
 const queue = require('../offline-sync-queue.js');
 const recovery = require('../cloud-sync-recovery.js');
 const curriculumIntegrity = require('../curriculum-integrity.js');
@@ -109,6 +112,7 @@ let releaseDeferredRemoteRead = null;
 let simulateAmbiguousCommittedWrite = false;
 let simulatedRacingCloudRow = null;
 let turnOfflineDuringRacingCommit = false;
+let missingChunkTable = false;
 const rows = new Map();
 const listeners = {};
 const elements = new Map();
@@ -147,6 +151,7 @@ const document = {
 const entityProjectionRebuilds = [];
 const window = {
   NexusBackupRestoreUtils: backup,
+  NexusCloudChunkStorage: cloudChunks,
   NexusOfflineSyncQueue: queue,
   NexusCloudSyncRecovery: recovery,
   NexusCurriculumIntegrity: curriculumIntegrity,
@@ -196,6 +201,9 @@ function makeQuery(table) {
     },
     async then(resolve, reject) { return Promise.resolve().then(async () => {
       if (!networkAvailable) throw new Error('simulated offline network');
+      if(table==='nexus_user_data_chunks'&&missingChunkTable){
+        return {data:null,error:{code:'PGRST205',message:"Could not find the table 'public.nexus_user_data_chunks' in the schema cache"}};
+      }
       if (table !== 'nexus_user_data' || !activeSession) return { data: [], error: null };
       if (operation === 'insert') {
         const owner = values.user_id;
@@ -1565,4 +1573,72 @@ assert.equal(window.NexusCloudSync.getAccountState().ready,true,
 assert.equal(getElement('cloudStatus').textContent,'Synced',
   'duplicate auth events must not leave the sync status in a signed-out or loading state');
 
-console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, target-account pending-snapshot isolation, first-login conflict gating, auth-session queue recovery, and 77,144-record second-device deletion reconciliation.');
+// Production can receive the Web build before OPS-01 installs the chunk table.
+// A bounded legacy JSONB workspace must keep syncing until that schema is ready.
+const accountF={id:'account-F',email:'f@example.test'};
+const payloadF=payloadFor(null);
+rows.set(accountF.id,{user_id:accountF.id,payload:payloadF,updated_at:'2026-11-13T18:15:00.000Z'});
+storage.setItem(OWNER,accountF.id);
+storage.setItem(STATE_KEY,JSON.stringify(payloadF.state));
+storage.setItem(FEATURE_KEY,JSON.stringify(payloadF.featureState));
+context.state=payloadF.state;
+activeSession={user:accountF};
+networkAvailable=true;
+missingChunkTable=false;
+await window.NexusCloudSync.reconnect();
+
+const legacyLargeState=stateFor('legacy-schema-large-workspace');
+legacyLargeState.topics[0].notes='x'.repeat(1_700_000);
+const legacyLargeFeatures=featuresFor(null);
+const legacyLargePayload={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),
+  state:legacyLargeState,featureState:legacyLargeFeatures};
+const legacyLargeBytes=new TextEncoder().encode(JSON.stringify(legacyLargePayload)).length;
+assert.ok(legacyLargeBytes>cloudChunks.CHUNK_THRESHOLD_BYTES&&legacyLargeBytes<2*1024*1024,
+  'legacy compatibility fixture must exceed the chunk threshold but remain within the bounded JSONB ceiling');
+context.state=legacyLargeState;
+storage.setItem(STATE_KEY,JSON.stringify(legacyLargeState));
+storage.setItem(FEATURE_KEY,JSON.stringify(legacyLargeFeatures));
+const legacyBefore=rows.get(accountF.id);
+queue.rememberStamp(storage,accountF.id,legacyBefore.updated_at);
+queue.rememberBase(storage,accountF.id,{state:legacyBefore.payload.state,featureState:legacyBefore.payload.featureState},legacyBefore.updated_at);
+queue.commitWorkspace(storage,[
+  {key:STATE_KEY,value:JSON.stringify(legacyLargeState)},
+  {key:FEATURE_KEY,value:JSON.stringify(legacyLargeFeatures)}
+],legacyLargePayload);
+missingChunkTable=true;
+assert.equal(await window.NexusCloudSync.upload(),true,
+  'a missing chunk table must fall back to a conditional legacy JSONB write for a bounded existing workspace');
+assert.equal(rows.get(accountF.id).payload.state.topics[0].notes,'x'.repeat(1_700_000),
+  'legacy fallback must publish the exact large workspace payload without loss');
+assert.equal(rows.get(accountF.id).payload.__nexusStorage,undefined,
+  'legacy compatibility writes must not publish a chunk manifest without chunk rows');
+assert.equal(queue.hasPending(storage,accountF.id),false,
+  'legacy fallback must acknowledge the queued workspace only after verified cloud read-back');
+
+// Larger workspaces must not be written as oversized JSONB. Preserve local work
+// until the chunk-storage migration is available instead of silently losing sync.
+const tooLargeState=JSON.parse(JSON.stringify(legacyLargeState));
+tooLargeState.topics[0].notes='y'.repeat(2*1024*1024);
+const tooLargePayload={...legacyLargePayload,exportedAt:new Date().toISOString(),state:tooLargeState};
+const beforeRejectedLargeWrite=rows.get(accountF.id);
+context.state=tooLargeState;
+storage.setItem(STATE_KEY,JSON.stringify(tooLargeState));
+storage.setItem(FEATURE_KEY,JSON.stringify(legacyLargeFeatures));
+queue.rememberStamp(storage,accountF.id,beforeRejectedLargeWrite.updated_at);
+queue.rememberBase(storage,accountF.id,{state:beforeRejectedLargeWrite.payload.state,featureState:beforeRejectedLargeWrite.payload.featureState},beforeRejectedLargeWrite.updated_at);
+queue.commitWorkspace(storage,[
+  {key:STATE_KEY,value:JSON.stringify(tooLargeState)},
+  {key:FEATURE_KEY,value:JSON.stringify(legacyLargeFeatures)}
+],tooLargePayload);
+const rejectedLegacyWrite=await window.NexusCloudSync.upload();
+assert.equal(rejectedLegacyWrite,false,
+  'payloads beyond the legacy JSONB safety ceiling must wait for the chunk-storage database upgrade');
+assert.equal(rows.get(accountF.id).updated_at,beforeRejectedLargeWrite.updated_at,
+  'an oversized compatibility failure must leave the published cloud revision unchanged');
+assert.ok(queue.hasPending(storage,accountF.id),
+  'an oversized compatibility failure must retain the full local pending snapshot');
+assert.match(getElement('cloudHelpText').textContent,/database upgrade|chunk-storage upgrade/i,
+  'the user must be told that a database upgrade is required rather than seeing an unexplained sync failure');
+missingChunkTable=false;
+
+console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, target-account pending-snapshot isolation, first-login conflict gating, auth-session queue recovery, 77,144-record second-device deletion reconciliation, and pre-migration chunk-table compatibility.');
