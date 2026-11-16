@@ -216,4 +216,73 @@ assert.equal(largeStreamCascade.result,true);
 assert.equal(largeStreamCascade.savedChanges,null,
  'stream cascades over 1,000 feature records must rebuild from the snapshot rather than exceed the bounded outbox write limit');
 
+
+assert.ok(appCore.includes('window.NexusStartUndoWorkspaceReplace=startUndoWorkspaceReplace'),
+ 'workspace replacement Undo must be exposed to the Study Hub');
+assert.ok(appCore.includes("window.NexusSetFeatureState(pending.featureState,{persist:false,render:false})"),
+ 'workspace Undo must restore the prior Study Hub state before persisting the complete workspace');
+assert.ok(studyHub.includes("if(mode==='REPLACE')window.NexusStartUndoWorkspaceReplace?.('Backup replaced.');"),
+ 'full JSON REPLACE must arm Undo only after its atomic workspace commit succeeds');
+const resetOverrideStart=studyHub.indexOf('resetAll=function(){');
+const resetOverrideEnd=studyHub.indexOf('// Gentle reminder check',resetOverrideStart);
+assert.ok(resetOverrideStart>=0&&resetOverrideEnd>resetOverrideStart,
+ 'the Study Hub workspace reset override must remain identifiable');
+assert.ok(studyHub.slice(resetOverrideStart,resetOverrideEnd).includes(
+ "window.NexusStartUndoWorkspaceReplace?.('Workspace reset.');"),
+ 'the Study Hub reset override must arm workspace Undo after its atomic commit');
+
+const replaceHelperStart=appCore.indexOf('  function startUndoWorkspaceReplace(text){');
+const replaceHelperEnd=appCore.indexOf('  function startUndoEntityEdit',replaceHelperStart);
+assert.ok(replaceHelperStart>=0&&replaceHelperEnd>replaceHelperStart,
+ 'the shared workspace replacement snapshot helper must be testable');
+const replaceUndoStart=appCore.indexOf('  function undo(){');
+const replaceUndoEnd=appCore.indexOf('\n  function subjectFor',replaceUndoStart);
+assert.ok(replaceUndoStart>=0&&replaceUndoEnd>replaceUndoStart,
+ 'the shared Undo restoration function must be testable');
+const originalTracker={topics:[{id:'old-topic'}],history:[{id:'old-review'}]};
+const originalFeatures={studyLogs:[{id:'old-study-log'}],papers:[{id:'old-paper'}]};
+let currentFeatures=JSON.parse(JSON.stringify(originalFeatures));
+const workspaceUndoEvents=[];
+const workspaceUndoSandbox={
+ state:originalTracker,undoState:null,undoTimer:null,undoSilent:false,
+ window:{
+  NexusClearCascadeUndo(){workspaceUndoEvents.push('clear-cascade');},
+  NexusGetFeatureState(){return JSON.parse(JSON.stringify(currentFeatures));},
+  NexusSetFeatureState(value,options){
+   workspaceUndoEvents.push({type:'restore-feature-state',options});
+   currentFeatures=JSON.parse(JSON.stringify(value));return true;
+  },
+  NexusUndoCascadeDelete(){return false;}
+ },
+ armUndo(text){workspaceUndoEvents.push({type:'arm',text});},
+ clearTimeout(){},clearUndoPresentation(){workspaceUndoEvents.push('clear-presentation');},
+ save(options){workspaceUndoEvents.push({type:'save',options});return true;},
+ renderAll(){workspaceUndoEvents.push('render');},
+ notify(message){workspaceUndoEvents.push({type:'notify',message});}
+};
+vm.createContext(workspaceUndoSandbox);
+vm.runInContext(
+ appCore.slice(replaceHelperStart,replaceHelperEnd)+'\n'+
+ appCore.slice(replaceUndoStart,replaceUndoEnd)+'\n'+
+ 'this.armWorkspaceUndo=startUndoWorkspaceReplace;this.runWorkspaceUndo=undo;',
+ workspaceUndoSandbox
+);
+workspaceUndoSandbox.armWorkspaceUndo('Workspace replaced.');
+assert.equal(workspaceUndoSandbox.undoState.kind,'workspace-reference');
+assert.deepEqual(JSON.parse(JSON.stringify(workspaceUndoSandbox.undoState.featureState)),originalFeatures,
+ 'Undo must capture Study Hub data before a workspace replacement');
+workspaceUndoSandbox.state={topics:[{id:'replacement-topic'}],history:[]};
+currentFeatures={studyLogs:[{id:'replacement-study-log'}],papers:[]};
+workspaceUndoSandbox.runWorkspaceUndo();
+assert.strictEqual(workspaceUndoSandbox.state,originalTracker,
+ 'Undo must restore the original tracker workspace reference');
+assert.deepEqual(currentFeatures,originalFeatures,
+ 'Undo must restore the exact pre-replacement Study Hub data');
+const restoredFeatureEvent=workspaceUndoEvents.find(event=>event&&event.type==='restore-feature-state');
+assert.ok(restoredFeatureEvent&&restoredFeatureEvent.options.persist===false&&restoredFeatureEvent.options.render===false,
+ 'Study Hub restoration must be in-memory only until the atomic workspace save');
+const workspaceSaveEvent=workspaceUndoEvents.find(event=>event&&event.type==='save');
+assert.ok(workspaceSaveEvent&&workspaceSaveEvent.options.replaceEntities===true,
+ 'Undo must persist the combined restored workspace through entity replacement');
+
 console.log('Undo lifecycle tests passed: 15-second expiry, Undo-only notification, feature restoration, all four Study Hub delete types, and bounded stream-cascade entity tombstones.');
