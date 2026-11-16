@@ -109,7 +109,7 @@ jobs:
         run: npm run android:sync:fdroid
 
       - name: Generate npm dependency and licence inventories
-        run: npm run android:sbom
+        run: GITHUB_SHA="$P34_06_SOURCE_SHA" npm run android:sbom
 
       - name: Verify Android asset isolation, OAuth callback and native printing
         run: npm run test:android
@@ -130,7 +130,7 @@ jobs:
           git -C .. diff --exit-code -- android/gradle/verification-metadata.xml
 
       - name: Generate Gradle/Maven dependency licence inventory
-        run: node scripts/write-android-gradle-license-inventory.mjs
+        run: GITHUB_SHA="$P34_06_SOURCE_SHA" node scripts/write-android-gradle-license-inventory.mjs
 
       - name: Package Android-local assets, verify APK outputs and write SHA-256 records
         run: |
