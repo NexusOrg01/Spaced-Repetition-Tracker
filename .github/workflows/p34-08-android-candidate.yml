@@ -21,13 +21,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
-      P34_06_SOURCE_SHA: 8228b0c5b223b89575339b0243a2e452d3137d3c
+      P34_06_SOURCE_SHA: 07b178c4680141401b54e947c8ef4cf0f1da1c7d
       NEXUS_ANDROID_CLOUD_MODE: staging
     steps:
       - name: Check out the exact P34-06 frozen source
         uses: actions/checkout@v4
         with:
-          ref: 8228b0c5b223b89575339b0243a2e452d3137d3c
+          ref: 07b178c4680141401b54e947c8ef4cf0f1da1c7d
           fetch-depth: 1
 
       - name: Set up Node.js
