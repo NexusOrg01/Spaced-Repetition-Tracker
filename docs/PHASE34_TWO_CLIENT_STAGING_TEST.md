@@ -211,3 +211,25 @@ The initial Delta migration on this source SHA no longer grants browser executio
 - Production was inspected read-only on 16 November 2026. Its migration history still contains only three pre-Phase-3.4 migrations and its eight existing workspaces remain JSONB snapshots. No production schema, data, migration, Auth setting or permission was changed.
 
 Keep the hosted previews offline/static for Delta protocol tests. Do not submit production or hosted staging URLs/credentials to the local-only harness.
+
+
+## Exact-head source freeze / Web-PWA acceptance — 2026-11-16
+
+**Frozen application/migration SHA:** `df2dde8a8c21b91a00bfe120a6c557cf14025603`.
+
+- [Comprehensive Web/PWA validation #1547](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43919814358) — success on the frozen SHA. The main validation passed its full backup/restore, account-switch, recovery, cloud-runtime and Web/PWA security/build checks.
+- [Disposable local Supabase + authenticated Chromium integration #72](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/43919814405) — success on the frozen SHA.
+- General snapshot integrity passed: existing-row and first-write races in both orderings, incomplete-candidate rejection, measured lock waits, stale-revision cleanup and account-deletion cascade.
+- Chunk-storage test passed UTF-8/27 MB chunking, active-manifest retention, bounded orphan cleanup, legacy snapshot compatibility, JSONB/chunked downgrade rejection, CAS conflicts, corruption rejection, owner isolation and interrupted-upload recovery.
+- Authenticated A1/A2/B: **19/19 assertions** — three independent Auth sessions, two devices share owner A, owner B isolation, CAS conflicts and retry, idempotent receipt replay, bounded reads, owner-only RLS and direct-write denial.
+- Large-workspace two-device lifecycle: **18/18 assertions** — 26,900,000 bytes, 103 chunks, 77,144 topics, 72,001 history rows; 12,032 topic deletions in 13 groups; 240 subject-owned topics and history rows removed; compaction through revision 16; stale A2 recovers two tail groups through revision 18; offline edits/journals retained; restarted devices converge; owner B stays isolated.
+- Cleanup completed successfully: six RPC EXECUTE grants revoked; temporary users and Delta rows removed; receipts/operations and Delta-mode rows checked clean; disposable local Supabase destroyed.
+- The main runtime suite also verifies the production pre-migration compatibility bridge: 1.7 MB legacy workspace falls back to conditional JSONB when the chunk table is missing; payloads above 2 MiB are refused without modifying the cloud revision or clearing the local queue, with a database-upgrade-required status.
+
+### Production compatibility and rollout boundary
+
+Production is still on the old schema: eight legacy JSONB workspaces; largest payload 1,635,656 bytes; no chunk table or sync-state table. The Web runtime now safely handles that current production range before OPS-01. A future payload above 2 MiB will remain locally preserved and pause cloud upload until the post-merge production chunk-storage migration exists.
+
+Hosted staging remains separate: nine shared migrations plus its one staging-only permission-alignment migration; four workspaces remain in snapshot mode; 6,275 chunk rows; zero operation/receipt rows; private schema inaccessible to browser roles. The local CI run uses only its disposable local database, never hosted staging or production.
+
+**No production migration or live deployment is performed by this test plan.** Production backup/PITR restore readiness remains to be confirmed before OPS-01. The PR scope excludes F-Droid/APK/store releases and Android physical acceptance.
