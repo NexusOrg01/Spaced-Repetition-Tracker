@@ -45,7 +45,7 @@ try {
 
   const status = await page.locator('#status').innerText();
   const log = await page.locator('#log').innerText();
-  assert.match(status, /^PASS — 19 authenticated local integration assertions completed\.$/, log);
+  assert.match(status, /^PASS — 27 authenticated local integration assertions completed\.$/, log);
 
   // PASS is set before the async finally block finishes signing out. Wait for
   // the teardown before asserting that the credential fields have been cleared.
@@ -73,7 +73,15 @@ try {
     'B table reads contain only owner B rows',
     'A cannot select B rows by guessing owner ID',
     'Direct operation-table write is denied',
-    'Final heads remain isolated (A=3, B=1)'
+    'Final heads remain isolated (A=3, B=1)',
+    'A publishes a full checkpoint at its exact Delta head',
+    'Compaction removes all covered owner A operations and receipts',
+    'Authenticated owner A performs the atomic Delta-to-snapshot downgrade',
+    'A1 and A2 observe the same checkpointed snapshot state',
+    'A1 and A2 read back the exact same unmarked snapshot',
+    'A2 stale pre-downgrade snapshot compare-and-swap is rejected',
+    'A2 stale retry cannot change the active unmarked snapshot',
+    'A different authenticated owner cannot downgrade or alter owner A'
   ];
   for (const assertion of expected) {
     assert.ok(log.includes('PASS  ' + assertion), 'missing authenticated assertion: ' + assertion + '\n' + log);
