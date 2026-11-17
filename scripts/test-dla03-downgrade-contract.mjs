@@ -31,16 +31,16 @@ assert.match(migration, /result_snapshot_updated_at/);
 assert.match(migration, /already_applied/);
 const snapshotNoopBranch = migration.slice(
   migration.indexOf("IF v_state.mode = 'snapshot' THEN"),
-  migration.indexOf("\\n  IF v_state.mode <> 'delta' THEN")
+  migration.indexOf("\n  IF v_state.mode <> 'delta' THEN")
 );
 assert.match(snapshotNoopBranch, /v_state.head_revision <> p_expected_head_revision/);
 assert.match(snapshotNoopBranch, /v_state.snapshot_revision <> p_expected_snapshot_revision/);
 assert.match(snapshotNoopBranch, /v_state.compacted_through_revision <> p_expected_compacted_through_revision/);
 assert.match(snapshotNoopBranch, /v_updated_at IS DISTINCT FROM p_expected_snapshot_updated_at/);
-assert.match(snapshotNoopBranch, /public\\.nexus_workspace_operations/);
-assert.match(snapshotNoopBranch, /public\\.nexus_workspace_operation_receipts/);
+assert.match(snapshotNoopBranch, /public\.nexus_workspace_operations/);
+assert.match(snapshotNoopBranch, /public\.nexus_workspace_operation_receipts/);
 
-assert.match(client, /async function downgradeToSnapshot\\(/);
+assert.match(client, /async function downgradeToSnapshot\(/);
 const clientDowngrade = client.slice(client.indexOf('async function downgradeToSnapshot'),
   client.indexOf('async function synchronize'));
 assert.ok(clientDowngrade.indexOf("if(state.mode==='snapshot')") <
