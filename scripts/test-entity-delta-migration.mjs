@@ -179,6 +179,8 @@ assert.match(downgradeSqlTest, /nexus_compact_entity_operations/);
 assert.match(downgradeSqlTest, /unmarked_chunk_manifest_incomplete/);
 assert.match(downgradeSqlTest, /Cross-owner downgrade attempt/);
 assert.match(downgradeSqlTest, /has_function_privilege/);
+assert.match(downgradeSqlTest, /nexus_test_dla03_injected_pointer_failure/);
+assert.match(downgradeSqlTest, /v_injected_failure/);
 assert.match(downgradeSqlTest, /v_chunk_old_count <> 1 OR v_chunk_new_count <> 1/,
   'the downgrade fixture must prove old and newly published chunks are retained');
 assert.match(read('scripts/prepare-phase34-local-supabase.mjs'), /supabase','delta-rollout'/,
@@ -189,6 +191,7 @@ assert.doesNotMatch(read('scripts/prepare-phase34-local-supabase.mjs'), /nexus_d
 assert.match(downgradeRunbook, /depends on DLA-02/i);
 assert.match(downgradeRunbook, /deliberately outside supabase\/migrations/i);
 assert.match(downgradeRunbook, /downgradeEntityDeltaToSnapshot/);
+assert.match(read('offline-sync-queue.js'), /function prepareDowngradeBaseCommit/);
 assert.match(downgradeRunbook, /has_function_privilege/);
 assert.match(downgradeRunbook, /residual_operations/);
 assert.match(downgradeRunbook, /any_chunk_has_delta_marker/);
