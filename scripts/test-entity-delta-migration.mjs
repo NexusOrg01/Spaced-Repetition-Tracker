@@ -153,7 +153,8 @@ assert.match(integration, /UPDATE public\.nexus_user_data[\s\S]*payload = payloa
   'the rollback-only integration fixture must exercise a legacy snapshot downgrade attempt');
 
 
-assert.match(pilotEligibility, /SECURITY DEFINER[\\s\\S]*SET search_path = ''[\\s\\S]*AS \\$function\\$/);
+assert.ok(pilotEligibility.includes("SECURITY DEFINER\nSET search_path = ''\nAS $function$"),
+  'DLA-02 enablement SECURITY DEFINER must use an empty search_path');
 assert.ok(authenticatedRpcTest.includes(`ARRAY['search_path=""']::text[]`),
   'the rollback-only authenticated SQL test must verify the deployed SECURITY DEFINER search_path');
 assert.ok(pilotEligibility.includes('CREATE TABLE IF NOT EXISTS nexus_private.entity_delta_pilot_allowlist'));
