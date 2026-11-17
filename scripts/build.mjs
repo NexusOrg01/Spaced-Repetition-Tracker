@@ -68,7 +68,7 @@ export function resolvePreviewConfig(env) {
     if (!isAllowedAnonKey(qaKey)) {
       throw new Error('The dedicated hosted QA branch accepts only a publishable key or legacy anon JWT; secret/service-role keys are forbidden.');
     }
-    return { url: new URL(rawQaUrl).origin, key: qaKey, hostedQaOrigin: qaOrigin };
+    return { url: new URL(rawQaUrl).origin, key: qaKey };
   }
   const allowedVercelPreview = env.VERCEL_ENV === 'preview' && PREVIEW_BRANCHES.has(String(env.VERCEL_GIT_COMMIT_REF || ''));
   // CF_PAGES is normally set by Pages, but some build wrappers omit it. The exact
