@@ -1057,6 +1057,7 @@ function makeStagingRuntimeHarness({
   const stateQuery={
     select(columns){calls.stateRead={...calls.stateRead,columns};return this;},
     eq(column,value){calls.stateRead={...calls.stateRead,filterColumn:column,filterValue:value};return this;},
+    abortSignal(value){calls.stateRead={...calls.stateRead,signal:value};return this;},
     async maybeSingle(){return {data:remoteState,error:remoteStateError};}
   };
   const client={
@@ -1129,6 +1130,8 @@ function makeStagingRuntimeHarness({
         throw new Error('The active account changed during hosted QA state verification.');
       }
     },
+    attachAbortSignal:(query,signal)=>
+      signal&&query&&typeof query.abortSignal==='function'?query.abortSignal(signal):query,
     localStorage,OWNER_KEY:'owner-key',
     STAGING_CONFIG:{url:stagingSupabaseUrl,key:'staging-test-key'},
     config:()=>({url:stagingUrl}),
@@ -1189,6 +1192,8 @@ assert.equal(activeHostedQa.calls.stateRead.table,'nexus_workspace_sync_state');
 assert.equal(activeHostedQa.calls.stateRead.columns,'mode');
 assert.equal(activeHostedQa.calls.stateRead.filterColumn,'user_id');
 assert.equal(activeHostedQa.calls.stateRead.filterValue,'account-A');
+assert.equal(activeHostedQa.calls.stateRead.signal,stagingSignal,
+  'the remote state preflight must retain the caller abort signal');
 assert.equal(activeHostedQa.calls.createClient,1);
 
 const hostedSnapshotMode=makeStagingRuntimeHarness({
