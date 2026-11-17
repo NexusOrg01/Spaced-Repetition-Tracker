@@ -27,6 +27,7 @@ on:
       - supabase/migrations/**
       - supabase/delta-rollout/**
       - supabase/tests/nexus_entity_delta_downgrade.sql
+      - docs/runbooks/entity-delta-downgrade-dla03.md
       - supabase/tests/nexus_entity_delta_two_client_*.sql
       - supabase/tests/nexus_user_data_chunks_active_manifest.sql
   workflow_dispatch:
