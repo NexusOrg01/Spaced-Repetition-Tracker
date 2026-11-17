@@ -79,6 +79,20 @@ inserted_workspaces AS (
     clock_timestamp()
   FROM inserted_users
   RETURNING user_id
+),
+inserted_pilot_eligibility AS (
+  -- The sorted first and third fixture accounts are used for the A1/A2
+  -- protocol and large-workspace lifecycle respectively. The second account
+  -- is deliberately unlisted so the browser regression proves default-deny.
+  INSERT INTO nexus_private.entity_delta_pilot_allowlist
+    (user_id, enabled, reason)
+  SELECT ranked.id, true, 'Disposable local Phase 3.4 integration fixture'
+  FROM (
+    SELECT id, email, row_number() OVER (ORDER BY email) AS fixture_order
+    FROM inserted_users
+  ) AS ranked
+  WHERE ranked.fixture_order IN (1, 3)
+  RETURNING user_id
 )
 SELECT
   credentials.email,
@@ -89,4 +103,5 @@ FROM credentials
 JOIN inserted_users USING (email)
 JOIN inserted_identities ON inserted_identities.user_id = inserted_users.id
 JOIN inserted_workspaces ON inserted_workspaces.user_id = inserted_users.id
+LEFT JOIN inserted_pilot_eligibility ON inserted_pilot_eligibility.user_id = inserted_users.id
 ORDER BY credentials.email;

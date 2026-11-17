@@ -839,9 +839,49 @@ async function runStagingEntityDeltaSync(ownerId,signal,action='sync'){
  const localHost=['localhost','127.0.0.1','::1','[::1]'].includes(String(location.hostname||'').toLowerCase());
  let localSupabase=false;
  try{const localUrl=new URL(config().url);localSupabase=localUrl.protocol==='http:'&&['localhost','127.0.0.1','::1','[::1]'].includes(localUrl.hostname.toLowerCase())&&localUrl.port==='54321'&&!localUrl.username&&!localUrl.password&&!localUrl.search&&!localUrl.hash&&(localUrl.pathname===''||localUrl.pathname==='/');}catch(_){localSupabase=false;}
- const gateOpen=window.NEXUS_ENTITY_DELTA_SYNC_STAGING===true&&localHost&&localSupabase;
+ const localGateOpen=window.NEXUS_ENTITY_DELTA_SYNC_STAGING===true&&localHost&&localSupabase;
+ let hostedQaGate=false;
+ try{
+  const qaOrigin=new URL(String(window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN||''));
+  const qaProject=new URL(config().url);
+  hostedQaGate=window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA===true&&
+   window.NEXUS_ENTITY_DELTA_SYNC_QA_REF==='feat/dla-01-hosted-qa-gate'&&
+   config().url==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&
+   qaProject.origin==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&
+   qaOrigin.protocol==='https:'&&qaOrigin.origin===String(window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN||'')&&
+   qaOrigin.hostname.endsWith('.vercel.app')&&!qaOrigin.port&&!qaOrigin.username&&
+   !qaOrigin.password&&!qaOrigin.search&&!qaOrigin.hash&&
+   (qaOrigin.pathname===''||qaOrigin.pathname==='/')&&qaOrigin.origin===String(location.origin||'');
+ }catch(_){hostedQaGate=false;}
+ const authenticatedOwner=session&&session.user&&typeof session.user.id==='string'?session.user.id:'';
+ const ownerMatches=!!ownerId&&authenticatedOwner===ownerId&&localStorage.getItem(OWNER_KEY)===ownerId;
+ const gateOpen=ownerMatches&&(localGateOpen||hostedQaGate);
  if(recoveryPending&&!gateOpen)return {blockedRecovery:true,reason:'staging_recovery_journal_pending'};
  if(!gateOpen)return {skipped:true,reason:'staging_delta_gate_closed'};
+ // DLA-01 deliberately leaves hosted workspaces in snapshot mode. Before
+ // attempting any Delta RPC, read this owner's state through the existing
+ // RLS-filtered SELECT grant. No row or snapshot mode means use the established
+ // snapshot/chunk writer. A read error or unknown mode fails closed; never
+ // downgrade a workspace that may already be in Delta mode.
+ if(!recoveryPending){
+  await assertActiveUser(ownerId);
+  let stateQuery=client.from('nexus_workspace_sync_state')
+   .select('mode').eq('user_id',ownerId);
+  stateQuery=attachAbortSignal(stateQuery,signal);
+  const stateRead=await stateQuery.maybeSingle();
+  if(stateRead.error)throw new Error(
+   'Could not safely verify this workspace sync mode. The snapshot writer was not started: '+
+   String(stateRead.error.message||stateRead.error.code||'remote state read failed')
+  );
+  await assertActiveUser(ownerId);
+  if(!stateRead.data||stateRead.data.mode==='snapshot'){
+   return {skipped:true,mode:'snapshot',
+    reason:stateRead.data?'server_snapshot_mode':'server_sync_state_missing'};
+  }
+  if(stateRead.data.mode!=='delta'){
+   throw new Error('The remote workspace has an unsupported sync mode. The snapshot writer was not started.');
+  }
+ }
  const delta=window.NexusEntityDeltaSync,chunkStorage=window.NexusCloudChunkStorage;
  if(!queue||!storage||!delta||typeof delta.createClient!=='function'||
     !chunkStorage||typeof chunkStorage.writeDeltaSnapshot!=='function'||

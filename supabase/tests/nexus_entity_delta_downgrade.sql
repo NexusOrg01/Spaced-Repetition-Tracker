@@ -87,6 +87,13 @@ BEGIN
      'nexus-dla03-isolation-'||replace(v_uid_c::text,'-','')||'@example.invalid',
      '',clock_timestamp(),'{}'::jsonb,'{}'::jsonb,clock_timestamp(),clock_timestamp());
 
+  -- The DLA-02 pilot migration is present in this disposable database.
+  -- Explicitly allow the transaction-only owners used by this rollback test.
+  INSERT INTO nexus_private.entity_delta_pilot_allowlist(user_id,enabled,reason)
+  VALUES
+    (v_uid_a,true,'Disposable local DLA-03 SQL owner A'),
+    (v_uid_b,true,'Disposable local DLA-03 SQL owner B');
+
   INSERT INTO public.nexus_user_data(user_id,payload,updated_at)
   VALUES (v_uid_a,v_base,clock_timestamp()),
          (v_uid_b,v_base,clock_timestamp()),
