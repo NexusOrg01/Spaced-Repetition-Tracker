@@ -2,7 +2,7 @@
 
 **Target project:** `txugbdavblpettcnhcxl` (production; ap-south-1)  
 **Runner:** `.github/workflows/ops-01-production-migrations.yml`  
-**Default action:** dry run. The workflow is manual-only and rejects refs other than `main`.
+**Default action:** protected read-only dry run. A push/merge to `main` runs the dry-run path automatically; a separate `workflow_dispatch` on `main` is required for apply. The job rejects refs other than `main`.
 
 ## Required GitHub environment setup
 
@@ -70,16 +70,18 @@ The production ledger was last inspected read-only before this runner was writte
 
 ## Operator procedure
 
-1. Open **Actions → OPS-01 protected production migration runner → Run workflow** on `main`.
-2. Keep `operation = dry-run` for the first run. Review the target, migration history, dry-run list and workflow artifact. A dry run does not apply migrations.
-3. After the backup/restore gate is complete, create a separate apply run. Choose `apply`, enter exactly `APPLY-OPS-01-TO-PRODUCTION`, and enter the verified backup/restore evidence reference.
-4. The protected GitHub environment reviewer must inspect the evidence reference and approve the job. Do not approve an apply run until the isolated restore has been verified.
-5. Confirm all 11 migrations are recorded after apply. The workflow then runs the post-migration SQL in read-only mode.
-6. Review the evidence artifact and Supabase advisors before any pilot. Verification checks chunk RLS, active-manifest protection, snapshot-candidate validation, sync-state alignment, six Delta RPC grants, private schema grants and all existing workspaces staying in snapshot mode.
+1. Merge the reviewed waiver-aware runner PR to `main`. The push to `main` automatically runs the protected read-only OPS-01 preflight and exact Supabase CLI dry run. This event has no apply step.
+2. Review the run summary/artifact: fixed target project, current migration history, exact 11 pending migration versions, and a dry-run comparison that matches the allowlist. The workflow fails closed if required environment secrets are absent or the migration set differs.
+3. Only after that dry run passes, open **Actions → OPS-01 protected production migration runner → Run workflow** on `main`. Choose `apply`, enter exactly `APPLY-OPS-01-TO-PRODUCTION`, and paste the exact owner risk-acceptance URL:
+   `https://github.com/NexusOrg01/Spaced-Repetition-Tracker/pull/131#issuecomment-6957021229`
+4. The protected GitHub environment reviewer must inspect the owner approval record, verify the no-backup risk is explicit, review the dry-run evidence and approve the protected job. The typed reference is not backup evidence and no `NEXUS-DR` ID is used.
+5. Confirm all 11 migrations are recorded after apply. The workflow then runs the post-migration SQL in read-only mode and verifies every workspace remains in snapshot mode.
+6. Review the evidence artifact and Supabase advisors before any pilot. Verification checks chunk RLS, active-manifest protection, snapshot-candidate validation, sync-state alignment, six Delta RPC grants, private schema grants and snapshot-only mode.
+
 
 ## Safety and rollback
 
-- No job is triggered by a pull request, branch push or deployment. Creating this PR does not contact production Supabase.
+- A push/merge to `main` triggers only the protected read-only dry-run path. Pull-request events do not access production secrets. Only a separate manual `workflow_dispatch` with the typed confirmation, exact owner risk-acceptance URL and protected environment approval can reach the apply step.
 - The only hosted write command is `supabase db push --yes --remote=<fixed production ref>`, inside the manual protected-environment job after the typed confirmation and environment approval.
 - CLI v3 defaults database commands to local unless `--remote` is passed. Every remote command therefore names the exact production reference. CLI is pinned to stable `3.0.0`; do not replace it with an unpinned latest install.
 - Keep additive schema objects on an application rollback. Do **not** drop chunk tables, private guard functions, active manifests, operation/receipt history or sync-state rows as an emergency rollback.
