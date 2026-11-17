@@ -1,6 +1,11 @@
 name: OPS-01 protected production migration runner
 
 on:
+  # Merge of the reviewed waiver-aware runner to main automatically performs
+  # a protected read-only preflight/dry-run. It never applies migrations.
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       operation:
@@ -30,7 +35,7 @@ concurrency:
 jobs:
   ops01:
     if: github.ref == 'refs/heads/main'
-    name: "OPS-01 production migration ${{ inputs.operation }}"
+    name: "OPS-01 production migration ${{ inputs.operation || 'dry-run' }}"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
@@ -39,7 +44,7 @@ jobs:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
       SUPABASE_PROJECT_REF: txugbdavblpettcnhcxl
-      OPS01_OPERATION: ${{ inputs.operation }}
+      OPS01_OPERATION: ${{ inputs.operation || 'dry-run' }}
       OPS01_CONFIRMATION: ${{ inputs.confirmation }}
       OPS01_RISK_ACCEPTANCE_REF: ${{ inputs.risk_acceptance_ref }}
     steps:
@@ -56,7 +61,7 @@ jobs:
         run: node scripts/ops01-migration-guard.mjs
       - name: Install pinned Supabase CLI v3.0.0
         run: npm install --global supabase@3.0.0
-      - name: Verify operator secrets, immutable target and recovery evidence
+      - name: Verify operator secrets, immutable target and DR-01 risk acceptance
         shell: bash
         run: |
           set -euo pipefail
