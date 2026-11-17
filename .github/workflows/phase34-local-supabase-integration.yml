@@ -180,8 +180,6 @@ jobs:
           cat "$RUNNER_TEMP/phase34-http.log"
           exit 1
 
-      - name: Run real authenticated A1/A2/B browser protocol test
-        run: node scripts/test-phase34-local-two-client-browser.mjs
 
       - name: Run 26.9 MB two-device offline and stale-compaction lifecycle
         timeout-minutes: 18
@@ -201,7 +199,37 @@ jobs:
           psql "$DB_URL" -X -v ON_ERROR_STOP=1 -qAt -F '|' \
             -f test-fixtures/nexus_entity_delta_two_client_setup.sql \
             > "$RUNNER_TEMP/phase34-dla03-fixtures.txt"
-          mapfile -t fixtures < <(grep -v '^[[:space:]]*        if: always()
+          mapfile -t fixtures < "$RUNNER_TEMP/phase34-dla03-fixtures.txt"
+          test "${#fixtures[@]}" -eq 3
+          IFS='|' read -r EMAIL_A PASSWORD_A USER_A STATUS_A <<< "${fixtures[0]}"
+          IFS='|' read -r EMAIL_B PASSWORD_B USER_B STATUS_B <<< "${fixtures[1]}"
+          IFS='|' read -r EMAIL_C PASSWORD_C USER_C STATUS_C <<< "${fixtures[2]}"
+          test -n "$EMAIL_A" && test -n "$PASSWORD_A" && test -n "$USER_A"
+          test -n "$EMAIL_B" && test -n "$PASSWORD_B" && test -n "$USER_B"
+          test -n "$EMAIL_C" && test -n "$PASSWORD_C" && test -n "$USER_C"
+          test "$USER_A" != "$USER_B" && test "$USER_A" != "$USER_C" && test "$USER_B" != "$USER_C"
+          echo "::add-mask::$EMAIL_A"
+          echo "::add-mask::$PASSWORD_A"
+          echo "::add-mask::$EMAIL_C"
+          echo "::add-mask::$PASSWORD_C"
+          {
+            printf 'PHASE34_DLA03_EMAIL_A=%s\n' "$EMAIL_A"
+            printf 'PHASE34_DLA03_PASSWORD_A=%s\n' "$PASSWORD_A"
+            printf 'PHASE34_DLA03_EMAIL_C=%s\n' "$EMAIL_C"
+            printf 'PHASE34_DLA03_PASSWORD_C=%s\n' "$PASSWORD_C"
+          } >> "$GITHUB_ENV"
+
+      - name: Run DLA-03 authenticated A1/A2/B downgrade browser regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          PHASE34_EMAIL_A="$PHASE34_DLA03_EMAIL_A" \
+          PHASE34_PASSWORD_A="$PHASE34_DLA03_PASSWORD_A" \
+          PHASE34_EMAIL_B="$PHASE34_DLA03_EMAIL_C" \
+          PHASE34_PASSWORD_B="$PHASE34_DLA03_PASSWORD_C" \
+            node scripts/test-phase34-local-two-client-browser.mjs
+      - name: Revoke RPC access, delete fixtures, verify cleanup and destroy local stack
+        if: always()
         timeout-minutes: 3
         shell: bash
         run: |
@@ -254,91 +282,6 @@ jobs:
               test "$remaining_allowlist" = "0"
               test "$leaked_grants" = "0"
               echo "PASS — disposable users, allowlist rows and Delta rows removed; RPC grants revoked; local database verified clean."
-            else
-              echo "Local Supabase did not reach the point where a database URL was exported; no test fixture was created."
-            fi
-          fi
- "$RUNNER_TEMP/phase34-dla03-fixtures.txt")
-          test "${#fixtures[@]}" -eq 3
-          IFS='|' read -r EMAIL_A PASSWORD_A USER_A STATUS_A <<< "${fixtures[0]}"
-          IFS='|' read -r EMAIL_B PASSWORD_B USER_B STATUS_B <<< "${fixtures[1]}"
-          IFS='|' read -r EMAIL_C PASSWORD_C USER_C STATUS_C <<< "${fixtures[2]}"
-          test -n "$EMAIL_A" && test -n "$PASSWORD_A" && test -n "$USER_A"
-          test -n "$EMAIL_B" && test -n "$PASSWORD_B" && test -n "$USER_B"
-          test -n "$EMAIL_C" && test -n "$PASSWORD_C" && test -n "$USER_C"
-          test "$USER_A" != "$USER_B" && test "$USER_A" != "$USER_C" && test "$USER_B" != "$USER_C"
-          echo "::add-mask::$EMAIL_A"
-          echo "::add-mask::$PASSWORD_A"
-          echo "::add-mask::$EMAIL_C"
-          echo "::add-mask::$PASSWORD_C"
-          {
-            printf 'PHASE34_DLA03_EMAIL_A=%s\\n' "$EMAIL_A"
-            printf 'PHASE34_DLA03_PASSWORD_A=%s\\n' "$PASSWORD_A"
-            printf 'PHASE34_DLA03_EMAIL_C=%s\\n' "$EMAIL_C"
-            printf 'PHASE34_DLA03_PASSWORD_C=%s\\n' "$PASSWORD_C"
-          } >> "$GITHUB_ENV"
-
-      - name: Run DLA-03 authenticated A1/A2/B downgrade browser regression
-        shell: bash
-        run: |
-          set -euo pipefail
-          PHASE34_EMAIL_A="$PHASE34_DLA03_EMAIL_A" \
-          PHASE34_PASSWORD_A="$PHASE34_DLA03_PASSWORD_A" \
-          PHASE34_EMAIL_B="$PHASE34_DLA03_EMAIL_C" \
-          PHASE34_PASSWORD_B="$PHASE34_DLA03_PASSWORD_C" \
-            node scripts/test-phase34-local-two-client-browser.mjs
-
-      - name: Revoke RPC access, delete fixtures, verify cleanup and destroy local stack
-        if: always()
-        timeout-minutes: 3
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -d .build/phase34-local-supabase/supabase ]]; then
-            cd .build/phase34-local-supabase
-            trap 'timeout 120s npx --yes supabase@latest stop --no-backup || true' EXIT
-            if [[ -n "${PHASE34_DB_URL:-}" ]]; then
-              psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
-          REVOKE EXECUTE ON FUNCTION public.nexus_get_entity_sync_state() FROM PUBLIC, anon, authenticated, service_role;
-          REVOKE EXECUTE ON FUNCTION public.nexus_enable_entity_delta(timestamptz) FROM PUBLIC, anon, authenticated, service_role;
-          REVOKE EXECUTE ON FUNCTION public.nexus_publish_entity_operation(text,bigint,jsonb) FROM PUBLIC, anon, authenticated, service_role;
-          REVOKE EXECUTE ON FUNCTION public.nexus_read_entity_operations(bigint,integer,integer) FROM PUBLIC, anon, authenticated, service_role;
-          REVOKE EXECUTE ON FUNCTION public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb) FROM PUBLIC, anon, authenticated, service_role;
-          REVOKE EXECUTE ON FUNCTION public.nexus_compact_entity_operations(integer) FROM PUBLIC, anon, authenticated, service_role;
-          REVOKE EXECUTE ON FUNCTION public.nexus_disable_entity_delta(bigint,timestamptz,jsonb) FROM PUBLIC, anon, authenticated, service_role;
-          SQL
-              psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 \
-                -f test-fixtures/nexus_entity_delta_two_client_cleanup.sql
-              remaining_users="$(psql "$PHASE34_DB_URL" -X -At -v ON_ERROR_STOP=1 \
-                -c "SELECT count(*) FROM auth.users WHERE email LIKE 'nexus-3-4-two-client-%@example.invalid'")"
-              remaining_operations="$(psql "$PHASE34_DB_URL" -X -At -v ON_ERROR_STOP=1 \
-                -c "SELECT count(*) FROM public.nexus_workspace_operations")"
-              remaining_receipts="$(psql "$PHASE34_DB_URL" -X -At -v ON_ERROR_STOP=1 \
-                -c "SELECT count(*) FROM public.nexus_workspace_operation_receipts")"
-              remaining_delta="$(psql "$PHASE34_DB_URL" -X -At -v ON_ERROR_STOP=1 \
-                -c "SELECT count(*) FROM public.nexus_workspace_sync_state WHERE mode='delta'")"
-              leaked_grants="$(psql "$PHASE34_DB_URL" -X -At -v ON_ERROR_STOP=1 <<'SQL'
-          SELECT count(*)
-          FROM unnest(ARRAY[
-            'public.nexus_get_entity_sync_state()',
-            'public.nexus_enable_entity_delta(timestamp with time zone)',
-            'public.nexus_publish_entity_operation(text,bigint,jsonb)',
-            'public.nexus_read_entity_operations(bigint,integer,integer)',
-            'public.nexus_publish_entity_snapshot(bigint,timestamp with time zone,jsonb)',
-            'public.nexus_compact_entity_operations(integer)',
-            'public.nexus_disable_entity_delta(bigint,timestamp with time zone,jsonb)'
-          ]::text[]) AS signatures(signature)
-          WHERE has_function_privilege('anon', signature, 'EXECUTE')
-             OR has_function_privilege('authenticated', signature, 'EXECUTE')
-             OR has_function_privilege('service_role', signature, 'EXECUTE');
-          SQL
-          )"
-              test "$remaining_users" = "0"
-              test "$remaining_operations" = "0"
-              test "$remaining_receipts" = "0"
-              test "$remaining_delta" = "0"
-              test "$leaked_grants" = "0"
-              echo "PASS — disposable users and Delta rows removed; RPC grants revoked; local database verified clean."
             else
               echo "Local Supabase did not reach the point where a database URL was exported; no test fixture was created."
             fi
