@@ -160,7 +160,7 @@ async function downloadSyncDiagnostics(){
  const operational=await collectSyncOperationalDiagnostics();
  const report={app:'Nexus sync diagnostic',schema:4,generatedAt:new Date().toISOString(),
   note:'Privacy-preserving local export. Includes aggregate counts and sync state only; excludes account IDs, email, credentials, topic names, study content, operation IDs, recovery digests and conflict values. Delta server head is the last locally observed value, not a live remote query.',
-  workspace:syncDiagSummary(diagnosticWorkspace()),operational,events:events.slice(-80).map(sanitizeSyncDiagEvent).filter(Boolean);
+  workspace:syncDiagSummary(diagnosticWorkspace()),operational,events:events.slice(-80).map(sanitizeSyncDiagEvent).filter(Boolean)};
  const blob=new Blob([JSON.stringify(report,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');
  link.href=url;link.download='nexus-sync-diagnostics.json';document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
 }
