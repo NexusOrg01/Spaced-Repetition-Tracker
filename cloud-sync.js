@@ -896,7 +896,8 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
     reason:stateRead.data?'server_snapshot_mode':'server_sync_state_missing'};
    if(!stateRead.data)return {skipped:true,mode:'snapshot',reason:'server_sync_state_missing'};
   }
-  if(stateRead.data.mode!=='delta'){
+  if(stateRead.data.mode!=='delta'&&
+     !(action&&action.downgrade===true&&stateRead.data.mode==='snapshot')){
    throw new Error('The remote workspace has an unsupported sync mode. The snapshot writer was not started.');
   }
  }
