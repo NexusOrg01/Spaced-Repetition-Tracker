@@ -9,7 +9,7 @@
 
 Standalone activation migration `supabase/pilot-migrations/20261117083717_add_entity_delta_pilot_eligibility.sql` creates `nexus_private.entity_delta_pilot_allowlist`. The table is empty after migration and every row defaults to `enabled=false`. The primary key is the Auth owner UUID and deletion of an Auth identity cascades to its eligibility row.
 
-The table is not exposed to browser roles. `PUBLIC`, `anon`, `authenticated`, and `service_role` have no `nexus_private` schema usage or table privileges. The security-definer enablement RPC reads the allowlist as its existing `postgres)-owned function; it returns `pilot_not_enabled` before inspecting or changing a workspace when the authenticated owner is not explicitly enabled.
+The table is not exposed to browser roles. `PUBLIC`, `anon`, `authenticated`, and `service_role` have no `nexus_private` schema usage or table privileges. The security-definer enablement RPC reads the allowlist as its existing ``postgres`-owned function; it returns `pilot_not_enabled` before inspecting or changing a workspace when the authenticated owner is not explicitly enabled.
 
 The six reviewed Delta RPCs are executable by `authenticated` only. `PUBLIC`, `anon`, and `service_role` remain revoked. The three Delta bookkeeping tables retain owner-filtered authenticated `SELECT` only; direct insert, update, delete and truncate are revoked. The six RPCs continue to use `auth.uid()` and the caller's own workspace/state checks.
 
@@ -70,3 +70,9 @@ The local authenticated browser suite additionally uses A1/A2 for one allowliste
 ## Completion boundary
 
 DLA-02 may be reported as implemented only after migration contract checks, rollback-only authenticated SQL, fresh local Supabase/Chromium CI, and isolated staging ACL/eligibility verification pass. DLA-03 and DLA-04 remain separate tasks. No production migration, grant, Delta activation, deployment or merge is authorized by this document.
+
+## Documentation correction — function owner and identity boundary
+
+The security-definer enablement routine is owned by the database migration owner (`postgres` in the isolated Supabase migration/test environment); its empty `search_path` and schema-qualified object references are intentional. The earlier phrase “postgres)-owned function” was a typographical error.
+
+**Identity boundary:** QA-01 authorized reuse of the existing staging login/workspace, not creation of a fifth Auth user. A later read-only inventory recorded an additional fifth user/workspace and an enabled allowlist row for that identity, but the tracker leaves that identity reconciliation pending. The observed identity is not accepted as the QA owner. Do not execute the illustrative allowlist INSERT/UPSERT as part of code merge, and do not alter either existing allowlist row or staging workspace until the owner records a resolution.
