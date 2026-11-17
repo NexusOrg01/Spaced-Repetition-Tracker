@@ -310,7 +310,8 @@ BEGIN
      OR v_downgrade->>'already_disabled' <> 'false'
      OR (v_downgrade->>'head_revision')::bigint <> 1
      OR (v_downgrade->>'snapshot_revision')::bigint <> 1
-     OR (v_downgrade->>'compacted_through_revision')::bigint <> 1 THEN
+     OR (v_downgrade->>'compacted_through_revision')::bigint <> 1
+     OR (v_downgrade->>'snapshot_updated_at')::timestamptz IS DISTINCT FROM v_downgrade_expected_stamp THEN
     RAISE EXCEPTION 'The owner-scoped snapshot downgrade failed: %', v_downgrade;
   END IF;
   v_state := public.nexus_get_entity_sync_state();
@@ -320,7 +321,9 @@ BEGIN
      OR (v_state->>'head_revision')::bigint <> 1
      OR (v_state->>'snapshot_revision')::bigint <> 1
      OR (v_state->>'compacted_through_revision')::bigint <> 1
-     OR (v_payload ? '__nexusDeltaSync') THEN
+     OR (v_payload ? '__nexusDeltaSync')
+     OR (SELECT updated_at FROM public.nexus_user_data WHERE user_id = v_owner_a)
+        IS DISTINCT FROM v_downgrade_expected_stamp THEN
     RAISE EXCEPTION 'The downgraded workspace did not preserve a marker-free aligned snapshot: %', v_state;
   END IF;
   v_page := public.nexus_read_entity_operations(0, 10, 1048576);
