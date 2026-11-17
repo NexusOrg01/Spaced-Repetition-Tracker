@@ -45,7 +45,7 @@ assert.deepEqual(safeEvent,{
 const sanitizedJson=JSON.stringify(safeEvent);
 for(const forbidden of ['PRIVATE','person@example.com','operationId','errorMessage','errorCode','arbitraryNested','topicName','notes'])assert.equal(sanitizedJson.includes(forbidden),false,`sanitized event must exclude ${forbidden}`);
 assert.equal(safeEvent.errorCategory,'conflict','conflict classification remains available without raw server codes');
-assert.equal(vm.runInContext(sanitizerSource+'\nsanitizeSyncDiagEvent({at:"2026-11-17T01:00:00.000Z",stage:"untrusted-stage",errorMessage:"leak"})',sanitizerSandbox),null,'unknown diagnostic stages must be rejected');
+assert.equal(vm.runInContext('sanitizeSyncDiagEvent({at:"2026-11-17T01:00:00.000Z",stage:"untrusted-stage",errorMessage:"leak"})',sanitizerSandbox),null,'unknown diagnostic stages must be rejected');
 
 const collectorStart=source.indexOf('async function collectSyncOperationalDiagnostics(){');
 const collectorEnd=source.indexOf('\nasync function downloadSyncDiagnostics()',collectorStart);
