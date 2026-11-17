@@ -117,6 +117,8 @@ DECLARE
   v_downgrade jsonb;
   v_downgrade_retry jsonb;
   v_downgrade_request uuid := gen_random_uuid();
+  v_downgrade_noop_request uuid := gen_random_uuid();
+  v_downgrade_bad_stamp_request uuid := gen_random_uuid();
   v_payload jsonb;
   v_disable_search_path text[];
   v_downgrade_receipts_denied boolean := false;
@@ -342,6 +344,41 @@ BEGIN
      OR v_downgrade_retry->>'still_snapshot' <> 'true'
      OR v_downgrade_retry->>'mode' <> 'snapshot' THEN
     RAISE EXCEPTION 'The committed downgrade was not idempotently acknowledged: %', v_downgrade_retry;
+  END IF;
+
+  -- A new request ID in snapshot mode still requires the exact current
+  -- checkpoint tuple. A failed stale attempt must not consume its request ID.
+  v_downgrade := public.nexus_disable_entity_delta(
+    v_downgrade_noop_request, 2, v_downgrade_expected_stamp, 1, 1
+  );
+  IF v_downgrade->>'ok' <> 'false'
+     OR v_downgrade->>'code' <> 'revision_conflict' THEN
+    RAISE EXCEPTION 'Snapshot no-op accepted a mismatched head revision: %', v_downgrade;
+  END IF;
+  v_downgrade := public.nexus_disable_entity_delta(
+    v_downgrade_noop_request, 1, v_downgrade_expected_stamp, 1, 1
+  );
+  IF v_downgrade->>'ok' <> 'true'
+     OR v_downgrade->>'already_disabled' <> 'true'
+     OR v_downgrade->>'mode' <> 'snapshot' THEN
+    RAISE EXCEPTION 'Exact snapshot no-op retry was not accepted after stale rejection: %', v_downgrade;
+  END IF;
+
+  v_downgrade := public.nexus_disable_entity_delta(
+    v_downgrade_bad_stamp_request, 1,
+    v_downgrade_expected_stamp + interval '1 second', 1, 1
+  );
+  IF v_downgrade->>'ok' <> 'false'
+     OR v_downgrade->>'code' <> 'revision_conflict' THEN
+    RAISE EXCEPTION 'Snapshot no-op accepted a mismatched checkpoint timestamp: %', v_downgrade;
+  END IF;
+  v_downgrade := public.nexus_disable_entity_delta(
+    v_downgrade_bad_stamp_request, 1, v_downgrade_expected_stamp, 1, 1
+  );
+  IF v_downgrade->>'ok' <> 'true'
+     OR v_downgrade->>'already_disabled' <> 'true'
+     OR v_downgrade->>'mode' <> 'snapshot' THEN
+    RAISE EXCEPTION 'Exact timestamp retry was not accepted after stale rejection: %', v_downgrade;
   END IF;
 
   BEGIN
