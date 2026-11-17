@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { resolvePreviewConfig, resolveStagingEntityDeltaEnabled, renderConfigScript } from './build.mjs';
+import { resolvePreviewConfig, resolveStagingEntityDeltaEnabled, resolveHostedQaEntityDeltaEnabled, renderConfigScript } from './build.mjs';
 
 const previewEnv = {
   VERCEL_ENV: 'preview',
@@ -191,5 +191,72 @@ assert.ok(renderConfigScript(localConfig,false).includes('window.NEXUS_ENTITY_DE
 const existingStagingConfig={url:'https://xuwfzibxhxzxxupprxsq.supabase.co',key:previewEnv.NEXUS_SUPABASE_ANON_KEY};
 assert.ok(renderConfigScript(existingStagingConfig,true).includes('window.NEXUS_ENTITY_DELTA_SYNC_STAGING=false'));
 assert.ok(renderConfigScript(null,true).includes('window.NEXUS_ENTITY_DELTA_SYNC_STAGING=false'));
+
+
+const hostedQaBranch = 'feat/dla-01-hosted-qa-gate';
+const hostedQaProject = 'https://xuwfzibxhxzxxupprxsq.supabase.co';
+const hostedQaEnv = {
+  VERCEL: '1',
+  VERCEL_ENV: 'preview',
+  VERCEL_GIT_COMMIT_REF: hostedQaBranch,
+  VERCEL_URL: 'nexus-dla-01-git-feat-dla-01-hosted-qa-gate-recall-ed03.vercel.app',
+  NEXUS_ENTITY_DELTA_QA_ENABLED: 'true',
+  NEXUS_SUPABASE_URL: hostedQaProject,
+  NEXUS_SUPABASE_ANON_KEY: previewEnv.NEXUS_SUPABASE_ANON_KEY
+};
+const hostedQaConfig = resolvePreviewConfig(hostedQaEnv);
+assert.deepEqual(hostedQaConfig, {
+  url: hostedQaProject,
+  key: previewEnv.NEXUS_SUPABASE_ANON_KEY
+}, 'the dedicated hosted QA branch may use only the existing isolated QA Supabase project');
+const hostedQaGate = resolveHostedQaEntityDeltaEnabled(hostedQaEnv, hostedQaConfig);
+assert.deepEqual(hostedQaGate, {
+  enabled: true,
+  origin: 'https://nexus-dla-01-git-feat-dla-01-hosted-qa-gate-recall-ed03.vercel.app',
+  ref: hostedQaBranch
+}, 'hosted QA must require the explicit flag, exact branch, exact project, and deployment-specific Vercel origin');
+const hostedQaConfigScript = renderConfigScript(hostedQaConfig, false, hostedQaGate);
+assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=true'));
+assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_REF="feat/dla-01-hosted-qa-gate"'));
+assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN="https://nexus-dla-01-git-feat-dla-01-hosted-qa-gate-recall-ed03.vercel.app"'));
+assert.ok(renderConfigScript(hostedQaConfig, false, null).includes('window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=false'));
+
+assert.equal(resolveHostedQaEntityDeltaEnabled({
+  ...hostedQaEnv, NEXUS_ENTITY_DELTA_QA_ENABLED: 'false'
+}, hostedQaConfig).enabled, false, 'missing explicit hosted QA opt-in must leave Delta disabled');
+assert.equal(resolveHostedQaEntityDeltaEnabled({
+  ...hostedQaEnv, VERCEL_GIT_COMMIT_REF: 'main'
+}, hostedQaConfig).enabled, false, 'production/main refs must not enable hosted QA');
+assert.equal(resolveHostedQaEntityDeltaEnabled({
+  ...hostedQaEnv, VERCEL_ENV: 'production'
+}, hostedQaConfig).enabled, false, 'production deployments must not enable hosted QA');
+assert.equal(resolveHostedQaEntityDeltaEnabled({
+  ...hostedQaEnv, VERCEL_URL: ''
+}, hostedQaConfig).enabled, false, 'a build without an exact deployment host must fail closed');
+assert.equal(resolveHostedQaEntityDeltaEnabled({
+  ...hostedQaEnv, VERCEL_URL: 'nexus-preview.example.com'
+}, hostedQaConfig).enabled, false, 'non-Vercel origins must fail closed');
+assert.equal(resolveHostedQaEntityDeltaEnabled({
+  ...hostedQaEnv, VERCEL_URL: 'nexus-preview.vercel.app/path'
+}, hostedQaConfig).enabled, false, 'deployment hosts containing paths must fail closed');
+assert.equal(resolveHostedQaEntityDeltaEnabled({
+  ...hostedQaEnv, VERCEL_GIT_COMMIT_REF: 'feat/another-preview'
+}, hostedQaConfig).enabled, false, 'generic public preview branches must not enable hosted QA');
+assert.equal(resolveHostedQaEntityDeltaEnabled({
+  ...hostedQaEnv, CONTEXT: 'deploy-preview', VERCEL_ENV: undefined
+}, hostedQaConfig).enabled, false, 'Netlify or generic deploy previews must not enable this Vercel-only QA gate');
+assert.equal(resolveHostedQaEntityDeltaEnabled(hostedQaEnv, {
+  url: 'https://another-staging-project.supabase.co',
+  key: previewEnv.NEXUS_SUPABASE_ANON_KEY
+}).enabled, false, 'the gate must reject any Supabase project other than the exact approved QA project');
+assert.equal(resolveHostedQaEntityDeltaEnabled(hostedQaEnv, {
+  url: 'https://txugbdavblpettcnhcxl.supabase.co',
+  key: previewEnv.NEXUS_SUPABASE_ANON_KEY
+}).enabled, false, 'the production Supabase project must never pass the hosted QA gate');
+assert.ok(renderConfigScript({
+  url: 'https://another-staging-project.supabase.co',
+  key: previewEnv.NEXUS_SUPABASE_ANON_KEY
+}, false, hostedQaGate).includes('window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=false'),
+  'config generation must independently fail closed when given a mismatched project');
 
 console.log('Preview-only Supabase configuration guard tests passed.');
