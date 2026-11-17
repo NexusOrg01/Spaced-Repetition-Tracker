@@ -515,3 +515,45 @@ A separate implementation branch, `feat/dla-01-hosted-qa-gate`, adds a hosted QA
 **QA-01 dependency discrepancy remains unresolved:** read-only verification of hosted `nexus-sync-staging` on 17 November found 4 Auth users, 4 workspaces and 4 workspace owners, with 6,275 existing chunk rows; all four workspaces remain in snapshot mode and operation/receipt tables remain empty. No separate synthetic QA owner/workspace was present. No staging rows or settings were changed. Preserve all four existing workspaces and their chunks.
 
 **Activation boundary:** no Vercel environment variable was configured, no preview was opted in, no hosted Delta RPC was invoked or granted, and no staging or production database change was made. The code-level gate is implemented on this branch but DLA-01 is **not accepted/complete** until QA-01 is independently evidenced, the dedicated preview is deployed, and the positive hosted QA path is verified on that exact origin. The PR preview remains default-off. DLA-02 (server-side pilot eligibility/RPC grants) and DLA-03 (server-side downgrade/kill switch) remain separate, later gates and must not be bypassed.
+
+### 17 November 2026 — DLA-02 server-side pilot eligibility implemented and staging-verified
+
+**Implementation branch:** `feat/dla-02-server-pilot-eligibility`  
+**Base dependency:** `feat/dla-01-hosted-qa-gate`  
+**Staging migration:** `20261117083717_add_entity_delta_pilot_eligibility.sql`  
+**Hosted staging project:** isolated `nexus-sync-staging` only.
+
+#### Server controls
+
+- Added private `nexus_private.entity_delta_pilot_allowlist`, keyed by Auth owner UUID, FK-cascaded on Auth deletion, with `enabled=false` by default and a required bounded operator reason.
+- The table is empty immediately after migration. It has RLS enabled and no schema/table privileges for `PUBLIC`, `anon`, `authenticated` or `service_role`.
+- Replaced `nexus_enable_entity_delta` with an owner-scoped `auth.uid()` check against the private allowlist. An absent/disabled row returns `pilot_not_enabled` before reading or changing workspace state. The allowlist row is locked `FOR SHARE` during enablement so a concurrent operator change cannot race the transition.
+- All six Delta RPCs are executable by `authenticated` only. `PUBLIC`, `anon` and `service_role` remain explicitly revoked.
+- The three sync bookkeeping tables retain authenticated owner-filtered `SELECT` only. Authenticated direct `INSERT`, `UPDATE`, `DELETE` and `TRUNCATE` are revoked. The private allowlist is not directly queryable by browser/API roles.
+- The DLA-02 activation migration remains separate from OPS-01's exact production schema migration allowlist. It does not grant direct browser writes or enable any workspace.
+
+#### QA owner qualification and staging eligibility
+
+The DLA-01 hosted QA gate record identifies the existing staging-login workspace as the owner-designated QA workspace; it explicitly says a separate synthetic Auth identity was not created. This DLA-02 implementation follows that owner-confirmed designation and **does not describe it as a synthetic account**. This is a documented deviation from the earlier roadmap wording “synthetic QA owner”; preserve the existing three non-QA workspaces. Do not create or silently substitute a new owner. If a separate synthetic identity is later required, it must be independently provisioned and verified before DLA-04.
+
+- The designated workspace was independently resolved by its recorded DLA-01 probe update timestamp and rechecked as a chunked snapshot.
+- Its manifest passed the pre-eligibility structural check: 5/5 chunks, indexes 0–4, consistent per-chunk counts, 1,175,324 recorded bytes matching the manifest, and a 64-character SHA-256 manifest value.
+- Exactly one owner is now enabled in the staging private allowlist, with reason `DLA-01 owner-designated staging QA account; existing login, not a synthetic Auth identity`.
+- No owner was switched persistently. All four staging workspaces remain in snapshot mode at revision zero; operation and receipt tables remain empty.
+
+#### Verification
+
+- Staging migration applied successfully and recorded by Supabase at version `20261117083717`.
+- Read-only ACL verification: all six RPCs have `authenticated EXECUTE = true`, `anon EXECUTE = false`, and `service_role EXECUTE = false`.
+- Read-only schema/table verification: `nexus_private` usage is false for authenticated/anon/service_role; allowlist table SELECT is false for authenticated/service_role; the three public sync tables give authenticated SELECT only and zero direct write privileges.
+- The rollback-only `supabase/tests/nexus_entity_delta_authenticated_rpc.sql` test ran against isolated staging without SQL errors. It exercised an eligible synthetic test owner and an unlisted owner under `SET LOCAL ROLE authenticated`, verified the eligible enable/publish flow, and proved the unlisted account receives `pilot_not_enabled`, cannot publish, and creates no operation/receipt rows. Test fixtures and mode changes rolled back.
+- A second rollback-only staging probe used the actual owner-designated QA login plus a separate existing unlisted staging owner. The designated account passed enablement inside the transaction; the unlisted account was denied enablement and publication; the transaction rolled back.
+- Final read-only reconciliation after both tests: 1 enabled allowlist row; 4 Auth users; 4 workspaces; 4 snapshot states; 0 Delta states; 0 operation rows; 0 receipt rows; no browser private-schema access; no authenticated direct sync-table write privileges.
+- Local CI fixtures were updated to allowlist only disposable owners A and C; disposable owner B is intentionally unlisted. The 20-assertion authenticated Chromium protocol now expects B to remain snapshot-only, and the 26.9 MB lifecycle continues under disposable owner C. Cleanup asserts no test allowlist rows remain.
+
+#### Gate boundaries
+
+- The DLA-01 browser/build gate is not widened by this branch. Generic previews and production remain default-off; the DLA-02 PR preview is not authorized to enter hosted Delta.
+- A workspace may be eligible without being activated. The owner-designated staging workspace remains snapshot-mode and no live Delta publication was made.
+- DLA-03's server-side downgrade/kill switch remains a required gate before persistent hosted activation. DLA-04's authenticated two-device pilot must follow only after DLA-01/02/03 acceptance.
+- No production Supabase migration, grant, allowlist row, workspace-mode change, production deployment, APK build, or merge was performed.
