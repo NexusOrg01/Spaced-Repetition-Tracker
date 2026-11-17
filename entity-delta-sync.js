@@ -1291,10 +1291,8 @@
           receipt.already_applied===true,mode:'snapshot',headRevision:expectedHead,
           snapshotRevision:expectedHead,updated_at:finalState.remote.updated_at,
           requestId,compaction,cursor:finalState.cursor};
-      }catch(error){
-        return failed('snapshot_downgrade_failed',{
-          retryable:true,errorCode:String(error&&error.code||'unknown'),
-          errorMessage:String(error&&error.message||'unknown').slice(0,180)});
+      }catch(_error){
+        return failed('snapshot_downgrade_failed');
       }
     }
 
