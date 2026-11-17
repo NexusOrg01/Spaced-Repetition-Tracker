@@ -1037,6 +1037,7 @@ function coordinatorHarness(options={}){
 }
 
 const stagingSupabaseUrl='http://127.0.0.1:54321';
+const hostedQaSupabaseUrl='https://xuwfzibxhxzxxupprxsq.supabase.co';
 const stagingFunctionStart=cloudSyncSource.indexOf('async function runStagingEntityDeltaSync(');
 const stagingFunctionEnd=cloudSyncSource.indexOf('\nasync function upload(){',stagingFunctionStart);
 assert.ok(stagingFunctionStart>=0&&stagingFunctionEnd>stagingFunctionStart,
@@ -1046,13 +1047,14 @@ const stagingFunctionSource=cloudSyncSource.slice(stagingFunctionStart,stagingFu
 function makeStagingRuntimeHarness({
   gate=false,localOrigin=true,stagingUrl=stagingSupabaseUrl,recoveryIntent=null,
   syncResult={ok:true,publishedCount:1},recoveryResult={ok:true,recovered:true},
-  missingChunkStorage=false
+  missingChunkStorage=false,hostedQaGate=false,hostedQaOrigin='',
+  browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='feat/dla-01-hosted-qa-gate'
 }={}){
   const calls={createClient:0,synchronize:null,recovery:null,cursorOwner:null,
     localBaseOwner:null,pendingOwner:null,chunkWrite:null,localCommit:null,
     renderCount:0,hubRenderCount:0,featureUpdate:null,fsrsSettings:null};
   const client={name:'staging-test-client'};
-  const localStorage={getItem:key=>key==='owner-key'?'account-A':null};
+  const localStorage={getItem:key=>key==='owner-key'?localOwner:null};
   const payload={state:{streams:[],subjects:[],topics:[],history:[],exams:[]},
     featureState:{journal:[],papers:[],goals:[],studyLogs:[]}};
   const cursor={snapshotUpdatedAt:'verified-snapshot-stamp',snapshotRevision:3};
@@ -1073,6 +1075,9 @@ function makeStagingRuntimeHarness({
   };
   const window={
     NEXUS_ENTITY_DELTA_SYNC_STAGING:gate,
+    NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA:hostedQaGate,
+    NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN:hostedQaOrigin,
+    NEXUS_ENTITY_DELTA_SYNC_QA_REF:hostedQaRef,
     NexusOfflineSyncQueue:queue,
     NexusStorage:storage,
     NexusEntityDeltaSync:{
@@ -1106,10 +1111,13 @@ function makeStagingRuntimeHarness({
     };
   }
   const context={
-    window,client,session:{user:{id:'account-A'}},localStorage,OWNER_KEY:'owner-key',
+    window,client,session:{user:{id:sessionUser}},localStorage,OWNER_KEY:'owner-key',
     STAGING_CONFIG:{url:stagingSupabaseUrl,key:'staging-test-key'},
     config:()=>({url:stagingUrl}),
-    location:{hostname:localOrigin?'127.0.0.1':'deploy-preview-126--nexussrt.netlify.app'},
+    location:{
+      hostname:localOrigin?'127.0.0.1':new URL(browserOrigin||'https://deploy-preview-126--nexussrt.netlify.app').hostname,
+      origin:browserOrigin||(localOrigin?'http://127.0.0.1:54321':'https://deploy-preview-126--nexussrt.netlify.app')
+    },
     URL,
     snapshot:()=>payload,
     sameWorkspace:()=>true,
@@ -1149,6 +1157,72 @@ const wrongProjectGate=makeStagingRuntimeHarness({
 assert.equal((await wrongProjectGate.run('account-A',stagingSignal)).skipped,true,
   'the runtime gate must reject the existing hosted staging project when the app is local');
 assert.equal(wrongProjectGate.calls.createClient,0);
+
+const hostedQaOrigin='https://nexus-dla-01-preview.vercel.app';
+const activeHostedQa=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
+  hostedQaGate:true,hostedQaOrigin,browserOrigin:hostedQaOrigin
+});
+const activeHostedQaResult=await activeHostedQa.run('account-A',stagingSignal);
+assert.equal(activeHostedQaResult.ok,true,
+  'hosted QA may use Delta only on its exact generated Vercel origin and approved staging project');
+assert.equal(activeHostedQa.calls.createClient,1);
+
+const wrongHostedOrigin=makeStagingRuntimeHarness({
+  localOrigin:false,stagingUrl:hostedQaSupabaseUrl,hostedQaGate:true,
+  hostedQaOrigin,browserOrigin:'https://another-preview.vercel.app'
+});
+assert.equal((await wrongHostedOrigin.run('account-A',stagingSignal)).skipped,true,
+  'a different Vercel preview origin must not open the hosted QA gate');
+assert.equal(wrongHostedOrigin.calls.createClient,0);
+
+const wrongHostedProject=makeStagingRuntimeHarness({
+  localOrigin:false,stagingUrl:'https://another-staging-project.supabase.co',
+  hostedQaGate:true,hostedQaOrigin,browserOrigin:hostedQaOrigin
+});
+assert.equal((await wrongHostedProject.run('account-A',stagingSignal)).skipped,true,
+  'the hosted QA runtime must reject every project except the exact approved staging project');
+assert.equal(wrongHostedProject.calls.createClient,0);
+
+const productionHostedProject=makeStagingRuntimeHarness({
+  localOrigin:false,stagingUrl:'https://txugbdavblpettcnhcxl.supabase.co',
+  hostedQaGate:true,hostedQaOrigin,browserOrigin:hostedQaOrigin
+});
+assert.equal((await productionHostedProject.run('account-A',stagingSignal)).skipped,true,
+  'the production Supabase project must never pass the hosted QA runtime gate');
+assert.equal(productionHostedProject.calls.createClient,0);
+
+const publicNetlifyPreview=makeStagingRuntimeHarness({
+  localOrigin:false,stagingUrl:hostedQaSupabaseUrl,hostedQaGate:true,
+  hostedQaOrigin,browserOrigin:'https://deploy-preview-133--nexussrt.netlify.app'
+});
+assert.equal((await publicNetlifyPreview.run('account-A',stagingSignal)).skipped,true,
+  'generic public previews and Netlify aliases must not open the Vercel-only hosted QA gate');
+assert.equal(publicNetlifyPreview.calls.createClient,0);
+
+const mismatchedAuthenticatedOwner=makeStagingRuntimeHarness({
+  localOrigin:false,stagingUrl:hostedQaSupabaseUrl,hostedQaGate:true,
+  hostedQaOrigin,browserOrigin:hostedQaOrigin,sessionUser:'account-B'
+});
+assert.equal((await mismatchedAuthenticatedOwner.run('account-A',stagingSignal)).skipped,true,
+  'the hosted QA gate must require the authenticated owner to equal the requested owner');
+assert.equal(mismatchedAuthenticatedOwner.calls.createClient,0);
+
+const mismatchedLocalOwner=makeStagingRuntimeHarness({
+  localOrigin:false,stagingUrl:hostedQaSupabaseUrl,hostedQaGate:true,
+  hostedQaOrigin,browserOrigin:hostedQaOrigin,localOwner:'account-B'
+});
+assert.equal((await mismatchedLocalOwner.run('account-A',stagingSignal)).skipped,true,
+  'the hosted QA gate must require the IndexedDB/local owner marker to match the authenticated owner');
+assert.equal(mismatchedLocalOwner.calls.createClient,0);
+
+const wrongHostedRef=makeStagingRuntimeHarness({
+  localOrigin:false,stagingUrl:hostedQaSupabaseUrl,hostedQaGate:true,
+  hostedQaOrigin,browserOrigin:hostedQaOrigin,hostedQaRef:'feat/another-preview'
+});
+assert.equal((await wrongHostedRef.run('account-A',stagingSignal)).skipped,true,
+  'the hosted QA runtime must reject an unexpected build ref even on the exact origin');
+assert.equal(wrongHostedRef.calls.createClient,0);
 
 const incompleteDependencies=makeStagingRuntimeHarness({gate:true,missingChunkStorage:true});
 await assert.rejects(
