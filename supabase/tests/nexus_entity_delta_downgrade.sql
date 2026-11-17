@@ -54,6 +54,7 @@ DECLARE
   v_unmarked_chunk text;
   v_delta_manifest jsonb;
   v_unmarked_manifest jsonb;
+  v_bad_chunk_manifest jsonb;
   v_chunk_old_count bigint;
   v_chunk_new_count bigint;
   v_privileges integer;
@@ -234,6 +235,28 @@ BEGIN
   IF v_result->>'code' <> 'unmarked_chunk_manifest_incomplete' THEN
     RAISE EXCEPTION 'Downgrade accepted an incomplete unmarked chunk manifest: %',v_result;
   END IF;
+
+  -- A clean manifest cannot point at chunk data that still contains the Delta
+  -- marker, even if the caller strips the marker from the JSONB manifest.
+  v_bad_chunk_manifest := v_delta_manifest - '__nexusDeltaSync';
+  v_result := public.nexus_disable_entity_delta(0,v_stamp,v_bad_chunk_manifest);
+  IF v_result->>'code' <> 'unmarked_chunk_data_has_delta_marker' THEN
+    RAISE EXCEPTION 'Downgrade accepted Delta-marked serialized chunk data: %',v_result;
+  END IF;
+
+  -- Declared chunk bytes must match the real UTF-8 byte count, not just add up
+  -- to the manifest total. The fixture then restores its correct byte count.
+  UPDATE public.nexus_user_data_chunks
+     SET chunk_bytes = chunk_bytes + 1
+   WHERE user_id = v_uid_b AND revision_id = v_unmarked_revision;
+  v_result := public.nexus_disable_entity_delta(0,v_stamp,v_unmarked_manifest);
+  IF v_result->>'code' <> 'unmarked_chunk_byte_count_mismatch' THEN
+    RAISE EXCEPTION 'Downgrade accepted an incorrect per-chunk byte count: %',v_result;
+  END IF;
+  UPDATE public.nexus_user_data_chunks
+     SET chunk_bytes = octet_length(chunk_data)
+   WHERE user_id = v_uid_b AND revision_id = v_unmarked_revision;
+
   IF NOT EXISTS (
     SELECT 1 FROM public.nexus_workspace_sync_state
     WHERE user_id=v_uid_b AND mode='delta'
