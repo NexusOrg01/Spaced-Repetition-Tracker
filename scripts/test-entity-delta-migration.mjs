@@ -171,7 +171,7 @@ assert.match(downgradeMigration, /unmarked_chunk_byte_count_mismatch/);
 assert.match(downgradeMigration, /unmarked_chunk_data_has_delta_marker/);
 assert.match(downgradeMigration, /SECURITY DEFINER[\s\S]*SET search_path = ''[\s\S]*AS \$function\$/);
 assert.match(downgradeMigration, /REVOKE ALL ON FUNCTION public\.nexus_disable_entity_delta\(bigint, timestamptz, jsonb\)[\s\S]*FROM PUBLIC, anon, authenticated, service_role/);
-assert.ok(downgradeSqlTest.includes("ARRAY['search_path=\\"\\"']::text[]"),
+assert.ok(downgradeSqlTest.includes(`ARRAY['search_path=""']::text[]`),
   'the DLA-03 SQL test must verify an empty SECURITY DEFINER search_path');
 assert.ok(downgradeSqlTest.includes("ARRAY['anon','authenticated','service_role']::text[]"),
   'the DLA-03 SQL test must verify service_role cannot execute the downgrade RPC');
