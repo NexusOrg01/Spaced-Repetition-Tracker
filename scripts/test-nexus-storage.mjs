@@ -1658,6 +1658,93 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
 }
 
 {
+  const owner='entity-delta-downgrade-storage-owner';
+  const state={schema:3,streams:[{id:'downgrade-stream',name:'Commerce'}],
+    subjects:[],topics:[{id:'downgrade-topic',name:'Before downgrade'}],
+    history:[],exams:[],settings:{}};
+  const features={version:1,journal:[],papers:[],goals:[],studyLogs:[]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true,'downgrade lock fixture must initialize durable storage');
+  await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+  const cursor=await loaded.api.initializeWorkspaceEntityDeltaCursor(
+    owner,4,'dla03-checkpoint-stamp',true);
+  assert.equal(cursor.ok,true);
+  const intentId='nexus-downgrade-storage-test';
+  const begun=await loaded.api.beginWorkspaceEntityDowngrade(owner,{
+    intentId,expectedHeadRevision:4,generation:cursor.generation,
+    snapshotUpdatedAt:'dla03-checkpoint-stamp'
+  });
+  assert.equal(begun.ok,true,'the downgrade intent must be persisted under its owner');
+  assert.equal(begun.intent.phase,'prepared');
+  assert.equal(loaded.api.getStatus().entityDowngradeLocked,true);
+  assert.equal(loaded.api.getStatus().entityRecoveryLocked,true,
+    'the shared write-lock status must report that normal workspace mutations are blocked');
+  await assert.rejects(loaded.api.syncWorkspaceEntities(owner,[]),/recovery is pending/,
+    'ordinary entity writes must be blocked while a downgrade intent is prepared');
+  assert.throws(()=>loaded.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(state)}
+  ]),/verified cloud recovery/,
+    'managed whole-workspace writes must remain blocked during downgrade');
+
+  const restarted=loadApi(makeWindow(native,idb));
+  assert.equal(await restarted.api.bootstrap(),true,
+    'a fresh page context must restore the prepared downgrade journal');
+  assert.equal(restarted.api.getStatus().entityDowngradeLocked,true,
+    'the prepared downgrade write lock must survive a page restart');
+  assert.equal(restarted.api.getStatus().entityRecoveryLocked,true);
+  await assert.rejects(restarted.api.syncWorkspaceEntities(owner,[]),/recovery is pending/,
+    'normal writes must stay blocked after restoring the downgrade lock');
+
+  const marked=await restarted.api.markWorkspaceEntityDowngradeCheckpoint(owner,intentId,{
+    verified:true,headRevision:4,snapshotRevision:4,compactedThroughRevision:4,
+    updated_at:'dla03-checkpoint-stamp'
+  });
+  assert.equal(marked.ok,true,'a fully verified and compacted checkpoint must advance the local journal');
+  assert.equal(marked.intent.phase,'checkpointed');
+  const checkpointRestart=loadApi(makeWindow(native,idb));
+  assert.equal(await checkpointRestart.api.bootstrap(),true);
+  assert.equal(checkpointRestart.api.getStatus().entityDowngradeLocked,true,
+    'the checkpointed intent must continue holding the local account write lock after restart');
+
+  const finished=await checkpointRestart.api.completeWorkspaceEntityDowngrade(
+    owner,intentId,4);
+  assert.equal(finished.ok,true);
+  assert.equal(finished.cleared,true);
+  assert.equal(checkpointRestart.api.getStatus().entityDowngradeLocked,false,
+    'the downgrade lock must release only after the verified snapshot-mode receipt is adopted');
+  assert.equal(await checkpointRestart.api.readWorkspaceEntityDowngrade(owner),null);
+  assert.equal((await checkpointRestart.api.readWorkspaceEntityDeltaCursor(owner)).exists,false,
+    'the Delta cursor must be removed only after the checkpoint was committed');
+
+  // Account deletion must also remove an interrupted downgrade journal and lock.
+  await checkpointRestart.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:checkpointRestart.api.getStatus().revision});
+  const nextCursor=await checkpointRestart.api.initializeWorkspaceEntityDeltaCursor(
+    owner,5,'dla03-delete-checkpoint',true);
+  assert.equal(nextCursor.ok,true);
+  const pendingDelete=await checkpointRestart.api.beginWorkspaceEntityDowngrade(owner,{
+    intentId:'nexus-downgrade-delete-pending',expectedHeadRevision:5,
+    generation:nextCursor.generation,snapshotUpdatedAt:'dla03-delete-checkpoint'
+  });
+  assert.equal(pendingDelete.ok,true);
+  const removed=await checkpointRestart.api.deleteWorkspaceEntities(owner);
+  assert.equal(removed.downgradeRemoved,true,
+    'account cleanup must remove an interrupted downgrade journal');
+  assert.equal(checkpointRestart.api.getStatus().entityDowngradeLocked,false,
+    'account cleanup must release the in-memory downgrade lock');
+  const meta=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  const downgradeKey='workspace-entity-downgrade:'+encodeURIComponent(owner);
+  assert.equal(meta.has(downgradeKey),false,
+    'account cleanup must remove the owner-scoped downgrade record from IndexedDB');
+}
+
+{
   const owner='entity-delta-recovery-atomic-owner';
   const state={schema:3,streams:[{id:'recovery-stream',name:'Commerce'}],
     subjects:[{id:'recovery-subject',streamId:'recovery-stream',name:'Accounting'}],
@@ -1803,4 +1890,4 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'successful owner cleanup must release the in-memory recovery lock');
 }
 
-console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, delta cursor receipt atomicity, recovery journal restart at prepared/staged/published phases, recovery write locks, failed-write recovery, and account-handoff isolation.');
+console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, delta cursor receipt atomicity, recovery journal restart at prepared/staged/published phases, recovery/downgrade write locks across restart, atomic downgrade checkpointing, failed-write recovery, and account-handoff isolation.');
