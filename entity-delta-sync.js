@@ -1091,6 +1091,34 @@
           return {ok:false,reason:'local_workspace_differs_from_verified_checkpoint',state,remote};
         return {ok:true,state,remote,local,headRevision:head};
       }
+      async function verifyDowngradedSnapshot(expectedHead){
+        const verified=await readVerifiedSnapshot('snapshot',expectedHead);
+        if(!verified.ok)return verified;
+        const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
+        const cursor=cursorResult&&cursorResult.cursor;
+        if(!cursorResult||cursorResult.ok!==true||!cursor||
+           cursor.ownerId!==owner||cursor.generation!==cursorResult.generation||
+           cursor.snapshotUpdatedAt!==verified.remote.updated_at||
+           Number(cursor.publishRevision)!==expectedHead||
+           Number(cursor.remoteHeadRevision)!==expectedHead||
+           cursor.requiresPull!==false){
+          return {ok:false,reason:'downgraded_snapshot_cursor_not_verified'};
+        }
+        const outbox=await storage.readWorkspaceEntityOutboxGroups(
+          owner,Number(cursor.acknowledgedSequence),1000,MAX_BYTES-65536);
+        if(!outbox||outbox.unavailable||outbox.snapshotRequired||
+           outbox.ownerId!==owner||outbox.generation!==cursor.generation||
+           Number(outbox.workspaceRevision)!==Number(cursor.workspaceRevision)||
+           !Array.isArray(outbox.groups)||outbox.groups.length||outbox.hasMore===true){
+          return {ok:false,reason:'downgraded_snapshot_outbox_not_empty'};
+        }
+        if(await getPendingSnapshot(owner))
+          return {ok:false,reason:'downgraded_snapshot_compatibility_queue_pending'};
+        const journal=await storage.readWorkspaceEntityRecovery(owner);
+        if(journal&&journal.intent)
+          return {ok:false,reason:'downgraded_snapshot_recovery_journal_pending'};
+        return {...verified,cursor};
+      }
       try{
         await assertOwner(owner);
         let journal=await storage.readWorkspaceEntityRecovery(owner);
@@ -1235,7 +1263,7 @@
         if(disabled&&disabled.error){
           const afterError=await readState();
           if(afterError.mode==='snapshot'){
-            const confirmed=await readVerifiedSnapshot('snapshot',expectedHead);
+            const confirmed=await verifyDowngradedSnapshot(expectedHead);
             if(confirmed.ok)return {ok:true,downgraded:true,alreadyDowngraded:true,
               mode:'snapshot',headRevision:expectedHead,snapshotRevision:expectedHead,
               updated_at:confirmed.remote.updated_at,requestId};
@@ -1257,12 +1285,12 @@
         if(!receipt||receipt.ok!==true||receipt.mode!=='snapshot')
           return failed(receipt&&receipt.code||'downgrade_rpc_receipt_invalid',{receipt:receipt||null});
         await assertOwner(owner);
-        const finalState=await readVerifiedSnapshot('snapshot',expectedHead);
+        const finalState=await verifyDowngradedSnapshot(expectedHead);
         if(!finalState.ok)return failed(finalState.reason,{receipt});
         return {ok:true,downgraded:true,alreadyDowngraded:receipt.already_disabled===true||
           receipt.already_applied===true,mode:'snapshot',headRevision:expectedHead,
           snapshotRevision:expectedHead,updated_at:finalState.remote.updated_at,
-          requestId,compaction};
+          requestId,compaction,cursor:finalState.cursor};
       }catch(error){
         return failed('snapshot_downgrade_failed',{
           retryable:true,errorCode:String(error&&error.code||'unknown'),
