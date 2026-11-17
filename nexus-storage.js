@@ -2368,40 +2368,87 @@
     });
   }
 
-  async function completeWorkspaceEntityDowngrade(ownerId,intentId,expectedHeadRevision){
-    const owner=entityOwnerKey(ownerId),id=String(intentId||''),head=Number(expectedHeadRevision);
+  async function completeWorkspaceEntityDowngrade(ownerId,intentId,expectedHeadRevision,entries){
+    const owner=entityOwnerKey(ownerId),id=String(intentId||''),head=Number(expectedHeadRevision),
+      allowed=new Set(['nexus.cloud.sync-base.v1','nexus.cloud.remote-stamps.v1']);
     if(!Number.isSafeInteger(head)||head<0)return {ok:false,reason:'invalid_downgrade_head'};
-    const result=await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
-      const store=tx.objectStore('migrationMeta'),
-        values={intent:null,cursor:null,recovery:null};let remaining=3;
-      const finish=()=>{
-        remaining--;if(remaining!==0)return;
-        const intent=values.intent,cursor=values.cursor,recovery=values.recovery;
-        if(!intent){
-          if(!cursor){set({ok:true,alreadyCompleted:true});return;}
-          set({ok:false,reason:'downgrade_intent_missing'});return;
-        }
-        if(intent.ownerId!==owner||intent.intentId!==id||intent.phase!=='checkpointed'||
-           Number(intent.checkpointHeadRevision)!==head||
-           !cursor||cursor.ownerId!==owner||cursor.generation!==intent.checkpointGeneration||
-           Number(cursor.publishRevision)!==head||Number(cursor.remoteHeadRevision)!==head||
-           cursor.requiresPull!==false||cursor.snapshotUpdatedAt!==intent.checkpointUpdatedAt||
-           (recovery&&recovery.ownerId===owner)){
-          set({ok:false,reason:'downgrade_local_checkpoint_changed'});return;
-        }
-        store.delete(entityDeltaCursorKey(owner));
-        store.delete(entityDeltaRecoveryCompletedKey(owner));
-        store.delete(entityDeltaDowngradeKey(owner));
-        set({ok:true,cleared:true,generation:cursor.generation,headRevision:head});
-      };
-      const i=store.get(entityDeltaDowngradeKey(owner)),c=store.get(entityDeltaCursorKey(owner)),
-        r=store.get(entityDeltaRecoveryKey(owner));
-      i.onsuccess=()=>{values.intent=i.result||null;finish();};
-      c.onsuccess=()=>{values.cursor=c.result||null;finish();};
-      r.onsuccess=()=>{values.recovery=r.result||null;finish();};
+    if(!Array.isArray(entries)||entries.length!==2)
+      return {ok:false,reason:'downgrade_local_base_entries_missing'};
+    const seen=new Set(),normalized=entries.map(entry=>{
+      if(!entry||typeof entry.key!=='string'||!allowed.has(entry.key)||
+         typeof entry.value!=='string'||seen.has(entry.key))
+        throw new Error('The verified downgrade base transaction contains an invalid or duplicate local-storage key.');
+      seen.add(entry.key);return {key:entry.key,value:entry.value};
     });
-    if(result&&result.ok===true)entityDowngradeLockedOwners.delete(owner);
-    return result;
+    if(seen.size!==allowed.size||[...allowed].some(key=>!seen.has(key)))
+      return {ok:false,reason:'downgrade_local_base_entries_incomplete'};
+    if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner)
+      return {ok:false,reason:'downgrade_local_owner_unavailable'};
+    await entitySyncSerial.catch(()=>undefined);
+    const task=serial.catch(()=>undefined).then(async()=>{
+      await persistPending();
+      if(!enabled||!database||committedOwnerId!==owner||entityRemovalOwners.has(owner)||pending.size)
+        return {ok:false,reason:'downgrade_local_writes_not_quiescent'};
+      const capturedWriteSequence=writeSequence,intentKey=entityDeltaDowngradeKey(owner),
+        cursorKey=entityDeltaCursorKey(owner),recoveryKey=entityDeltaRecoveryKey(owner),
+        completedKey=entityDeltaRecoveryCompletedKey(owner);
+      const result=await transaction([RECORDS,META,'migrationMeta'],'readwrite',(tx,set)=>{
+        const records=tx.objectStore(RECORDS),meta=tx.objectStore(META),
+          migration=tx.objectStore('migrationMeta');
+        const values={owner:null,intent:null,cursor:null,recovery:null,lastRevision:null};
+        let remaining=5,finished=false;
+        const finish=()=>{
+          remaining--;if(remaining!==0||finished)return;finished=true;
+          const intent=values.intent,cursor=values.cursor,recovery=values.recovery;
+          if(!intent&&!cursor){
+            set({ok:true,alreadyCompleted:true,revision:Number(values.lastRevision&&values.lastRevision.value)||revision});
+            return;
+          }
+          if(writeSequence!==capturedWriteSequence||!enabled||committedOwnerId!==owner||
+             entityRemovalOwners.has(owner)||rowValue(values.owner)!==owner||
+             !intent||intent.ownerId!==owner||intent.intentId!==id||intent.phase!=='checkpointed'||
+             Number(intent.checkpointHeadRevision)!==head||
+             !cursor||cursor.ownerId!==owner||cursor.generation!==intent.checkpointGeneration||
+             Number(cursor.publishRevision)!==head||Number(cursor.remoteHeadRevision)!==head||
+             cursor.requiresPull!==false||cursor.snapshotUpdatedAt!==intent.checkpointUpdatedAt||
+             (recovery&&recovery.ownerId===owner)){
+            set({ok:false,reason:'local_downgrade_commit_precondition_failed'});return;
+          }
+          const nextRevision=Math.max(0,Number(values.lastRevision&&values.lastRevision.value)||0)+1;
+          for(const entry of normalized)records.put({
+            key:entry.key,value:entry.value,deleted:false,
+            revision:nextRevision,updatedAt:timestamp()
+          });
+          meta.put({key:'lastCommittedRevision',value:nextRevision,updatedAt:timestamp()});
+          migration.delete(cursorKey);
+          migration.delete(completedKey);
+          migration.delete(intentKey);
+          set({ok:true,alreadyCompleted:false,cleared:true,
+            revision:nextRevision,generation:cursor.generation,headRevision:head});
+        };
+        const ownerRequest=records.get(OWNER_KEY),intentRequest=migration.get(intentKey),
+          cursorRequest=migration.get(cursorKey),recoveryRequest=migration.get(recoveryKey),
+          revisionRequest=meta.get('lastCommittedRevision');
+        ownerRequest.onsuccess=()=>{values.owner=ownerRequest.result||null;finish();};
+        intentRequest.onsuccess=()=>{values.intent=intentRequest.result||null;finish();};
+        cursorRequest.onsuccess=()=>{values.cursor=cursorRequest.result||null;finish();};
+        recoveryRequest.onsuccess=()=>{values.recovery=recoveryRequest.result||null;finish();};
+        revisionRequest.onsuccess=()=>{values.lastRevision=revisionRequest.result||null;finish();};
+      });
+      if(!result||result.ok!==true)return result||{ok:false,reason:'downgrade_local_commit_failed'};
+      if(!result.alreadyCompleted){
+        revision=result.revision;
+        if(writeSequence===capturedWriteSequence){
+          for(const entry of normalized){cache.set(entry.key,entry.value);knownKeys.add(entry.key);}
+          mirrorBatch(normalized);
+        }
+      }
+      entityDowngradeLockedOwners.delete(owner);
+      return result;
+    });
+    serial=task.then(()=>revision);
+    task.catch(reportFailure);
+    return task;
   }
 
   async function readWorkspaceEntityRecovery(ownerId){
