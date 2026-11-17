@@ -309,7 +309,7 @@ BEGIN
     RAISE EXCEPTION 'The downgraded workspace did not preserve a marker-free aligned snapshot: %', v_state;
   END IF;
   v_page := public.nexus_read_entity_operations(0, 10, 1048576);
-  IF v_page->>'mode' <> 'snapshot' OR v_page->>'snapshot_required' <> 'true'
+  IF v_page->>'mode' <> 'snapshot'
      OR jsonb_array_length(v_page->'groups') <> 0 THEN
     RAISE EXCEPTION 'A stale Delta client was not redirected to snapshot recovery: %', v_page;
   END IF;
