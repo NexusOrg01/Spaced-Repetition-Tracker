@@ -6,12 +6,17 @@ on:
     paths:
       - .github/workflows/phase34-local-supabase-integration.yml
       - cloud-sync.js
+      - cloud-chunk-storage.js
+      - entity-delta-sync.js
+      - offline-sync-queue.js
+      - nexus-storage.js
       - scripts/prepare-phase34-local-supabase.mjs
       - scripts/test-phase34-local-two-client-browser.mjs
       - scripts/test-phase34-large-workspace-lifecycle.mjs
       - scripts/test-active-manifest-race.mjs
       - scripts/test-staging-two-client-harness.mjs
       - scripts/test-entity-delta-client.mjs
+      - scripts/test-dla03-downgrade-contract.mjs
       - scripts/test-preview-build-config.mjs
       - scripts/test-android-build.mjs
       - staging-test/**
@@ -70,15 +75,22 @@ jobs:
           printf 'PHASE34_DB_URL=%s\n' "$DB_URL" >> "$GITHUB_ENV"
           printf 'PHASE34_ANON_KEY=%s\n' "$ANON_KEY" >> "$GITHUB_ENV"
 
-      - name: Run DLA-02 authenticated RPC and snapshot integrity tests
+      - name: Run DLA-02/DLA-03 authenticated RPC and snapshot integrity tests
         shell: bash
         run: |
           set -euo pipefail
+          node --check cloud-sync.js
+          node --check cloud-chunk-storage.js
+          node --check entity-delta-sync.js
+          node --check offline-sync-queue.js
+          node --check nexus-storage.js
           node --check scripts/test-active-manifest-race.mjs
           psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 -f supabase/tests/nexus_user_data_chunks_active_manifest.sql
           NEXUS_RACE_DATABASE_URL="$PHASE34_DB_URL" node scripts/test-active-manifest-race.mjs
           node scripts/test-cloud-chunk-storage.mjs
           node scripts/test-account-deletion.mjs
+          node scripts/test-entity-delta-client.mjs
+          node scripts/test-dla03-downgrade-contract.mjs
           psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 -f supabase/tests/nexus_entity_delta_authenticated_rpc.sql
           psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 -f supabase/tests/nexus_entity_delta_sync.sql
 
@@ -167,6 +179,7 @@ jobs:
           REVOKE EXECUTE ON FUNCTION public.nexus_read_entity_operations(bigint,integer,integer) FROM PUBLIC, anon, authenticated, service_role;
           REVOKE EXECUTE ON FUNCTION public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb) FROM PUBLIC, anon, authenticated, service_role;
           REVOKE EXECUTE ON FUNCTION public.nexus_compact_entity_operations(integer) FROM PUBLIC, anon, authenticated, service_role;
+          REVOKE EXECUTE ON FUNCTION public.nexus_disable_entity_delta(uuid,bigint,timestamp with time zone,bigint,bigint) FROM PUBLIC, anon, authenticated, service_role;
           SQL
               psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 \
                 -f test-fixtures/nexus_entity_delta_two_client_cleanup.sql
@@ -180,6 +193,8 @@ jobs:
                 -c "SELECT count(*) FROM public.nexus_workspace_sync_state WHERE mode='delta'")"
               remaining_allowlist="$(psql "$PHASE34_DB_URL" -X -At -v ON_ERROR_STOP=1 \
                 -c "SELECT count(*) FROM nexus_private.entity_delta_pilot_allowlist")"
+              remaining_downgrade_receipts="$(psql "$PHASE34_DB_URL" -X -At -v ON_ERROR_STOP=1 \
+                -c "SELECT count(*) FROM nexus_private.entity_delta_downgrade_receipts")"
               leaked_grants="$(psql "$PHASE34_DB_URL" -X -At -v ON_ERROR_STOP=1 <<'SQL'
           SELECT count(*)
           FROM unnest(ARRAY[
@@ -188,7 +203,8 @@ jobs:
             'public.nexus_publish_entity_operation(text,bigint,jsonb)',
             'public.nexus_read_entity_operations(bigint,integer,integer)',
             'public.nexus_publish_entity_snapshot(bigint,timestamp with time zone,jsonb)',
-            'public.nexus_compact_entity_operations(integer)'
+            'public.nexus_compact_entity_operations(integer)',
+            'public.nexus_disable_entity_delta(uuid,bigint,timestamp with time zone,bigint,bigint)'
           ]::text[]) AS signatures(signature)
           WHERE has_function_privilege('anon', signature, 'EXECUTE')
              OR has_function_privilege('authenticated', signature, 'EXECUTE')
@@ -200,8 +216,9 @@ jobs:
               test "$remaining_receipts" = "0"
               test "$remaining_delta" = "0"
               test "$remaining_allowlist" = "0"
+              test "$remaining_downgrade_receipts" = "0"
               test "$leaked_grants" = "0"
-              echo "PASS — disposable users, allowlist rows and Delta rows removed; RPC grants revoked; local database verified clean."
+              echo "PASS — disposable users, allowlist/downgrade receipts and Delta rows removed; RPC grants revoked; local database verified clean."
             else
               echo "Local Supabase did not reach the point where a database URL was exported; no test fixture was created."
             fi

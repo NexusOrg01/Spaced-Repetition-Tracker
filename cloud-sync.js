@@ -36,7 +36,7 @@ function syncDiagSummary(payload){
 }
 const SYNC_DIAG_STAGES=new Set([
  'auth-event','cloud-chunk-read-error','cloud-read','cloud-read-error','cloud-write-complete','cloud-write-error',
- 'curriculum-install-save-requested','delta-sync-result','diagnostics-enabled','initialize-after-cloud-read',
+ 'curriculum-install-save-requested','delta-snapshot-downgrade-result','delta-sync-result','diagnostics-enabled','initialize-after-cloud-read',
  'initialize-error','initialize-finished','initialize-settled','initialize-start','local-save-queue-error',
  'local-save-queued','local-storage-flush','offline-account-base-unavailable','offline-account-pending-unavailable',
  'offline-account-queue-rebuilt','offline-account-recovery-error','offline-account-workspace-restored',
@@ -299,6 +299,27 @@ async function fetchRemote(userId,knownWrite,signal){
     syncDiag('cloud-chunk-read-error',null,{errorCategory:syncDiagErrorCategory(chunkError)});
     throw chunkError;
    }
+  }
+  // The immutable chunk bytes can retain the historical Delta marker after
+  // downgrade; the active manifest pointer no longer carries it. Once the
+  // owner state is snapshot mode, hide that protocol-only field from the
+  // application snapshot so legacy writers/devices see ordinary workspace JSON.
+  let syncStateQuery=client.from('nexus_workspace_sync_state')
+   .select('mode').eq('user_id',uid);
+  syncStateQuery=attachAbortSignal(syncStateQuery,activeSignal);
+  const syncStateRead=await syncStateQuery.maybeSingle();
+  if(syncStateRead&&syncStateRead.error)throw new Error(
+   'Could not verify the chunked workspace sync mode. The downloaded snapshot was not applied: '+
+   String(syncStateRead.error.message||syncStateRead.error.code||'state read failed')
+  );
+  if(syncStateRead&&syncStateRead.data&&syncStateRead.data.mode==='snapshot'&&
+     remote.payload&&remote.payload.__nexusDeltaSync==='entity-delta-v1'){
+   const snapshotPayload={...remote.payload};
+   delete snapshotPayload.__nexusDeltaSync;
+   remote={...remote,payload:snapshotPayload};
+  }else if(syncStateRead&&syncStateRead.data&&
+     !['delta','snapshot'].includes(syncStateRead.data.mode)){
+   throw new Error('The chunked workspace uses an unsupported sync mode. Local data remains preserved.');
   }
  }else{
   lastRemoteStorageMode='legacy';
@@ -827,7 +848,7 @@ ready=true;const adoptedUpload=await upload();if(!adoptedUpload){lastUserId=newU
 }}}
 
 async function sameWorkspace(a,b){if(!a||!b)return false;const merger=window.NexusWorkspaceSyncMerge;if(!merger||typeof merger.sameAsync!=='function')throw new Error('Safe large-workspace comparison is unavailable.');return merger.sameAsync({state:a.state||{},featureState:a.featureState||{}},{state:b.state||{},featureState:b.featureState||{}});}
-async function runStagingEntityDeltaSync(ownerId,signal){
+async function runStagingEntityDeltaSync(ownerId,signal,action={}){
  const queue=window.NexusOfflineSyncQueue,storage=window.NexusStorage;
  const recovery=storage&&typeof storage.readWorkspaceEntityRecovery==='function'
   ?await storage.readWorkspaceEntityRecovery(ownerId):null;
@@ -841,7 +862,7 @@ async function runStagingEntityDeltaSync(ownerId,signal){
   const qaOrigin=new URL(String(window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN||''));
   const qaProject=new URL(config().url);
   hostedQaGate=window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA===true&&
-   window.NEXUS_ENTITY_DELTA_SYNC_QA_REF==='feat/dla-01-hosted-qa-gate'&&
+   window.NEXUS_ENTITY_DELTA_SYNC_QA_REF==='feat/dla-03-safe-snapshot-downgrade'&&
    config().url==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&
    qaProject.origin==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&
    qaOrigin.protocol==='https:'&&qaOrigin.origin===String(window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN||'')&&
@@ -871,10 +892,12 @@ async function runStagingEntityDeltaSync(ownerId,signal){
   );
   await assertActiveUser(ownerId);
   if(!stateRead.data||stateRead.data.mode==='snapshot'){
-   return {skipped:true,mode:'snapshot',
+   if(!(action&&action.downgrade===true))return {skipped:true,mode:'snapshot',
     reason:stateRead.data?'server_snapshot_mode':'server_sync_state_missing'};
+   if(!stateRead.data)return {skipped:true,mode:'snapshot',reason:'server_sync_state_missing'};
   }
-  if(stateRead.data.mode!=='delta'){
+  if(stateRead.data.mode!=='delta'&&
+     !(action&&action.downgrade===true&&stateRead.data.mode==='snapshot')){
    throw new Error('The remote workspace has an unsupported sync mode. The snapshot writer was not started.');
   }
  }
@@ -923,6 +946,7 @@ async function runStagingEntityDeltaSync(ownerId,signal){
   },
   publishSnapshot:(userId,payload,expectedHead,expectedStamp,requestSignal)=>
    chunkStorage.writeDeltaSnapshot(client,userId,payload,expectedHead,expectedStamp,requestSignal),
+  disableSnapshot:(userId,args)=>client.rpc('nexus_disable_entity_delta',args),
   compactOperations:(userId,expectedFloor,requestSignal)=>
    chunkStorage.compactDeltaOperations(client,userId,expectedFloor,requestSignal),
   commitLocalRecovery:(userId,payload,publication,conflicts,metadata)=>
@@ -930,6 +954,13 @@ async function runStagingEntityDeltaSync(ownerId,signal){
     conflicts,{baseServerVersion:metadata.baseServerVersion},
     {intentId:metadata.intentId,candidateDigest:metadata.candidateDigest})
  });
+ if(action&&action.downgrade===true){
+  const result=await makeClient.downgradeToSnapshot(ownerId,{signal,maxGroups:100,maxBytes:8*1048576});
+  if(typeof syncDiag==='function')syncDiag('delta-snapshot-downgrade-result',null,{
+   ok:result&&result.ok===true,mode:result&&result.mode||null,
+   reason:result&&result.reason||null,headRevision:result&&result.headRevision||null});
+  return result||{ok:false,retryable:true,reason:'snapshot_downgrade_unavailable'};
+ }
  if(recoveryPending){
    if(typeof syncDiag==='function')syncDiag('snapshot-recovery-start',null,{reason:'resume-existing-journal'});
    const resumed=await makeClient.publishConflictRecovery(ownerId,{
@@ -1265,8 +1296,40 @@ async function deleteCurrentAccount(){
   if(!session)deletingAccount=false;
  }
 }
+async function downgradeEntityDelta(){
+ if(deletingAccount||!localQueueHealthy||!client||!session||!ready)
+  return {ok:false,reason:'account_sync_not_ready'};
+ if(syncing)return {ok:false,retryable:true,reason:'sync_already_in_progress'};
+ const ownerId=session.user.id;
+ if(localStorage.getItem(OWNER_KEY)!==ownerId)
+  return {ok:false,reason:'active_account_does_not_own_local_workspace'};
+ syncing=true;
+ status('Preparing snapshot downgrade…');
+ const scope=createSyncAbortScope();
+ try{
+  const result=await runStagingEntityDeltaSync(ownerId,scope.signal,{downgrade:true});
+  if(result&&result.ok===true&&result.mode==='snapshot'){
+   lastRemoteStamp=result.updated_at||lastRemoteStamp;
+   await flushDurableLocalWrites();
+   status('Snapshot mode · synced');
+   say('This account has a verified full snapshot and is back in snapshot sync mode. Other offline devices will be required to download and reconcile the current snapshot before their next snapshot write.');
+   return result;
+  }
+  status('Snapshot downgrade paused');
+  say('Snapshot downgrade did not complete. No unverified mode change was accepted. '+String(result&&result.reason||'Review the staging diagnostics and retry when local recovery is clear.'));
+  return result||{ok:false,retryable:true,reason:'snapshot_downgrade_unavailable'};
+ }catch(error){
+  status('Snapshot downgrade paused');
+  say('Snapshot downgrade failed safely. Local workspace and recovery data were preserved. No unverified mode change was accepted.');
+  return {ok:false,retryable:true,reason:'snapshot_downgrade_failed'};
+ }finally{
+  scope.clear();
+  syncing=false;
+  if(pendingSync){pendingSync=false;schedule();}
+ }
+}
 async function signOut(){if(client)await client.auth.signOut();session=null;ready=false;clearTimeout(timer);clearRetry();status('Not signed in · offline ready');say('You are signed out. Continue using this device offline; data remains local.');setControls();}
-window.NexusCloudSync={schedule,upload,reconnect:connect,getAccountState,deleteAccount:deleteCurrentAccount,
+window.NexusCloudSync={schedule,upload,reconnect:connect,getAccountState,deleteAccount:deleteCurrentAccount,downgradeEntityDelta,
  noteCommittedLocalSave:(payload)=>{
   if(deletingAccount)return;
   // app-core has already committed this exact snapshot to the account-bound queue.
