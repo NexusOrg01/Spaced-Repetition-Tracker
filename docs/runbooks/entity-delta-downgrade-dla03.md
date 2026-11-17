@@ -8,7 +8,7 @@ DLA-03 depends on DLA-02. The 17 November 2026 tracker records DLA-02 as owner-c
 
 - supabase/delta-rollout/20261117160000_owner_scoped_entity_delta_downgrade.sql is deliberately outside supabase/migrations/ and the OPS-01 11-file production migration allowlist.
 - scripts/prepare-phase34-local-supabase.mjs copies that SQL only into the generated disposable local Supabase database.
-- The RPC public.nexus_disable_entity_delta(bigint, timestamptz, jsonb) revokes EXECUTE from PUBLIC, anon, and authenticated. Do not manually grant it.
+- The RPC public.nexus_disable_entity_delta(bigint, timestamptz, jsonb) is a SECURITY DEFINER function with an empty search_path and revokes EXECUTE from PUBLIC, anon, authenticated, and service_role. Do not manually grant it.
 - Before any hosted QA use, DLA-02's allowlist/grant package must be reconciled with this new RPC signature and independently verify the synthetic QA identity. Only a separately approved, owner-scoped QA path may add its narrow authenticated grant; do not add a broad grant.
 - Do not enable Delta, change Supabase function grants, deploy a hosted migration, or run a downgrade against production. The local test migration is not a hosted deployment plan.
 - The PR preview is for code review. It is not a hosted Delta pilot and must not be used to downgrade a real account.
@@ -18,7 +18,7 @@ DLA-03 depends on DLA-02. The 17 November 2026 tracker records DLA-02 as owner-c
 1. Use the isolated local Supabase stack prepared by node scripts/prepare-phase34-local-supabase.mjs. Confirm the generated project README says it is disposable and not linked to a hosted project.
 2. Use only fixture users and workspaces created by the local test setup. Confirm the app's authenticated owner UUID matches the fixture owner. Keep the device online and wait until the active local workspace has finished its ordinary sync.
 3. Confirm there is no pending legacy snapshot, no unresolved recovery journal, and no unacknowledged entity outbox group. The coordinator repeats these checks after it acquires a persistent owner-scoped write lock.
-4. The disposable CI runner applies a temporary `GRANT EXECUTE` for `nexus_disable_entity_delta(bigint,timestamptz,jsonb)` to `authenticated` only inside this generated local database, after the rollback-only SQL checks. The cleanup step revokes it, deletes all disposable users/data, verifies no browser grants remain, and destroys the local Supabase stack. For a manual local run, apply the same narrow grant only after confirming the target is the generated loopback database; never apply it to a hosted project.
+4. The disposable CI runner applies a temporary `GRANT EXECUTE` for `nexus_disable_entity_delta(bigint,timestamptz,jsonb)` to `authenticated` only inside this generated local database, after the rollback-only SQL checks. The cleanup step revokes it, deletes all disposable users/data, verifies no browser or service_role grants remain, and destroys the local Supabase stack. For a manual local run, apply the same narrow grant only after confirming the target is the generated loopback database; never apply it to a hosted project.
 5. Invoke the local staging operator from the app console:
 
    ```js
