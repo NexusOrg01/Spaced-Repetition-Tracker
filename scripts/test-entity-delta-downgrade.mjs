@@ -8,6 +8,7 @@ import { TextEncoder } from 'node:util';
 import { createRequire } from 'node:module';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
+const owner='account-dla03-A';
 const require=createRequire(import.meta.url);
 const offlineQueue=require(resolve(root,'offline-sync-queue.js'));
 const sourceText=readFileSync(resolve(root,'entity-delta-sync.js'),'utf8');
@@ -41,7 +42,6 @@ assert.ok(typeof offlineQueue.prepareDowngradeBaseCommit==='function',
 }
 
 
-const owner='account-dla03-A';
 const workspace={
   state:{streams:[{id:'stream-1'}],subjects:[],topics:[],history:[],exams:[]},
   featureState:{journal:[],papers:[],goals:[],studyLogs:[]}
