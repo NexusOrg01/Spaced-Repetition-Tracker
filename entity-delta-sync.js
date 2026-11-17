@@ -1119,9 +1119,24 @@
           if(!checkpoint||checkpoint.ok!==true)
             return {ok:false,retryable:true,reason:checkpoint&&checkpoint.reason||'verified_delta_checkpoint_failed',
               checkpoint};
-          if(!checkpoint.compaction||checkpoint.compaction.complete!==true)
-            return {ok:false,retryable:true,reason:'delta_operation_compaction_incomplete',
-              compaction:checkpoint.compaction||null};
+          // Do not trust a previous snapshot-reuse receipt as proof that physical
+          // operation/receipt cleanup finished. Re-run the bounded compactor until
+          // the database explicitly reports an empty batch.
+          let verifiedCompaction=null;
+          if(typeof compactOperations!=='function')
+            return {ok:false,retryable:true,reason:'delta_operation_compaction_unavailable'};
+          for(let cleanupRound=0;cleanupRound<20;cleanupRound++){
+            const cleanup=await compactOperations(owner,Number(checkpoint.headRevision),signal);
+            if(!cleanup||cleanup.ok!==true){
+              return {ok:false,retryable:true,reason:'delta_operation_compaction_incomplete',compaction:cleanup||null};
+            }
+            if(cleanup.complete===true){verifiedCompaction=cleanup;break;}
+            if((Number(cleanup.deletedOperations)||0)+(Number(cleanup.deletedReceipts)||0)===0){
+              return {ok:false,retryable:true,reason:'delta_operation_compaction_made_no_progress',compaction:cleanup};
+            }
+          }
+          if(!verifiedCompaction)
+            return {ok:false,retryable:true,reason:'delta_operation_compaction_incomplete',compactionPending:true};
           const latestStateResult=await client.rpc('nexus_get_entity_sync_state');
           if(latestStateResult&&latestStateResult.error)
             return unavailable('downgrade_checkpoint_state_recheck_failed',{
@@ -1159,6 +1174,7 @@
           if(!marked||marked.ok!==true)
             return {ok:false,retryable:true,reason:marked&&marked.reason||'downgrade_checkpoint_journal_failed'};
           intent=marked.intent;
+          checkpoint.compaction=verifiedCompaction;
         }
 
         if(intent.phase!=='checkpointed')
