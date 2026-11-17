@@ -133,6 +133,7 @@ jobs:
           GRANT EXECUTE ON FUNCTION public.nexus_read_entity_operations(bigint,integer,integer) TO authenticated;
           GRANT EXECUTE ON FUNCTION public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb) TO authenticated;
           GRANT EXECUTE ON FUNCTION public.nexus_compact_entity_operations(integer) TO authenticated;
+          GRANT EXECUTE ON FUNCTION public.nexus_disable_entity_delta(bigint,timestamptz,jsonb) TO authenticated;
           SQL
           {
             printf 'PHASE34_EMAIL_A=%s\n' "$EMAIL_A"
