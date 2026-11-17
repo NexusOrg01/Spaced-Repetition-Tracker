@@ -6,7 +6,7 @@
 <body><main>
 <h1>Nexus Phase 3.4 — authenticated local two-client test</h1>
 <p class="notice"><strong>LOCAL ONLY.</strong> This harness refuses every public origin, including Vercel and Netlify previews. It accepts only a loopback Supabase API on port 54321 and a local publishable/anon key. Never enter a hosted project URL or a service-role/secret key. Credentials are kept in form memory only and cleared after the run.</p>
-<p>Creates three independent Supabase Auth sessions: A1 and A2 use the same disposable owner from separate sessions, while B uses a different owner. It tests account isolation, concurrent publication, revision conflict, idempotent replay, bounded reads, RLS and direct-table write denial.</p>
+<p>Creates three independent Supabase Auth sessions: A1 and A2 use the same disposable owner from separate sessions, while B uses a different owner. It tests account isolation, concurrent publication, revision conflict, idempotent replay, bounded reads, RLS, direct-table write denial, the authenticated DLA-03 downgrade RPC, A1/A2 post-downgrade consistency, stale A2 compare-and-swap rejection, and owner B isolation.</p>
 <form id="testForm">
 <label for="supabaseUrl">Local Supabase API URL</label><input id="supabaseUrl" type="url" inputmode="url" placeholder="http://127.0.0.1:54321" autocomplete="off" required>
 <label for="anonKey">Local publishable / anon key (not service_role)</label><input id="anonKey" type="password" autocomplete="off" required>

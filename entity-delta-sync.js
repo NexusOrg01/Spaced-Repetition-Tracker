@@ -328,6 +328,8 @@
     const readRemoteSnapshot=typeof options.readRemoteSnapshot==='function'?options.readRemoteSnapshot:null;
     const publishSnapshot=options.publishSnapshot||null;
     const commitLocalRecovery=options.commitLocalRecovery||null;
+    const publishDowngradeSnapshot=typeof options.publishDowngradeSnapshot==='function'?options.publishDowngradeSnapshot:null;
+    const commitSnapshotDowngradeLocal=typeof options.commitSnapshotDowngradeLocal==='function'?options.commitSnapshotDowngradeLocal:null;
     const compactSnapshot=typeof options.compactSnapshot==='function'
       ?options.compactSnapshot:null;
     const compactOperations=typeof options.compactOperations==='function'
@@ -945,6 +947,304 @@
       }
     }
 
+
+    function downgradeIntentId(){
+      const cryptoRef=root&&root.crypto;
+      if(!cryptoRef||typeof cryptoRef.randomUUID!=='function')
+        throw new Error('Secure downgrade intent ID generation is unavailable.');
+      return 'nexus-downgrade-'+cryptoRef.randomUUID();
+    }
+
+    async function readDowngradeOutbox(owner,cursor){
+      if(!storage||typeof storage.readWorkspaceEntityOutboxGroups!=='function')
+        return {ok:false,reason:'downgrade_outbox_reader_unavailable'};
+      const batch=await storage.readWorkspaceEntityOutboxGroups(owner,
+        Number(cursor.acknowledgedSequence),1000,MAX_BYTES-65536);
+      if(!batch||batch.unavailable||batch.snapshotRequired||
+         batch.ownerId!==owner||batch.generation!==cursor.generation||
+         Number(batch.workspaceRevision)!==Number(cursor.workspaceRevision)||
+         !Array.isArray(batch.groups)){
+        return {ok:false,reason:batch&&batch.reason||'downgrade_outbox_unavailable'};
+      }
+      if(batch.groups.length||batch.hasMore===true){
+        return {ok:false,reason:'unacknowledged_local_outbox_operations'};
+      }
+      return {ok:true,batch};
+    }
+
+    async function finishCommittedDowngrade(owner,intent,state,signal){
+      if(!intent||intent.ownerId!==owner||intent.phase!=='checkpointed')
+        return {ok:false,retryable:true,reason:'downgrade_journal_unavailable'};
+      const head=safeInteger(state&&state.head_revision),snapshot=safeInteger(state&&state.snapshot_revision),
+        floor=safeInteger(state&&state.compacted_through_revision);
+      if(!state||state.mode!=='snapshot'||head===null||snapshot!==head||floor!==head||
+         head!==Number(intent.checkpointHeadRevision)||
+         typeof state.snapshot_updated_at!=='string'||!state.snapshot_updated_at){
+        return {ok:false,retryable:true,reason:'snapshot_mode_state_does_not_match_downgrade_journal'};
+      }
+      if(typeof readRemoteSnapshot!=='function'||typeof getLocalWorkspace!=='function'||
+         typeof sameWorkspace!=='function'||typeof commitSnapshotDowngradeLocal!=='function'){
+        return unavailable('downgrade_snapshot_adoption_dependencies_unavailable');
+      }
+      const pending=await getPendingSnapshot(owner);
+      if(pending)return {ok:false,retryable:true,reason:'local_snapshot_pending_after_server_downgrade'};
+      const recovery=await storage.readWorkspaceEntityRecovery(owner);
+      if(recovery&&recovery.intent)return {ok:false,retryable:true,reason:'local_recovery_journal_still_pending'};
+      const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
+      if(!cursorResult||cursorResult.ok!==true||!cursorResult.exists||!cursorResult.cursor||
+         cursorResult.cursor.ownerId!==owner||
+         cursorResult.cursor.generation!==intent.checkpointGeneration||
+         Number(cursorResult.cursor.publishRevision)!==head||
+         Number(cursorResult.cursor.remoteHeadRevision)!==head||
+         cursorResult.cursor.requiresPull!==false||
+         cursorResult.cursor.snapshotUpdatedAt!==intent.checkpointUpdatedAt){
+        return {ok:false,retryable:true,reason:'local_downgrade_cursor_changed'};
+      }
+      const empty=await readDowngradeOutbox(owner,cursorResult.cursor);
+      if(!empty.ok)return {ok:false,retryable:true,reason:empty.reason};
+      await assertOwner(owner);
+      const remote=await readRemoteSnapshot(owner,signal||null);
+      await assertOwner(owner);
+      if(!remote||remote.updated_at!==state.snapshot_updated_at||
+         !isRecord(remote.payload)||Object.prototype.hasOwnProperty.call(remote.payload,'__nexusDeltaSync')||
+         !isRecord(remote.payload.state)||!Array.isArray(remote.payload.state.streams)||
+         !isRecord(remote.payload.featureState)){
+        return {ok:false,retryable:true,snapshotRequired:true,reason:'final_unmarked_snapshot_readback_failed'};
+      }
+      const local=await getLocalWorkspace(owner);
+      if(!isRecord(local)||!isRecord(local.state)||!isRecord(local.featureState)||
+         !(await sameWorkspace(local,remote.payload))){
+        return {ok:false,retryable:true,snapshotRequired:true,reason:'local_workspace_does_not_match_downgraded_snapshot'};
+      }
+      await assertOwner(owner);
+      const localCommitEntries=await commitSnapshotDowngradeLocal(owner,remote.payload,remote.updated_at);
+      if(!Array.isArray(localCommitEntries)||localCommitEntries.length!==2){
+        return {ok:false,retryable:true,reason:'local_snapshot_base_update_unavailable'};
+      }
+      const completed=await storage.completeWorkspaceEntityDowngrade(
+        owner,intent.intentId,head,localCommitEntries);
+      if(!completed||completed.ok!==true){
+        return {ok:false,retryable:true,reason:completed&&completed.reason||'local_downgrade_journal_commit_failed'};
+      }
+      return {ok:true,alreadyDowngraded:true,mode:'snapshot',headRevision:head,
+        snapshotRevision:snapshot,compactedThroughRevision:floor,
+        snapshotUpdatedAt:remote.updated_at,localCursorCleared:!!completed.cleared,
+        generation:completed.generation||intent.checkpointGeneration};
+    }
+
+    async function downgradeToSnapshot(ownerId,downgradeOptions={}){
+      if(!enabled)return {ok:false,skipped:true,reason:'feature_disabled'};
+      const owner=String(ownerId||'').trim(),signal=downgradeOptions.signal||null;
+      if(!owner||!client||!storage||
+         typeof storage.readWorkspaceEntityDowngrade!=='function'||
+         typeof storage.beginWorkspaceEntityDowngrade!=='function'||
+         typeof storage.markWorkspaceEntityDowngradeCheckpoint!=='function'||
+         typeof storage.completeWorkspaceEntityDowngrade!=='function'||
+         typeof storage.readWorkspaceEntityDeltaCursor!=='function'||
+         typeof storage.readWorkspaceEntityOutboxGroups!=='function'||
+         typeof getPendingSnapshot!=='function'||typeof publishDowngradeSnapshot!=='function'||
+         typeof readRemoteSnapshot!=='function'||typeof getLocalWorkspace!=='function'||
+         typeof sameWorkspace!=='function'||typeof commitSnapshotDowngradeLocal!=='function'){
+        return unavailable('downgrade_dependencies_unavailable');
+      }
+      try{
+        await assertOwner(owner);
+        let intent=await storage.readWorkspaceEntityDowngrade(owner);
+        let recovery=await storage.readWorkspaceEntityRecovery(owner);
+        if(recovery&&recovery.intent&&!intent)
+          return {ok:false,retryable:true,reason:'unresolved_recovery_journal_must_finish_first'};
+        const pending=await getPendingSnapshot(owner);
+        if(pending)return {ok:false,retryable:true,reason:'compatibility_snapshot_still_pending'};
+        const stateResult=await client.rpc('nexus_get_entity_sync_state');
+        if(stateResult&&stateResult.error)return unavailable('downgrade_state_read_failed',{
+          retryable:true,errorCode:String(stateResult.error.code||'unknown')
+        });
+        await assertOwner(owner);
+        let state=stateResult&&stateResult.data;
+        if(!state||typeof state!=='object')return {ok:false,retryable:true,reason:'invalid_remote_sync_state'};
+        if(state.mode==='snapshot'){
+          if(!intent)return {ok:true,skipped:true,mode:'snapshot',
+            reason:'stale_device_must_use_verified_snapshot_reconciliation'};
+          return await finishCommittedDowngrade(owner,intent,state,signal);
+        }
+        const head=safeInteger(state.head_revision),snapshot=safeInteger(state.snapshot_revision),
+          floor=safeInteger(state.compacted_through_revision);
+        if(state.mode!=='delta'||Number(state.protocol_version)!==1||
+           head===null||snapshot===null||floor===null||floor>snapshot||snapshot>head||
+           typeof state.snapshot_updated_at!=='string'||!state.snapshot_updated_at){
+          return {ok:false,retryable:true,snapshotRequired:true,reason:'unsupported_remote_sync_state'};
+        }
+        const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
+        if(!cursorResult||cursorResult.ok!==true||!cursorResult.exists||!cursorResult.cursor||
+           cursorResult.cursor.ownerId!==owner||
+           cursorResult.cursor.generation!==cursorResult.generation||
+           cursorResult.cursor.snapshotUpdatedAt!==state.snapshot_updated_at||
+           Number(cursorResult.cursor.publishRevision)<floor||
+           Number(cursorResult.cursor.publishRevision)>head||
+           Number(cursorResult.cursor.remoteHeadRevision)<Number(cursorResult.cursor.publishRevision)||
+           Number(cursorResult.cursor.remoteHeadRevision)>head||
+           cursorResult.cursor.requiresPull!==(Number(cursorResult.cursor.remoteHeadRevision)>
+             Number(cursorResult.cursor.publishRevision))){
+          return {ok:false,retryable:true,snapshotRequired:true,reason:'local_delta_cursor_not_downgradeable'};
+        }
+        const outbox=await readDowngradeOutbox(owner,cursorResult.cursor);
+        if(!outbox.ok)return {ok:false,retryable:true,reason:outbox.reason};
+        recovery=await storage.readWorkspaceEntityRecovery(owner);
+        if(recovery&&recovery.intent&&!intent)
+          return {ok:false,retryable:true,reason:'unresolved_recovery_journal_must_finish_first'};
+        if(!intent){
+          const begun=await storage.beginWorkspaceEntityDowngrade(owner,{
+            intentId:downgradeIntentId(),expectedHeadRevision:head,
+            generation:cursorResult.cursor.generation,snapshotUpdatedAt:state.snapshot_updated_at
+          });
+          if(!begun||begun.ok!==true)
+            return {ok:false,retryable:true,reason:begun&&begun.reason||'local_downgrade_lock_failed'};
+          intent=begun.intent;
+        }else if(intent.ownerId!==owner||!['prepared','checkpointed'].includes(intent.phase)){
+          return {ok:false,retryable:true,reason:'local_downgrade_journal_invalid'};
+        }
+
+        if(intent.phase==='checkpointed'&&
+           (Number(intent.checkpointHeadRevision)!==head||
+            intent.checkpointUpdatedAt!==state.snapshot_updated_at)){
+          const refreshed=await storage.refreshWorkspaceEntityDowngrade(owner,intent.intentId,
+            head,state.snapshot_updated_at,cursorResult.cursor.generation);
+          if(!refreshed||refreshed.ok!==true)
+            return {ok:false,retryable:true,reason:refreshed&&refreshed.reason||'downgrade_checkpoint_refresh_failed'};
+          intent=refreshed.intent;
+        }
+        if(intent.phase==='prepared'){
+          const checkpoint=await publishConflictRecovery(owner,{
+            signal,maxGroups:100,maxBytes:MAX_RECONCILIATION_BYTES
+          });
+          if(!checkpoint||checkpoint.ok!==true)
+            return {ok:false,retryable:true,reason:checkpoint&&checkpoint.reason||'verified_delta_checkpoint_failed',
+              checkpoint};
+          // Do not trust a previous snapshot-reuse receipt as proof that physical
+          // operation/receipt cleanup finished. Re-run the bounded compactor until
+          // the database explicitly reports an empty batch.
+          let verifiedCompaction=null;
+          if(typeof compactOperations!=='function')
+            return {ok:false,retryable:true,reason:'delta_operation_compaction_unavailable'};
+          for(let cleanupRound=0;cleanupRound<20;cleanupRound++){
+            const cleanup=await compactOperations(owner,Number(checkpoint.headRevision),signal);
+            if(!cleanup||cleanup.ok!==true){
+              return {ok:false,retryable:true,reason:'delta_operation_compaction_incomplete',compaction:cleanup||null};
+            }
+            if(cleanup.complete===true){verifiedCompaction=cleanup;break;}
+            if((Number(cleanup.deletedOperations)||0)+(Number(cleanup.deletedReceipts)||0)===0){
+              return {ok:false,retryable:true,reason:'delta_operation_compaction_made_no_progress',compaction:cleanup};
+            }
+          }
+          if(!verifiedCompaction)
+            return {ok:false,retryable:true,reason:'delta_operation_compaction_incomplete',compactionPending:true};
+          const latestStateResult=await client.rpc('nexus_get_entity_sync_state');
+          if(latestStateResult&&latestStateResult.error)
+            return unavailable('downgrade_checkpoint_state_recheck_failed',{
+              retryable:true,errorCode:String(latestStateResult.error.code||'unknown')
+            });
+          await assertOwner(owner);
+          state=latestStateResult&&latestStateResult.data;
+          if(!state||state.mode!=='delta'||Number(state.head_revision)!==Number(checkpoint.headRevision)||
+             Number(state.snapshot_revision)!==Number(checkpoint.snapshotRevision)||
+             Number(state.compacted_through_revision)!==Number(checkpoint.headRevision)||
+             typeof state.snapshot_updated_at!=='string'||!state.snapshot_updated_at){
+            return {ok:false,retryable:true,reason:'delta_head_changed_after_checkpoint'};
+          }
+          const afterRecovery=await storage.readWorkspaceEntityRecovery(owner);
+          if(afterRecovery&&afterRecovery.intent)
+            return {ok:false,retryable:true,reason:'recovery_journal_not_cleared_after_checkpoint'};
+          const postCursor=await storage.readWorkspaceEntityDeltaCursor(owner);
+          if(!postCursor||postCursor.ok!==true||!postCursor.exists||!postCursor.cursor||
+             postCursor.cursor.ownerId!==owner||
+             postCursor.cursor.generation!==postCursor.generation||
+             Number(postCursor.cursor.publishRevision)!==Number(state.head_revision)||
+             Number(postCursor.cursor.remoteHeadRevision)!==Number(state.head_revision)||
+             postCursor.cursor.requiresPull!==false||
+             postCursor.cursor.snapshotUpdatedAt!==state.snapshot_updated_at){
+            return {ok:false,retryable:true,reason:'local_cursor_not_reconciled_after_checkpoint'};
+          }
+          const postOutbox=await readDowngradeOutbox(owner,postCursor.cursor);
+          if(!postOutbox.ok)return {ok:false,retryable:true,reason:postOutbox.reason};
+          const marked=await storage.markWorkspaceEntityDowngradeCheckpoint(owner,intent.intentId,{
+            verified:true,headRevision:Number(state.head_revision),
+            snapshotRevision:Number(state.snapshot_revision),
+            compactedThroughRevision:Number(state.compacted_through_revision),
+            updated_at:state.snapshot_updated_at
+          });
+          if(!marked||marked.ok!==true)
+            return {ok:false,retryable:true,reason:marked&&marked.reason||'downgrade_checkpoint_journal_failed'};
+          intent=marked.intent;
+          checkpoint.compaction=verifiedCompaction;
+        }
+
+        if(intent.phase!=='checkpointed')
+          return {ok:false,retryable:true,reason:'downgrade_checkpoint_not_persisted'};
+        const checkpointStateResult=await client.rpc('nexus_get_entity_sync_state');
+        if(checkpointStateResult&&checkpointStateResult.error)
+          return unavailable('downgrade_final_state_read_failed',{retryable:true,
+            errorCode:String(checkpointStateResult.error.code||'unknown')});
+        await assertOwner(owner);
+        state=checkpointStateResult&&checkpointStateResult.data;
+        if(!state||state.mode!=='delta'||
+           Number(state.head_revision)!==Number(intent.checkpointHeadRevision)||
+           Number(state.snapshot_revision)!==Number(intent.checkpointHeadRevision)||
+           Number(state.compacted_through_revision)!==Number(intent.checkpointHeadRevision)||
+           state.snapshot_updated_at!==intent.checkpointUpdatedAt){
+          return {ok:false,retryable:true,reason:'delta_checkpoint_changed_before_mode_switch'};
+        }
+        const remote=await readRemoteSnapshot(owner,signal);
+        await assertOwner(owner);
+        if(!remote||remote.updated_at!==state.snapshot_updated_at||
+           !isRecord(remote.payload)||remote.payload.__nexusDeltaSync!=='entity-delta-v1'||
+           !isRecord(remote.payload.state)||!Array.isArray(remote.payload.state.streams)||
+           !isRecord(remote.payload.featureState)){
+          return {ok:false,retryable:true,snapshotRequired:true,reason:'delta_checkpoint_snapshot_readback_failed'};
+        }
+        const local=await getLocalWorkspace(owner);
+        if(!isRecord(local)||!isRecord(local.state)||!isRecord(local.featureState)||
+           !(await sameWorkspace(local,remote.payload))){
+          return {ok:false,retryable:true,snapshotRequired:true,reason:'local_workspace_differs_from_checkpoint'};
+        }
+        const latestPending=await getPendingSnapshot(owner);
+        const latestRecovery=await storage.readWorkspaceEntityRecovery(owner);
+        const latestCursor=await storage.readWorkspaceEntityDeltaCursor(owner);
+        if(latestPending||(latestRecovery&&latestRecovery.intent)||
+           !latestCursor||latestCursor.ok!==true||!latestCursor.exists||
+           !latestCursor.cursor||latestCursor.cursor.generation!==intent.checkpointGeneration||
+           Number(latestCursor.cursor.publishRevision)!==Number(intent.checkpointHeadRevision)||
+           latestCursor.cursor.snapshotUpdatedAt!==intent.checkpointUpdatedAt){
+          return {ok:false,retryable:true,reason:'downgrade_local_preflight_changed'};
+        }
+        const latestOutbox=await readDowngradeOutbox(owner,latestCursor.cursor);
+        if(!latestOutbox.ok)return {ok:false,retryable:true,reason:latestOutbox.reason};
+        const candidate={...remote.payload};
+        delete candidate.__nexusDeltaSync;
+        const publication=await publishDowngradeSnapshot(owner,candidate,
+          Number(intent.checkpointHeadRevision),intent.checkpointUpdatedAt,signal);
+        if(!publication||publication.verified!==true||publication.markerRemoved!==true||
+           publication.mode!=='snapshot'||
+           Number(publication.headRevision)!==Number(intent.checkpointHeadRevision)||
+           Number(publication.snapshotRevision)!==Number(intent.checkpointHeadRevision)||
+           Number(publication.compactedThroughRevision)!==Number(intent.checkpointHeadRevision)||
+           typeof publication.updated_at!=='string'||!publication.updated_at){
+          return {ok:false,retryable:true,snapshotRequired:true,reason:'unmarked_snapshot_publication_unverified'};
+        }
+        const finalStateResult=await client.rpc('nexus_get_entity_sync_state');
+        if(finalStateResult&&finalStateResult.error)
+          return unavailable('downgrade_post_commit_state_read_failed',{retryable:true,
+            errorCode:String(finalStateResult.error.code||'unknown')});
+        await assertOwner(owner);
+        state=finalStateResult&&finalStateResult.data;
+        return await finishCommittedDowngrade(owner,intent,state,signal);
+      }catch(error){
+        return unavailable('delta_downgrade_failed',{
+          retryable:true,errorCode:String(error&&error.code||'unknown'),
+          errorMessage:String(error&&error.message||'unknown').slice(0,160)
+        });
+      }
+    }
+
     async function compactIdleSnapshot(ownerId,compactOptions={}){
       const owner=String(ownerId||'').trim();
       const rawThreshold=compactOptions.snapshotCompactionThreshold===undefined
@@ -1106,7 +1406,7 @@
     }
 
     return Object.freeze({readRemotePage,applyRemotePage,publishPending,prepareConflictRecovery,
-      publishConflictRecovery,synchronize});
+      publishConflictRecovery,downgradeToSnapshot,synchronize});
   }
 
   root.NexusEntityDeltaSync=Object.freeze({createClient,validateRemotePage,reconstructRemoteSnapshot,

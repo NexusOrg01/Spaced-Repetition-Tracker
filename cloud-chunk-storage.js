@@ -494,10 +494,162 @@ async function writeDeltaSnapshot(client,userId,payload,expectedHeadRevision,exp
   verifiedChunks:!!manifest,storageMode:manifest?'chunked':'jsonb',verified:true,compaction,cleanupDeletedCount,cleanupBacklogMayRemain,cleanupFailed};
 }
 
+
+async function verifyDowngradeSnapshotPublication(client,userId,expectedHead,manifest,candidateHash,candidatePayload,signal){
+ await assertDeltaSnapshotOwner(client,userId);
+ const stateResult=await client.rpc('nexus_get_entity_sync_state');
+ if(stateResult&&stateResult.error)throw stateResult.error;
+ const state=stateResult&&stateResult.data;
+ if(!state||state.mode!=='snapshot'||
+    Number(state.head_revision)!==expectedHead||
+    Number(state.snapshot_revision)!==expectedHead||
+    Number(state.compacted_through_revision)!==expectedHead||
+    typeof state.snapshot_updated_at!=='string'||!state.snapshot_updated_at){
+  throw fail('The snapshot downgrade is not yet committed at the verified Delta head. Keep the local downgrade journal and retry.','NEXUS_DELTA_DOWNGRADE_UNCONFIRMED');
+ }
+ let query=client.from('nexus_user_data').select('payload,updated_at').eq('user_id',userId);
+ query=attachAbortSignal(query,signal);
+ const rowResult=await query.maybeSingle();
+ if(rowResult&&rowResult.error)throw rowResult.error;
+ const row=rowResult&&rowResult.data;
+ if(!row||row.updated_at!==state.snapshot_updated_at){
+  throw fail('The downgraded snapshot pointer and server state do not match. Keep the local downgrade journal.','NEXUS_DELTA_DOWNGRADE_UNCONFIRMED');
+ }
+ let verifiedPayload=row.payload;
+ if(manifest){
+  if(!sameManifest(row.payload,manifest)||row.payload.__nexusDeltaSync!==undefined){
+   throw fail('The active snapshot does not reference the unmarked, verified chunk revision.','NEXUS_DELTA_DOWNGRADE_UNCONFIRMED');
+  }
+  verifiedPayload=await readSnapshot(client,userId,manifest,signal);
+ }else if(!row.payload||row.payload.__nexusDeltaSync!==undefined){
+  throw fail('The active JSONB snapshot still contains an Entity Delta protocol marker.','NEXUS_DELTA_DOWNGRADE_UNCONFIRMED');
+ }
+ if(await sha256(stableJson(verifiedPayload))!==candidateHash||
+    verifiedPayload.__nexusDeltaSync!==undefined){
+  throw fail('The downgraded full snapshot failed exact read-back/hash verification.','NEXUS_DELTA_DOWNGRADE_UNCONFIRMED');
+ }
+ return {payload:verifiedPayload,updated_at:row.updated_at,
+  headRevision:Number(state.head_revision),snapshotRevision:Number(state.snapshot_revision),
+  compactedThroughRevision:Number(state.compacted_through_revision),mode:'snapshot'};
+}
+
+async function writeDowngradeSnapshot(client,userId,payload,expectedHeadRevision,expectedStamp,signal){
+ const expectedHead=Number(expectedHeadRevision);
+ if(!client||typeof userId!=='string'||!userId||
+    !Number.isSafeInteger(expectedHead)||expectedHead<0||
+    typeof expectedStamp!=='string'||!expectedStamp||
+    !payload||typeof payload!=='object'||Array.isArray(payload)||
+    !payload.state||!Array.isArray(payload.state.streams)||
+    !payload.featureState||typeof payload.featureState!=='object'||Array.isArray(payload.featureState)||
+    Object.prototype.hasOwnProperty.call(payload,'__nexusDeltaSync')){
+  throw fail('A complete, unmarked workspace snapshot and verified owner are required for downgrade.');
+ }
+ await assertDeltaSnapshotOwner(client,userId);
+ const stateResult=await client.rpc('nexus_get_entity_sync_state');
+ if(stateResult&&stateResult.error)throw stateResult.error;
+ const state=stateResult&&stateResult.data;
+ if(state&&state.mode==='snapshot'){
+  throw fail('The server is already in snapshot mode. Resume the persisted local downgrade journal to verify and adopt the active snapshot.','NEXUS_DELTA_DOWNGRADE_ALREADY_COMMITTED');
+ }
+ if(!state||state.mode!=='delta'||
+    Number(state.head_revision)!==expectedHead||
+    Number(state.snapshot_revision)!==expectedHead||
+    Number(state.compacted_through_revision)!==expectedHead||
+    state.snapshot_updated_at!==expectedStamp){
+  throw fail('The Delta workspace changed after its fully verified snapshot checkpoint. No downgrade was attempted.','NEXUS_CLOUD_CONFLICT');
+ }
+ let baselineQuery=client.from('nexus_user_data').select('payload,updated_at').eq('user_id',userId);
+ baselineQuery=attachAbortSignal(baselineQuery,signal);
+ const baselineResult=await baselineQuery.maybeSingle();
+ if(baselineResult&&baselineResult.error)throw baselineResult.error;
+ const baseline=baselineResult&&baselineResult.data;
+ if(!baseline||baseline.updated_at!==expectedStamp||
+    !baseline.payload||baseline.payload.__nexusDeltaSync!=='entity-delta-v1'){
+  throw fail('The current Delta snapshot baseline no longer matches the verified checkpoint.','NEXUS_CLOUD_CONFLICT');
+ }
+ const preserveChunked=baseline.payload.__nexusStorage===FORMAT;
+ if(preserveChunked)assertManifest(baseline.payload);
+ const serialized=JSON.stringify(payload);
+ if(typeof serialized!=='string'||!serialized)throw fail('The downgraded snapshot could not be serialized.');
+ const totalBytes=utf8ByteLength(serialized);
+ let manifest=null,publishedPayload=payload;
+ if(totalBytes>=CHUNK_THRESHOLD_BYTES||preserveChunked){
+  const ranges=await splitUtf8RangesAsync(serialized);
+  if(ranges.length>MAX_CHUNKS)throw fail('The downgraded snapshot exceeds the safe chunk-count limit. The Delta checkpoint remains active.');
+  const revisionId=secureRevisionId();
+  manifest={[MARKER_KEY]:FORMAT,version:1,revisionId,chunkCount:ranges.length,
+   totalBytes,sha256:await sha256(serialized)};
+  for(let offset=0;offset<ranges.length;offset+=INSERT_BATCH_SIZE){
+   await assertDeltaSnapshotOwner(client,userId);
+   const batch=ranges.slice(offset,offset+INSERT_BATCH_SIZE).map((range,index)=>({
+    user_id:userId,revision_id:revisionId,chunk_index:offset+index,
+    chunk_count:ranges.length,chunk_bytes:range.bytes,
+    chunk_data:serialized.slice(range.start,range.end)
+   }));
+   let insertion=client.from(TABLE).insert(batch);
+   insertion=attachAbortSignal(insertion,signal);
+   const inserted=await insertion.select('chunk_index');
+   if(inserted&&inserted.error)throw inserted.error;
+   if(!inserted||!Array.isArray(inserted.data)||inserted.data.length!==batch.length){
+    throw fail('The unmarked snapshot chunk upload could not be confirmed. The prior Delta snapshot remains active.');
+   }
+  }
+  await verifySnapshotChunks(client,userId,manifest,serialized,ranges,signal);
+  publishedPayload=manifest;
+ }
+ await assertDeltaSnapshotOwner(client,userId);
+ let rpcResult=null,rpcFailure=null;
+ try{
+  rpcResult=await client.rpc('nexus_disable_entity_delta',{
+   p_expected_head_revision:expectedHead,
+   p_expected_updated_at:expectedStamp,
+   p_snapshot_payload:publishedPayload
+  });
+  if(rpcResult&&rpcResult.error)rpcFailure=rpcResult.error;
+ }catch(error){rpcFailure=error;}
+ if(!rpcFailure){
+  const result=rpcResult&&rpcResult.data;
+  if(!result||result.ok!==true){
+   const code=String(result&&result.code||'unknown');
+   throw fail('The server refused the Delta downgrade ('+code+'). The previous Delta snapshot remains active.',
+    code==='revision_conflict'?'NEXUS_CLOUD_CONFLICT':'NEXUS_DELTA_DOWNGRADE_REJECTED');
+  }
+  if(Number(result.head_revision)!==expectedHead||
+     Number(result.snapshot_revision)!==expectedHead||
+     Number(result.compacted_through_revision)!==expectedHead||
+     result.mode!=='snapshot'){
+   throw fail('The server returned an unexpected Delta downgrade receipt. Keep the local journal and verify again.','NEXUS_DELTA_DOWNGRADE_UNCONFIRMED');
+  }
+ }
+ let verified;
+ try{
+  verified=await verifyDowngradeSnapshotPublication(client,userId,expectedHead,manifest,
+   await sha256(stableJson(payload)),payload,signal);
+ }catch(verificationError){
+  if(rpcFailure)throw rpcFailure;
+  throw verificationError;
+ }
+ let cleanupDeletedCount=0,cleanupBacklogMayRemain=false,cleanupFailed=false;
+ if(manifest){
+  try{
+   const result=await cleanupOldChunksWithDetails(client,userId,manifest.revisionId,signal);
+   cleanupDeletedCount=result.deletedCount;cleanupBacklogMayRemain=result.backlogPending;
+  }catch(error){
+   cleanupFailed=true;
+   if(root&&root.console)root.console.warn('Old Nexus Delta snapshot chunks remain retained after downgrade; the new snapshot is verified.',error);
+  }
+ }
+ return {...verified,manifest,verified:true,markerRemoved:true,
+  alreadyPublished:!!(rpcFailure||(rpcResult&&rpcResult.data&&rpcResult.data.already_downgraded)),
+  verifiedChunks:!!manifest,storageMode:manifest?'chunked':'jsonb',
+  cleanupDeletedCount,cleanupBacklogMayRemain,cleanupFailed};
+}
+
+
 return {
  TABLE,FORMAT,CHUNK_BYTES,INSERT_BATCH_SIZE,READ_BATCH_SIZE,CHUNK_THRESHOLD_BYTES,
  isManifest,sameManifest,utf8ByteLength,splitUtf8,splitUtf8Ranges,readSnapshot,writeSnapshot,
- writeDeltaSnapshot,
+ writeDeltaSnapshot,writeDowngradeSnapshot,
  compactDeltaOperations:(client,userId,expectedFloor,signal)=>
   compactPublishedDeltaOperations(client,userId,expectedFloor,signal),
  cleanupOldChunks,cleanupOldChunksWithDetails,MAX_CHUNKS,CLEANUP_AGE_MS,CLEANUP_BATCH_SIZE

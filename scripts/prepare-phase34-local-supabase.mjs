@@ -32,6 +32,9 @@ await cp(join(root,'supabase','local-phase34','20261108000000_phase34_local_work
 for(const m of migrations)await cp(join(root,'supabase','migrations',m),join(dir,m));
 const pilotMigration='20261117083717_add_entity_delta_pilot_eligibility.sql';
 await cp(join(root,'supabase','pilot-migrations',pilotMigration),join(dir,pilotMigration));
+// DLA-03 is copied only into this disposable local Supabase test project.
+const dla03Migration='20261117160000_owner_scoped_entity_delta_downgrade.sql';
+await cp(join(root,'supabase','delta-rollout',dla03Migration),join(dir,dla03Migration));
 const fixtures=join(target,'test-fixtures');await mkdir(fixtures,{recursive:true});
 for(const f of ['nexus_entity_delta_two_client_setup.sql','nexus_entity_delta_two_client_cleanup.sql'])await cp(join(root,'supabase','tests',f),join(fixtures,f));
 await writeFile(join(target,'README.txt'),['Disposable local Nexus Phase 3.4 Supabase project.','Generated directory; safe to delete after cleanup.','Not linked to a hosted project.','Start: npx supabase start --exclude realtime,storage-api,imgproxy,edge-runtime,logflare,vector,supavisor','Status: npx supabase status','Cleanup: revoke RPC grants, delete fixture users, then npx supabase stop --no-backup'].join('\n')+'\n','utf8');

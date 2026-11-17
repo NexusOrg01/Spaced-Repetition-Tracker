@@ -19,6 +19,11 @@ const activeManifestRaceRunner = read('scripts/test-active-manifest-race.mjs');
 const pilotEligibility = read('supabase/pilot-migrations/20261117083717_add_entity_delta_pilot_eligibility.sql');
 const authenticatedRpcTest = read('supabase/tests/nexus_entity_delta_authenticated_rpc.sql');
 const twoClientSetup = read('supabase/tests/nexus_entity_delta_two_client_setup.sql');
+const downgradeMigration = read('supabase/delta-rollout/20261117160000_owner_scoped_entity_delta_downgrade.sql');
+const downgradeSqlTest = read('supabase/tests/nexus_entity_delta_downgrade.sql');
+const downgradeRunbook = read('docs/runbooks/entity-delta-downgrade-dla03.md');
+const phase34Workflow = read('.github/workflows/phase34-local-supabase-integration.yml');
+const localTwoClientHarness = read('staging-test/two-client.js');
 
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_sync_state/);
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_operation_receipts/);
@@ -197,5 +202,71 @@ assert.ok(authenticatedRpcTest.includes("has_schema_privilege('authenticated', '
 assert.ok(twoClientSetup.includes('row_number() OVER (ORDER BY email)'));
 assert.ok(twoClientSetup.includes('fixture_order IN (1, 3)'),
   'only disposable local protocol and large-workspace owners should be allowlisted; B is the default-deny fixture');
+
+
+assert.match(downgradeMigration, /CREATE OR REPLACE FUNCTION public\.nexus_disable_entity_delta/);
+assert.match(downgradeMigration, /v_uid uuid := auth\.uid\(\)/,
+  'the downgrade must derive its owner from the authenticated Supabase identity');
+assert.match(downgradeMigration, /FROM public\.nexus_user_data\s+WHERE user_id = v_uid\s+FOR UPDATE/);
+assert.match(downgradeMigration, /FROM public\.nexus_workspace_sync_state\s+WHERE user_id = v_uid\s+FOR UPDATE/);
+assert.match(downgradeMigration, /v_state\.head_revision <> v_state\.snapshot_revision/);
+assert.match(downgradeMigration, /v_state\.snapshot_revision <> v_state\.compacted_through_revision/);
+assert.match(downgradeMigration, /remaining_operations/);
+assert.match(downgradeMigration, /remaining_receipts/);
+assert.match(downgradeMigration, /SET mode = 'snapshot'/);
+assert.match(downgradeMigration, /p_snapshot_payload ->> '__nexusDeltaSync' IS NOT NULL/);
+assert.match(downgradeMigration, /unmarked_chunk_manifest_incomplete/);
+assert.match(downgradeMigration, /unmarked_chunk_byte_count_mismatch/);
+assert.match(downgradeMigration, /unmarked_chunk_data_has_delta_marker/);
+assert.match(downgradeMigration, /SECURITY DEFINER[\s\S]*SET search_path = ''[\s\S]*AS \$function\$/);
+assert.match(downgradeMigration, /REVOKE ALL ON FUNCTION public\.nexus_disable_entity_delta\(bigint, timestamptz, jsonb\)[\s\S]*FROM PUBLIC, anon, authenticated, service_role/);
+assert.ok(downgradeSqlTest.includes(`ARRAY['search_path=""']::text[]`),
+  'the DLA-03 SQL test must verify an empty SECURITY DEFINER search_path');
+assert.ok(downgradeSqlTest.includes("ARRAY['anon','authenticated','service_role']::text[]"),
+  'the DLA-03 SQL test must verify service_role cannot execute the downgrade RPC');
+assert.doesNotMatch(downgradeMigration, /GRANT EXECUTE ON FUNCTION/,
+  'DLA-03 cannot grant a browser role ahead of the DLA-02 allowlist');
+assert.ok(downgradeMigration.includes('BEGIN;') && downgradeMigration.trimEnd().endsWith('COMMIT;'),
+  'the DLA-03 mode and snapshot-pointer change must be one SQL transaction');
+assert.ok(downgradeSqlTest.includes('BEGIN;') && downgradeSqlTest.trimEnd().endsWith('ROLLBACK;'),
+  'DLA-03 SQL tests must be rollback-only');
+assert.match(downgradeSqlTest, /verified_checkpoint_required/);
+assert.match(downgradeSqlTest, /revision_conflict/);
+assert.match(downgradeSqlTest, /already_downgraded/);
+assert.match(downgradeSqlTest, /nexus_compact_entity_operations/);
+assert.match(downgradeSqlTest, /unmarked_chunk_manifest_incomplete/);
+assert.match(downgradeSqlTest, /v_bad_chunk_manifest/);
+assert.match(downgradeSqlTest, /v_chunk_bytes_rejected/);
+assert.match(downgradeSqlTest, /check_violation/);
+assert.match(downgradeSqlTest, /Cross-owner downgrade attempt/);
+assert.match(downgradeSqlTest, /has_function_privilege/);
+assert.match(downgradeSqlTest, /nexus_test_dla03_injected_pointer_failure/);
+assert.match(downgradeSqlTest, /v_injected_failure/);
+assert.match(downgradeSqlTest, /v_chunk_old_count <> 2 OR v_chunk_new_count <> 1/,
+  'the downgrade fixture must prove old and newly published chunks are retained');
+assert.match(read('scripts/prepare-phase34-local-supabase.mjs'), /supabase','delta-rollout'/,
+  'the DLA-03 SQL must be copied only into the generated local test database');
+assert.doesNotMatch(read('scripts/prepare-phase34-local-supabase.mjs'), /nexus_disable_entity_delta.*GRANT/,
+  'the local preparation script must not grant the new RPC to browser roles');
+
+assert.match(phase34Workflow, /GRANT EXECUTE ON FUNCTION public\.nexus_disable_entity_delta\(bigint,timestamptz,jsonb\) TO authenticated/);
+assert.match(phase34Workflow, /REVOKE EXECUTE ON FUNCTION public\.nexus_disable_entity_delta\(bigint,timestamptz,jsonb\) FROM PUBLIC, anon, authenticated/);
+assert.match(localTwoClientHarness, /rpc\(a1,'nexus_disable_entity_delta'/,
+  'the localhost-only authenticated two-device browser test must exercise the real DLA-03 RPC');
+assert.match(localTwoClientHarness, /A2 stale pre-downgrade snapshot compare-and-swap is rejected/);
+assert.match(localTwoClientHarness, /A different authenticated owner cannot downgrade or alter owner A/);
+assert.match(downgradeRunbook, /depends on DLA-02/i);
+assert.match(downgradeRunbook, /deliberately outside supabase\/migrations/i);
+assert.match(downgradeRunbook, /downgradeEntityDeltaToSnapshot/);
+assert.match(read('offline-sync-queue.js'), /function prepareDowngradeBaseCommit/);
+assert.match(downgradeRunbook, /has_function_privilege/);
+assert.match(downgradeRunbook, /residual_operations/);
+assert.match(downgradeRunbook, /any_chunk_has_delta_marker/);
+assert.doesNotMatch(downgradeRunbook, /chunk_data::jsonb/,
+  'individual chunk substrings must not be parsed as complete JSON documents');
+assert.match(downgradeRunbook, /string_agg\(c\.chunk_data/);
+assert.match(downgradeRunbook, /Read-only post-downgrade checks/);
+assert.doesNotMatch(downgradeRunbook, /GRANT EXECUTE ON FUNCTION/);
+
 
 console.log('Nexus entity-delta migration and staging-test contract checks passed.');
