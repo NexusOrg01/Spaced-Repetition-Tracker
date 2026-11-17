@@ -255,6 +255,24 @@ BEGIN
     RAISE EXCEPTION 'Authenticated snapshot publication failed: %', v_snapshot;
   END IF;
 
+  -- A verified checkpoint is not sufficient while an operation or receipt
+  -- remains physically present. Downgrade must refuse until bounded cleanup ends.
+  SELECT updated_at INTO v_downgrade_expected_stamp
+  FROM public.nexus_user_data WHERE user_id = v_owner_a;
+  v_downgrade := public.nexus_disable_entity_delta(
+    gen_random_uuid(), 1, v_downgrade_expected_stamp, 1, 1
+  );
+  IF v_downgrade->>'ok' <> 'false'
+     OR v_downgrade->>'code' <> 'operation_compaction_pending' THEN
+    RAISE EXCEPTION 'Downgrade proceeded before operations and receipts were compacted: %', v_downgrade;
+  END IF;
+  v_state := public.nexus_get_entity_sync_state();
+  SELECT payload INTO v_payload
+  FROM public.nexus_user_data WHERE user_id = v_owner_a;
+  IF v_state->>'mode' <> 'delta' OR NOT (v_payload ? '__nexusDeltaSync') THEN
+    RAISE EXCEPTION 'A compaction-gated downgrade modified the active Delta workspace.';
+  END IF;
+
   v_compact := public.nexus_compact_entity_operations(10);
   IF v_compact->>'ok' <> 'true'
      OR (v_compact->>'deleted_operations')::integer <> 1
@@ -268,9 +286,6 @@ BEGIN
   END IF;
 
   -- A stale expected head must not cause a transition or strip the Delta marker.
-  SELECT updated_at INTO v_stamp
-  FROM public.nexus_user_data WHERE user_id = v_owner_a;
-  v_downgrade_expected_stamp := v_stamp;
   v_downgrade := public.nexus_disable_entity_delta(
     gen_random_uuid(), 2, v_downgrade_expected_stamp, 1, 1
   );
