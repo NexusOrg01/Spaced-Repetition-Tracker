@@ -29,10 +29,14 @@ await writeFile(configPath,config,'utf8');
 const dir=join(supa,'migrations');await mkdir(dir,{recursive:true});
 await cp(join(root,'supabase','local-phase34','20261108000000_phase34_local_workspace_baseline.sql'),join(dir,'20261108000000_phase34_local_workspace_baseline.sql'));
 for(const m of migrations)await cp(join(root,'supabase','migrations',m),join(dir,m));
+// DLA-03 is intentionally not a checked-in/hosted migration. Copy it only into
+// this generated disposable database so the SQL downgrade contract can be tested.
+const dla03Migration='20261117160000_owner_scoped_entity_delta_downgrade.sql';
+await cp(join(root,'supabase','delta-rollout',dla03Migration),join(dir,dla03Migration));
 const fixtures=join(target,'test-fixtures');await mkdir(fixtures,{recursive:true});
 for(const f of ['nexus_entity_delta_two_client_setup.sql','nexus_entity_delta_two_client_cleanup.sql'])await cp(join(root,'supabase','tests',f),join(fixtures,f));
 await writeFile(join(target,'README.txt'),['Disposable local Nexus Phase 3.4 Supabase project.','Generated directory; safe to delete after cleanup.','Not linked to a hosted project.','Start: npx supabase start --exclude realtime,storage-api,imgproxy,edge-runtime,logflare,vector,supavisor','Status: npx supabase status','Cleanup: revoke RPC grants, delete fixture users, then npx supabase stop --no-backup'].join('\n')+'\n','utf8');
 console.log('Prepared local Supabase project in .build/phase34-local-supabase');
-console.log('Only the Phase 3.4 baseline and nine relevant migrations were copied.');
+console.log('Copied the Phase 3.4 baseline, nine checked-in migrations, and the local-only DLA-03 SQL migration.');
 console.log('No hosted Supabase project was linked or contacted.');
 console.log('Next: cd .build/phase34-local-supabase && npx supabase start --exclude realtime,storage-api,imgproxy,edge-runtime,logflare,vector,supavisor');
