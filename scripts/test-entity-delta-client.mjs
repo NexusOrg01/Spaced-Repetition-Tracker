@@ -1048,12 +1048,22 @@ function makeStagingRuntimeHarness({
   gate=false,localOrigin=true,stagingUrl=stagingSupabaseUrl,recoveryIntent=null,
   syncResult={ok:true,publishedCount:1},recoveryResult={ok:true,recovered:true},
   missingChunkStorage=false,hostedQaGate=false,hostedQaOrigin='',
-  browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='feat/dla-01-hosted-qa-gate'
+  browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='feat/dla-01-hosted-qa-gate',
+  remoteState={mode:'delta',protocol_version:1},remoteStateError=null
 }={}){
   const calls={createClient:0,synchronize:null,recovery:null,cursorOwner:null,
     localBaseOwner:null,pendingOwner:null,chunkWrite:null,localCommit:null,
-    renderCount:0,hubRenderCount:0,featureUpdate:null,fsrsSettings:null};
-  const client={name:'staging-test-client'};
+    stateRead:null,renderCount:0,hubRenderCount:0,featureUpdate:null,fsrsSettings:null};
+  const stateQuery={
+    select(columns){calls.stateRead={...calls.stateRead,columns};return this;},
+    eq(column,value){calls.stateRead={...calls.stateRead,filterColumn:column,filterValue:value};return this;},
+    async maybeSingle(){return {data:remoteState,error:remoteStateError};}
+  };
+  const client={
+    name:'staging-test-client',
+    auth:{async getSession(){return {data:{session:{user:{id:sessionUser}}},error:null};}},
+    from(table){calls.stateRead={table,columns:null,filterColumn:null,filterValue:null};return stateQuery;}
+  };
   const localStorage={getItem:key=>key==='owner-key'?localOwner:null};
   const payload={state:{streams:[],subjects:[],topics:[],history:[],exams:[]},
     featureState:{journal:[],papers:[],goals:[],studyLogs:[]}};
@@ -1161,12 +1171,60 @@ assert.equal(wrongProjectGate.calls.createClient,0);
 const hostedQaOrigin='https://nexus-dla-01-preview.vercel.app';
 const activeHostedQa=makeStagingRuntimeHarness({
   gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
-  hostedQaGate:true,hostedQaOrigin,browserOrigin:hostedQaOrigin
+  hostedQaGate:true,hostedQaOrigin,browserOrigin:hostedQaOrigin,
+  remoteState:{mode:'delta',protocol_version:1}
 });
 const activeHostedQaResult=await activeHostedQa.run('account-A',stagingSignal);
 assert.equal(activeHostedQaResult.ok,true,
-  'hosted QA may use Delta only on its exact generated Vercel origin and approved staging project');
+  'hosted QA may enter the Delta coordinator only on its exact generated Vercel origin and approved staging project');
+assert.equal(activeHostedQa.calls.stateRead.table,'nexus_workspace_sync_state');
+assert.equal(activeHostedQa.calls.stateRead.columns,'mode');
+assert.equal(activeHostedQa.calls.stateRead.filterColumn,'user_id');
+assert.equal(activeHostedQa.calls.stateRead.filterValue,'account-A');
 assert.equal(activeHostedQa.calls.createClient,1);
+
+const hostedSnapshotMode=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
+  hostedQaGate:true,hostedQaOrigin,browserOrigin:hostedQaOrigin,
+  remoteState:{mode:'snapshot',protocol_version:1}
+});
+const hostedSnapshotResult=await hostedSnapshotMode.run('account-A',stagingSignal);
+assert.deepEqual(hostedSnapshotResult,
+  {skipped:true,mode:'snapshot',reason:'server_snapshot_mode'},
+  'a hosted QA workspace still in snapshot mode must use the established snapshot/chunk path');
+assert.equal(hostedSnapshotMode.calls.createClient,0,
+  'snapshot-mode workspaces must not invoke Delta RPCs');
+assert.equal(hostedSnapshotMode.calls.stateRead.filterValue,'account-A',
+  'the snapshot-mode preflight must be scoped to the authenticated owner');
+
+const hostedLegacyMode=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
+  hostedQaGate:true,hostedQaOrigin,browserOrigin:hostedQaOrigin,remoteState:null
+});
+const hostedLegacyResult=await hostedLegacyMode.run('account-A',stagingSignal);
+assert.equal(hostedLegacyResult.skipped,true,
+  'a workspace without a sync-state row must continue through the snapshot/chunk protocol');
+assert.equal(hostedLegacyResult.reason,'server_sync_state_missing');
+assert.equal(hostedLegacyMode.calls.createClient,0);
+
+const hostedStateReadFailure=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
+  hostedQaGate:true,hostedQaOrigin,browserOrigin:hostedQaOrigin,
+  remoteStateError:{message:'permission denied',code:'42501'}
+});
+await assert.rejects(()=>hostedStateReadFailure.run('account-A',stagingSignal),
+  /Could not safely verify this workspace sync mode/,
+  'an uncertain state read must fail closed rather than start a potentially destructive snapshot write');
+assert.equal(hostedStateReadFailure.calls.createClient,0);
+
+const hostedUnknownMode=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
+  hostedQaGate:true,hostedQaOrigin,browserOrigin:hostedQaOrigin,
+  remoteState:{mode:'unknown',protocol_version:99}
+});
+await assert.rejects(()=>hostedUnknownMode.run('account-A',stagingSignal),
+  /unsupported sync mode/,
+  'an unknown server mode must not be treated as snapshot mode');
 
 const wrongHostedOrigin=makeStagingRuntimeHarness({
   localOrigin:false,stagingUrl:hostedQaSupabaseUrl,hostedQaGate:true,
