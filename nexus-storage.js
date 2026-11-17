@@ -478,6 +478,8 @@
   // Prevent new entity writes from recreating rows while an account is being deleted.
   const entityRemovalOwners=new Set();
   const entityRecoveryLockedOwners=new Set();
+  const entityDowngradeLockedOwners=new Set();
+  function entityWritesLocked(owner){return entityRecoveryLockedOwners.has(owner)||entityDowngradeLockedOwners.has(owner);}
   let entitySyncError=null;
   let entitySyncLastSuccessAt=null;
 
@@ -491,6 +493,7 @@
   function entityDeltaCursorKey(ownerId){return 'workspace-entity-delta-cursor:'+encodeURIComponent(entityOwnerKey(ownerId));}
   function entityDeltaRecoveryKey(ownerId){return 'workspace-entity-delta-recovery:'+encodeURIComponent(entityOwnerKey(ownerId));}
   function entityDeltaRecoveryCompletedKey(ownerId){return 'workspace-entity-delta-recovery-completed:'+encodeURIComponent(entityOwnerKey(ownerId));}
+  function entityDeltaDowngradeKey(ownerId){return 'workspace-entity-delta-downgrade:'+encodeURIComponent(entityOwnerKey(ownerId));}
   function entityOwnerRecordPrefix(ownerId){return 'workspace-entity:'+encodeURIComponent(entityOwnerKey(ownerId))+':';}
   function entityRecordPrefix(ownerId,generation){return entityOwnerRecordPrefix(ownerId)+encodeURIComponent(generation)+':';}
   function entityOutboxPrefix(ownerId){return 'workspace-entity-change:'+encodeURIComponent(entityOwnerKey(ownerId))+':';}
@@ -671,7 +674,7 @@
     if(entityRemovalOwners.has(owner))throw new Error('This account workspace is being permanently deleted.');
     if(!enabled||!database)throw new Error('IndexedDB must be enabled before the per-entity migration can run.');
     if(committedOwnerId!==owner)throw new Error('The active account does not match the requested entity migration owner.');
-    if(entityRecoveryLockedOwners.has(owner)&&options.deferActivation!==true)
+    if(entityWritesLocked(owner)&&options.deferActivation!==true)
       throw new Error('An entity-delta recovery is pending for this account; normal entity projection rebuilds are paused.');
     if(!stateSnapshot||typeof stateSnapshot!=='object'||Array.isArray(stateSnapshot)||
        !featureSnapshot||typeof featureSnapshot!=='object'||Array.isArray(featureSnapshot)){
@@ -963,7 +966,7 @@
     if(entityRemovalOwners.has(owner))throw new Error('This account workspace is being permanently deleted.');
     if(!enabled||!database)throw new Error('IndexedDB must be enabled before incremental entity writes can run.');
     if(committedOwnerId!==owner)throw new Error('The active account does not match the requested entity write owner.');
-    if(entityRecoveryLockedOwners.has(owner))throw new Error('An entity-delta recovery is pending; new entity writes are paused.');
+    if(entityWritesLocked(owner))throw new Error('An entity-delta recovery is pending; new entity writes are paused.');
     if(!Array.isArray(changes)||!changes.length||changes.length>1000)throw new Error('Provide between 1 and 1,000 entity changes.');
     const changeIdentitySet=new Set();
     const normalized=changes.map(change=>{
@@ -1336,7 +1339,7 @@
     const owner=entityOwnerKey(ownerId),
       through=Math.min(Number.MAX_SAFE_INTEGER,Math.max(0,Math.floor(Number(throughSequence)||0)));
     if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner||through===0)return 0;
-    if(entityRecoveryLockedOwners.has(owner))return 0;
+    if(entityWritesLocked(owner))return 0;
     let removed=0,afterSequence=0;
     // Acknowledgement is a destructive queue operation, so every bounded page
     // revalidates the owner, active generation and compatibility workspace revision
@@ -1627,7 +1630,7 @@
 
   async function acknowledgeWorkspaceEntityOutboxGroup(ownerId,batch,group,expectedServerRevision,receipt){
     const owner=entityOwnerKey(ownerId),expected=Number(expectedServerRevision);
-    if(entityRecoveryLockedOwners.has(owner))return {ok:false,unavailable:true,reason:'recovery_commit_pending'};
+    if(entityWritesLocked(owner))return {ok:false,unavailable:true,reason:'recovery_commit_pending'};
     if(!batch||batch.ownerId!==owner||!group||typeof group.operationId!=='string'||
        !group.operationId||!Number.isSafeInteger(Number(group.firstSequence))||
        !Number.isSafeInteger(Number(group.lastSequence))||
@@ -1742,7 +1745,7 @@
     const owner=entityOwnerKey(ownerId),expected=Number(expectedServerRevision),
       remoteHead=Number(remoteHeadRevision),revisionValue=Number(group&&group.revision),
       operationId=String(group&&group.operation_id||'');
-    if(entityRecoveryLockedOwners.has(owner))return {ok:false,snapshotRequired:true,reason:'recovery_commit_pending'};
+    if(entityWritesLocked(owner))return {ok:false,snapshotRequired:true,reason:'recovery_commit_pending'};
     if(!Number.isSafeInteger(expected)||expected<0||
        !Number.isSafeInteger(remoteHead)||remoteHead<1||
        !Number.isSafeInteger(revisionValue)||revisionValue!==expected+1||
@@ -2020,7 +2023,7 @@
     if(entityRemovalOwners.has(owner))throw new Error('This account workspace is being permanently deleted.');
     if(!enabled||!database)return {skipped:true,reason:'indexeddb-unavailable'};
     if(committedOwnerId!==owner)throw new Error('The active account does not match the requested entity synchronization owner.');
-    if(entityRecoveryLockedOwners.has(owner))throw new Error('An entity-delta recovery is pending; entity projection synchronization is paused.');
+    if(entityWritesLocked(owner))throw new Error('An entity-delta recovery is pending; entity projection synchronization is paused.');
     const capturedChanges=cloneEntityChanges(changes);
     const trackerRoot=options.trackerRoot?JSON.parse(JSON.stringify(options.trackerRoot)):null;
     const featureRoot=options.featureRoot?JSON.parse(JSON.stringify(options.featureRoot)):null;
@@ -2203,6 +2206,201 @@
       }).catch(()=>null);
       if(!persisted||persisted.ownerId!==owner)entityRecoveryLockedOwners.delete(owner);
     }
+    return result;
+  }
+
+
+  async function beginWorkspaceEntityDowngrade(ownerId,input){
+    const owner=entityOwnerKey(ownerId),intentId=String(input&&input.intentId||'').trim(),
+      expectedHeadRevision=Number(input&&input.expectedHeadRevision),
+      generation=String(input&&input.generation||''),
+      snapshotUpdatedAt=String(input&&input.snapshotUpdatedAt||'');
+    if(!input||typeof input!=='object'||!intentId||intentId.length>160||
+       !Number.isSafeInteger(expectedHeadRevision)||expectedHeadRevision<0||
+       !generation||generation.length>160||!snapshotUpdatedAt||
+       entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner)
+      throw new Error('The active owner-bound Delta workspace is unavailable for downgrade locking.');
+    entityDowngradeLockedOwners.add(owner);
+    await entitySyncSerial.catch(()=>undefined);
+    await serial.catch(()=>undefined);
+    await persistPending();
+    const manifestKey=entityManifestKey(owner),intentKey=entityDeltaDowngradeKey(owner),
+      recoveryKey=entityDeltaRecoveryKey(owner),cursorKey=entityDeltaCursorKey(owner);
+    const result=await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
+      const store=tx.objectStore('migrationMeta'),
+        values={manifest:null,intent:null,recovery:null,cursor:null};let remaining=4;
+      const finish=()=>{
+        remaining--;if(remaining!==0)return;
+        const manifest=values.manifest,intent=values.intent,recovery=values.recovery,cursor=values.cursor;
+        if(!enabled||committedOwnerId!==owner||entityRemovalOwners.has(owner)||
+           !manifest||manifest.ownerId!==owner||manifest.status!=='ready'||
+           !manifest.activeGeneration||manifest.activeGeneration!==generation||
+           manifest.pendingGeneration||manifest.pendingRecoveryIntentId){
+          set({ok:false,reason:'active_entity_generation_unavailable'});return;
+        }
+        if(intent){
+          if(intent.ownerId===owner&&intent.intentId===intentId&&
+             ['prepared','checkpointed'].includes(intent.phase)){
+            set({ok:true,created:false,intent:{...intent}});return;
+          }
+          set({ok:false,reason:'another_entity_downgrade_is_pending'});return;
+        }
+        if(recovery&&recovery.ownerId===owner){
+          set({ok:false,reason:'entity_recovery_must_finish_before_downgrade'});return;
+        }
+        if(!cursor||cursor.ownerId!==owner||cursor.generation!==generation||
+           cursor.snapshotUpdatedAt!==snapshotUpdatedAt||
+           !Number.isSafeInteger(Number(cursor.publishRevision))||
+           Number(cursor.publishRevision)>expectedHeadRevision||
+           !Number.isSafeInteger(Number(cursor.remoteHeadRevision))||
+           Number(cursor.remoteHeadRevision)<Number(cursor.publishRevision)||
+           Number(cursor.remoteHeadRevision)>expectedHeadRevision||
+           !Number.isSafeInteger(Number(cursor.acknowledgedSequence))||
+           Number(cursor.acknowledgedSequence)<0||
+           cursor.requiresPull!==(Number(cursor.remoteHeadRevision)>Number(cursor.publishRevision))){
+          set({ok:false,reason:'verified_delta_cursor_unavailable'});return;
+        }
+        const intentRecord={key:intentKey,ownerId:owner,intentId,phase:'prepared',
+          expectedGeneration:generation,expectedHeadRevision,
+          initialSnapshotUpdatedAt:snapshotUpdatedAt,
+          createdAt:timestamp(),updatedAt:timestamp()};
+        store.put(intentRecord);set({ok:true,created:true,intent:intentRecord});
+      };
+      const m=store.get(manifestKey),i=store.get(intentKey),r=store.get(recoveryKey),c=store.get(cursorKey);
+      m.onsuccess=()=>{values.manifest=m.result||null;finish();};
+      i.onsuccess=()=>{values.intent=i.result||null;finish();};
+      r.onsuccess=()=>{values.recovery=r.result||null;finish();};
+      c.onsuccess=()=>{values.cursor=c.result||null;finish();};
+    });
+    if(!result||result.ok!==true){
+      const persisted=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
+        const request=tx.objectStore('migrationMeta').get(intentKey);
+        request.onsuccess=()=>set(request.result||null);
+      }).catch(()=>null);
+      if(!persisted||persisted.ownerId!==owner)entityDowngradeLockedOwners.delete(owner);
+    }
+    return result;
+  }
+
+  async function readWorkspaceEntityDowngrade(ownerId){
+    const owner=entityOwnerKey(ownerId);
+    if(!enabled||!database||committedOwnerId!==owner||entityRemovalOwners.has(owner))return null;
+    return transaction(['migrationMeta'],'readonly',(tx,set)=>{
+      const request=tx.objectStore('migrationMeta').get(entityDeltaDowngradeKey(owner));
+      request.onsuccess=()=>set(request.result?{...request.result}:null);
+    });
+  }
+
+  async function refreshWorkspaceEntityDowngrade(ownerId,intentId,headRevision,snapshotUpdatedAt,generation){
+    const owner=entityOwnerKey(ownerId),id=String(intentId||''),head=Number(headRevision),
+      stamp=String(snapshotUpdatedAt||''),expectedGeneration=String(generation||'');
+    if(!Number.isSafeInteger(head)||head<0||!stamp||!expectedGeneration)
+      return {ok:false,reason:'invalid_downgrade_refresh'};
+    return transaction(['migrationMeta'],'readwrite',(tx,set)=>{
+      const store=tx.objectStore('migrationMeta'),
+        values={intent:null,cursor:null,recovery:null,manifest:null};let remaining=4;
+      const finish=()=>{
+        remaining--;if(remaining!==0)return;
+        const intent=values.intent,cursor=values.cursor,recovery=values.recovery,manifest=values.manifest;
+        if(!intent||intent.ownerId!==owner||intent.intentId!==id||
+           !['prepared','checkpointed'].includes(intent.phase)||
+           (recovery&&recovery.ownerId===owner)||
+           !manifest||manifest.ownerId!==owner||manifest.activeGeneration!==expectedGeneration||
+           manifest.status!=='ready'||!cursor||cursor.ownerId!==owner||
+           cursor.generation!==expectedGeneration||cursor.snapshotUpdatedAt!==stamp||
+           !Number.isSafeInteger(Number(cursor.publishRevision))||
+           Number(cursor.publishRevision)>head||
+           Number(cursor.remoteHeadRevision)<Number(cursor.publishRevision)||
+           Number(cursor.remoteHeadRevision)>head||
+           cursor.requiresPull!==(Number(cursor.remoteHeadRevision)>Number(cursor.publishRevision))){
+          set({ok:false,reason:'downgrade_refresh_precondition_failed'});return;
+        }
+        const next={...intent,phase:'prepared',expectedGeneration,
+          expectedHeadRevision:head,initialSnapshotUpdatedAt:stamp,
+          checkpointHeadRevision:null,checkpointUpdatedAt:null,
+          checkpointGeneration:null,checkpointWorkspaceRevision:null,updatedAt:timestamp()};
+        store.put(next);set({ok:true,intent:next});
+      };
+      const i=store.get(entityDeltaDowngradeKey(owner)),c=store.get(entityDeltaCursorKey(owner)),
+        r=store.get(entityDeltaRecoveryKey(owner)),m=store.get(entityManifestKey(owner));
+      i.onsuccess=()=>{values.intent=i.result||null;finish();};
+      c.onsuccess=()=>{values.cursor=c.result||null;finish();};
+      r.onsuccess=()=>{values.recovery=r.result||null;finish();};
+      m.onsuccess=()=>{values.manifest=m.result||null;finish();};
+    });
+  }
+
+  async function markWorkspaceEntityDowngradeCheckpoint(ownerId,intentId,checkpoint){
+    const owner=entityOwnerKey(ownerId),id=String(intentId||''),
+      head=Number(checkpoint&&checkpoint.headRevision),
+      snapshot=Number(checkpoint&&checkpoint.snapshotRevision),
+      floor=Number(checkpoint&&checkpoint.compactedThroughRevision),
+      stamp=String(checkpoint&&checkpoint.updated_at||'');
+    if(!checkpoint||checkpoint.verified!==true||!stamp||
+       !Number.isSafeInteger(head)||!Number.isSafeInteger(snapshot)||!Number.isSafeInteger(floor)||
+       head<0||snapshot!==head||floor!==head)
+      throw new Error('A fully verified and compacted Delta-head snapshot is required before downgrade.');
+    return transaction(['migrationMeta'],'readwrite',(tx,set)=>{
+      const store=tx.objectStore('migrationMeta'),
+        values={intent:null,cursor:null,manifest:null,recovery:null};let remaining=4;
+      const finish=()=>{
+        remaining--;if(remaining!==0)return;
+        const intent=values.intent,cursor=values.cursor,manifest=values.manifest,recovery=values.recovery;
+        if(!intent||intent.ownerId!==owner||intent.intentId!==id||
+           !manifest||manifest.ownerId!==owner||manifest.activeGeneration!==cursor?.generation||
+           (recovery&&recovery.ownerId===owner)||
+           !cursor||cursor.ownerId!==owner||cursor.generation!==manifest.activeGeneration||
+           Number(cursor.publishRevision)!==head||Number(cursor.remoteHeadRevision)!==head||
+           cursor.requiresPull!==false||cursor.snapshotUpdatedAt!==stamp){
+          set({ok:false,reason:'downgrade_checkpoint_does_not_match_local_cursor'});return;
+        }
+        const next={...intent,phase:'checkpointed',checkpointHeadRevision:head,
+          checkpointUpdatedAt:stamp,checkpointGeneration:cursor.generation,
+          checkpointWorkspaceRevision:Number(cursor.workspaceRevision),updatedAt:timestamp()};
+        store.put(next);set({ok:true,intent:next});
+      };
+      const i=store.get(entityDeltaDowngradeKey(owner)),c=store.get(entityDeltaCursorKey(owner)),
+        m=store.get(entityManifestKey(owner)),r=store.get(entityDeltaRecoveryKey(owner));
+      i.onsuccess=()=>{values.intent=i.result||null;finish();};
+      c.onsuccess=()=>{values.cursor=c.result||null;finish();};
+      m.onsuccess=()=>{values.manifest=m.result||null;finish();};
+      r.onsuccess=()=>{values.recovery=r.result||null;finish();};
+    });
+  }
+
+  async function completeWorkspaceEntityDowngrade(ownerId,intentId,expectedHeadRevision){
+    const owner=entityOwnerKey(ownerId),id=String(intentId||''),head=Number(expectedHeadRevision);
+    if(!Number.isSafeInteger(head)||head<0)return {ok:false,reason:'invalid_downgrade_head'};
+    const result=await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
+      const store=tx.objectStore('migrationMeta'),
+        values={intent:null,cursor:null,recovery:null};let remaining=3;
+      const finish=()=>{
+        remaining--;if(remaining!==0)return;
+        const intent=values.intent,cursor=values.cursor,recovery=values.recovery;
+        if(!intent){
+          if(!cursor){set({ok:true,alreadyCompleted:true});return;}
+          set({ok:false,reason:'downgrade_intent_missing'});return;
+        }
+        if(intent.ownerId!==owner||intent.intentId!==id||intent.phase!=='checkpointed'||
+           Number(intent.checkpointHeadRevision)!==head||
+           !cursor||cursor.ownerId!==owner||cursor.generation!==intent.checkpointGeneration||
+           Number(cursor.publishRevision)!==head||Number(cursor.remoteHeadRevision)!==head||
+           cursor.requiresPull!==false||cursor.snapshotUpdatedAt!==intent.checkpointUpdatedAt||
+           (recovery&&recovery.ownerId===owner)){
+          set({ok:false,reason:'downgrade_local_checkpoint_changed'});return;
+        }
+        store.delete(entityDeltaCursorKey(owner));
+        store.delete(entityDeltaRecoveryCompletedKey(owner));
+        store.delete(entityDeltaDowngradeKey(owner));
+        set({ok:true,cleared:true,generation:cursor.generation,headRevision:head});
+      };
+      const i=store.get(entityDeltaDowngradeKey(owner)),c=store.get(entityDeltaCursorKey(owner)),
+        r=store.get(entityDeltaRecoveryKey(owner));
+      i.onsuccess=()=>{values.intent=i.result||null;finish();};
+      c.onsuccess=()=>{values.cursor=c.result||null;finish();};
+      r.onsuccess=()=>{values.recovery=r.result||null;finish();};
+    });
+    if(result&&result.ok===true)entityDowngradeLockedOwners.delete(owner);
     return result;
   }
 
@@ -2407,13 +2605,13 @@
 
     const manifestKey=entityManifestKey(owner),sequenceKey=entitySequenceKey(owner),
       cursorKey=entityDeltaCursorKey(owner),recoveryKey=entityDeltaRecoveryKey(owner),
-      completedKey=entityDeltaRecoveryCompletedKey(owner);
+      completedKey=entityDeltaRecoveryCompletedKey(owner),downgradeKey=entityDeltaDowngradeKey(owner);
     const removedMetadata=await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
       const store=tx.objectStore('migrationMeta');
       const manifestRequest=store.get(manifestKey),sequenceRequest=store.get(sequenceKey),
         cursorRequest=store.get(cursorKey),recoveryRequest=store.get(recoveryKey),
-        completedRequest=store.get(completedKey);
-      const values={manifest:null,sequence:null,cursor:null,recovery:null,completed:null};let remaining=5;
+        completedRequest=store.get(completedKey),downgradeRequest=store.get(downgradeKey);
+      const values={manifest:null,sequence:null,cursor:null,recovery:null,completed:null,downgrade:null};let remaining=6;
       const finish=()=>{
         remaining--;
         if(remaining!==0)return;
@@ -2421,7 +2619,8 @@
            (values.sequence&&values.sequence.ownerId!==owner)||
            (values.cursor&&values.cursor.ownerId!==owner)||
            (values.recovery&&values.recovery.ownerId!==owner)||
-           (values.completed&&values.completed.ownerId!==owner)){
+           (values.completed&&values.completed.ownerId!==owner)||
+           (values.downgrade&&values.downgrade.ownerId!==owner)){
           try{tx.abort();}catch(_){}
           return;
         }
@@ -2430,14 +2629,17 @@
         store.delete(cursorKey);
         store.delete(recoveryKey);
         store.delete(completedKey);
+        store.delete(downgradeKey);
         set({manifestRemoved:!!values.manifest,sequenceRemoved:!!values.sequence,
-          cursorRemoved:!!values.cursor,recoveryRemoved:!!values.recovery});
+          cursorRemoved:!!values.cursor,recoveryRemoved:!!values.recovery,
+          downgradeRemoved:!!values.downgrade});
       };
       manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;finish();};
       sequenceRequest.onsuccess=()=>{values.sequence=sequenceRequest.result||null;finish();};
       cursorRequest.onsuccess=()=>{values.cursor=cursorRequest.result||null;finish();};
       recoveryRequest.onsuccess=()=>{values.recovery=recoveryRequest.result||null;finish();};
       completedRequest.onsuccess=()=>{values.completed=completedRequest.result||null;finish();};
+      downgradeRequest.onsuccess=()=>{values.downgrade=downgradeRequest.result||null;finish();};
     });
 
     const removeOwnerPrefix=async(storeName,prefix)=>{
@@ -2476,9 +2678,11 @@
     const entityRowsRemoved=await removeOwnerPrefix('workspaces',entityOwnerRecordPrefix(owner));
     const outboxRowsRemoved=await removeOwnerPrefix('outbox',entityOutboxPrefix(owner));
     entityRecoveryLockedOwners.delete(owner);
+    entityDowngradeLockedOwners.delete(owner);
     return {ownerId:owner,entityRowsRemoved,outboxRowsRemoved,
       manifestRemoved:removedMetadata.manifestRemoved,sequenceRemoved:removedMetadata.sequenceRemoved,
-      cursorRemoved:removedMetadata.cursorRemoved,recoveryRemoved:removedMetadata.recoveryRemoved};
+      cursorRemoved:removedMetadata.cursorRemoved,recoveryRemoved:removedMetadata.recoveryRemoved,
+      downgradeRemoved:removedMetadata.downgradeRemoved};
   }
 
   function restoreNativeProperty() {
@@ -2724,7 +2928,7 @@
     const recoveryAccountSwitch=!!(ownerEntry&&ownerEntry.value!==currentOwner&&
       normalized.some(entry=>entry.key===TRACKER_KEY)&&
       normalized.some(entry=>entry.key===FEATURE_KEY));
-    if(enabled&&committedOwnerId&&entityRecoveryLockedOwners.has(committedOwnerId)&&
+    if(enabled&&committedOwnerId&&entityWritesLocked(committedOwnerId)&&
        normalized.some(entry=>isManagedKey(entry.key))&&!recoveryAccountSwitch){
       throw new Error('Nexus is completing a verified cloud recovery. Workspace edits are temporarily paused so they cannot be lost while the recovery snapshot and local entity generation are committed. An atomic account switch with both workspace snapshots remains allowed.');
     }
@@ -2925,14 +3129,22 @@
       committedOwnerId = cache.has(OWNER_KEY) ? cache.get(OWNER_KEY) : null;
       revision = snapshot.revision;
       enabled = true;
-      const recoveryIntent=committedOwnerId?await transaction(['migrationMeta'],'readonly',(tx,set)=>{
-        const request=tx.objectStore('migrationMeta').get(entityDeltaRecoveryKey(committedOwnerId));
-        request.onsuccess=()=>set(request.result||null);
+      const recoveryLocks=committedOwnerId?await transaction(['migrationMeta'],'readonly',(tx,set)=>{
+        const store=tx.objectStore('migrationMeta'),values={recovery:null,downgrade:null};let remaining=2;
+        const finish=()=>{remaining--;if(remaining===0)set(values);};
+        const recovery=store.get(entityDeltaRecoveryKey(committedOwnerId)),
+          downgrade=store.get(entityDeltaDowngradeKey(committedOwnerId));
+        recovery.onsuccess=()=>{values.recovery=recovery.result||null;finish();};
+        downgrade.onsuccess=()=>{values.downgrade=downgrade.result||null;finish();};
       }):null;
+      const recoveryIntent=recoveryLocks&&recoveryLocks.recovery,
+        downgradeIntent=recoveryLocks&&recoveryLocks.downgrade;
       if(recoveryIntent&&recoveryIntent.ownerId===committedOwnerId&&
-         ['prepared','staged','published'].includes(recoveryIntent.phase)){
-        entityRecoveryLockedOwners.add(committedOwnerId);
-      }else if(committedOwnerId){entityRecoveryLockedOwners.delete(committedOwnerId);}
+         ['prepared','staged','published'].includes(recoveryIntent.phase))entityRecoveryLockedOwners.add(committedOwnerId);
+      else if(committedOwnerId)entityRecoveryLockedOwners.delete(committedOwnerId);
+      if(downgradeIntent&&downgradeIntent.ownerId===committedOwnerId&&
+         ['prepared','checkpointed'].includes(downgradeIntent.phase))entityDowngradeLockedOwners.add(committedOwnerId);
+      else if(committedOwnerId)entityDowngradeLockedOwners.delete(committedOwnerId);
       await seedWorkspaceProjection(snapshot.rows, snapshot.revision);
       if(options&&options.hydrateEntities===true)await hydrateWorkspaceCacheFromEntities();
       // Reflect a verified entity-first cache in the native compatibility mirror,
@@ -2992,6 +3204,11 @@
     readWorkspaceEntities,
     beginWorkspaceEntityRecovery,
     readWorkspaceEntityRecovery,
+    beginWorkspaceEntityDowngrade,
+    readWorkspaceEntityDowngrade,
+    refreshWorkspaceEntityDowngrade,
+    markWorkspaceEntityDowngradeCheckpoint,
+    completeWorkspaceEntityDowngrade,
     markWorkspaceEntityRecoveryPublished,
     commitWorkspaceEntityRecovery,
     deleteWorkspaceEntities,
@@ -3016,7 +3233,8 @@
       entitySyncLastSuccessAt,
       entityHydrationMode,
       entityHydrationError,
-      entityRecoveryLocked:!!(committedOwnerId&&entityRecoveryLockedOwners.has(committedOwnerId))
+      entityRecoveryLocked:!!(committedOwnerId&&entityWritesLocked(committedOwnerId)),
+      entityDowngradeLocked:!!(committedOwnerId&&entityDowngradeLockedOwners.has(committedOwnerId))
     })
   };
 });
