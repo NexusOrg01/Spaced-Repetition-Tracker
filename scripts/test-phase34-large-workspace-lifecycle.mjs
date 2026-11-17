@@ -660,6 +660,94 @@ check('Post-restart synchronization is idle with no residual Delta tail or repea
   emptyTail.groups.length === 0 && stableRecovery.groupCount === 0 &&
   Number(finalState.compacted_through_revision) === revision);
 
+// DLA-03: downgrade only after a verified full checkpoint, full operation/receipt
+// compaction, and matching cursor. First prove a stale CAS request is harmless.
+const downgradeExpectedUpdatedAt = rowA1Restart.updated_at;
+const staleDowngrade = await rpc(clientA1Restart, 'nexus_disable_entity_delta', {
+  p_request_id: crypto.randomUUID(),
+  p_expected_head_revision: revision + 1,
+  p_expected_snapshot_updated_at: downgradeExpectedUpdatedAt,
+  p_expected_snapshot_revision: revision,
+  p_expected_compacted_through_revision: revision
+});
+assert.equal(staleDowngrade.ok, false);
+assert.equal(staleDowngrade.code, 'revision_conflict');
+const stateAfterRejectedDowngrade = await rpc(clientA1Restart, 'nexus_get_entity_sync_state');
+assert.equal(stateAfterRejectedDowngrade.mode, 'delta');
+const rejectedRow = await readSnapshotRow(clientA1Restart, ownerA);
+assert.equal(rejectedRow.payload.__nexusDeltaSync, 'entity-delta-v1');
+check('DLA-03 stale compare-and-swap is rejected without changing the active Delta snapshot',
+  staleDowngrade.code === 'revision_conflict' && stateAfterRejectedDowngrade.mode === 'delta' &&
+  rejectedRow.payload.__nexusDeltaSync === 'entity-delta-v1');
+
+const downgradeRequest = {
+  p_request_id: crypto.randomUUID(),
+  p_expected_head_revision: revision,
+  p_expected_snapshot_updated_at: downgradeExpectedUpdatedAt,
+  p_expected_snapshot_revision: revision,
+  p_expected_compacted_through_revision: revision
+};
+// Simulate the client losing the HTTP response after PostgreSQL commits. The
+// caller sees a timeout, retries the exact same request ID, and gets the receipt.
+const originalA1Rpc = clientA1Restart.rpc.bind(clientA1Restart);
+let dropDowngradeResponse = true;
+clientA1Restart.rpc = async (name, args) => {
+  const response = await originalA1Rpc(name, args);
+  if (name === 'nexus_disable_entity_delta' && dropDowngradeResponse) {
+    dropDowngradeResponse = false;
+    return { data: null, error: { code: '57014', message: 'simulated lost response after commit' } };
+  }
+  return response;
+};
+const lostDowngradeResponse = await clientA1Restart.rpc('nexus_disable_entity_delta', downgradeRequest);
+assert.equal(lostDowngradeResponse.error.code, '57014');
+clientA1Restart.rpc = originalA1Rpc;
+const replayedDowngrade = await rpc(clientA1Restart, 'nexus_disable_entity_delta', downgradeRequest);
+assert.equal(replayedDowngrade.ok, true);
+assert.equal(replayedDowngrade.already_applied, true);
+assert.equal(replayedDowngrade.mode, 'snapshot');
+assert.equal(replayedDowngrade.still_snapshot, true);
+
+const [stateAfterDowngrade, rowAfterDowngrade] = await Promise.all([
+  rpc(clientA1Restart, 'nexus_get_entity_sync_state'),
+  readSnapshotRow(clientA1Restart, ownerA)
+]);
+assert.equal(stateAfterDowngrade.mode, 'snapshot');
+assert.equal(Number(stateAfterDowngrade.head_revision), revision);
+assert.equal(Number(stateAfterDowngrade.snapshot_revision), revision);
+assert.equal(Number(stateAfterDowngrade.compacted_through_revision), revision);
+assert.equal(rowAfterDowngrade.updated_at, stateAfterDowngrade.snapshot_updated_at);
+assert.equal(Object.prototype.hasOwnProperty.call(rowAfterDowngrade.payload, '__nexusDeltaSync'), false);
+assert.equal(chunkStorage.isManifest(rowAfterDowngrade.payload), true,
+  'DLA-03 must retain the immutable active chunk manifest while stripping only the Delta marker');
+const downgradedWorkspaceA1 = await chunkStorage.readSnapshot(
+  clientA1Restart, ownerA, rowAfterDowngrade.payload
+);
+assert.equal(await merge.sameAsync(downgradedWorkspaceA1, workspaceA1Restart), true,
+  'the snapshot payload must be byte-verified/reconstructable and logically equal to the checkpoint');
+check('DLA-03 commits an aligned owner-only snapshot downgrade and retains the verified chunk snapshot',
+  stateAfterDowngrade.mode === 'snapshot' &&
+  Number(stateAfterDowngrade.head_revision) === Number(stateAfterDowngrade.snapshot_revision) &&
+  Number(stateAfterDowngrade.snapshot_revision) === Number(stateAfterDowngrade.compacted_through_revision) &&
+  !Object.prototype.hasOwnProperty.call(rowAfterDowngrade.payload, '__nexusDeltaSync') &&
+  chunkStorage.isManifest(rowAfterDowngrade.payload));
+
+const staleA2PageAfterDowngrade = await rpc(clientA2, 'nexus_read_entity_operations', {
+  p_after_revision: 2, p_limit_groups: 100, p_max_bytes: 1048576
+});
+assert.equal(staleA2PageAfterDowngrade.mode, 'snapshot');
+assert.equal(staleA2PageAfterDowngrade.groups.length, 0);
+const rowA2AfterDowngrade = await readSnapshotRow(clientA2, ownerA);
+assert.equal(rowA2AfterDowngrade.updated_at, stateAfterDowngrade.snapshot_updated_at);
+const downgradedWorkspaceA2 = await chunkStorage.readSnapshot(
+  clientA2, ownerA, rowA2AfterDowngrade.payload
+);
+assert.equal(await merge.sameAsync(downgradedWorkspaceA2, downgradedWorkspaceA1), true);
+check('The stale offline second device is forced off Delta reads and can recover the exact marker-free snapshot',
+  staleA2PageAfterDowngrade.mode === 'snapshot' &&
+  staleA2PageAfterDowngrade.groups.length === 0 &&
+  await merge.sameAsync(downgradedWorkspaceA2, downgradedWorkspaceA1));
+
 const foreignSnapshotRows = await clientB.from('nexus_user_data')
   .select('user_id').eq('user_id', ownerA);
 const foreignChunkRows = await clientB.from('nexus_user_data_chunks')
