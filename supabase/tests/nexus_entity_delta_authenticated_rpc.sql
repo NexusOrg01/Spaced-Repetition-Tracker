@@ -1,8 +1,8 @@
 -- Disposable authenticated-role RPC exercise for Nexus entity-delta sync.
--- Run only against the isolated Supabase staging/local project as a database owner.
--- RPC EXECUTE grants, two synthetic auth users, snapshots, operations, and receipts
--- are all inside one transaction and are rolled back at the end. This does not
--- grant execution to authenticated users persistently.
+-- Run only against an isolated Supabase staging/local project as a database owner.
+-- The test verifies the DLA-02 migration's persistent narrow grants; it never
+-- changes RPC privileges. Two synthetic Auth users, workspaces, allowlist rows,
+-- operations, and receipts are rolled back together at the end.
 BEGIN;
 
 SELECT set_config('nexus.test.owner_a', gen_random_uuid()::text, true);
