@@ -1,15 +1,16 @@
 # Nexus Entity Delta downgrade operator runbook (DLA-03)
 
-**Status:** Implemented on the DLA-03 feature branch; not enabled for hosted accounts.
+**Status:** Implemented and locally validated on the DLA-03 feature branch; not enabled for hosted accounts.
 
 ## Activation boundary
 
-DLA-03 depends on DLA-02. The 17 November 2026 task tracker records DLA-02 as not implemented for hosted use. Therefore:
+DLA-03 depends on DLA-02. The 17 November 2026 tracker records DLA-02 as owner-confirmed complete on draft PR #133, with corrected automated validation passed; hosted synthetic-QA identity reconciliation remains pending and PR #133 is not merged. This DLA-03 branch is still local-only. Therefore:
 
 - supabase/delta-rollout/20261117160000_owner_scoped_entity_delta_downgrade.sql is deliberately outside supabase/migrations/ and the OPS-01 11-file production migration allowlist.
 - scripts/prepare-phase34-local-supabase.mjs copies that SQL only into the generated disposable local Supabase database.
 - The RPC public.nexus_disable_entity_delta(bigint, timestamptz, jsonb) revokes EXECUTE from PUBLIC, anon, and authenticated. Do not manually grant it.
-- Do not enable Delta, change Supabase function grants, deploy a hosted migration, or run a downgrade against production. A later DLA-02 task must install and review the protected owner-scoped pilot allowlist and make any approved QA authorization change.
+- Before any hosted QA use, DLA-02's allowlist/grant package must be reconciled with this new RPC signature and independently verify the synthetic QA identity. Only a separately approved, owner-scoped QA path may add its narrow authenticated grant; do not add a broad grant.
+- Do not enable Delta, change Supabase function grants, deploy a hosted migration, or run a downgrade against production. The local test migration is not a hosted deployment plan.
 - The PR preview is for code review. It is not a hosted Delta pilot and must not be used to downgrade a real account.
 
 ## Local-only procedure
@@ -124,7 +125,7 @@ SELECT
 FROM chunk_summary;
 ```
 
-Expected for a chunked owner: actual count equals the manifest count; first index is 0; last index is count minus 1; both declared chunk counts equal the manifest count; summed bytes equal the manifest byte total; and any_chunk_has_delta_marker = false. The client additionally verifies exact chunk reconstruction and SHA-256 against the manifest before it requests the mode switch.
+Expected for a chunked owner: actual count equals the manifest count; first index is 0; last index is count minus 1; both declared chunk counts equal the manifest count; summed bytes equal the manifest byte total; and any_chunk_has_delta_marker = false. Expected: actual count equals the manifest count; first index is 0; last index is count minus 1; both declared chunk counts equal the manifest count; declared and actual byte totals equal the manifest total; has_chunk_byte_mismatch = false; and any_chunk_has_delta_marker = false. The query reconstructs the serialized document before parsing it because individual chunk rows are text slices, not standalone JSON documents. The client additionally verifies exact chunk reconstruction and SHA-256 against the manifest before it requests the mode switch.
 
 ### 4. Confirm the current browser-role grant boundary
 
@@ -155,4 +156,4 @@ A local QA run is accepted only when all of the following are true:
 - Restart/retry after a simulated lost response is idempotent; stale second-device and different-owner tests do not clear or overwrite another owner's state.
 - The rollback-only SQL test, IndexedDB journal tests, chunk publisher failure-injection tests, and local authenticated Phase 3.4 integration workflow pass.
 
-**Hosted status remains blocked by DLA-02.** Passing the local tests does not authorize a hosted pilot, production migration, grant, deployment or account downgrade.
+**Hosted status remains blocked pending DLA-02 integration/hosted identity reconciliation and DLA-04.** Passing local tests does not authorize a hosted pilot, production migration, grant, deployment or account downgrade.
