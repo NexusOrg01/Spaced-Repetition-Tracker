@@ -89,12 +89,33 @@ DECLARE
   v_unlisted_ops integer;
   v_unlisted_receipts integer;
   v_rpc text;
+  v_enable_search_path text[];
+  v_allowlist_default text;
   v_table text;
   v_privilege text;
   v_direct_write_denied boolean := false;
 BEGIN
   IF current_user <> 'authenticated' OR auth.uid() IS DISTINCT FROM v_owner_a THEN
     RAISE EXCEPTION 'The RPC probe is not running as the intended authenticated owner.';
+  END IF;
+
+  SELECT proconfig INTO v_enable_search_path
+  FROM pg_catalog.pg_proc
+  WHERE oid = 'public.nexus_enable_entity_delta(timestamp with time zone)'::regprocedure;
+  IF NOT COALESCE(v_enable_search_path @> ARRAY['search_path=""']::text[], false) THEN
+    RAISE EXCEPTION 'DLA-02 SECURITY DEFINER RPC must pin an empty search_path: %',
+      v_enable_search_path;
+  END IF;
+
+  SELECT pg_catalog.pg_get_expr(d.adbin, d.adrelid) INTO v_allowlist_default
+  FROM pg_catalog.pg_attrdef AS d
+  JOIN pg_catalog.pg_attribute AS a
+    ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+  WHERE d.adrelid = 'nexus_private.entity_delta_pilot_allowlist'::regclass
+    AND a.attname = 'enabled';
+  IF v_allowlist_default IS DISTINCT FROM 'false' THEN
+    RAISE EXCEPTION 'The pilot allowlist enabled column must default to false: %',
+      v_allowlist_default;
   END IF;
 
   -- The deployed grant set is tested directly; this test does not add temporary
