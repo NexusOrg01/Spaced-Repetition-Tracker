@@ -49,7 +49,7 @@ CREATE OR REPLACE FUNCTION public.nexus_enable_entity_delta(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public, auth
+SET search_path = ''
 AS $function$
 DECLARE
   v_uid uuid := auth.uid();
