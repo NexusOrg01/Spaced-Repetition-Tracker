@@ -245,10 +245,7 @@ BEGIN
     'public.nexus_disable_entity_delta(bigint,timestamp with time zone,jsonb)'::regprocedure,
     'EXECUTE'
   );
-  IF v_privileges <> 0
-     OR has_function_privilege('PUBLIC',
-       'public.nexus_disable_entity_delta(bigint,timestamp with time zone,jsonb)'::regprocedure,
-       'EXECUTE') THEN
+  IF v_privileges <> 0 THEN
     RAISE EXCEPTION 'DLA-03 downgrade RPC must remain revoked from browser roles until DLA-02.';
   END IF;
 
