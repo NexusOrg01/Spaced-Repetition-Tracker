@@ -184,7 +184,7 @@ assert.match(downgradeSqlTest, /Cross-owner downgrade attempt/);
 assert.match(downgradeSqlTest, /has_function_privilege/);
 assert.match(downgradeSqlTest, /nexus_test_dla03_injected_pointer_failure/);
 assert.match(downgradeSqlTest, /v_injected_failure/);
-assert.match(downgradeSqlTest, /v_chunk_old_count <> 1 OR v_chunk_new_count <> 1/,
+assert.match(downgradeSqlTest, /v_chunk_old_count <> 2 OR v_chunk_new_count <> 1/,
   'the downgrade fixture must prove old and newly published chunks are retained');
 assert.match(read('scripts/prepare-phase34-local-supabase.mjs'), /supabase','delta-rollout'/,
   'the DLA-03 SQL must be copied only into the generated local test database');
