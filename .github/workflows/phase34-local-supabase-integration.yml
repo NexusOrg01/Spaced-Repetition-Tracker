@@ -2,7 +2,7 @@ name: Phase 3.4 local authenticated two-client integration
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, feat/dla-01-hosted-qa-gate]
     paths:
       - .github/workflows/phase34-local-supabase-integration.yml
       - cloud-sync.js
@@ -17,7 +17,10 @@ on:
       - staging-test/**
       - supabase/local-phase34/**
       - supabase/migrations/**
+      - supabase/pilot-migrations/**
       - supabase/tests/nexus_entity_delta_two_client_*.sql
+      - supabase/tests/nexus_entity_delta_authenticated_rpc.sql
+      - supabase/tests/nexus_entity_delta_sync.sql
       - supabase/tests/nexus_user_data_chunks_active_manifest.sql
   workflow_dispatch:
 
@@ -67,7 +70,7 @@ jobs:
           printf 'PHASE34_DB_URL=%s\n' "$DB_URL" >> "$GITHUB_ENV"
           printf 'PHASE34_ANON_KEY=%s\n' "$ANON_KEY" >> "$GITHUB_ENV"
 
-      - name: Run general snapshot candidate integrity and fallback tests
+      - name: Run DLA-02 authenticated RPC and snapshot integrity tests
         shell: bash
         run: |
           set -euo pipefail
@@ -76,8 +79,10 @@ jobs:
           NEXUS_RACE_DATABASE_URL="$PHASE34_DB_URL" node scripts/test-active-manifest-race.mjs
           node scripts/test-cloud-chunk-storage.mjs
           node scripts/test-account-deletion.mjs
+          psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 -f supabase/tests/nexus_entity_delta_authenticated_rpc.sql
+          psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 -f supabase/tests/nexus_entity_delta_sync.sql
 
-      - name: Create disposable Auth fixtures and grant test RPCs locally
+      - name: Create disposable Auth fixtures and export local test credentials
         working-directory: .build/phase34-local-supabase
         shell: bash
         run: |
@@ -103,14 +108,6 @@ jobs:
           echo "::add-mask::$PASSWORD_B"
           echo "::add-mask::$EMAIL_C"
           echo "::add-mask::$PASSWORD_C"
-          psql "$DB_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
-          GRANT EXECUTE ON FUNCTION public.nexus_get_entity_sync_state() TO authenticated;
-          GRANT EXECUTE ON FUNCTION public.nexus_enable_entity_delta(timestamptz) TO authenticated;
-          GRANT EXECUTE ON FUNCTION public.nexus_publish_entity_operation(text,bigint,jsonb) TO authenticated;
-          GRANT EXECUTE ON FUNCTION public.nexus_read_entity_operations(bigint,integer,integer) TO authenticated;
-          GRANT EXECUTE ON FUNCTION public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb) TO authenticated;
-          GRANT EXECUTE ON FUNCTION public.nexus_compact_entity_operations(integer) TO authenticated;
-          SQL
           {
             printf 'PHASE34_EMAIL_A=%s\n' "$EMAIL_A"
             printf 'PHASE34_PASSWORD_A=%s\n' "$PASSWORD_A"
@@ -164,12 +161,12 @@ jobs:
             trap 'timeout 120s npx --yes supabase@latest stop --no-backup || true' EXIT
             if [[ -n "${PHASE34_DB_URL:-}" ]]; then
               psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
-          REVOKE EXECUTE ON FUNCTION public.nexus_get_entity_sync_state() FROM PUBLIC, anon, authenticated;
-          REVOKE EXECUTE ON FUNCTION public.nexus_enable_entity_delta(timestamptz) FROM PUBLIC, anon, authenticated;
-          REVOKE EXECUTE ON FUNCTION public.nexus_publish_entity_operation(text,bigint,jsonb) FROM PUBLIC, anon, authenticated;
-          REVOKE EXECUTE ON FUNCTION public.nexus_read_entity_operations(bigint,integer,integer) FROM PUBLIC, anon, authenticated;
-          REVOKE EXECUTE ON FUNCTION public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb) FROM PUBLIC, anon, authenticated;
-          REVOKE EXECUTE ON FUNCTION public.nexus_compact_entity_operations(integer) FROM PUBLIC, anon, authenticated;
+          REVOKE EXECUTE ON FUNCTION public.nexus_get_entity_sync_state() FROM PUBLIC, anon, authenticated, service_role;
+          REVOKE EXECUTE ON FUNCTION public.nexus_enable_entity_delta(timestamptz) FROM PUBLIC, anon, authenticated, service_role;
+          REVOKE EXECUTE ON FUNCTION public.nexus_publish_entity_operation(text,bigint,jsonb) FROM PUBLIC, anon, authenticated, service_role;
+          REVOKE EXECUTE ON FUNCTION public.nexus_read_entity_operations(bigint,integer,integer) FROM PUBLIC, anon, authenticated, service_role;
+          REVOKE EXECUTE ON FUNCTION public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb) FROM PUBLIC, anon, authenticated, service_role;
+          REVOKE EXECUTE ON FUNCTION public.nexus_compact_entity_operations(integer) FROM PUBLIC, anon, authenticated, service_role;
           SQL
               psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 \
                 -f test-fixtures/nexus_entity_delta_two_client_cleanup.sql
@@ -181,6 +178,8 @@ jobs:
                 -c "SELECT count(*) FROM public.nexus_workspace_operation_receipts")"
               remaining_delta="$(psql "$PHASE34_DB_URL" -X -At -v ON_ERROR_STOP=1 \
                 -c "SELECT count(*) FROM public.nexus_workspace_sync_state WHERE mode='delta'")"
+              remaining_allowlist="$(psql "$PHASE34_DB_URL" -X -At -v ON_ERROR_STOP=1 \
+                -c "SELECT count(*) FROM nexus_private.entity_delta_pilot_allowlist")"
               leaked_grants="$(psql "$PHASE34_DB_URL" -X -At -v ON_ERROR_STOP=1 <<'SQL'
           SELECT count(*)
           FROM unnest(ARRAY[
@@ -192,15 +191,17 @@ jobs:
             'public.nexus_compact_entity_operations(integer)'
           ]::text[]) AS signatures(signature)
           WHERE has_function_privilege('anon', signature, 'EXECUTE')
-             OR has_function_privilege('authenticated', signature, 'EXECUTE');
+             OR has_function_privilege('authenticated', signature, 'EXECUTE')
+             OR has_function_privilege('service_role', signature, 'EXECUTE');
           SQL
           )"
               test "$remaining_users" = "0"
               test "$remaining_operations" = "0"
               test "$remaining_receipts" = "0"
               test "$remaining_delta" = "0"
+              test "$remaining_allowlist" = "0"
               test "$leaked_grants" = "0"
-              echo "PASS — disposable users and Delta rows removed; RPC grants revoked; local database verified clean."
+              echo "PASS — disposable users, allowlist rows and Delta rows removed; RPC grants revoked; local database verified clean."
             else
               echo "Local Supabase did not reach the point where a database URL was exported; no test fixture was created."
             fi

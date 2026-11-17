@@ -347,13 +347,13 @@ check('Three independent authenticated sessions represent two devices and a sepa
 const stateA = await rpc(clientA1, 'nexus_get_entity_sync_state');
 const stateB = await rpc(clientB, 'nexus_get_entity_sync_state');
 assert.equal(stateA.mode, 'snapshot', 'Fixture C is intentionally untouched by the preceding A1/A2/B protocol test');
-assert.equal(stateB.mode, 'delta', 'Fixture B was used by the preceding A1/A2/B protocol test and must retain its own isolated state');
-assert.equal(Number(stateB.head_revision), 1, 'The prior protocol test should leave exactly one B-owned operation');
+assert.equal(stateB.mode, 'snapshot', 'Unlisted fixture B must remain in snapshot mode after the preceding protocol test');
+assert.equal(Number(stateB.head_revision), 0, 'An unlisted owner must not acquire a Delta revision');
 const foreignPage = await rpc(clientB, 'nexus_read_entity_operations', {
   p_after_revision: 0, p_limit_groups: 50, p_max_bytes: 1048576
 });
-assert.equal(foreignPage.next_revision, 1);
-assert.equal(foreignPage.groups.length, 1);
+assert.equal(foreignPage.mode, 'snapshot');
+assert.equal(foreignPage.groups.length, 0);
 const enabled = await rpc(clientA1, 'nexus_enable_entity_delta', {
   p_expected_updated_at: stateA.snapshot_updated_at
 });
@@ -361,9 +361,9 @@ assert.equal(enabled.ok, true);
 assert.equal(enabled.mode, 'delta');
 const baselineState = await rpc(clientA1, 'nexus_get_entity_sync_state');
 const ownerBaseStamp = baselineState.snapshot_updated_at;
-check('Clean fixture C is enabled for the large-workspace lifecycle while prior account B retains only its own revision-1 operation',
+check('Allowlisted fixture C can enter Delta while unlisted account B remains snapshot-only',
   baselineState.mode === 'delta' && Number(baselineState.head_revision) === 0 &&
-  stateB.mode === 'delta' && Number(stateB.head_revision) === 1 && foreignPage.groups.length === 1);
+  stateB.mode === 'snapshot' && Number(stateB.head_revision) === 0 && foreignPage.mode === 'snapshot' && foreignPage.groups.length === 0);
 
 console.log('Building the 77,144-topic / 72,001-history workspace…');
 const { payload: initialPayload, serialized: initialSerialized } = buildLargeWorkspace();
@@ -669,17 +669,17 @@ assert.equal(foreignChunkRows.error, null);
 assert.equal(foreignSnapshotRows.data.length, 0);
 assert.equal(foreignChunkRows.data.length, 0);
 const finalForeignState = await rpc(clientB, 'nexus_get_entity_sync_state');
-assert.equal(finalForeignState.mode, 'delta');
-assert.equal(Number(finalForeignState.head_revision), 1);
+assert.equal(finalForeignState.mode, 'snapshot');
+assert.equal(Number(finalForeignState.head_revision), 0);
 const finalForeignPage = await rpc(clientB, 'nexus_read_entity_operations', {
   p_after_revision: 0, p_limit_groups: 50, p_max_bytes: 1048576
 });
-assert.equal(finalForeignPage.groups.length, 1);
-assert.equal(finalForeignPage.groups[0].operation_id.startsWith('phase34-two-client-b-'), true);
-check('Account B cannot read C snapshot/chunks and retains only its own unchanged revision-1 operation',
+assert.equal(finalForeignPage.mode, 'snapshot');
+assert.equal(finalForeignPage.groups.length, 0);
+check('Unlisted account B cannot read C snapshot/chunks and remains snapshot-only',
   foreignSnapshotRows.data.length === 0 && foreignChunkRows.data.length === 0 &&
-  finalForeignState.mode === 'delta' && Number(finalForeignState.head_revision) === 1 &&
-  finalForeignPage.groups.length === 1);
+  finalForeignState.mode === 'snapshot' && Number(finalForeignState.head_revision) === 0 &&
+  finalForeignPage.mode === 'snapshot' && finalForeignPage.groups.length === 0);
 
 console.log('PASS — ' + checks.length + ' large-workspace two-device lifecycle assertions completed.');
 console.log('Evidence: ' + JSON.stringify({
