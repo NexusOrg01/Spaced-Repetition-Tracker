@@ -61,6 +61,8 @@ assert.match(cloud, /downgradeEntityDelta,\s*noteCommittedLocalSave/);
 assert.match(cloud, /nexus_disable_entity_delta/);
 assert.match(cloud, /syncStateQuery=client\.from\('nexus_workspace_sync_state'\)/);
 assert.match(cloud, /syncStateRead\.data\.mode==='snapshot'[\s\S]*?delete snapshotPayload\.__nexusDeltaSync/);
+assert.match(docs, /checkpoint's `nexus_user_data\.updated_at` value/);
+assert.match(lifecycle, /rowAfterDowngrade\.updated_at, downgradeExpectedUpdatedAt/);
 
 
 assert.match(prepare, /20261117131900_add_entity_delta_snapshot_downgrade\.sql/);
