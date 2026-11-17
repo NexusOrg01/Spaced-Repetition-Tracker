@@ -5,14 +5,41 @@ import { fileURLToPath } from 'node:url';
 import { webcrypto } from 'node:crypto';
 import vm from 'node:vm';
 import { TextEncoder } from 'node:util';
+import { createRequire } from 'node:module';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
+const require=createRequire(import.meta.url);
+const offlineQueue=require(resolve(root,'offline-sync-queue.js'));
 const sourceText=readFileSync(resolve(root,'entity-delta-sync.js'),'utf8');
 const window={crypto:webcrypto,TextEncoder};
 const context=vm.createContext({window,console,TextEncoder,Uint8Array});
 vm.runInContext(sourceText,context,{filename:'entity-delta-sync.js'});
 const factory=window.NexusEntityDeltaSync;
 assert.ok(factory&&typeof factory.createClient==='function');
+
+assert.ok(typeof offlineQueue.prepareDowngradeBaseCommit==='function',
+  'the offline queue must prepare an owner-scoped base update for the atomic downgrade commit');
+{
+  const values=new Map();
+  const local={getItem:key=>values.has(key)?values.get(key):null,
+    setItem:(key,value)=>values.set(key,String(value)),
+    removeItem:key=>values.delete(key)};
+  const snapshot={state:{streams:[{id:'queue-stream'}]},featureState:{journal:[]}};
+  const entries=offlineQueue.prepareDowngradeBaseCommit(
+    local,owner,snapshot,'verified-downgrade-stamp');
+  assert.equal(entries.length,2);
+  assert.equal(entries[0].key,offlineQueue.BASE);
+  assert.equal(entries[1].key,offlineQueue.STAMP);
+  assert.equal(values.size,0,
+    'preparing local base entries must not bypass the downgrade storage lock with an eager ordinary localStorage write');
+  assert.deepEqual(JSON.parse(entries[0].value)[owner],{
+    state:snapshot.state,featureState:snapshot.featureState,serverVersion:'verified-downgrade-stamp'
+  });
+  assert.equal(JSON.parse(entries[1].value)[owner],'verified-downgrade-stamp');
+  assert.throws(()=>offlineQueue.prepareDowngradeBaseCommit(local,owner,{state:{}},'bad'),
+    /verified owner-bound snapshot/);
+}
+
 
 const owner='account-dla03-A';
 const workspace={
@@ -67,7 +94,8 @@ function fixture(options={}){
       if(options.completeFailure)return {ok:false,reason:options.completeFailure};
       intent=null;
       return {ok:true,cleared:true,generation:cursor?.generation,headRevision:head};
-    }  };
+    }
+  };
   const activeUser=options.activeUser===undefined?owner:options.activeUser;
   const client={
     auth:{async getUser(){return {data:{user:{id:options.authUser===undefined?owner:options.authUser}},error:null};}},
