@@ -60,20 +60,21 @@ try {
     'B has a distinct owner identity',
     'A1 and A2 have independent access tokens',
     'Both accounts begin in snapshot mode',
-    'Delta enablement remains owner-scoped',
-    'Independent owners publish revision 1',
+    'Only allowlisted owner A can enable Delta',
+    'Allowlisted owner A publishes revision 1',
+    'Unlisted owner B cannot publish Delta',
     'Concurrent A publication returns one winner and one revision conflict',
     'Losing operation retries at revision 3',
     'Same ID and payload replays original receipt',
     'Same ID with different payload is rejected',
     'A reads exactly its three contiguous revisions',
-    'B reads only its own revision',
+    'Unlisted B stays in snapshot mode and reads no Delta operations',
     'No cross-account operation IDs appear',
     'A table reads contain only owner A rows',
-    'B table reads contain only owner B rows',
+    'B table reads contain no Delta rows',
     'A cannot select B rows by guessing owner ID',
     'Direct operation-table write is denied',
-    'Final heads remain isolated (A=3, B=1)'
+    'Final heads remain isolated (A=3, B=0)'
   ];
   for (const assertion of expected) {
     assert.ok(log.includes('PASS  ' + assertion), 'missing authenticated assertion: ' + assertion + '\n' + log);
