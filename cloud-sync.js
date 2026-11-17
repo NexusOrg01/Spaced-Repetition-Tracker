@@ -827,7 +827,7 @@ ready=true;const adoptedUpload=await upload();if(!adoptedUpload){lastUserId=newU
 }}}
 
 async function sameWorkspace(a,b){if(!a||!b)return false;const merger=window.NexusWorkspaceSyncMerge;if(!merger||typeof merger.sameAsync!=='function')throw new Error('Safe large-workspace comparison is unavailable.');return merger.sameAsync({state:a.state||{},featureState:a.featureState||{}},{state:b.state||{},featureState:b.featureState||{}});}
-async function runStagingEntityDeltaSync(ownerId,signal){
+async function runStagingEntityDeltaSync(ownerId,signal,action='sync'){
  const queue=window.NexusOfflineSyncQueue,storage=window.NexusStorage;
  const recovery=storage&&typeof storage.readWorkspaceEntityRecovery==='function'
   ?await storage.readWorkspaceEntityRecovery(ownerId):null;
@@ -885,11 +885,27 @@ async function runStagingEntityDeltaSync(ownerId,signal){
    chunkStorage.writeDeltaSnapshot(client,userId,payload,expectedHead,expectedStamp,requestSignal),
   compactOperations:(userId,expectedFloor,requestSignal)=>
    chunkStorage.compactDeltaOperations(client,userId,expectedFloor,requestSignal),
+  publishDowngradeSnapshot:(userId,payload,expectedHead,expectedStamp,requestSignal)=>
+   chunkStorage.writeDowngradeSnapshot(client,userId,payload,expectedHead,expectedStamp,requestSignal),
+  commitSnapshotDowngradeLocal:(userId,payload,serverVersion)=>{
+   if(!session||!session.user||session.user.id!==userId||localStorage.getItem(OWNER_KEY)!==userId)
+    throw new Error('The active account changed before the downgraded snapshot base could be committed.');
+   queue.rememberBase(localStorage,userId,payload,serverVersion);
+   queue.rememberStamp(localStorage,userId,serverVersion);
+   lastRemoteStamp=serverVersion;
+   return true;
+  },
   commitLocalRecovery:(userId,payload,publication,conflicts,metadata)=>
    queue.commitVerifiedEntityDeltaSnapshot(localStorage,userId,payload,publication.updated_at,
     conflicts,{baseServerVersion:metadata.baseServerVersion},
     {intentId:metadata.intentId,candidateDigest:metadata.candidateDigest})
  });
+ if(action==='downgrade'){
+  if(typeof syncDiag==='function')syncDiag('entity-delta-downgrade-start',null,{ownerVerified:true});
+  const downgraded=await makeClient.downgradeToSnapshot(ownerId,{signal});
+  if(typeof syncDiag==='function')syncDiag('entity-delta-downgrade-complete',null,{ok:!!(downgraded&&downgraded.ok===true),mode:downgraded&&downgraded.mode||null,reason:downgraded&&downgraded.reason||null});
+  return downgraded;
+ }
  if(recoveryPending){
    if(typeof syncDiag==='function')syncDiag('snapshot-recovery-start',null,{reason:'resume-existing-journal'});
    const resumed=await makeClient.publishConflictRecovery(ownerId,{
@@ -1226,7 +1242,17 @@ async function deleteCurrentAccount(){
  }
 }
 async function signOut(){if(client)await client.auth.signOut();session=null;ready=false;clearTimeout(timer);clearRetry();status('Not signed in · offline ready');say('You are signed out. Continue using this device offline; data remains local.');setControls();}
-window.NexusCloudSync={schedule,upload,reconnect:connect,getAccountState,deleteAccount:deleteCurrentAccount,
+async function downgradeStagingEntityDeltaToSnapshot(){
+ const userId=session&&session.user&&session.user.id;
+ if(!userId||!ready||lastUserId!==userId||localStorage.getItem(OWNER_KEY)!==userId)
+  throw new Error('Sign in and wait for the active account workspace to finish syncing before requesting a downgrade.');
+ if(syncing||initializing||deletingAccount)
+  throw new Error('Nexus is currently syncing, initializing, or deleting this account. Retry when that work has finished.');
+ if(typeof navigator!=='undefined'&&!navigator.onLine)
+  throw new Error('An internet connection is required to checkpoint and downgrade an Entity Delta workspace.');
+ return runStagingEntityDeltaSync(userId,null,'downgrade');
+}
+window.NexusCloudSync={schedule,upload,reconnect:connect,getAccountState,downgradeEntityDeltaToSnapshot:downgradeStagingEntityDeltaToSnapshot,deleteAccount:deleteCurrentAccount,
  noteCommittedLocalSave:(payload)=>{
   if(deletingAccount)return;
   // app-core has already committed this exact snapshot to the account-bound queue.
