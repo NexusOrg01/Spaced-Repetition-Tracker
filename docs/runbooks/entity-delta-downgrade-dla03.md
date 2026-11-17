@@ -18,15 +18,16 @@ DLA-03 depends on DLA-02. The 17 November 2026 tracker records DLA-02 as owner-c
 1. Use the isolated local Supabase stack prepared by node scripts/prepare-phase34-local-supabase.mjs. Confirm the generated project README says it is disposable and not linked to a hosted project.
 2. Use only fixture users and workspaces created by the local test setup. Confirm the app's authenticated owner UUID matches the fixture owner. Keep the device online and wait until the active local workspace has finished its ordinary sync.
 3. Confirm there is no pending legacy snapshot, no unresolved recovery journal, and no unacknowledged entity outbox group. The coordinator repeats these checks after it acquires a persistent owner-scoped write lock.
-4. Invoke the local staging operator from the app console:
+4. The disposable CI runner applies a temporary `GRANT EXECUTE` for `nexus_disable_entity_delta(bigint,timestamptz,jsonb)` to `authenticated` only inside this generated local database, after the rollback-only SQL checks. The cleanup step revokes it, deletes all disposable users/data, verifies no browser grants remain, and destroys the local Supabase stack. For a manual local run, apply the same narrow grant only after confirming the target is the generated loopback database; never apply it to a hosted project.
+5. Invoke the local staging operator from the app console:
 
    ```js
    await window.NexusCloudSync.downgradeEntityDeltaToSnapshot()
    ```
 
-5. A successful result must report ok: true and mode: "snapshot". The implementation checkpoints and compacts to the exact Delta head, publishes a full unmarked snapshot, verifies its read-back/hash, changes the owner mode and snapshot pointer in one SQL transaction, then commits the new local sync base and clears the local Delta cursor/journal atomically.
-6. On a retryable failure, keep the application data and browser storage intact. The durable downgrade journal and write lock are intentional. Restore connectivity or the missing local test dependency, then retry. A subsequent ordinary sync resumes a persisted downgrade before it attempts normal Delta sync.
-7. Do not manually delete the Delta marker, edit the sync-state row, remove an outbox, clear IndexedDB, or switch a workspace to snapshot mode with direct SQL.
+6. A successful result must report ok: true and mode: "snapshot". The implementation checkpoints and compacts to the exact Delta head, publishes a full unmarked snapshot, verifies its read-back/hash, changes the owner mode and snapshot pointer in one SQL transaction, then commits the new local sync base and clears the local Delta cursor/journal atomically.
+7. On a retryable failure, keep the application data and browser storage intact. The durable downgrade journal and write lock are intentional. Restore connectivity or the missing local test dependency, then retry. A subsequent ordinary sync resumes a persisted downgrade before it attempts normal Delta sync.
+8. Do not manually delete the Delta marker, edit the sync-state row, remove an outbox, clear IndexedDB, or switch a workspace to snapshot mode with direct SQL.
 
 ### Other-device and interruption handling
 
