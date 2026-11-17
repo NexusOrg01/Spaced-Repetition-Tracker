@@ -155,8 +155,8 @@ assert.match(integration, /UPDATE public\.nexus_user_data[\s\S]*payload = payloa
 assert.match(downgradeMigration, /CREATE OR REPLACE FUNCTION public\.nexus_disable_entity_delta/);
 assert.match(downgradeMigration, /v_uid uuid := auth\.uid\(\)/,
   'the downgrade must derive its owner from the authenticated Supabase identity');
-assert.match(downgradeMigration, /FROM public\.nexus_user_data WHERE user_id = v_uid FOR UPDATE/);
-assert.match(downgradeMigration, /FROM public\.nexus_workspace_sync_state WHERE user_id = v_uid FOR UPDATE/);
+assert.match(downgradeMigration, /FROM public\.nexus_user_data\\s+WHERE user_id = v_uid\\s+FOR UPDATE/);
+assert.match(downgradeMigration, /FROM public\.nexus_workspace_sync_state\\s+WHERE user_id = v_uid\\s+FOR UPDATE/);
 assert.match(downgradeMigration, /v_state\.head_revision <> v_state\.snapshot_revision/);
 assert.match(downgradeMigration, /v_state\.snapshot_revision <> v_state\.compacted_through_revision/);
 assert.match(downgradeMigration, /remaining_operations/);
