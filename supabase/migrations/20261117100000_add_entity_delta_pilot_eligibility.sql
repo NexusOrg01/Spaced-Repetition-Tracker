@@ -71,12 +71,13 @@ BEGIN
 
   -- Check server-side eligibility before inspecting or changing workspace
   -- state. A caller who knows the RPC name cannot self-enrol.
-  IF NOT EXISTS (
-    SELECT 1
-    FROM nexus_private.entity_delta_pilot_allowlist AS pilot
-    WHERE pilot.user_id = v_uid
-      AND pilot.enabled IS TRUE
-  ) THEN
+  PERFORM 1
+  FROM nexus_private.entity_delta_pilot_allowlist AS pilot
+  WHERE pilot.user_id = v_uid
+    AND pilot.enabled IS TRUE
+  FOR SHARE;
+
+  IF NOT FOUND THEN
     RETURN jsonb_build_object(
       'ok', false,
       'code', 'pilot_not_enabled',
