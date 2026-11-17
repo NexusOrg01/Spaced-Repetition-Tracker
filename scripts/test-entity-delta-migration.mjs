@@ -195,9 +195,9 @@ assert.match(read('scripts/prepare-phase34-local-supabase.mjs'), /supabase','del
 assert.doesNotMatch(read('scripts/prepare-phase34-local-supabase.mjs'), /nexus_disable_entity_delta.*GRANT/,
   'the local preparation script must not grant the new RPC to browser roles');
 
-assert.match(phase34Workflow, /GRANT EXECUTE ON FUNCTION public\\.nexus_disable_entity_delta\\(bigint,timestamptz,jsonb\\) TO authenticated/);
-assert.match(phase34Workflow, /REVOKE EXECUTE ON FUNCTION public\\.nexus_disable_entity_delta\\(bigint,timestamptz,jsonb\\) FROM PUBLIC, anon, authenticated/);
-assert.match(localTwoClientHarness, /rpc\\(a1,'nexus_disable_entity_delta'/,
+assert.match(phase34Workflow, /GRANT EXECUTE ON FUNCTION public\.nexus_disable_entity_delta\(bigint,timestamptz,jsonb\) TO authenticated/);
+assert.match(phase34Workflow, /REVOKE EXECUTE ON FUNCTION public\.nexus_disable_entity_delta\(bigint,timestamptz,jsonb\) FROM PUBLIC, anon, authenticated/);
+assert.match(localTwoClientHarness, /rpc\(a1,'nexus_disable_entity_delta'/,
   'the localhost-only authenticated two-device browser test must exercise the real DLA-03 RPC');
 assert.match(localTwoClientHarness, /A2 stale pre-downgrade snapshot compare-and-swap is rejected/);
 assert.match(localTwoClientHarness, /A different authenticated owner cannot downgrade or alter owner A/);
