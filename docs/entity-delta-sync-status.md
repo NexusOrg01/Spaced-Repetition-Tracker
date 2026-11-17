@@ -516,6 +516,15 @@ A separate implementation branch, `feat/dla-01-hosted-qa-gate`, adds a hosted QA
 
 **Activation boundary:** no Vercel environment variable was configured, no preview was opted in, no hosted Delta RPC was invoked or granted, and no staging or production database change was made. The code-level gate is implemented on this branch but DLA-01 is **not accepted/complete** until QA-01 is independently evidenced, the dedicated preview is deployed, and the positive hosted QA path is verified on that exact origin. The PR preview remains default-off. DLA-02 (server-side pilot eligibility/RPC grants) and DLA-03 (server-side downgrade/kill switch) remain separate, later gates and must not be bypassed.
 
+### DLA-01 status reconciliation — owner-confirmed scope (17 November 2026)
+
+This note supersedes the earlier DLA-01 checkpoint above where it describes QA-01/DLA-01 as not yet accepted or states that the hosted QA workspace did not exist. The owner-confirmed QA-01 decision explicitly selected reuse of the existing staging login/workspace rather than creating a fifth Auth identity. The task tracker records QA-01 and DLA-01 as complete — owner-confirmed; independent evidence review remains a separate qualification.
+
+- The hosted DLA-01 smoke-test evidence recorded in this PR description remains the basis for the owner-confirmed acceptance: the probe stream was created, synced, deleted and confirmed absent from the reconstructed active snapshot; all four then-recorded workspaces remained in snapshot mode and Delta operation/receipt rows remained empty.
+- Current branch head: `0ff2c14e58e7bd82bc19386a248adce9df0a81e5`. Exact-head local authenticated Supabase/Chromium run [#127](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/44074592189) and catalogue validation [#1608](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/44074592149) passed.
+- The current Vercel check is blocked by the provider's deployment-per-day rate limit; the previously recorded Vercel preview at `72367b7` is an earlier revision, not the current head. Netlify preview passes but is intentionally a negative case and cannot replace the Vercel-only hosted QA origin.
+- This documentation correction does not authorize a new staging identity, hosted Delta activation, migration, grant, or production change.
+
 ### 17 November 2026 — DLA-02 server-side pilot eligibility implemented and staging-verified
 
 **Implementation branch:** `feat/dla-02-server-pilot-eligibility`  
