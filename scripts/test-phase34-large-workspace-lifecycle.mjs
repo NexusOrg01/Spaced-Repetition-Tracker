@@ -717,6 +717,8 @@ assert.equal(Number(stateAfterDowngrade.head_revision), revision);
 assert.equal(Number(stateAfterDowngrade.snapshot_revision), revision);
 assert.equal(Number(stateAfterDowngrade.compacted_through_revision), revision);
 assert.equal(rowAfterDowngrade.updated_at, stateAfterDowngrade.snapshot_updated_at);
+assert.equal(rowAfterDowngrade.updated_at, downgradeExpectedUpdatedAt,
+  'DLA-03 marker-only transition must preserve the checkpoint timestamp used by both local cursors');
 assert.equal(Object.prototype.hasOwnProperty.call(rowAfterDowngrade.payload, '__nexusDeltaSync'), false);
 assert.equal(chunkStorage.isManifest(rowAfterDowngrade.payload), true,
   'DLA-03 must retain the immutable active chunk manifest while stripping only the Delta marker');
