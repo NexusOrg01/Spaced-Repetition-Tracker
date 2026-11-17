@@ -1017,11 +1017,12 @@
         return {ok:false,retryable:true,snapshotRequired:true,reason:'local_workspace_does_not_match_downgraded_snapshot'};
       }
       await assertOwner(owner);
-      const remembered=await commitSnapshotDowngradeLocal(owner,remote.payload,remote.updated_at);
-      if(remembered===false||remembered&&remembered.ok===false){
-        return {ok:false,retryable:true,reason:'local_snapshot_base_update_failed'};
+      const localCommitEntries=await commitSnapshotDowngradeLocal(owner,remote.payload,remote.updated_at);
+      if(!Array.isArray(localCommitEntries)||localCommitEntries.length!==2){
+        return {ok:false,retryable:true,reason:'local_snapshot_base_update_unavailable'};
       }
-      const completed=await storage.completeWorkspaceEntityDowngrade(owner,intent.intentId,head);
+      const completed=await storage.completeWorkspaceEntityDowngrade(
+        owner,intent.intentId,head,localCommitEntries);
       if(!completed||completed.ok!==true){
         return {ok:false,retryable:true,reason:completed&&completed.reason||'local_downgrade_journal_commit_failed'};
       }
