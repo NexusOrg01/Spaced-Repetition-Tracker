@@ -89,14 +89,14 @@ BEGIN
 
   v_operation := public.nexus_publish_entity_operation('dla03-json-operation',0,
     jsonb_build_array(jsonb_build_object(
-      'collection','streams','id','dla03-stream','operation','put','position',0,
-      'value',jsonb_build_object('id','dla03-stream')
+      'collection','streams','id','dla03-stream-updated','operation','put','position',0,
+      'value',jsonb_build_object('id','dla03-stream-updated')
     )));
   IF v_operation->>'ok' <> 'true' OR (v_operation->>'revision')::bigint <> 1 THEN
     RAISE EXCEPTION 'DLA-03 JSONB operation fixture failed: %',v_operation;
   END IF;
 
-  v_expected := v_base || jsonb_build_object('testOwner','owner-A');
+  v_expected := jsonb_set(v_base,'{state,streams,0,id}',to_jsonb('dla03-stream-updated'::text));
   v_result := public.nexus_disable_entity_delta(1,v_stamp,v_expected);
   IF v_result->>'code' <> 'verified_checkpoint_required' THEN
     RAISE EXCEPTION 'Downgrade accepted a Delta head that was not checkpointed: %',v_result;
