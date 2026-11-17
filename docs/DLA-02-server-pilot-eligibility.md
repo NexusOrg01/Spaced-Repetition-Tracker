@@ -7,7 +7,7 @@
 
 ## Security design
 
-Migration `20261117100000_add_entity_delta_pilot_eligibility.sql` creates `nexus_private.entity_delta_pilot_allowlist`. The table is empty after migration and every row defaults to `enabled=false`. The primary key is the Auth owner UUID and deletion of an Auth identity cascades to its eligibility row.
+Migration `20261117083717_add_entity_delta_pilot_eligibility.sql` creates `nexus_private.entity_delta_pilot_allowlist`. The table is empty after migration and every row defaults to `enabled=false`. The primary key is the Auth owner UUID and deletion of an Auth identity cascades to its eligibility row.
 
 The table is not exposed to browser roles. `PUBLIC`, `anon`, `authenticated`, and `service_role` have no `nexus_private` schema usage or table privileges. The security-definer enablement RPC reads the allowlist as its existing `postgres)-owned function; it returns `pilot_not_enabled` before inspecting or changing a workspace when the authenticated owner is not explicitly enabled.
 
