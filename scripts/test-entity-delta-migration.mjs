@@ -198,6 +198,8 @@ assert.match(read('offline-sync-queue.js'), /function prepareDowngradeBaseCommit
 assert.match(downgradeRunbook, /has_function_privilege/);
 assert.match(downgradeRunbook, /residual_operations/);
 assert.match(downgradeRunbook, /any_chunk_has_delta_marker/);
+assert.doesNotMatch(downgradeRunbook, /chunk_data::jsonb/,
+  'individual chunk substrings must not be parsed as complete JSON documents');
 assert.match(downgradeRunbook, /string_agg\(c\.chunk_data/);
 assert.match(downgradeRunbook, /Read-only post-downgrade checks/);
 assert.doesNotMatch(downgradeRunbook, /GRANT EXECUTE ON FUNCTION/);
