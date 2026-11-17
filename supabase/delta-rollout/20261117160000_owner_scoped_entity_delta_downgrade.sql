@@ -13,7 +13,7 @@ CREATE OR REPLACE FUNCTION public.nexus_disable_entity_delta(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public, auth
+SET search_path = ''
 AS $function$
 DECLARE
   v_uid uuid := auth.uid();
@@ -211,7 +211,7 @@ END;
 $function$;
 
 REVOKE ALL ON FUNCTION public.nexus_disable_entity_delta(bigint, timestamptz, jsonb)
-  FROM PUBLIC, anon, authenticated;
+  FROM PUBLIC, anon, authenticated, service_role;
 
 COMMENT ON FUNCTION public.nexus_disable_entity_delta(bigint, timestamptz, jsonb)
 IS 'Owner-scoped atomic Delta-to-snapshot switch. Requires a verified unmarked snapshot at the fully checkpointed/compacted head and zero residual operation/receipt rows. EXECUTE remains revoked until DLA-02 authorizes a controlled QA owner.';
