@@ -97,6 +97,7 @@ DECLARE
   v_owner_a uuid := current_setting('nexus.test.owner_a')::uuid;
   v_owner_b uuid := current_setting('nexus.test.owner_b')::uuid;
   v_stamp timestamptz;
+  v_downgrade_expected_stamp timestamptz;
   v_state jsonb;
   v_enable jsonb;
   v_publish jsonb;
@@ -269,8 +270,9 @@ BEGIN
   -- A stale expected head must not cause a transition or strip the Delta marker.
   SELECT updated_at INTO v_stamp
   FROM public.nexus_user_data WHERE user_id = v_owner_a;
+  v_downgrade_expected_stamp := v_stamp;
   v_downgrade := public.nexus_disable_entity_delta(
-    gen_random_uuid(), 2, v_stamp, 1, 1
+    gen_random_uuid(), 2, v_downgrade_expected_stamp, 1, 1
   );
   IF v_downgrade->>'ok' <> 'false'
      OR v_downgrade->>'code' <> 'revision_conflict' THEN
@@ -286,7 +288,7 @@ BEGIN
   -- Exact, fully compacted checkpoint can atomically return this owner to
   -- snapshot mode. The protocol marker is stripped only after the state switch.
   v_downgrade := public.nexus_disable_entity_delta(
-    v_downgrade_request, 1, v_stamp, 1, 1
+    v_downgrade_request, 1, v_downgrade_expected_stamp, 1, 1
   );
   IF v_downgrade->>'ok' <> 'true'
      OR v_downgrade->>'mode' <> 'snapshot'
@@ -314,11 +316,8 @@ BEGIN
 
   -- Simulate a client losing the response after commit: replay the same request
   -- and require a stable idempotency receipt, without another timestamp change.
-  v_stamp := v_downgrade->>'snapshot_updated_at';
   v_downgrade_retry := public.nexus_disable_entity_delta(
-    v_downgrade_request, 1,
-    (SELECT updated_at FROM public.nexus_user_data WHERE user_id = v_owner_a),
-    1, 1
+    v_downgrade_request, 1, v_downgrade_expected_stamp, 1, 1
   );
   IF v_downgrade_retry->>'ok' <> 'true'
      OR v_downgrade_retry->>'already_applied' <> 'true'
