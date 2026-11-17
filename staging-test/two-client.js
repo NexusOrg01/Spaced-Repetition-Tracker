@@ -86,6 +86,121 @@ async function run(){
   check('Direct operation-table write is denied',denied.status===401||denied.status===403);
   const [fa,fb]=await Promise.all([rpc(a1,'nexus_get_entity_sync_state'),rpc(b,'nexus_get_entity_sync_state')]);
   check('Final heads remain isolated (A=3, B=1)',fa.head_revision===3&&fb.head_revision===1);
+
+  // Exercise the real authenticated DLA-03 RPC against this disposable local DB.
+  // A1 and A2 share the same owner but hold independent access tokens.
+  const baselineRead=await api(a1,'/rest/v1/nexus_user_data?select=payload,updated_at&user_id=eq.'+encodeURIComponent(a1.user.id));
+  assert(baselineRead.ok&&Array.isArray(baselineRead.body)&&baselineRead.body.length===1,
+    'owner A must have one readable snapshot row before downgrade');
+  const baselineRow=baselineRead.body[0],preDowngradeStamp=baselineRow.updated_at;
+  const snapshotCandidate={
+    ...baselineRow.payload,
+    state:{
+      ...baselineRow.payload.state,
+      topics:[chA[0].value],
+      history:[ra.p_changes[0].value,rb.p_changes[0].value]
+    },
+    __nexusDeltaSync:'entity-delta-v1'
+  };
+  const checkpoint=await rpc(a1,'nexus_publish_entity_snapshot',{
+    p_expected_head_revision:3,
+    p_expected_updated_at:preDowngradeStamp,
+    p_payload:snapshotCandidate
+  });
+  check('A publishes a full checkpoint at its exact Delta head',
+    checkpoint.ok===true&&checkpoint.mode==='delta'&&checkpoint.head_revision===3&&
+    checkpoint.snapshot_revision===3&&checkpoint.compacted_through_revision===3);
+
+  let compacted=false,totalDeletedOperations=0,totalDeletedReceipts=0;
+  for(let round=0;round<10;round++){
+    const compact=await rpc(a1,'nexus_compact_entity_operations',{p_limit:5000});
+    assert(compact.ok===true,'owner A compaction must remain available before downgrade');
+    totalDeletedOperations+=Number(compact.deleted_operations)||0;
+    totalDeletedReceipts+=Number(compact.deleted_receipts)||0;
+    if((Number(compact.deleted_operations)||0)===0&&(Number(compact.deleted_receipts)||0)===0){
+      compacted=true;break;
+    }
+  }
+  const remainingA=await api(a1,'/rest/v1/nexus_workspace_operations?select=revision&user_id=eq.'+
+    encodeURIComponent(a1.user.id));
+  const remainingReceiptsA=await api(a1,'/rest/v1/nexus_workspace_operation_receipts?select=revision&user_id=eq.'+
+    encodeURIComponent(a1.user.id));
+  check('Compaction removes all covered owner A operations and receipts',
+    compacted&&remainingA.ok&&remainingReceiptsA.ok&&
+    Array.isArray(remainingA.body)&&remainingA.body.length===0&&
+    Array.isArray(remainingReceiptsA.body)&&remainingReceiptsA.body.length===0&&
+    totalDeletedOperations>=3&&totalDeletedReceipts>=3);
+
+  const checkpointState=await rpc(a1,'nexus_get_entity_sync_state');
+  const unmarkedSnapshot={...snapshotCandidate};
+  delete unmarkedSnapshot.__nexusDeltaSync;
+  const downgrade=await rpc(a1,'nexus_disable_entity_delta',{
+    p_expected_head_revision:3,
+    p_expected_updated_at:checkpointState.snapshot_updated_at,
+    p_snapshot_payload:unmarkedSnapshot
+  });
+  check('Authenticated owner A performs the atomic Delta-to-snapshot downgrade',
+    downgrade.ok===true&&downgrade.mode==='snapshot'&&
+    downgrade.head_revision===3&&downgrade.snapshot_revision===3&&
+    downgrade.compacted_through_revision===3&&downgrade.storage_mode==='jsonb');
+
+  const [a1State,a2State,bState,a1Snapshot,a2Snapshot]=await Promise.all([
+    rpc(a1,'nexus_get_entity_sync_state'),
+    rpc(a2,'nexus_get_entity_sync_state'),
+    rpc(b,'nexus_get_entity_sync_state'),
+    api(a1,'/rest/v1/nexus_user_data?select=payload,updated_at&user_id=eq.'+encodeURIComponent(a1.user.id)),
+    api(a2,'/rest/v1/nexus_user_data?select=payload,updated_at&user_id=eq.'+encodeURIComponent(a2.user.id))
+  ]);
+  const canonical=value=>Array.isArray(value)?value.map(canonical):
+    value&&typeof value==='object'?Object.keys(value).sort().reduce((out,key)=>{out[key]=canonical(value[key]);return out;},{}):value;
+  const sameJson=(left,right)=>JSON.stringify(canonical(left))===JSON.stringify(canonical(right));
+  check('A1 and A2 observe the same checkpointed snapshot state',
+    a1State.mode==='snapshot'&&a2State.mode==='snapshot'&&
+    a1State.head_revision===3&&a1State.snapshot_revision===3&&
+    a1State.compacted_through_revision===3&&
+    a2State.head_revision===a1State.head_revision&&
+    a2State.snapshot_updated_at===a1State.snapshot_updated_at&&
+    bState.mode==='delta'&&bState.head_revision===1);
+  check('A1 and A2 read back the exact same unmarked snapshot',
+    a1Snapshot.ok&&a2Snapshot.ok&&Array.isArray(a1Snapshot.body)&&Array.isArray(a2Snapshot.body)&&
+    a1Snapshot.body.length===1&&a2Snapshot.body.length===1&&
+    a1Snapshot.body[0].updated_at===downgrade.snapshot_updated_at&&
+    a2Snapshot.body[0].updated_at===downgrade.snapshot_updated_at&&
+    a1Snapshot.body[0].payload.__nexusDeltaSync===undefined&&
+    a2Snapshot.body[0].payload.__nexusDeltaSync===undefined&&
+    sameJson(a1Snapshot.body[0].payload,unmarkedSnapshot)&&
+    sameJson(a2Snapshot.body[0].payload,unmarkedSnapshot));
+
+  // A2 still has the old compare-and-swap timestamp. Its stale snapshot write
+  // must not overwrite the newly published unmarked owner A snapshot.
+  const stalePayload={...snapshotCandidate,staleDeviceOverwriteAttempt:true};
+  const staleWrite=await api(a2,
+    '/rest/v1/nexus_user_data?user_id=eq.'+encodeURIComponent(a2.user.id)+
+    '&updated_at=eq.'+encodeURIComponent(preDowngradeStamp),
+    {method:'PATCH',headers:{Prefer:'return=representation'},body:{payload:stalePayload}});
+  const afterStaleWrite=await api(a1,
+    '/rest/v1/nexus_user_data?select=payload,updated_at&user_id=eq.'+encodeURIComponent(a1.user.id));
+  check('A2 stale pre-downgrade snapshot compare-and-swap is rejected',
+    staleWrite.ok&&Array.isArray(staleWrite.body)&&staleWrite.body.length===0);
+  check('A2 stale retry cannot change the active unmarked snapshot',
+    afterStaleWrite.ok&&Array.isArray(afterStaleWrite.body)&&afterStaleWrite.body.length===1&&
+    afterStaleWrite.body[0].updated_at===downgrade.snapshot_updated_at&&
+    afterStaleWrite.body[0].payload.__nexusDeltaSync===undefined&&
+    sameJson(afterStaleWrite.body[0].payload,unmarkedSnapshot));
+
+  const crossOwner=await rpc(b,'nexus_disable_entity_delta',{
+    p_expected_head_revision:3,
+    p_expected_updated_at:preDowngradeStamp,
+    p_snapshot_payload:unmarkedSnapshot
+  });
+  const [aFinal,bFinal]=await Promise.all([
+    rpc(a1,'nexus_get_entity_sync_state'),
+    rpc(b,'nexus_get_entity_sync_state')
+  ]);
+  check('A different authenticated owner cannot downgrade or alter owner A',
+    crossOwner.ok===false&&crossOwner.code==='revision_conflict'&&
+    aFinal.mode==='snapshot'&&aFinal.head_revision===3&&
+    bFinal.mode==='delta'&&bFinal.head_revision===1);
   say('PASS — '+passed+' authenticated local integration assertions completed.');
  }finally{
   for(const session of sessions){try{await api(session,'/auth/v1/logout',{method:'POST',body:{}});}catch(_){}}
