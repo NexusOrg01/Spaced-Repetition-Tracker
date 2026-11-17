@@ -181,11 +181,11 @@ function fixture(options={}){
 }
 {
   // The lock is persisted before checkpoint preparation. This fixture deliberately
-  // omits the recovery-generation writer, proving the failure remains recoverable.
+  // omits the recovery commit dependencies, proving the failure remains recoverable.
   const h=fixture();
   const result=await h.api.downgradeToSnapshot(owner);
   assert.equal(result.ok,false);
-  assert.equal(result.reason,'verified_delta_checkpoint_failed');
+  assert.equal(result.reason,'local_recovery_commit_dependencies_unavailable');
   assert.equal(h.beginCalls(),1);
   assert.equal(h.readIntent()?.phase,'prepared',
     'a failed checkpoint must leave the owner-scoped downgrade journal in place');
