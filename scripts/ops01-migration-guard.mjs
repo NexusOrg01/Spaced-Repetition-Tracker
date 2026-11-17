@@ -58,13 +58,15 @@ export function validateDryRun(remoteVersions,dryRunText){
  assert.deepEqual(unexpected,[],'Supabase CLI dry-run includes a migration outside OPS-01');
  return {pending:expectedPending};
 }
-export function validateBackupRestoreEvidenceRef(value,{required=false}={}){
+export const OPS01_RISK_ACCEPTANCE_REF='https://github.com/NexusOrg01/Spaced-Repetition-Tracker/pull/131#issuecomment-6957021229';
+export function validateRiskAcceptanceRef(value,{required=false}={}){
  const reference=typeof value==='string'?value.trim():'';
  if(!reference){
-  if(required)throw new Error('Production apply requires a verified backup/restore evidence reference. Complete a full backup and isolated restore before applying migrations.');
+  if(required)throw new Error('Production apply requires the exact owner-approved DR-01 risk-acceptance record reference.');
   return null;
  }
- assert.match(reference,/^NEXUS-DR-\d{8}-[A-Z0-9]{4,12}$/,'Backup/restore evidence reference must use NEXUS-DR-YYYYMMDD-XXXX format.');
+ assert.equal(reference,OPS01_RISK_ACCEPTANCE_REF,
+  'Risk-acceptance reference must identify the exact owner approval comment recorded on PR #131; a DR evidence ID is not valid.');
  return reference;
 }
 export function validateVerificationOutput(text){
@@ -79,9 +81,9 @@ function readOption(name){const i=process.argv.indexOf(name);return i>=0?process
 async function main(){
  const dir=resolve(root,'supabase/migrations');
  validateLocalMigrationSet(readdirSync(dir));
- const requireBackup=process.argv.includes('--require-backup-restore-evidence');
- const evidenceRef=validateBackupRestoreEvidenceRef(readOption('--backup-restore-evidence-ref'),{required:requireBackup});
- if(evidenceRef)console.log('Backup/restore evidence reference supplied:',evidenceRef,'— reviewer verification is still required.');
+ const requireRiskAcceptance=process.argv.includes('--require-risk-acceptance');
+ const riskAcceptanceRef=validateRiskAcceptanceRef(readOption('--risk-acceptance-ref'),{required:requireRiskAcceptance});
+ if(riskAcceptanceRef)console.log('Owner risk-acceptance record supplied:',riskAcceptanceRef,'— this records accepted no-backup risk; it is not backup/restore evidence.');
  const remoteFile=readOption('--remote-file');
  if(remoteFile){
   const remote=parseRemoteMigrationVersions(readFileSync(remoteFile,'utf8'));

@@ -1,6 +1,11 @@
 name: OPS-01 protected production migration runner
 
 on:
+  # Merge of the reviewed waiver-aware runner to main automatically performs
+  # a protected read-only preflight/dry-run. It never applies migrations.
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       operation:
@@ -15,8 +20,8 @@ on:
         description: "For apply only, enter exactly: APPLY-OPS-01-TO-PRODUCTION"
         required: false
         type: string
-      backup_restore_evidence_ref:
-        description: "For apply only, enter a verified evidence ID: NEXUS-DR-YYYYMMDD-XXXX. Do not paste backup URLs, credentials, or backup contents."
+      risk_acceptance_ref:
+        description: "For apply only, paste the exact owner-approved DR-01 waiver record URL from PR #131."
         required: false
         type: string
 
@@ -30,7 +35,7 @@ concurrency:
 jobs:
   ops01:
     if: github.ref == 'refs/heads/main'
-    name: "OPS-01 production migration ${{ inputs.operation }}"
+    name: "OPS-01 production migration ${{ inputs.operation || 'dry-run' }}"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
@@ -39,9 +44,9 @@ jobs:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
       SUPABASE_PROJECT_REF: txugbdavblpettcnhcxl
-      OPS01_OPERATION: ${{ inputs.operation }}
+      OPS01_OPERATION: ${{ inputs.operation || 'dry-run' }}
       OPS01_CONFIRMATION: ${{ inputs.confirmation }}
-      OPS01_BACKUP_RESTORE_EVIDENCE_REF: ${{ inputs.backup_restore_evidence_ref }}
+      OPS01_RISK_ACCEPTANCE_REF: ${{ inputs.risk_acceptance_ref }}
     steps:
       - name: Check out reviewed main branch
         uses: actions/checkout@v4
@@ -56,7 +61,7 @@ jobs:
         run: node scripts/ops01-migration-guard.mjs
       - name: Install pinned Supabase CLI v3.0.0
         run: npm install --global supabase@3.0.0
-      - name: Verify operator secrets, immutable target and recovery evidence
+      - name: Verify operator secrets, immutable target and DR-01 risk acceptance
         shell: bash
         run: |
           set -euo pipefail
@@ -73,14 +78,16 @@ jobs:
               exit 1
             fi
             node scripts/ops01-migration-guard.mjs \
-              --require-backup-restore-evidence \
-              --backup-restore-evidence-ref "$OPS01_BACKUP_RESTORE_EVIDENCE_REF"
+              --require-risk-acceptance \
+              --risk-acceptance-ref "$OPS01_RISK_ACCEPTANCE_REF"
             {
-              echo "## OPS-01 recovery gate"
+              echo "## OPS-01 DR-01 risk acceptance"
               echo ""
-              echo "- Backup/restore evidence reference: `$OPS01_BACKUP_RESTORE_EVIDENCE_REF`"
-              echo "- The protected environment reviewer must inspect the referenced evidence and independently confirm that the backup was restored into an isolated recovery project before approving this job."
-              echo "- The evidence reference is an operator-supplied pointer, not proof by itself."
+              echo "- Owner approval record: `$OPS01_RISK_ACCEPTANCE_REF`"
+              echo "- DR-01 is waived in full. No production backup, isolated restore, or recovery-fidelity proof exists."
+              echo "- The owner explicitly accepts the risk that current production workspace/Auth data may be irrecoverable after a damaging change."
+              echo "- This owner record is risk acceptance, not backup/restore evidence. No NEXUS-DR evidence ID is claimed."
+              echo "- The protected environment reviewer must inspect the owner record and approve the job under the configured environment protection rules."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
           supabase --version

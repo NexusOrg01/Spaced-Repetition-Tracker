@@ -2,7 +2,7 @@
 
 **Target project:** `txugbdavblpettcnhcxl` (production; ap-south-1)  
 **Runner:** `.github/workflows/ops-01-production-migrations.yml`  
-**Default action:** dry run. The workflow is manual-only and rejects refs other than `main`.
+**Default action:** protected read-only dry run. A push/merge to `main` runs the dry-run path automatically; a separate `workflow_dispatch` on `main` is required for apply. The job rejects refs other than `main`.
 
 ## Required GitHub environment setup
 
@@ -14,46 +14,39 @@ Before enabling the runner, a repository administrator must create the GitHub Ac
 
 The workflow declares this environment but cannot create or prove its reviewer protection. Treat production apply as **not fully protected** until the environment review rules and secrets have been configured and checked in GitHub settings.
 
-## Mandatory backup and isolated-restore gate
+## DR-01 waiver and owner-approved risk acceptance
 
-**Production apply is blocked until a fresh, complete and restorable database recovery set has been restored successfully into a separate recovery environment.** The earlier record of a backup-safeguard waiver is superseded for final rollout execution.
+**DR-01 is WAIVED IN FULL. It was not performed.** The owner explicitly accepts that production has no verified backup or restore point and that existing Auth identities/workspace data may be irrecoverable after a damaging change. No backup, export, off-site encrypted copy, isolated restore, fidelity test, or `NEXUS-DR-YYYYMMDD-XXXX` evidence ID exists.
 
-### Supabase export scope — important
+The durable approval record is:
 
-Do **not** treat a plain `supabase db dump` as a complete Supabase project backup:
+`https://github.com/NexusOrg01/Spaced-Repetition-Tracker/pull/131#issuecomment-6957021229`
 
-- The Supabase CLI dump excludes Supabase-managed schemas such as `auth`, `storage` and extension-managed schemas by default.
-- A default dump is schema-only: it does not include table data or custom roles unless the corresponding options are requested.
-- Database dumps do not include the actual files stored through the Supabase Storage API; those objects need their own backup if the project uses Storage.
+This exact URL is the owner's approval comment on PR #131. The workflow validates this exact reference. It is a risk-acceptance record, **not** a backup/restore evidence ID and not a claim of disaster-recovery readiness.
 
-See the official [Supabase CLI `db dump` reference](https://supabase.com/docs/reference/cli/supabase-db-dump) and [Supabase Database Backups guide](https://supabase.com/docs/guides/platform/backups).
+### Apply-time controls retained
 
-For Nexus, the recovery set must cover, at minimum:
+The waiver replaces only the old DR evidence-ID requirement. It does not bypass these controls:
 
-1. The application schema, functions, triggers, indexes, RLS policies, grants and required extensions.
-2. All application table data, including every `public.nexus_user_data` row and its workspace payload.
-3. Required custom database roles and privilege/default-privilege state.
-4. The Auth user identities referenced by Nexus workspace rows, preserving the exact user UUIDs and the identity/account relationships needed to keep the workspace foreign keys valid.
-5. Any project configuration or Storage objects that the application actually depends on.
+1. The workflow must run from `main` in the `nexus-production-migrations` environment.
+2. The repository must verify the protected environment, allowed deployment ref, required reviewers and environment-scoped `SUPABASE_ACCESS_TOKEN` and `SUPABASE_DB_PASSWORD` before apply. A workflow declaration alone is not proof of those settings.
+3. The operator must enter the exact confirmation phrase `APPLY-OPS-01-TO-PRODUCTION` and the exact risk-acceptance URL above.
+4. The migration ledger must equal the three known baseline versions plus exactly the 11 reviewed pending OPS-01 migrations. The pinned Supabase CLI dry-run must match those files exactly.
+5. The workflow targets only production project `txugbdavblpettcnhcxl`. No pilot/activation migration, RPC browser grant, or workspace mode change is included.
+6. The environment reviewer must inspect the owner approval record and the run summary before approving the protected job.
 
-The Auth identity item is a hard gate: a public-schema-only export that omits the corresponding `auth.users` identities is not a successful Nexus restore, even if the eight workspace rows themselves were copied. Do not assume that copying user emails or user metadata is equivalent to restoring the original Auth identities. Use a supported, reviewed method for preserving/reconstructing those identities in the isolated recovery environment and prove that every restored `nexus_user_data.user_id` resolves to the expected Auth user. Do not attempt undocumented direct writes to Supabase-managed Auth tables.
+### Data disposition authorized by the owner
 
-### Required recovery procedure
+On 17 November 2026 the owner additionally authorized disposal of existing workspace data and test/account data in staging and production, stating that these records do not need preservation. This permission allows scoped cleanup where the rollout requires it; it does **not** mean OPS-G3 should silently delete data.
 
-Before an apply run:
+- OPS-G3 remains the exact additive 11-file schema migration set. It must not contain ad hoc workspace truncation or direct writes to Supabase-managed Auth tables.
+- Do not delete Auth identities with raw SQL. Any account deletion must use a supported Supabase Auth Admin path.
+- Any staging/production workspace cleanup must be a separately recorded, tightly scoped action with pre/post row counts, and must not drop schema, active-manifest guards, private functions, or migration history.
+- The production OPS-G3 acceptance check continues to verify workspace ownership integrity and snapshot-mode state. If cleanup is required, its effect must be explicitly visible in the audit output rather than silently treated as an ordinary migration side-effect.
 
-1. Create a fresh export/recovery set. Explicitly account for the CLI exclusions above; capture application schema, table data and custom roles separately where required, and separately preserve Auth identities and Storage objects using supported methods.
-2. Record the production project ref, exact backup timestamp, export commands/methods, tool versions, file inventory and SHA-256 checksums.
-3. Store the recovery set encrypted at rest in an off-repository, access-controlled location. Do not upload raw database dumps, Auth records, credentials, connection strings or user workspace content to GitHub Actions artifacts or PR comments.
-4. Restore the recovery set into a separate isolated recovery project/environment. Never test a restore over production or hosted staging.
-5. Verify the restored migration baseline, schema objects, all eight currently recorded Nexus workspace rows, every workspace payload, exact Auth user UUID references, foreign-key relationships, policies/permissions and required table row counts. If Storage is used, verify the objects independently.
-6. Record the recovery project/environment ref, restore timestamp, verification queries/results and any deviations in a restricted audit record. Confirm the recovered application can read the preserved workspaces using the restored account identities.
-7. Assign a reference in the exact format `NEXUS-DR-YYYYMMDD-XXXX` (for example, `NEXUS-DR-20261117-AB12`). The reference is a pointer to the protected evidence, not proof by itself.
-8. The protected GitHub environment reviewer must inspect the referenced evidence and independently confirm the isolated restore succeeded before approving an apply run.
+### Residual risk
 
-**Stop condition:** If the team cannot preserve and restore the original Auth user identities and their workspace ownership relationships through a supported method, the backup gate remains blocked. Do not apply the production migrations until an adequate recovery method is demonstrated.
-
-The workflow enforces a non-empty, format-checked evidence reference for `apply`. The human environment approval is the actual evidence-review gate; the typed reference cannot prove that a backup exists or is restorable.
+A failed migration or data-destructive forward fix could permanently lose the existing production data. There is no isolated recovery project and no verified point-in-time restore under this waiver. If post-migration checks fail, stop; do not claim rollback is available. Continue only with a reviewed forward-fix and the owner's recorded risk acceptance.
 
 ## Reviewed migration set and order
 
@@ -77,16 +70,18 @@ The production ledger was last inspected read-only before this runner was writte
 
 ## Operator procedure
 
-1. Open **Actions → OPS-01 protected production migration runner → Run workflow** on `main`.
-2. Keep `operation = dry-run` for the first run. Review the target, migration history, dry-run list and workflow artifact. A dry run does not apply migrations.
-3. After the backup/restore gate is complete, create a separate apply run. Choose `apply`, enter exactly `APPLY-OPS-01-TO-PRODUCTION`, and enter the verified backup/restore evidence reference.
-4. The protected GitHub environment reviewer must inspect the evidence reference and approve the job. Do not approve an apply run until the isolated restore has been verified.
-5. Confirm all 11 migrations are recorded after apply. The workflow then runs the post-migration SQL in read-only mode.
-6. Review the evidence artifact and Supabase advisors before any pilot. Verification checks chunk RLS, active-manifest protection, snapshot-candidate validation, sync-state alignment, six Delta RPC grants, private schema grants and all existing workspaces staying in snapshot mode.
+1. Merge the reviewed waiver-aware runner PR to `main`. The push to `main` automatically runs the protected read-only OPS-01 preflight and exact Supabase CLI dry run. This event has no apply step.
+2. Review the run summary/artifact: fixed target project, current migration history, exact 11 pending migration versions, and a dry-run comparison that matches the allowlist. The workflow fails closed if required environment secrets are absent or the migration set differs.
+3. Only after that dry run passes, open **Actions → OPS-01 protected production migration runner → Run workflow** on `main`. Choose `apply`, enter exactly `APPLY-OPS-01-TO-PRODUCTION`, and paste the exact owner risk-acceptance URL:
+   `https://github.com/NexusOrg01/Spaced-Repetition-Tracker/pull/131#issuecomment-6957021229`
+4. The protected GitHub environment reviewer must inspect the owner approval record, verify the no-backup risk is explicit, review the dry-run evidence and approve the protected job. The typed reference is not backup evidence and no `NEXUS-DR` ID is used.
+5. Confirm all 11 migrations are recorded after apply. The workflow then runs the post-migration SQL in read-only mode and verifies every workspace remains in snapshot mode.
+6. Review the evidence artifact and Supabase advisors before any pilot. Verification checks chunk RLS, active-manifest protection, snapshot-candidate validation, sync-state alignment, six Delta RPC grants, private schema grants and snapshot-only mode.
+
 
 ## Safety and rollback
 
-- No job is triggered by a pull request, branch push or deployment. Creating this PR does not contact production Supabase.
+- A push/merge to `main` triggers only the protected read-only dry-run path. Pull-request events do not access production secrets. Only a separate manual `workflow_dispatch` with the typed confirmation, exact owner risk-acceptance URL and protected environment approval can reach the apply step.
 - The only hosted write command is `supabase db push --yes --remote=<fixed production ref>`, inside the manual protected-environment job after the typed confirmation and environment approval.
 - CLI v3 defaults database commands to local unless `--remote` is passed. Every remote command therefore names the exact production reference. CLI is pinned to stable `3.0.0`; do not replace it with an unpinned latest install.
 - Keep additive schema objects on an application rollback. Do **not** drop chunk tables, private guard functions, active manifests, operation/receipt history or sync-state rows as an emergency rollback.
