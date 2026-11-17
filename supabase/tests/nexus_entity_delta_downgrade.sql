@@ -51,6 +51,9 @@ DECLARE
   v_delta_revision uuid := gen_random_uuid();
   v_unmarked_revision uuid := gen_random_uuid();
   v_delta_chunk text;
+  v_delta_chunk_left text;
+  v_delta_chunk_right text;
+  v_delta_split integer;
   v_unmarked_chunk text;
   v_delta_manifest jsonb;
   v_unmarked_manifest jsonb;
@@ -200,13 +203,19 @@ BEGIN
   SELECT updated_at INTO v_stamp FROM public.nexus_user_data WHERE user_id=v_uid_b;
 
   v_delta_chunk := (v_base || jsonb_build_object('__nexusDeltaSync','entity-delta-v1'))::text;
+  -- Split the marker key across the chunk boundary so server validation must
+  -- inspect the serialized sequence, not parse each chunk as a JSON document.
+  v_delta_split := position('"__nexusDeltaSync"' IN v_delta_chunk) + 8;
+  v_delta_chunk_left := left(v_delta_chunk,v_delta_split);
+  v_delta_chunk_right := substr(v_delta_chunk,v_delta_split+1);
   INSERT INTO public.nexus_user_data_chunks
     (user_id,revision_id,chunk_index,chunk_count,chunk_bytes,chunk_data)
   VALUES
-    (v_uid_b,v_delta_revision,0,1,octet_length(v_delta_chunk),v_delta_chunk);
+    (v_uid_b,v_delta_revision,0,2,octet_length(v_delta_chunk_left),v_delta_chunk_left),
+    (v_uid_b,v_delta_revision,1,2,octet_length(v_delta_chunk_right),v_delta_chunk_right);
   v_delta_manifest := jsonb_build_object(
     '__nexusStorage','chunked-v1','__nexusDeltaSync','entity-delta-v1',
-    'version',1,'revisionId',v_delta_revision::text,'chunkCount',1,
+    'version',1,'revisionId',v_delta_revision::text,'chunkCount',2,
     'totalBytes',octet_length(v_delta_chunk),
     'sha256',encode(extensions.digest(convert_to(v_delta_chunk,'UTF8'),'sha256'),'hex')
   );
@@ -288,7 +297,7 @@ BEGIN
    WHERE user_id=v_uid_b AND revision_id=v_delta_revision;
   SELECT count(*) INTO v_chunk_new_count FROM public.nexus_user_data_chunks
    WHERE user_id=v_uid_b AND revision_id=v_unmarked_revision;
-  IF v_chunk_old_count <> 1 OR v_chunk_new_count <> 1 THEN
+  IF v_chunk_old_count <> 2 OR v_chunk_new_count <> 1 THEN
     RAISE EXCEPTION 'The downgrade deleted an old or newly published chunk revision: %, %',
       v_chunk_old_count,v_chunk_new_count;
   END IF;
