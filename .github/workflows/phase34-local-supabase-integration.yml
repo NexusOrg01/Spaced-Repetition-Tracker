@@ -89,6 +89,8 @@ jobs:
           NEXUS_RACE_DATABASE_URL="$PHASE34_DB_URL" node scripts/test-active-manifest-race.mjs
           node scripts/test-cloud-chunk-storage.mjs
           node scripts/test-account-deletion.mjs
+          node scripts/test-entity-delta-client.mjs
+          node scripts/test-dla03-downgrade-contract.mjs
           psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 -f supabase/tests/nexus_entity_delta_authenticated_rpc.sql
           psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 -f supabase/tests/nexus_entity_delta_sync.sql
 
