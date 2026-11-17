@@ -64,6 +64,26 @@ VALUES (
 );
 
 
+-- Inspect the private allowlist's schema contract as the database owner.
+-- The authenticated-role section below must not acquire nexus_private USAGE
+-- merely to inspect catalog metadata.
+DO $allowlist_contract$
+DECLARE
+  v_allowlist_default text;
+BEGIN
+  SELECT pg_catalog.pg_get_expr(d.adbin, d.adrelid) INTO v_allowlist_default
+  FROM pg_catalog.pg_attrdef AS d
+  JOIN pg_catalog.pg_attribute AS a
+    ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+  WHERE d.adrelid = 'nexus_private.entity_delta_pilot_allowlist'::regclass
+    AND a.attname = 'enabled';
+  IF v_allowlist_default IS DISTINCT FROM 'false' THEN
+    RAISE EXCEPTION 'The pilot allowlist enabled column must default to false: %',
+      v_allowlist_default;
+  END IF;
+END
+$allowlist_contract$;
+
 SET LOCAL ROLE authenticated;
 SELECT set_config('request.jwt.claim.sub', current_setting('nexus.test.owner_a'), true);
 SELECT set_config(
@@ -90,7 +110,6 @@ DECLARE
   v_unlisted_receipts integer;
   v_rpc text;
   v_enable_search_path text[];
-  v_allowlist_default text;
   v_table text;
   v_privilege text;
   v_direct_write_denied boolean := false;
@@ -105,17 +124,6 @@ BEGIN
   IF NOT COALESCE(v_enable_search_path @> ARRAY['search_path=""']::text[], false) THEN
     RAISE EXCEPTION 'DLA-02 SECURITY DEFINER RPC must pin an empty search_path: %',
       v_enable_search_path;
-  END IF;
-
-  SELECT pg_catalog.pg_get_expr(d.adbin, d.adrelid) INTO v_allowlist_default
-  FROM pg_catalog.pg_attrdef AS d
-  JOIN pg_catalog.pg_attribute AS a
-    ON a.attrelid = d.adrelid AND a.attnum = d.adnum
-  WHERE d.adrelid = 'nexus_private.entity_delta_pilot_allowlist'::regclass
-    AND a.attname = 'enabled';
-  IF v_allowlist_default IS DISTINCT FROM 'false' THEN
-    RAISE EXCEPTION 'The pilot allowlist enabled column must default to false: %',
-      v_allowlist_default;
   END IF;
 
   -- The deployed grant set is tested directly; this test does not add temporary
