@@ -40,7 +40,7 @@ assert.match(clientDowngrade, /compatibility_snapshot_still_pending/);
 assert.match(clientDowngrade, /verifyDowngradedSnapshot/);
 assert.match(clientDowngrade, /downgraded_snapshot_cursor_not_verified/);
 assert.match(clientDowngrade, /downgraded_snapshot_outbox_not_empty/);
-assert.match(clientDowngrade, /cursor\\.snapshotUpdatedAt!==verified\\.remote\\.updated_at/);
+assert.match(clientDowngrade, /cursor\.snapshotUpdatedAt!==verified\.remote\.updated_at/);
 
 assert.match(client, /readWorkspaceEntityDeltaCursor/);
 assert.match(client, /readWorkspaceEntityOutboxGroups/);
