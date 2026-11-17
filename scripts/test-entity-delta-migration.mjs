@@ -154,7 +154,7 @@ assert.match(integration, /UPDATE public\.nexus_user_data[\s\S]*payload = payloa
 
 
 assert.match(pilotEligibility, /SECURITY DEFINER[\\s\\S]*SET search_path = ''[\\s\\S]*AS \\$function\\$/);
-assert.ok(authenticatedRpcTest.includes("ARRAY['search_path=\\"\\"']::text[]"),
+assert.ok(authenticatedRpcTest.includes(`ARRAY['search_path=""']::text[]`),
   'the rollback-only authenticated SQL test must verify the deployed SECURITY DEFINER search_path');
 assert.ok(pilotEligibility.includes('CREATE TABLE IF NOT EXISTS nexus_private.entity_delta_pilot_allowlist'));
 assert.ok(pilotEligibility.includes('enabled boolean NOT NULL DEFAULT false'));
