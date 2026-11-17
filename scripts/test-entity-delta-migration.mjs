@@ -16,6 +16,9 @@ const chunkManifestProtection = read('supabase/migrations/20261114103353_protect
 const generalSnapshotIntegrity = read('supabase/migrations/20261115171500_validate_general_snapshot_candidates.sql');
 const chunkManifestDeletionTest = read('supabase/tests/nexus_user_data_chunks_active_manifest.sql');
 const activeManifestRaceRunner = read('scripts/test-active-manifest-race.mjs');
+const pilotEligibility = read('supabase/migrations/20261117100000_add_entity_delta_pilot_eligibility.sql');
+const authenticatedRpcTest = read('supabase/tests/nexus_entity_delta_authenticated_rpc.sql');
+const twoClientSetup = read('supabase/tests/nexus_entity_delta_two_client_setup.sql');
 
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_sync_state/);
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_operation_receipts/);
@@ -148,5 +151,38 @@ assert.match(integration, /nexus_publish_entity_snapshot/);
 assert.match(integration, /nexus_compact_entity_operations/);
 assert.match(integration, /UPDATE public\.nexus_user_data[\s\S]*payload = payload - '__nexusDeltaSync'[\s\S]*SQLSTATE '55000'/,
   'the rollback-only integration fixture must exercise a legacy snapshot downgrade attempt');
+
+
+assert.match(pilotEligibility, /CREATE TABLE IF NOT EXISTS nexus_private\\.entity_delta_pilot_allowlist/);
+assert.match(pilotEligibility, /enabled boolean NOT NULL DEFAULT false/);
+assert.match(pilotEligibility, /REFERENCES auth\\.users\\(id\\) ON DELETE CASCADE/);
+assert.match(pilotEligibility, /ALTER TABLE nexus_private\\.entity_delta_pilot_allowlist ENABLE ROW LEVEL SECURITY/);
+assert.match(pilotEligibility, /REVOKE ALL ON SCHEMA nexus_private FROM PUBLIC, anon, authenticated, service_role/);
+assert.match(pilotEligibility, /REVOKE ALL ON TABLE nexus_private\\.entity_delta_pilot_allowlist[\\s\\S]*FROM PUBLIC, anon, authenticated, service_role/);
+assert.doesNotMatch(pilotEligibility, /GRANT (?:USAGE|CREATE) ON SCHEMA nexus_private/);
+assert.doesNotMatch(pilotEligibility, /INSERT INTO nexus_private\\.entity_delta_pilot_allowlist/,
+  'the committed migration must not pre-authorize any account');
+assert.match(pilotEligibility, /pilot\\.user_id = v_uid[\\s\\S]*pilot\\.enabled IS TRUE/);
+assert.match(pilotEligibility, /'pilot_not_enabled'/);
+assert.match(pilotEligibility, /REVOKE ALL PRIVILEGES ON TABLE[\\s\\S]*nexus_workspace_sync_state[\\s\\S]*nexus_workspace_operations[\\s\\S]*nexus_workspace_operation_receipts[\\s\\S]*FROM PUBLIC, anon, authenticated/);
+assert.match(pilotEligibility, /GRANT SELECT ON TABLE[\\s\\S]*nexus_workspace_sync_state[\\s\\S]*nexus_workspace_operations[\\s\\S]*nexus_workspace_operation_receipts[\\s\\S]*TO authenticated/);
+for (const signature of gatedRpcSignatures) {
+  assert.match(pilotEligibility, new RegExp('REVOKE ALL ON FUNCTION ' + signature.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\console.log('Nexus entity-delta migration and staging-test contract checks passed.');') + '[\\s\\S]*FROM PUBLIC, anon, authenticated, service_role'));
+  assert.ok(pilotEligibility.includes('GRANT EXECUTE ON FUNCTION ' + signature + '\\n  TO authenticated;'),
+    `DLA-02 must grant only authenticated execution for ${signature}`);
+}
+assert.ok(authenticatedRpcTest.includes('BEGIN;') && authenticatedRpcTest.trimEnd().endsWith('ROLLBACK;'),
+  'the authenticated pilot-eligibility fixture must roll back every test row and mode transition');
+assert.doesNotMatch(authenticatedRpcTest, /GRANT EXECUTE ON FUNCTION/,
+  'the authenticated SQL test must verify deployed grants rather than create temporary ones');
+assert.match(authenticatedRpcTest, /has_function_privilege\\('authenticated'/);
+assert.match(authenticatedRpcTest, /has_function_privilege\\('anon'/);
+assert.match(authenticatedRpcTest, /nexus_private\\.entity_delta_pilot_allowlist/);
+assert.match(authenticatedRpcTest, /pilot_not_enabled/);
+assert.match(authenticatedRpcTest, /unlisted owner published a Delta operation/i);
+assert.match(authenticatedRpcTest, /has_schema_privilege\\('authenticated', 'nexus_private', 'USAGE'\\)/);
+assert.match(twoClientSetup, /row_number\\(\\) OVER \\(ORDER BY email\\)/);
+assert.match(twoClientSetup, /fixture_order IN \\(1, 3\\)/,
+  'only the disposable local protocol and large-workspace owners should be allowlisted; B is the default-deny fixture');
 
 console.log('Nexus entity-delta migration and staging-test contract checks passed.');
