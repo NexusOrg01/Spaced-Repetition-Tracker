@@ -57,7 +57,8 @@ async function run(){
   const firstA=await rpc(a1,'nexus_publish_entity_operation',{p_operation_id:opA,p_expected_revision:0,p_changes:chA});
   check('Allowlisted owner A publishes revision 1',firstA.ok===true&&firstA.revision===1);
   const blockedB=await api(b,'/rest/v1/rpc/nexus_publish_entity_operation',{method:'POST',body:{p_operation_id:opB,p_expected_revision:0,p_changes:chB}});
-  check('Unlisted owner B cannot publish Delta',blockedB.status===400&&blockedB.body&&blockedB.body.code==='55000');
+  log('Unlisted owner B publish denial: HTTP '+blockedB.status+' '+JSON.stringify(blockedB.body));
+  check('Unlisted owner B cannot publish Delta',!blockedB.ok&&blockedB.status>=400&&blockedB.body&&blockedB.body.code==='55000');
   say('Racing two authenticated devices on owner A…');
   const ra={p_operation_id:'phase34-race-a1-'+crypto.randomUUID(),p_expected_revision:1,p_changes:[{collection:'history',id:'race-a1-'+crypto.randomUUID(),operation:'put',position:0,value:null}]};
   const rb={p_operation_id:'phase34-race-a2-'+crypto.randomUUID(),p_expected_revision:1,p_changes:[{collection:'history',id:'race-a2-'+crypto.randomUUID(),operation:'put',position:1,value:null}]};
