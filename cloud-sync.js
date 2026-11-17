@@ -890,10 +890,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action='sync'){
   commitSnapshotDowngradeLocal:(userId,payload,serverVersion)=>{
    if(!session||!session.user||session.user.id!==userId||localStorage.getItem(OWNER_KEY)!==userId)
     throw new Error('The active account changed before the downgraded snapshot base could be committed.');
-   queue.rememberBase(localStorage,userId,payload,serverVersion);
-   queue.rememberStamp(localStorage,userId,serverVersion);
-   lastRemoteStamp=serverVersion;
-   return true;
+   return queue.prepareDowngradeBaseCommit(localStorage,userId,payload,serverVersion);
   },
   commitLocalRecovery:(userId,payload,publication,conflicts,metadata)=>
    queue.commitVerifiedEntityDeltaSnapshot(localStorage,userId,payload,publication.updated_at,
@@ -903,6 +900,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action='sync'){
  if(action==='downgrade'){
   if(typeof syncDiag==='function')syncDiag('entity-delta-downgrade-start',null,{ownerVerified:true});
   const downgraded=await makeClient.downgradeToSnapshot(ownerId,{signal});
+  if(downgraded&&downgraded.ok===true)lastRemoteStamp=downgraded.snapshotUpdatedAt||lastRemoteStamp;
   if(typeof syncDiag==='function')syncDiag('entity-delta-downgrade-complete',null,{ok:!!(downgraded&&downgraded.ok===true),mode:downgraded&&downgraded.mode||null,reason:downgraded&&downgraded.reason||null});
   return downgraded;
  }
