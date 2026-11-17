@@ -165,6 +165,8 @@ assert.match(downgradeMigration, /remaining_receipts/);
 assert.match(downgradeMigration, /SET mode = 'snapshot'/);
 assert.match(downgradeMigration, /p_snapshot_payload ->> '__nexusDeltaSync' IS NOT NULL/);
 assert.match(downgradeMigration, /unmarked_chunk_manifest_incomplete/);
+assert.match(downgradeMigration, /unmarked_chunk_byte_count_mismatch/);
+assert.match(downgradeMigration, /unmarked_chunk_data_has_delta_marker/);
 assert.match(downgradeMigration, /REVOKE ALL ON FUNCTION public\.nexus_disable_entity_delta\(bigint, timestamptz, jsonb\)[\s\S]*FROM PUBLIC, anon, authenticated/);
 assert.doesNotMatch(downgradeMigration, /GRANT EXECUTE ON FUNCTION/,
   'DLA-03 cannot grant a browser role ahead of the DLA-02 allowlist');
@@ -177,6 +179,7 @@ assert.match(downgradeSqlTest, /revision_conflict/);
 assert.match(downgradeSqlTest, /already_downgraded/);
 assert.match(downgradeSqlTest, /nexus_compact_entity_operations/);
 assert.match(downgradeSqlTest, /unmarked_chunk_manifest_incomplete/);
+assert.match(downgradeSqlTest, /v_bad_chunk_manifest/);
 assert.match(downgradeSqlTest, /Cross-owner downgrade attempt/);
 assert.match(downgradeSqlTest, /has_function_privilege/);
 assert.match(downgradeSqlTest, /nexus_test_dla03_injected_pointer_failure/);
@@ -195,6 +198,7 @@ assert.match(read('offline-sync-queue.js'), /function prepareDowngradeBaseCommit
 assert.match(downgradeRunbook, /has_function_privilege/);
 assert.match(downgradeRunbook, /residual_operations/);
 assert.match(downgradeRunbook, /any_chunk_has_delta_marker/);
+assert.match(downgradeRunbook, /string_agg\(c\.chunk_data/);
 assert.match(downgradeRunbook, /Read-only post-downgrade checks/);
 assert.doesNotMatch(downgradeRunbook, /GRANT EXECUTE ON FUNCTION/);
 
