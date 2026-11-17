@@ -549,11 +549,7 @@ async function writeDowngradeSnapshot(client,userId,payload,expectedHeadRevision
  if(stateResult&&stateResult.error)throw stateResult.error;
  const state=stateResult&&stateResult.data;
  if(state&&state.mode==='snapshot'){
-  const candidateHash=await sha256(stableJson(payload));
-  const existingManifest=null;
-  const verified=await verifyDowngradeSnapshotPublication(client,userId,expectedHead,
-    existingManifest,candidateHash,payload,signal);
-  if(verified.updated_at)return {...verified,verified:true,alreadyPublished:true,markerRemoved:true};
+  throw fail('The server is already in snapshot mode. Resume the persisted local downgrade journal to verify and adopt the active snapshot.','NEXUS_DELTA_DOWNGRADE_ALREADY_COMMITTED');
  }
  if(!state||state.mode!=='delta'||
     Number(state.head_revision)!==expectedHead||
