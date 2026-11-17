@@ -520,7 +520,7 @@ A separate implementation branch, `feat/dla-01-hosted-qa-gate`, adds a hosted QA
 
 **Implementation branch:** `feat/dla-02-server-pilot-eligibility`  
 **Base dependency:** `feat/dla-01-hosted-qa-gate`  
-**Staging migration:** `20261117083717_add_entity_delta_pilot_eligibility.sql`  
+**Staging migration:** `supabase/pilot-migrations/20261117083717_add_entity_delta_pilot_eligibility.sql` (kept outside the default/OPS-01 migration directory)  
 **Hosted staging project:** isolated `nexus-sync-staging` only.
 
 #### Server controls
