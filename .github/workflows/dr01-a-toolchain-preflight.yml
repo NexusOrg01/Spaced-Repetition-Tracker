@@ -168,9 +168,9 @@ jobs:
           {
             echo "## DR01-A production connectivity"
             echo ""
-            echo "- Target project reference: `$PRODUCTION_PROJECT_REF` (matched against the connection URL)"
-            echo "- Database: `$db`"
-            echo "- Server version: `$server_version` (PostgreSQL 17)"
+            echo "- Target project reference: ${PRODUCTION_PROJECT_REF} (matched against the connection URL)"
+            echo "- Database: ${db}"
+            echo "- Server version: ${server_version} (PostgreSQL 17)"
             echo "- TLS: required"
             echo "- Transaction mode: read-only"
             echo "- Probe: metadata-only SELECT inside BEGIN READ ONLY / ROLLBACK"
