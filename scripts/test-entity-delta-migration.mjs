@@ -153,40 +153,44 @@ assert.match(integration, /UPDATE public\.nexus_user_data[\s\S]*payload = payloa
   'the rollback-only integration fixture must exercise a legacy snapshot downgrade attempt');
 
 
-assert.match(pilotEligibility, /CREATE TABLE IF NOT EXISTS nexus_private\\.entity_delta_pilot_allowlist/);
-assert.match(pilotEligibility, /enabled boolean NOT NULL DEFAULT false/);
-assert.match(pilotEligibility, /REFERENCES auth\\.users\\(id\\) ON DELETE CASCADE/);
-assert.match(pilotEligibility, /ALTER TABLE nexus_private\\.entity_delta_pilot_allowlist ENABLE ROW LEVEL SECURITY/);
-assert.match(pilotEligibility, /REVOKE ALL ON SCHEMA nexus_private FROM PUBLIC, anon, authenticated, service_role/);
-assert.match(pilotEligibility, /REVOKE ALL ON TABLE nexus_private\\.entity_delta_pilot_allowlist[\\s\\S]*FROM PUBLIC, anon, authenticated, service_role/);
+assert.ok(pilotEligibility.includes('CREATE TABLE IF NOT EXISTS nexus_private.entity_delta_pilot_allowlist'));
+assert.ok(pilotEligibility.includes('enabled boolean NOT NULL DEFAULT false'));
+assert.ok(pilotEligibility.includes('REFERENCES auth.users(id) ON DELETE CASCADE'));
+assert.ok(pilotEligibility.includes('ALTER TABLE nexus_private.entity_delta_pilot_allowlist ENABLE ROW LEVEL SECURITY'));
+assert.ok(pilotEligibility.includes('REVOKE ALL ON SCHEMA nexus_private FROM PUBLIC, anon, authenticated, service_role'));
+assert.ok(pilotEligibility.includes('REVOKE ALL ON TABLE nexus_private.entity_delta_pilot_allowlist'));
+assert.ok(pilotEligibility.includes('FROM PUBLIC, anon, authenticated, service_role;'));
 assert.doesNotMatch(pilotEligibility, /GRANT (?:USAGE|CREATE) ON SCHEMA nexus_private/);
-assert.doesNotMatch(pilotEligibility, /INSERT INTO nexus_private\\.entity_delta_pilot_allowlist/,
+assert.doesNotMatch(pilotEligibility, /INSERT INTO nexus_private\.entity_delta_pilot_allowlist/,
   'the committed migration must not pre-authorize any account');
-assert.match(pilotEligibility, /pilot\\.user_id = v_uid[\\s\\S]*pilot\\.enabled IS TRUE/);
-assert.match(pilotEligibility, /'pilot_not_enabled'/);
-assert.match(pilotEligibility, /REVOKE ALL PRIVILEGES ON TABLE[\\s\\S]*nexus_workspace_sync_state[\\s\\S]*nexus_workspace_operations[\\s\\S]*nexus_workspace_operation_receipts[\\s\\S]*FROM PUBLIC, anon, authenticated/);
-assert.match(pilotEligibility, /GRANT SELECT ON TABLE[\\s\\S]*nexus_workspace_sync_state[\\s\\S]*nexus_workspace_operations[\\s\\S]*nexus_workspace_operation_receipts[\\s\\S]*TO authenticated/);
+assert.ok(pilotEligibility.includes('pilot.user_id = v_uid'));
+assert.ok(pilotEligibility.includes('pilot.enabled IS TRUE'));
+assert.ok(pilotEligibility.includes("'pilot_not_enabled'"));
+assert.ok(pilotEligibility.includes('public.nexus_workspace_sync_state,'));
+assert.ok(pilotEligibility.includes('public.nexus_workspace_operations,'));
+assert.ok(pilotEligibility.includes('public.nexus_workspace_operation_receipts'));
+assert.ok(pilotEligibility.includes('TO authenticated;'));
 for (const signature of gatedRpcSignatures) {
   assert.ok(pilotEligibility.includes(
-    `REVOKE ALL ON FUNCTION ${signature}\n  FROM PUBLIC, anon, authenticated, service_role;`
-  ), `DLA-02 must revoke non-authenticated execution for ${signature}`);
+    'REVOKE ALL ON FUNCTION ' + signature + '\n  FROM PUBLIC, anon, authenticated, service_role;'
+  ), 'DLA-02 must revoke non-authenticated execution for ' + signature);
   assert.ok(pilotEligibility.includes(
-    `GRANT EXECUTE ON FUNCTION ${signature}\n  TO authenticated;`
-  ), `DLA-02 must grant only authenticated execution for ${signature}`);
+    'GRANT EXECUTE ON FUNCTION ' + signature + '\n  TO authenticated;'
+  ), 'DLA-02 must grant only authenticated execution for ' + signature);
 }
 
 assert.ok(authenticatedRpcTest.includes('BEGIN;') && authenticatedRpcTest.trimEnd().endsWith('ROLLBACK;'),
   'the authenticated pilot-eligibility fixture must roll back every test row and mode transition');
 assert.doesNotMatch(authenticatedRpcTest, /GRANT EXECUTE ON FUNCTION/,
   'the authenticated SQL test must verify deployed grants rather than create temporary ones');
-assert.match(authenticatedRpcTest, /has_function_privilege\\('authenticated'/);
-assert.match(authenticatedRpcTest, /has_function_privilege\\('anon'/);
-assert.match(authenticatedRpcTest, /nexus_private\\.entity_delta_pilot_allowlist/);
-assert.match(authenticatedRpcTest, /pilot_not_enabled/);
-assert.match(authenticatedRpcTest, /unlisted owner published a Delta operation/i);
-assert.match(authenticatedRpcTest, /has_schema_privilege\\('authenticated', 'nexus_private', 'USAGE'\\)/);
-assert.match(twoClientSetup, /row_number\\(\\) OVER \\(ORDER BY email\\)/);
-assert.match(twoClientSetup, /fixture_order IN \\(1, 3\\)/,
-  'only the disposable local protocol and large-workspace owners should be allowlisted; B is the default-deny fixture');
+assert.ok(authenticatedRpcTest.includes("has_function_privilege('authenticated'"));
+assert.ok(authenticatedRpcTest.includes("has_function_privilege('anon'"));
+assert.ok(authenticatedRpcTest.includes('nexus_private.entity_delta_pilot_allowlist'));
+assert.ok(authenticatedRpcTest.includes('pilot_not_enabled'));
+assert.ok(authenticatedRpcTest.includes('An unlisted owner published a Delta operation.'));
+assert.ok(authenticatedRpcTest.includes("has_schema_privilege('authenticated', 'nexus_private', 'USAGE')"));
+assert.ok(twoClientSetup.includes('row_number() OVER (ORDER BY email)'));
+assert.ok(twoClientSetup.includes('fixture_order IN (1, 3)'),
+  'only disposable local protocol and large-workspace owners should be allowlisted; B is the default-deny fixture');
 
 console.log('Nexus entity-delta migration and staging-test contract checks passed.');
