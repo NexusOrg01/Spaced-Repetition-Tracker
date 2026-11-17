@@ -16,7 +16,7 @@ const chunkManifestProtection = read('supabase/migrations/20261114103353_protect
 const generalSnapshotIntegrity = read('supabase/migrations/20261115171500_validate_general_snapshot_candidates.sql');
 const chunkManifestDeletionTest = read('supabase/tests/nexus_user_data_chunks_active_manifest.sql');
 const activeManifestRaceRunner = read('scripts/test-active-manifest-race.mjs');
-const pilotEligibility = read('supabase/migrations/20261117100000_add_entity_delta_pilot_eligibility.sql');
+const pilotEligibility = read('supabase/migrations/20261117083717_add_entity_delta_pilot_eligibility.sql');
 const authenticatedRpcTest = read('supabase/tests/nexus_entity_delta_authenticated_rpc.sql');
 const twoClientSetup = read('supabase/tests/nexus_entity_delta_two_client_setup.sql');
 
