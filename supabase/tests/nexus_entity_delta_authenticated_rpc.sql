@@ -113,6 +113,12 @@ DECLARE
   v_table text;
   v_privilege text;
   v_direct_write_denied boolean := false;
+  v_downgrade jsonb;
+  v_downgrade_retry jsonb;
+  v_downgrade_request uuid := gen_random_uuid();
+  v_payload jsonb;
+  v_disable_search_path text[];
+  v_downgrade_receipts_denied boolean := false;
 BEGIN
   IF current_user <> 'authenticated' OR auth.uid() IS DISTINCT FROM v_owner_a THEN
     RAISE EXCEPTION 'The RPC probe is not running as the intended authenticated owner.';
@@ -126,6 +132,14 @@ BEGIN
       v_enable_search_path;
   END IF;
 
+  SELECT proconfig INTO v_disable_search_path
+  FROM pg_catalog.pg_proc
+  WHERE oid = 'public.nexus_disable_entity_delta(uuid,bigint,timestamp with time zone,bigint,bigint)'::regprocedure;
+  IF NOT COALESCE(v_disable_search_path @> ARRAY['search_path=""']::text[], false) THEN
+    RAISE EXCEPTION 'DLA-03 SECURITY DEFINER RPC must pin an empty search_path: %',
+      v_disable_search_path;
+  END IF;
+
   -- The deployed grant set is tested directly; this test does not add temporary
   -- RPC privileges that could hide a migration regression.
   FOREACH v_rpc IN ARRAY ARRAY[
@@ -134,7 +148,8 @@ BEGIN
     'public.nexus_publish_entity_operation(text,bigint,jsonb)',
     'public.nexus_read_entity_operations(bigint,integer,integer)',
     'public.nexus_publish_entity_snapshot(bigint,timestamp with time zone,jsonb)',
-    'public.nexus_compact_entity_operations(integer)'
+    'public.nexus_compact_entity_operations(integer)',
+    'public.nexus_disable_entity_delta(uuid,bigint,timestamp with time zone,bigint,bigint)'
   ] LOOP
     IF NOT has_function_privilege('authenticated', v_rpc, 'EXECUTE') THEN
       RAISE EXCEPTION 'Authenticated RPC grant is missing: %', v_rpc;
@@ -155,6 +170,14 @@ BEGIN
   END;
   IF NOT v_private_schema_denied THEN
     RAISE EXCEPTION 'Authenticated users can read the private pilot allowlist directly.';
+  END IF;
+  BEGIN
+    PERFORM 1 FROM nexus_private.entity_delta_downgrade_receipts;
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_downgrade_receipts_denied := true;
+  END;
+  IF NOT v_downgrade_receipts_denied THEN
+    RAISE EXCEPTION 'Authenticated users can read private downgrade receipts directly.';
   END IF;
 
   FOREACH v_table IN ARRAY ARRAY[
@@ -241,6 +264,67 @@ BEGIN
   v_page := public.nexus_read_entity_operations(0, 10, 1048576);
   IF v_page->>'snapshot_required' <> 'true' THEN
     RAISE EXCEPTION 'A cursor behind the compaction floor was not rejected: %', v_page;
+  END IF;
+
+  -- A stale expected head must not cause a transition or strip the Delta marker.
+  SELECT updated_at INTO v_stamp
+  FROM public.nexus_user_data WHERE user_id = v_owner_a;
+  v_downgrade := public.nexus_disable_entity_delta(
+    gen_random_uuid(), 2, v_stamp, 1, 1
+  );
+  IF v_downgrade->>'ok' <> 'false'
+     OR v_downgrade->>'code' <> 'revision_conflict' THEN
+    RAISE EXCEPTION 'A stale downgrade precondition was not rejected: %', v_downgrade;
+  END IF;
+  v_state := public.nexus_get_entity_sync_state();
+  SELECT payload INTO v_payload
+  FROM public.nexus_user_data WHERE user_id = v_owner_a;
+  IF v_state->>'mode' <> 'delta' OR NOT (v_payload ? '__nexusDeltaSync') THEN
+    RAISE EXCEPTION 'A rejected downgrade modified the active Delta workspace.';
+  END IF;
+
+  -- Exact, fully compacted checkpoint can atomically return this owner to
+  -- snapshot mode. The protocol marker is stripped only after the state switch.
+  v_downgrade := public.nexus_disable_entity_delta(
+    v_downgrade_request, 1, v_stamp, 1, 1
+  );
+  IF v_downgrade->>'ok' <> 'true'
+     OR v_downgrade->>'mode' <> 'snapshot'
+     OR v_downgrade->>'already_disabled' <> 'false'
+     OR (v_downgrade->>'head_revision')::bigint <> 1
+     OR (v_downgrade->>'snapshot_revision')::bigint <> 1
+     OR (v_downgrade->>'compacted_through_revision')::bigint <> 1 THEN
+    RAISE EXCEPTION 'The owner-scoped snapshot downgrade failed: %', v_downgrade;
+  END IF;
+  v_state := public.nexus_get_entity_sync_state();
+  SELECT payload INTO v_payload
+  FROM public.nexus_user_data WHERE user_id = v_owner_a;
+  IF v_state->>'mode' <> 'snapshot'
+     OR (v_state->>'head_revision')::bigint <> 1
+     OR (v_state->>'snapshot_revision')::bigint <> 1
+     OR (v_state->>'compacted_through_revision')::bigint <> 1
+     OR (v_payload ? '__nexusDeltaSync') THEN
+    RAISE EXCEPTION 'The downgraded workspace did not preserve a marker-free aligned snapshot: %', v_state;
+  END IF;
+  v_page := public.nexus_read_entity_operations(0, 10, 1048576);
+  IF v_page->>'mode' <> 'snapshot' OR v_page->>'snapshot_required' <> 'true'
+     OR jsonb_array_length(v_page->'groups') <> 0 THEN
+    RAISE EXCEPTION 'A stale Delta client was not redirected to snapshot recovery: %', v_page;
+  END IF;
+
+  -- Simulate a client losing the response after commit: replay the same request
+  -- and require a stable idempotency receipt, without another timestamp change.
+  v_stamp := v_downgrade->>'snapshot_updated_at';
+  v_downgrade_retry := public.nexus_disable_entity_delta(
+    v_downgrade_request, 1,
+    (SELECT updated_at FROM public.nexus_user_data WHERE user_id = v_owner_a),
+    1, 1
+  );
+  IF v_downgrade_retry->>'ok' <> 'true'
+     OR v_downgrade_retry->>'already_applied' <> 'true'
+     OR v_downgrade_retry->>'still_snapshot' <> 'true'
+     OR v_downgrade_retry->>'mode' <> 'snapshot' THEN
+    RAISE EXCEPTION 'The committed downgrade was not idempotently acknowledged: %', v_downgrade_retry;
   END IF;
 
   BEGIN
