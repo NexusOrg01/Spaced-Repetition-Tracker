@@ -167,10 +167,14 @@ assert.match(pilotEligibility, /'pilot_not_enabled'/);
 assert.match(pilotEligibility, /REVOKE ALL PRIVILEGES ON TABLE[\\s\\S]*nexus_workspace_sync_state[\\s\\S]*nexus_workspace_operations[\\s\\S]*nexus_workspace_operation_receipts[\\s\\S]*FROM PUBLIC, anon, authenticated/);
 assert.match(pilotEligibility, /GRANT SELECT ON TABLE[\\s\\S]*nexus_workspace_sync_state[\\s\\S]*nexus_workspace_operations[\\s\\S]*nexus_workspace_operation_receipts[\\s\\S]*TO authenticated/);
 for (const signature of gatedRpcSignatures) {
-  assert.match(pilotEligibility, new RegExp('REVOKE ALL ON FUNCTION ' + signature.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\console.log('Nexus entity-delta migration and staging-test contract checks passed.');') + '[\\s\\S]*FROM PUBLIC, anon, authenticated, service_role'));
-  assert.ok(pilotEligibility.includes('GRANT EXECUTE ON FUNCTION ' + signature + '\\n  TO authenticated;'),
-    `DLA-02 must grant only authenticated execution for ${signature}`);
+  assert.ok(pilotEligibility.includes(
+    `REVOKE ALL ON FUNCTION ${signature}\n  FROM PUBLIC, anon, authenticated, service_role;`
+  ), `DLA-02 must revoke non-authenticated execution for ${signature}`);
+  assert.ok(pilotEligibility.includes(
+    `GRANT EXECUTE ON FUNCTION ${signature}\n  TO authenticated;`
+  ), `DLA-02 must grant only authenticated execution for ${signature}`);
 }
+
 assert.ok(authenticatedRpcTest.includes('BEGIN;') && authenticatedRpcTest.trimEnd().endsWith('ROLLBACK;'),
   'the authenticated pilot-eligibility fixture must roll back every test row and mode transition');
 assert.doesNotMatch(authenticatedRpcTest, /GRANT EXECUTE ON FUNCTION/,
