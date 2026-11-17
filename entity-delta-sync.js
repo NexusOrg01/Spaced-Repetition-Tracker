@@ -1168,8 +1168,12 @@
         if(expectedHead===null||safeInteger(checkpoint.snapshotRevision)!==expectedHead)
           return failed('final_snapshot_checkpoint_revision_mismatch',{checkpoint});
 
-        let compaction=checkpoint.compaction||null;
-        for(let attempt=0;(!compaction||compaction.complete!==true)&&attempt<12;attempt++){
+        // Do one explicit final compaction RPC even when snapshot publication
+        // reports the floor at the head (or reused a snapshot). The SQL transition
+        // refuses any leftover operation/receipt rows, so verify the tables are
+        // actually drained rather than trusting only the revision floor.
+        let compaction=null;
+        for(let attempt=0;attempt<12;attempt++){
           if(typeof compactOperations!=='function')
             return failed('operation_compaction_unavailable',{compaction});
           await assertOwner(owner);
@@ -1177,6 +1181,7 @@
           await assertOwner(owner);
           if(!compaction||compaction.ok!==true)
             return failed(compaction&&compaction.reason||'operation_compaction_failed',{compaction});
+          if(compaction.complete===true)break;
         }
         if(!compaction||compaction.complete!==true||compaction.pending===true)
           return failed('operation_compaction_still_pending',{compaction});
