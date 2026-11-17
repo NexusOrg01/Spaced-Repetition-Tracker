@@ -270,6 +270,22 @@ assert.equal(resolveHostedQaEntityDeltaEnabled({
   ...hostedQaEnv, VERCEL_URL: 'nexus-preview.vercel.app/path'
 }, hostedQaConfig).enabled, false, 'deployment hosts containing paths must fail closed');
 assert.equal(resolveHostedQaEntityDeltaEnabled({
+  ...hostedQaEnv, VERCEL_URL: 'nexus-preview.vercel.app:4443'
+}, hostedQaConfig).enabled, false, 'non-default deployment ports must fail closed');
+assert.equal(resolveHostedQaEntityDeltaEnabled({
+  ...hostedQaEnv, VERCEL_URL: 'user@nexus-preview.vercel.app'
+}, hostedQaConfig).enabled, false, 'deployment host userinfo must fail closed');
+assert.equal(resolveHostedQaEntityDeltaEnabled({
+  ...hostedQaEnv, VERCEL_URL: 'nexus-preview.vercel.app?tenant=wrong'
+}, hostedQaConfig).enabled, false, 'deployment host query strings must fail closed');
+assert.equal(resolveHostedQaEntityDeltaEnabled({
+  ...hostedQaEnv, VERCEL_URL: 'nexus-preview.vercel.app#fragment'
+}, hostedQaConfig).enabled, false, 'deployment host fragments must fail closed');
+assert.equal(renderConfigScript(hostedQaConfig, false, {
+  enabled: true, ref: hostedQaBranch, origin: 'https://nexus-preview.vercel.app:4443'
+}).includes('window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=true'), false,
+  'config rendering must independently reject non-default QA deployment ports');
+assert.equal(resolveHostedQaEntityDeltaEnabled({
   ...hostedQaEnv, VERCEL_GIT_COMMIT_REF: 'feat/another-preview'
 }, hostedQaConfig).enabled, false, 'generic public preview branches must not enable hosted QA');
 assert.equal(resolveHostedQaEntityDeltaEnabled({
