@@ -180,6 +180,8 @@ assert.match(downgradeSqlTest, /already_downgraded/);
 assert.match(downgradeSqlTest, /nexus_compact_entity_operations/);
 assert.match(downgradeSqlTest, /unmarked_chunk_manifest_incomplete/);
 assert.match(downgradeSqlTest, /v_bad_chunk_manifest/);
+assert.match(downgradeSqlTest, /v_chunk_bytes_rejected/);
+assert.match(downgradeSqlTest, /check_violation/);
 assert.match(downgradeSqlTest, /Cross-owner downgrade attempt/);
 assert.match(downgradeSqlTest, /has_function_privilege/);
 assert.match(downgradeSqlTest, /nexus_test_dla03_injected_pointer_failure/);
