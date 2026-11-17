@@ -1,7 +1,7 @@
-# Phase 3.4 authenticated two-client test — local disposable Supabase
+# Phase 3.4 / DLA-02 authenticated two-client test — local disposable Supabase
 
-**Scope:** local-only authenticated protocol integration for PR #126  
-**Repository branch:** android/capacitor-multistore-foundation  
+**Scope:** local-only authenticated protocol and pilot-eligibility integration for PR #126 / DLA-02  
+**Repository branch:** feat/dla-02-server-pilot-eligibility (stacked on the DLA-01 preview gate)  
 **Cost:** no hosted Supabase project or development branch is created  
 **Hosted project safety:** never connect to nexus-spaced-repetition or nexus-sync-staging.
 
@@ -11,12 +11,12 @@ This replaces the former hosted-staging browser runbook. The old harness hardcod
 
 - Run only from a local Nexus checkout on your computer.
 - The disposable stack is built in .build/phase34-local-supabase, outside the repository's normal supabase/migrations chain.
-- The helper copies a test-only nexus_user_data baseline and nine relevant chunk/entity-delta migrations, including the 20261115171500 general snapshot-candidate validator into the temporary Supabase project. It omits the historical syllabus migrations and staging-only permissions migration because those have environment-specific prerequisites and are unrelated to Phase 3.4.
+- The helper copies a test-only nexus_user_data baseline and ten relevant chunk/entity-delta migrations, including the 20261115171500 general snapshot-candidate validator into the temporary Supabase project. It omits the historical syllabus migrations and staging-only permissions migration because those have environment-specific prerequisites and are unrelated to Phase 3.4.
 - No supabase login, supabase link, --remote, --linked, hosted project URL, or hosted API key is required or permitted.
 - Public Vercel and Netlify previews are blocked by the harness. Their generated Delta feature gate remains false, including when the old staging opt-in is set.
 - The normal production gate remains false. Local Delta mode requires NEXUS_PHASE34_LOCAL_TEST=true and NEXUS_ENTITY_DELTA_SYNC_LOCAL=true, a loopback API URL on port 54321, and a loopback browser origin.
 - Never paste a service-role or secret key into the harness. It accepts only a publishable key or legacy anon JWT.
-- Test identities exist only in the disposable local database and must be deleted before stopping it.
+- Test identities and their two local-only allowlist rows exist only in the disposable local database and must be deleted before stopping it.
 
 ## 1. Prepare the local disposable Supabase project
 
@@ -39,22 +39,21 @@ The default local API is http://127.0.0.1:54321; Studio is normally http://127.0
 
 Open local Studio's SQL Editor and run test-fixtures/nexus_entity_delta_two_client_setup.sql.
 
-It creates two confirmed email/password Auth users, their email identities, and empty snapshot workspaces. Copy the returned emails and passwords. The reserved email prefix is nexus-3-4-two-client-.
+It creates three confirmed email/password Auth users, their email identities, and empty snapshot workspaces. Copy the returned emails and passwords. The reserved email prefix is nexus-3-4-two-client-. The sorted first and third fixtures are allowlisted only inside this disposable local database (A for A1/A2 protocol, C for the later large-workspace lifecycle); the second fixture B is deliberately unlisted and must remain snapshot-only.
 
-## 3. Temporarily grant the six RPCs — local database only
+## 3. Verify the migration-provided authenticated grants — local database only
 
-Run in local Studio immediately before the browser harness:
+The DLA-02 migration grants the six reviewed RPCs to `authenticated` and keeps `PUBLIC`, `anon`, and `service_role` revoked. It does not grant browser access to `nexus_private`, and no direct write privileges are granted on sync-state, operations, or receipt tables.
 
-~~~sql
-GRANT EXECUTE ON FUNCTION public.nexus_get_entity_sync_state() TO authenticated;
-GRANT EXECUTE ON FUNCTION public.nexus_enable_entity_delta(timestamptz) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.nexus_publish_entity_operation(text,bigint,jsonb) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.nexus_read_entity_operations(bigint,integer,integer) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.nexus_compact_entity_operations(integer) TO authenticated;
+Run the rollback-only authorization test after `supabase db reset`:
+
+~~~bash
+psql "$DB_URL" -X -v ON_ERROR_STOP=1 -f supabase/tests/nexus_entity_delta_authenticated_rpc.sql
 ~~~
 
-These temporary grants are needed because the committed migrations intentionally revoke browser-role execution by default. They exist only in the throwaway local database. Never run this SQL against either hosted project.
+This test verifies the migration's actual grants, enables only its synthetic allowlisted owner inside a rolled-back transaction, proves the unlisted owner receives `pilot_not_enabled` and cannot publish, and checks that direct private-schema access and direct sync-table writes are denied. It does not add temporary grants and leaves the database unchanged.
+
+The disposable local fixture setup later allowlists only local test owners A and C to preserve the A1/A2 and large-workspace automation. Owner B stays unlisted. Never reuse the fixture SQL or its test grants against either hosted project.
 
 ## 4. Run the authenticated three-session harness
 
@@ -83,7 +82,7 @@ py -m http.server 4173 --bind 127.0.0.1 --directory dist
 
 Open http://127.0.0.1:4173/staging-test/two-client.html. Enter the local API URL, local anon key, and the two disposable accounts.
 
-The harness establishes A1 and A2 sessions for the same owner and B for a different owner. It checks independent tokens, snapshot mode, owner-scoped enablement, independent publishing, a concurrent revision race, retry, exact idempotent replay, mismatched-payload rejection, bounded reads, RLS owner isolation, direct operation-table write denial, and final heads A=3/B=1.
+The harness establishes A1 and A2 sessions for allowlisted owner A and B for a different, unlisted owner. It checks independent tokens, default snapshot mode, A's successful eligibility-gated enablement, B's `pilot_not_enabled` denial and failed publish, A's concurrent revision race, retry, exact idempotent replay, mismatched-payload rejection, bounded reads, RLS owner isolation, direct operation-table write denial, and final heads A=3/B=0. The separate large-workspace lifecycle uses allowlisted disposable owner C; B remains snapshot-only throughout.
 
 It signs out all created sessions and clears the anon-key/password fields in finally, including on test failure. This proves the authenticated PostgREST/RPC contract, not the later 26.9 MB app lifecycle or Android acceptance matrix.
 
