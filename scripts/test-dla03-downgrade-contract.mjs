@@ -31,6 +31,13 @@ assert.match(migration, /result_snapshot_updated_at/);
 assert.match(migration, /already_applied/);
 
 assert.match(client, /async function downgradeToSnapshot\(/);
+const clientDowngrade = client.slice(client.indexOf('async function downgradeToSnapshot'),
+  client.indexOf('async function synchronize'));
+assert.ok(clientDowngrade.indexOf("if(state.mode==='snapshot')") <
+  clientDowngrade.indexOf("let synchronized=await synchronize"),
+  'An already-disabled account must be verified before the Delta synchronizer is called.');
+assert.match(clientDowngrade, /compatibility_snapshot_still_pending/);
+
 assert.match(client, /readWorkspaceEntityDeltaCursor/);
 assert.match(client, /readWorkspaceEntityOutboxGroups/);
 assert.match(client, /readWorkspaceEntityRecovery/);
@@ -48,6 +55,9 @@ assert.match(cloud, /action&&action\.downgrade===true/);
 assert.match(cloud, /downgradeEntityDelta/);
 assert.match(cloud, /downgradeEntityDelta,\s*noteCommittedLocalSave/);
 assert.match(cloud, /nexus_disable_entity_delta/);
+assert.match(cloud, /syncStateQuery=client\.from\('nexus_workspace_sync_state'\)/);
+assert.match(cloud, /syncStateRead\.data\.mode==='snapshot'[\s\S]*?delete snapshotPayload\.__nexusDeltaSync/);
+
 
 assert.match(prepare, /20261117131900_add_entity_delta_snapshot_downgrade\.sql/);
 assert.match(workflow, /entity-delta-sync\.js/);
@@ -57,6 +67,9 @@ assert.match(workflow, /remaining_downgrade_receipts/);
 assert.match(lifecycle, /simulated lost response after commit/);
 assert.match(lifecycle, /staleA2PageAfterDowngrade\.mode, 'snapshot'/);
 assert.match(lifecycle, /replayedDowngrade\.already_applied, true/);
+assert.match(client, /alreadyDowngraded:true/);
+assert.match(docs, /historical Delta marker remains inside the immutable chunk bytes/);
+
 assert.match(docs, /existing exact local\/hosted-QA gate remains required/);
 assert.match(docs, /does not apply it to `nexus-sync-staging` or production/);
 
