@@ -4,6 +4,23 @@
 
 BEGIN;
 
+CREATE FUNCTION public.nexus_test_dla03_injected_pointer_failure()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+  IF current_setting('nexus.dla03.fail_user', true) = NEW.user_id::text THEN
+    RAISE EXCEPTION 'DLA-03 injected snapshot pointer update failure.'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$function$;
+
+CREATE TRIGGER nexus_test_dla03_injected_pointer_failure
+BEFORE UPDATE ON public.nexus_user_data
+FOR EACH ROW EXECUTE FUNCTION public.nexus_test_dla03_injected_pointer_failure();
+
 DO $test$
 DECLARE
   v_uid_a uuid := gen_random_uuid();
@@ -40,6 +57,7 @@ DECLARE
   v_chunk_old_count bigint;
   v_chunk_new_count bigint;
   v_privileges integer;
+  v_injected_failure boolean := false;
 BEGIN
   INSERT INTO auth.users
     (id,aud,role,email,encrypted_password,email_confirmed_at,
@@ -114,6 +132,25 @@ BEGIN
   END IF;
 
   SELECT updated_at INTO v_stamp FROM public.nexus_user_data WHERE user_id=v_uid_a;
+  PERFORM set_config('nexus.dla03.fail_user',v_uid_a::text,true);
+  BEGIN
+    PERFORM public.nexus_disable_entity_delta(1,v_stamp,v_expected);
+  EXCEPTION WHEN SQLSTATE '23514' THEN
+    v_injected_failure := true;
+  END;
+  PERFORM set_config('nexus.dla03.fail_user','',true);
+  IF NOT v_injected_failure OR NOT EXISTS (
+    SELECT 1 FROM public.nexus_workspace_sync_state
+    WHERE user_id=v_uid_a AND mode='delta'
+      AND head_revision=1 AND snapshot_revision=1 AND compacted_through_revision=1
+  ) OR NOT EXISTS (
+    SELECT 1 FROM public.nexus_user_data
+    WHERE user_id=v_uid_a
+      AND payload = v_expected || jsonb_build_object('__nexusDeltaSync','entity-delta-v1')
+  ) THEN
+    RAISE EXCEPTION 'A failure during snapshot-pointer update did not roll back both the mode and pointer atomically.';
+  END IF;
+
   v_result := public.nexus_disable_entity_delta(1,v_stamp,v_expected);
   IF v_result->>'ok' <> 'true' OR v_result->>'mode' <> 'snapshot'
      OR v_result->>'storage_mode' <> 'jsonb' THEN
@@ -254,5 +291,8 @@ BEGIN
   RAISE NOTICE 'PASS — DLA-03 JSONB, chunked, CAS, incomplete checkpoint, compaction, idempotency, owner isolation and RPC revocation.';
 END
 $test$;
+
+DROP TRIGGER nexus_test_dla03_injected_pointer_failure ON public.nexus_user_data;
+DROP FUNCTION public.nexus_test_dla03_injected_pointer_failure();
 
 ROLLBACK;
