@@ -188,13 +188,13 @@ jobs:
             trap 'timeout 120s npx --yes supabase@latest stop --no-backup || true' EXIT
             if [[ -n "${PHASE34_DB_URL:-}" ]]; then
               psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
-          REVOKE EXECUTE ON FUNCTION public.nexus_get_entity_sync_state() FROM PUBLIC, anon, authenticated;
-          REVOKE EXECUTE ON FUNCTION public.nexus_enable_entity_delta(timestamptz) FROM PUBLIC, anon, authenticated;
-          REVOKE EXECUTE ON FUNCTION public.nexus_publish_entity_operation(text,bigint,jsonb) FROM PUBLIC, anon, authenticated;
-          REVOKE EXECUTE ON FUNCTION public.nexus_read_entity_operations(bigint,integer,integer) FROM PUBLIC, anon, authenticated;
-          REVOKE EXECUTE ON FUNCTION public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb) FROM PUBLIC, anon, authenticated;
-          REVOKE EXECUTE ON FUNCTION public.nexus_compact_entity_operations(integer) FROM PUBLIC, anon, authenticated;
-          REVOKE EXECUTE ON FUNCTION public.nexus_disable_entity_delta(bigint,timestamptz,jsonb) FROM PUBLIC, anon, authenticated;
+          REVOKE EXECUTE ON FUNCTION public.nexus_get_entity_sync_state() FROM PUBLIC, anon, authenticated, service_role;
+          REVOKE EXECUTE ON FUNCTION public.nexus_enable_entity_delta(timestamptz) FROM PUBLIC, anon, authenticated, service_role;
+          REVOKE EXECUTE ON FUNCTION public.nexus_publish_entity_operation(text,bigint,jsonb) FROM PUBLIC, anon, authenticated, service_role;
+          REVOKE EXECUTE ON FUNCTION public.nexus_read_entity_operations(bigint,integer,integer) FROM PUBLIC, anon, authenticated, service_role;
+          REVOKE EXECUTE ON FUNCTION public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb) FROM PUBLIC, anon, authenticated, service_role;
+          REVOKE EXECUTE ON FUNCTION public.nexus_compact_entity_operations(integer) FROM PUBLIC, anon, authenticated, service_role;
+          REVOKE EXECUTE ON FUNCTION public.nexus_disable_entity_delta(bigint,timestamptz,jsonb) FROM PUBLIC, anon, authenticated, service_role;
           SQL
               psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 \
                 -f test-fixtures/nexus_entity_delta_two_client_cleanup.sql
@@ -218,7 +218,8 @@ jobs:
             'public.nexus_disable_entity_delta(bigint,timestamp with time zone,jsonb)'
           ]::text[]) AS signatures(signature)
           WHERE has_function_privilege('anon', signature, 'EXECUTE')
-             OR has_function_privilege('authenticated', signature, 'EXECUTE');
+             OR has_function_privilege('authenticated', signature, 'EXECUTE')
+             OR has_function_privilege('service_role', signature, 'EXECUTE');
           SQL
           )"
               test "$remaining_users" = "0"
