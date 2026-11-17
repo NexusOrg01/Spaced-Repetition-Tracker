@@ -1121,7 +1121,15 @@ function makeStagingRuntimeHarness({
     };
   }
   const context={
-    window,client,session:{user:{id:sessionUser}},localStorage,OWNER_KEY:'owner-key',
+    window,client,session:{user:{id:sessionUser}},
+    assertActiveUser:async userId=>{
+      const {data,error}=await client.auth.getSession();
+      if(error||!data||!data.session||!data.session.user||
+         data.session.user.id!==userId||sessionUser!==userId){
+        throw new Error('The active account changed during hosted QA state verification.');
+      }
+    },
+    localStorage,OWNER_KEY:'owner-key',
     STAGING_CONFIG:{url:stagingSupabaseUrl,key:'staging-test-key'},
     config:()=>({url:stagingUrl}),
     location:{
