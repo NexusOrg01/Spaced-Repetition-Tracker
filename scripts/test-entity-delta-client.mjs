@@ -1048,7 +1048,7 @@ function makeStagingRuntimeHarness({
   gate=false,localOrigin=true,stagingUrl=stagingSupabaseUrl,recoveryIntent=null,
   syncResult={ok:true,publishedCount:1},recoveryResult={ok:true,recovered:true},
   missingChunkStorage=false,hostedQaGate=false,hostedQaOrigin='',
-  browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='feat/dla-01-hosted-qa-gate',
+  browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='feat/dla-03-safe-snapshot-downgrade',
   remoteState={mode:'delta',protocol_version:1},remoteStateError=null
 }={}){
   const calls={createClient:0,synchronize:null,recovery:null,cursorOwner:null,
