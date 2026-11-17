@@ -906,6 +906,14 @@ async function runStagingEntityDeltaSync(ownerId,signal,action='sync'){
   if(typeof syncDiag==='function')syncDiag('entity-delta-downgrade-complete',null,{ok:!!(downgraded&&downgraded.ok===true),mode:downgraded&&downgraded.mode||null,reason:downgraded&&downgraded.reason||null});
   return downgraded;
  }
+ const pendingDowngrade=storage&&typeof storage.readWorkspaceEntityDowngrade==='function'
+  ?await storage.readWorkspaceEntityDowngrade(ownerId):null;
+ if(pendingDowngrade&&action!=='downgrade'){
+  if(typeof syncDiag==='function')syncDiag('entity-delta-downgrade-resume-start',null,{reason:'durable-downgrade-journal-present'});
+  const resumed=await makeClient.downgradeToSnapshot(ownerId,{signal});
+  if(typeof syncDiag==='function')syncDiag('entity-delta-downgrade-resume-complete',null,{ok:!!(resumed&&resumed.ok===true),mode:resumed&&resumed.mode||null,reason:resumed&&resumed.reason||null});
+  return resumed;
+ }
  if(recoveryPending){
    if(typeof syncDiag==='function')syncDiag('snapshot-recovery-start',null,{reason:'resume-existing-journal'});
    const resumed=await makeClient.publishConflictRecovery(ownerId,{
