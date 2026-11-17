@@ -1100,6 +1100,20 @@
             return failed('existing_recovery_journal_not_resolved',{recovery:resumed||null});
           await assertOwner(owner);
         }
+        let state=await readState();
+        if(state.mode==='snapshot'){
+          if(await getPendingSnapshot(owner))return failed('compatibility_snapshot_still_pending');
+          journal=await storage.readWorkspaceEntityRecovery(owner);
+          if(journal&&journal.intent)
+            return failed('recovery_journal_still_pending',{phase:journal.intent.phase||'unknown'});
+          const head=safeInteger(state.head_revision);
+          if(head===null)return failed('snapshot_mode_revision_invalid');
+          const verified=await readVerifiedSnapshot('snapshot',head);
+          if(!verified.ok)return failed(verified.reason);
+          return {ok:true,downgraded:true,alreadyDowngraded:true,mode:'snapshot',
+            headRevision:head,snapshotRevision:head,updated_at:verified.remote.updated_at};
+        }
+        if(state.mode!=='delta')return failed('remote_delta_state_invalid');
         let synchronized=await synchronize(owner,{
           signal,maxRounds:50,maxGroups:100,maxBytes:MAX_BYTES
         });
@@ -1122,15 +1136,7 @@
         if(journal&&journal.intent)
           return failed('recovery_journal_still_pending',{phase:journal.intent.phase||'unknown'});
 
-        let state=await readState();
-        if(state.mode==='snapshot'){
-          const head=safeInteger(state.head_revision);
-          if(head===null)return failed('snapshot_mode_revision_invalid');
-          const verified=await readVerifiedSnapshot('snapshot',head);
-          if(!verified.ok)return failed(verified.reason);
-          return {ok:true,downgraded:true,alreadyDowngraded:true,mode:'snapshot',
-            headRevision:head,snapshotRevision:head,updated_at:verified.remote.updated_at};
-        }
+        state=await readState();
         const initialHead=safeInteger(state.head_revision),initialSnapshot=safeInteger(state.snapshot_revision),
           initialFloor=safeInteger(state.compacted_through_revision);
         if(state.mode!=='delta'||Number(state.protocol_version)!==1||
