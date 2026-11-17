@@ -45,7 +45,7 @@ try {
 
   const status = await page.locator('#status').innerText();
   const log = await page.locator('#log').innerText();
-  assert.match(status, /^PASS — 19 authenticated local integration assertions completed\.$/, log);
+  assert.match(status, /^PASS — 20 authenticated local integration assertions completed\.$/, log);
 
   // PASS is set before the async finally block finishes signing out. Wait for
   // the teardown before asserting that the credential fields have been cleared.
