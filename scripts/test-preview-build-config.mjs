@@ -305,4 +305,11 @@ assert.ok(renderConfigScript({
 }, false, hostedQaGate).includes('window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=false'),
   'config generation must independently fail closed when given a mismatched project');
 
+assert.ok(cloudSyncSource.includes("qaOrigin.hostname.endsWith('.vercel.app')&&!qaOrigin.port&&!qaOrigin.username"),
+  'runtime validation must reject non-canonical deployment authorities');
+assert.ok(cloudSyncSource.includes('!qaOrigin.password&&!qaOrigin.search&&!qaOrigin.hash'),
+  'runtime validation must reject origin credentials, query strings and fragments');
+assert.ok(cloudSyncSource.includes("(qaOrigin.pathname===''||qaOrigin.pathname==='/')"),
+  'runtime validation must bind only the root deployment origin');
+
 console.log('Preview-only Supabase configuration guard tests passed.');
