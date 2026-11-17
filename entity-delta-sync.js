@@ -1266,7 +1266,7 @@
             const confirmed=await verifyDowngradedSnapshot(expectedHead);
             if(confirmed.ok)return {ok:true,downgraded:true,alreadyDowngraded:true,
               mode:'snapshot',headRevision:expectedHead,snapshotRevision:expectedHead,
-              updated_at:confirmed.remote.updated_at,requestId};
+              updated_at:confirmed.remote.updated_at,requestId,cursor:confirmed.cursor};
             return failed('downgrade_commit_ambiguous_but_snapshot_not_verified',{
               errorCode:String(disabled.error.code||'unknown'),verification:confirmed.reason});
           }
