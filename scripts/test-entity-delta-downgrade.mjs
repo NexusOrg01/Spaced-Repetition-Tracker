@@ -88,7 +88,7 @@ function fixture(options={}){
     getLocalWorkspace:async()=>clone(workspace),
     getPendingSnapshot:async()=>options.pendingSnapshot?{status:'pending'}:null,
     sameWorkspace:async()=>true,
-    readRemoteSnapshot:async()=>({payload:clone(workspace),updated_at:'stamp-snapshot'}),
+    readRemoteSnapshot:async()=>({payload:clone(workspace),updated_at:options.remoteStamp||state.snapshot_updated_at||'stamp-snapshot'}),
     publishSnapshot:async()=>({verified:true}),
     commitLocalRecovery:async()=>({ok:true}),
     publishDowngradeSnapshot:async()=>({verified:true,markerRemoved:true,mode:'snapshot',
@@ -177,7 +177,7 @@ function fixture(options={}){
     checkpointUpdatedAt:checkpointStamp};
   const state={mode:'snapshot',protocol_version:1,head_revision:5,
     snapshot_revision:5,compacted_through_revision:5,snapshot_updated_at:checkpointStamp};
-  const h=fixture({intent:journal,state,cursor:{
+  const h=fixture({intent:journal,state,remoteStamp:checkpointStamp,cursor:{
     ownerId:owner,generation:'generation-A',workspaceRevision:9,publishRevision:5,
     acknowledgedSequence:12,remoteHeadRevision:5,snapshotUpdatedAt:checkpointStamp,requiresPull:false
   }});
