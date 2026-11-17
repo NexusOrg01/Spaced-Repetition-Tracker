@@ -193,14 +193,14 @@ assert.ok(renderConfigScript(existingStagingConfig,true).includes('window.NEXUS_
 assert.ok(renderConfigScript(null,true).includes('window.NEXUS_ENTITY_DELTA_SYNC_STAGING=false'));
 
 
-const hostedQaBranch = 'feat/dla-01-hosted-qa-gate';
+const hostedQaBranch = 'feat/dla-03-safe-snapshot-downgrade';
 const hostedQaProject = 'https://xuwfzibxhxzxxupprxsq.supabase.co';
 const hostedQaEnv = {
   VERCEL: '1',
   VERCEL_PROJECT_ID: 'prj_UgPzqFpvqBaKkKXi2Vm2COxqUsDi',
   VERCEL_ENV: 'preview',
   VERCEL_GIT_COMMIT_REF: hostedQaBranch,
-  VERCEL_URL: 'nexus-dla-01-git-feat-dla-01-hosted-qa-gate-recall-ed03.vercel.app',
+  VERCEL_URL: 'nexus-dla-03-git-feat-dla-03-safe-snapshot-downgrade-recall-ed03.vercel.app',
   NEXUS_ENTITY_DELTA_QA_ENABLED: 'true',
   NEXUS_SUPABASE_URL: hostedQaProject,
   NEXUS_SUPABASE_ANON_KEY: previewEnv.NEXUS_SUPABASE_ANON_KEY
@@ -249,13 +249,13 @@ assert.deepEqual(hostedQaConfig, {
 const hostedQaGate = resolveHostedQaEntityDeltaEnabled(hostedQaEnv, hostedQaConfig);
 assert.deepEqual(hostedQaGate, {
   enabled: true,
-  origin: 'https://nexus-dla-01-git-feat-dla-01-hosted-qa-gate-recall-ed03.vercel.app',
+  origin: 'https://nexus-dla-03-git-feat-dla-03-safe-snapshot-downgrade-recall-ed03.vercel.app',
   ref: hostedQaBranch
 }, 'hosted QA must require the explicit flag, exact branch, exact project, and deployment-specific Vercel origin');
 const hostedQaConfigScript = renderConfigScript(hostedQaConfig, false, hostedQaGate);
 assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=true'));
-assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_REF="feat/dla-01-hosted-qa-gate"'));
-assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN="https://nexus-dla-01-git-feat-dla-01-hosted-qa-gate-recall-ed03.vercel.app"'));
+assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_REF="feat/dla-03-safe-snapshot-downgrade"'));
+assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN="https://nexus-dla-03-git-feat-dla-03-safe-snapshot-downgrade-recall-ed03.vercel.app"'));
 assert.ok(renderConfigScript(hostedQaConfig, false, null).includes('window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=false'));
 
 assert.equal(resolveHostedQaEntityDeltaEnabled({
