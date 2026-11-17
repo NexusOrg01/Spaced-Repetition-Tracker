@@ -1320,9 +1320,8 @@ async function downgradeEntityDelta(){
   return result||{ok:false,retryable:true,reason:'snapshot_downgrade_unavailable'};
  }catch(error){
   status('Snapshot downgrade paused');
-  say('Snapshot downgrade failed safely. Local workspace and recovery data were preserved. '+String(error&&error.message||'unknown error'));
-  return {ok:false,retryable:true,reason:'snapshot_downgrade_failed',
-   errorCode:String(error&&error.code||'unknown')};
+  say('Snapshot downgrade failed safely. Local workspace and recovery data were preserved. No unverified mode change was accepted.');
+  return {ok:false,retryable:true,reason:'snapshot_downgrade_failed'};
  }finally{
   scope.clear();
   syncing=false;
