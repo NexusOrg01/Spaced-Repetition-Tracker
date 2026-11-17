@@ -46,6 +46,8 @@ BEGIN
     ), clock_timestamp());
 
   PERFORM set_config('request.jwt.claim.sub',v_uid::text,true);
+  INSERT INTO nexus_private.entity_delta_pilot_allowlist (user_id, enabled, reason)
+  VALUES (v_uid, true, 'Rollback-only entity-delta integration fixture');
   SELECT updated_at INTO v_stamp FROM public.nexus_user_data WHERE user_id=v_uid;
   v_enable := public.nexus_enable_entity_delta(v_stamp);
   IF v_enable->>'ok' <> 'true' OR v_enable->>'mode' <> 'delta' THEN
