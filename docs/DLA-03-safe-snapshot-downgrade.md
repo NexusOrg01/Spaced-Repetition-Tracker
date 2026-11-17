@@ -17,7 +17,7 @@ The transaction:
 6. switches that owner's sync state to `snapshot`, then removes only `__nexusDeltaSync` from the active snapshot pointer;
 7. records a request-ID receipt in `nexus_private.entity_delta_downgrade_receipts`.
 
-The chunked snapshot revision and chunk rows remain active. The downgrade does not drop schema, delete chunks, clear the pilot allowlist, or reset revision counters. The receipt is owner-bound, idempotent, and cascades on Auth-account deletion. A lost response can be retried with the same request ID without repeating the transition.
+The chunked snapshot revision and chunk rows remain active. For a chunked workspace, the historical Delta marker remains inside the immutable chunk bytes so the already-verified SHA-256 manifest does not need to be rewritten; the active manifest pointer itself becomes marker-free. After reading the owner sync state and confirming snapshot mode, the ordinary cloud reader removes that inert protocol-only marker from the reconstructed in-memory application payload. While the workspace remains in Delta mode, the reader preserves the marker for recovery logic. The downgrade does not drop schema, delete chunks, clear the pilot allowlist, or reset revision counters. The receipt is owner-bound, idempotent, and cascades on Auth-account deletion. A lost response can be retried with the same request ID without repeating the transition.
 
 ## Operator command — gated QA runtime only
 
@@ -38,8 +38,8 @@ For the authenticated QA owner, verify through the existing sync-state RPC and o
 - `mode = snapshot`;
 - `head_revision = snapshot_revision = compacted_through_revision`;
 - `snapshot_updated_at = nexus_user_data.updated_at`;
-- the active payload has no `__nexusDeltaSync` marker;
-- if `__nexusStorage = chunked-v1`, the same active manifest still resolves to the full expected payload.
+- the active JSONB payload has no `__nexusDeltaSync` marker; for chunked workspaces the active manifest pointer has no marker, and snapshot-mode cloud reads strip the historical marker from the immutable chunk payload before exposing it to the app;
+- if `__nexusStorage = chunked-v1`, the same active manifest still resolves to the full expected workspace state and feature data; only the inert protocol marker is filtered.
 
 As a database operator in the isolated QA project, additionally confirm that the owner has zero rows in `nexus_workspace_operations` and `nexus_workspace_operation_receipts`, and that only a private idempotency receipt was added. Never query or mutate another owner's records to verify the result.
 
