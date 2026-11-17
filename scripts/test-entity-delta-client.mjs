@@ -1431,7 +1431,7 @@ assert.ok(cloudSyncSource.indexOf('writeRemoteSnapshot(',legacyQueueStart)>legac
     compacted_through_revision: 7,
     snapshot_updated_at: 'snapshot-mode-stamp'
   };
-  const api = delta.createClient({
+  const api = factory({
     enabled: true,
     client: {
       auth: { getUser: async () => ({ data: { user: { id: 'account-A' } }, error: null }) },
@@ -1476,7 +1476,7 @@ assert.ok(cloudSyncSource.indexOf('writeRemoteSnapshot(',legacyQueueStart)>legac
     state: { streams: [] },
     featureState: { journal: [] }
   };
-  const api = delta.createClient({
+  const api = factory({
     enabled: true,
     client: {
       auth: { getUser: async () => ({ data: { user: { id: 'account-A' } }, error: null }) },
