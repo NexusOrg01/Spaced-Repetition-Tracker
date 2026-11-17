@@ -845,7 +845,9 @@ async function runStagingEntityDeltaSync(ownerId,signal){
    config().url==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&
    qaProject.origin==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&
    qaOrigin.protocol==='https:'&&qaOrigin.origin===String(window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN||'')&&
-   qaOrigin.hostname.endsWith('.vercel.app')&&qaOrigin.origin===String(location.origin||'');
+   qaOrigin.hostname.endsWith('.vercel.app')&&!qaOrigin.port&&!qaOrigin.username&&
+   !qaOrigin.password&&!qaOrigin.search&&!qaOrigin.hash&&
+   (qaOrigin.pathname===''||qaOrigin.pathname==='/')&&qaOrigin.origin===String(location.origin||'');
  }catch(_){hostedQaGate=false;}
  const authenticatedOwner=session&&session.user&&typeof session.user.id==='string'?session.user.id:'';
  const ownerMatches=!!ownerId&&authenticatedOwner===ownerId&&localStorage.getItem(OWNER_KEY)===ownerId;
