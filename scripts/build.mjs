@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = resolve(root, 'dist');
 const LIVE_HOST = 'txugbdavblpettcnhcxl.supabase.co';
-const HOSTED_QA_BRANCH = 'feat/dla-01-hosted-qa-gate';
+const HOSTED_QA_BRANCH = 'feat/dla-03-safe-snapshot-downgrade';
 const HOSTED_QA_PROJECT_URL = 'https://xuwfzibxhxzxxupprxsq.supabase.co';
 const HOSTED_QA_VERCEL_PROJECT_ID = 'prj_UgPzqFpvqBaKkKXi2Vm2COxqUsDi';
 const PREVIEW_BRANCHES = new Set(['feat/account-bound-offline-sync', 'ai-dev/rebuild-commerce-sync-integrity', 'ai-dev/fix-signin-preserve-offline-workspace', 'ai-dev/fix-commerce-pending-overwrite', 'ai-dev/rebuild-explore-curriculum-lifecycle', 'ai-dev/fresh-curriculum-sync-rebuild', 'android/capacitor-multistore-foundation']);
