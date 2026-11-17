@@ -24,7 +24,7 @@ const clone=value=>value===undefined?undefined:JSON.parse(JSON.stringify(value))
 function fixture(options={}){
   const calls=[];
   let intent=clone(options.intent||null);
-  let completeCalls=0,beginCalls=0,baseCommits=0;
+  let completeCalls=0,beginCalls=0,baseCommits=0,committedBaseEntries=null;
   const state=clone(options.state||{
     mode:'delta',protocol_version:1,head_revision:2,snapshot_revision:0,
     compacted_through_revision:0,snapshot_updated_at:'stamp-1'
@@ -56,16 +56,18 @@ function fixture(options={}){
       return {ok:true,created:true,intent:clone(intent)};
     },
     async markWorkspaceEntityDowngradeCheckpoint(){throw new Error('checkpoint must not be marked in a preflight-only test');},
-    async completeWorkspaceEntityDowngrade(requestedOwner,intentId,head){
+    async completeWorkspaceEntityDowngrade(requestedOwner,intentId,head,entries){
       completeCalls++;
       assert.equal(requestedOwner,owner);
       assert.equal(intentId,intent?.intentId);
       assert.equal(head,intent?.checkpointHeadRevision);
+      assert.equal(Array.isArray(entries),true,'sync base and stamp must be passed into the atomic local journal commit');
+      assert.equal(entries.length,2);
+      committedBaseEntries=clone(entries);
       if(options.completeFailure)return {ok:false,reason:options.completeFailure};
       intent=null;
       return {ok:true,cleared:true,generation:cursor?.generation,headRevision:head};
-    }
-  };
+    }  };
   const activeUser=options.activeUser===undefined?owner:options.activeUser;
   const client={
     auth:{async getUser(){return {data:{user:{id:options.authUser===undefined?owner:options.authUser}},error:null};}},
@@ -93,9 +95,9 @@ function fixture(options={}){
     commitLocalRecovery:async()=>({ok:true}),
     publishDowngradeSnapshot:async()=>({verified:true,markerRemoved:true,mode:'snapshot',
       headRevision:2,snapshotRevision:2,compactedThroughRevision:2,updated_at:'stamp-snapshot'}),
-    commitSnapshotDowngradeLocal:async()=>{baseCommits++;return true;}
+    commitSnapshotDowngradeLocal:async()=>{baseCommits++;return [\n      {key:'nexus.cloud.sync-base.v1',value:'{}'},\n      {key:'nexus.cloud.remote-stamps.v1',value:'{}'}\n    ];}
   });
-  return {api,storage,calls,state,readIntent:()=>clone(intent),
+  return {api,storage,calls,state,readIntent:()=>clone(intent),committedBaseEntries:()=>clone(committedBaseEntries),
     beginCalls:()=>beginCalls,completeCalls:()=>completeCalls,baseCommits:()=>baseCommits};
 }
 
@@ -187,6 +189,7 @@ function fixture(options={}){
   assert.equal(result.localCursorCleared,true);
   assert.equal(h.baseCommits(),1);
   assert.equal(h.completeCalls(),1);
+  assert.equal(h.committedBaseEntries().length,2);
   assert.equal(h.readIntent(),null);
 }
 {
