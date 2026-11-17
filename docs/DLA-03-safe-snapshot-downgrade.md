@@ -8,6 +8,8 @@ DLA-03 is a one-owner state transition, not a global kill switch. The client mus
 
 Before the final RPC, the client reads the checkpoint back and verifies the payload, owner, snapshot timestamp, head, snapshot revision, compaction floor, cursor, empty outbox, and absence of pending recovery state. Bounded compaction must report complete. The final SQL function repeats the critical checks while holding the workspace row and sync-state row locks.
 
+The transaction preserves the checkpoint's `nexus_user_data.updated_at` value when removing the protocol marker. This is metadata-only, so the local cursor's `snapshotUpdatedAt`, the remote `snapshot_updated_at`, and the active row timestamp remain identical. After the RPC, the client independently re-reads the cursor and outbox and refuses success unless the cursor owner/generation/revision/stamp match and the outbox and recovery journal are empty.
+
 The transaction:
 1. checks `auth.uid()` and locks only that owner's workspace and sync-state rows;
 2. accepts only the exact revision/timestamp tuple supplied by the caller;
@@ -37,7 +39,7 @@ For the authenticated QA owner, verify through the existing sync-state RPC and o
 
 - `mode = snapshot`;
 - `head_revision = snapshot_revision = compacted_through_revision`;
-- `snapshot_updated_at = nexus_user_data.updated_at`;
+- `snapshot_updated_at = nexus_user_data.updated_at` and that timestamp is unchanged by the marker-only transition;
 - the active JSONB payload has no `__nexusDeltaSync` marker; for chunked workspaces the active manifest pointer has no marker, and snapshot-mode cloud reads strip the historical marker from the immutable chunk payload before exposing it to the app;
 - if `__nexusStorage = chunked-v1`, the same active manifest still resolves to the full expected workspace state and feature data; only the inert protocol marker is filtered.
 
