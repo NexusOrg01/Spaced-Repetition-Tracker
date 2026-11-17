@@ -300,6 +300,27 @@ async function fetchRemote(userId,knownWrite,signal){
     throw chunkError;
    }
   }
+  // The immutable chunk bytes can retain the historical Delta marker after
+  // downgrade; the active manifest pointer no longer carries it. Once the
+  // owner state is snapshot mode, hide that protocol-only field from the
+  // application snapshot so legacy writers/devices see ordinary workspace JSON.
+  let syncStateQuery=client.from('nexus_workspace_sync_state')
+   .select('mode').eq('user_id',uid);
+  syncStateQuery=attachAbortSignal(syncStateQuery,activeSignal);
+  const syncStateRead=await syncStateQuery.maybeSingle();
+  if(syncStateRead&&syncStateRead.error)throw new Error(
+   'Could not verify the chunked workspace sync mode. The downloaded snapshot was not applied: '+
+   String(syncStateRead.error.message||syncStateRead.error.code||'state read failed')
+  );
+  if(syncStateRead&&syncStateRead.data&&syncStateRead.data.mode==='snapshot'&&
+     remote.payload&&remote.payload.__nexusDeltaSync==='entity-delta-v1'){
+   const snapshotPayload={...remote.payload};
+   delete snapshotPayload.__nexusDeltaSync;
+   remote={...remote,payload:snapshotPayload};
+  }else if(syncStateRead&&syncStateRead.data&&
+     !['delta','snapshot'].includes(syncStateRead.data.mode)){
+   throw new Error('The chunked workspace uses an unsupported sync mode. Local data remains preserved.');
+  }
  }else{
   lastRemoteStorageMode='legacy';
   if(remote)remote={...remote,storageMode:'legacy'};
