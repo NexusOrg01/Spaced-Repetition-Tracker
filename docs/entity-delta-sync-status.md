@@ -500,3 +500,18 @@ This is the authoritative post-merge status. Earlier entries in this file that d
 - OPS-01 uses a protected, manual-only workflow and exact versioned migration allowlist. Its creation is not a production migration run. It requires environment reviewers/secrets to be configured and an explicit separate operator run; Delta stays off even after migrations until separate acceptance.
 
 No live Nexus deployment or production Supabase data was changed by the PR work.
+
+
+### 17 November 2026 — DLA-01 hosted QA gate implementation checkpoint
+
+A separate implementation branch, `feat/dla-01-hosted-qa-gate`, adds a hosted QA gate without changing the normal hosted sync path or opening access on generic previews.
+
+- The build gate requires `NEXUS_ENTITY_DELTA_QA_ENABLED=true`, Vercel Preview context, the exact branch `feat/dla-01-hosted-qa-gate`, the exact existing QA project URL `https://xuwfzibxhxzxxupprxsq.supabase.co`, and a deployment-specific `VERCEL_URL` under `vercel.app`.
+- The generated client config contains the expected exact origin and branch ref only when every build check passes. Otherwise both hosted QA fields are false/empty. The separate local loopback gate is unchanged.
+- At runtime, Delta requires the generated hosted-QA flag, matching branch ref, exact current browser origin, exact QA Supabase project, authenticated user ID, requested owner ID, and the local owner marker to agree. A mismatched origin, project, ref, session or local owner leaves Delta closed and uses the established snapshot/chunk path.
+- The gate is Vercel-preview-only. Generic Vercel previews, Netlify/Cloudflare previews, production deployments and the production Supabase project cannot pass the build checks. The expected origin is the unique `VERCEL_URL` for the dedicated preview, not a wildcard or shared preview hostname.
+- Local loopback gate coverage is retained. Regression coverage now includes hosted positive-path build/runtime tests and negative cases for missing opt-in, wrong branch/ref, production context, generic preview, non-Vercel host, wrong project, wrong browser origin, unauthenticated/mismatched owner state and production Supabase.
+
+**QA-01 dependency discrepancy remains unresolved:** read-only verification of hosted `nexus-sync-staging` on 17 November found 4 Auth users, 4 workspaces and 4 workspace owners, with 6,275 existing chunk rows; all four workspaces remain in snapshot mode and operation/receipt tables remain empty. No separate synthetic QA owner/workspace was present. No staging rows or settings were changed. Preserve all four existing workspaces and their chunks.
+
+**Activation boundary:** no Vercel environment variable was configured, no preview was opted in, no hosted Delta RPC was invoked or granted, and no staging or production database change was made. The code-level gate is implemented on this branch but DLA-01 is **not accepted/complete** until QA-01 is independently evidenced, the dedicated preview is deployed, and the positive hosted QA path is verified on that exact origin. The PR preview remains default-off. DLA-02 (server-side pilot eligibility/RPC grants) and DLA-03 (server-side downgrade/kill switch) remain separate, later gates and must not be bypassed.
