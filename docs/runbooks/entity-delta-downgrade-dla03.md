@@ -86,23 +86,42 @@ WITH active AS (
   FROM public.nexus_user_data
   WHERE user_id = :'owner_id'::uuid
     AND payload ->> '__nexusStorage' = 'chunked-v1'
+),
+chunk_summary AS (
+  SELECT
+    a.revision_id,
+    a.expected_chunk_count,
+    a.expected_total_bytes,
+    count(c.chunk_index) AS actual_chunk_count,
+    min(c.chunk_index) AS first_chunk_index,
+    max(c.chunk_index) AS last_chunk_index,
+    min(c.chunk_count) AS min_declared_chunk_count,
+    max(c.chunk_count) AS max_declared_chunk_count,
+    COALESCE(sum(c.chunk_bytes), 0) AS declared_total_bytes,
+    COALESCE(sum(octet_length(c.chunk_data)), 0) AS actual_total_bytes,
+    COALESCE(bool_or(c.chunk_bytes <> octet_length(c.chunk_data)), false)
+      AS has_chunk_byte_mismatch,
+    string_agg(c.chunk_data, '' ORDER BY c.chunk_index) AS reconstructed_snapshot
+  FROM active AS a
+  LEFT JOIN public.nexus_user_data_chunks AS c
+    ON c.user_id = a.user_id AND c.revision_id = a.revision_id
+  GROUP BY a.revision_id, a.expected_chunk_count, a.expected_total_bytes
 )
 SELECT
-  a.revision_id,
-  a.expected_chunk_count,
-  a.expected_total_bytes,
-  count(c.chunk_index) AS actual_chunk_count,
-  min(c.chunk_index) AS first_chunk_index,
-  max(c.chunk_index) AS last_chunk_index,
-  min(c.chunk_count) AS min_declared_chunk_count,
-  max(c.chunk_count) AS max_declared_chunk_count,
-  sum(c.chunk_bytes) AS actual_total_bytes,
-  bool_or(COALESCE(c.chunk_data::jsonb ? '__nexusDeltaSync', false))
+  revision_id,
+  expected_chunk_count,
+  expected_total_bytes,
+  actual_chunk_count,
+  first_chunk_index,
+  last_chunk_index,
+  min_declared_chunk_count,
+  max_declared_chunk_count,
+  declared_total_bytes,
+  actual_total_bytes,
+  has_chunk_byte_mismatch,
+  COALESCE(reconstructed_snapshot::jsonb ? '__nexusDeltaSync', false)
     AS any_chunk_has_delta_marker
-FROM active AS a
-LEFT JOIN public.nexus_user_data_chunks AS c
-  ON c.user_id = a.user_id AND c.revision_id = a.revision_id
-GROUP BY a.revision_id, a.expected_chunk_count, a.expected_total_bytes;
+FROM chunk_summary;
 ```
 
 Expected for a chunked owner: actual count equals the manifest count; first index is 0; last index is count minus 1; both declared chunk counts equal the manifest count; summed bytes equal the manifest byte total; and any_chunk_has_delta_marker = false. The client additionally verifies exact chunk reconstruction and SHA-256 against the manifest before it requests the mode switch.
