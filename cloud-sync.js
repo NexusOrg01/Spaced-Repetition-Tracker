@@ -45,9 +45,8 @@ const SYNC_DIAG_STAGES=new Set([
  'upload-start','upload-verification-readback','workspace-merge-commit-complete','workspace-merge-commit-error',
  'workspace-merge-commit-start','workspace-merge-complete','workspace-merge-error',
  'workspace-merge-normalize-complete','workspace-merge-normalize-error','workspace-merge-normalize-start',
- 'workspace-merge-restarted','workspace-merge-start','workspace-saved-locally'
-
-  'entity-delta-downgrade-start',
+ 'workspace-merge-restarted','workspace-merge-start','workspace-saved-locally',
+ 'entity-delta-downgrade-start',
   'entity-delta-downgrade-complete',
   'entity-delta-downgrade-resume-start',
   'entity-delta-downgrade-resume-complete',
