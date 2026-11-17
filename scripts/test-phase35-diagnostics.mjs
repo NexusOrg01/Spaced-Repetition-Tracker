@@ -56,6 +56,10 @@ assert.ok(!collector.includes('JSON.stringify(history)'),'raw conflict history m
 assert.ok(source.includes('schema:4'),'diagnostic export must be versioned');
 assert.ok(source.includes('remoteHeadIsLive:false'),'remote head must be labelled last-known, not live');
 assert.ok(source.includes('rows.slice(-80).map(sanitizeSyncDiagEvent).filter(Boolean)'),'new events and stored history must be sanitized before persistence');
+const usedStages=[...new Set([...source.matchAll(/syncDiag\\('([^']+)'/g)].map(match=>match[1]))];
+const allowedStages=[...sanitizerSource.matchAll(/'([^']+)'/g)].map(match=>match[1]);
+for(const stage of usedStages)assert.ok(allowedStages.includes(stage),`sanitizer stage allowlist must include ${stage}`);
+
 assert.ok(source.includes('events:events.slice(-80).map(sanitizeSyncDiagEvent).filter(Boolean)'),'legacy stored events must be sanitized before export');
 assert.ok(!source.includes('errorMessage'),'free-form exception messages must not be written into diagnostics');
 assert.ok(!source.includes('errorCode'),'raw server/runtime error codes must not be written into diagnostics');
