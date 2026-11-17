@@ -204,6 +204,36 @@ const hostedQaEnv = {
   NEXUS_SUPABASE_URL: hostedQaProject,
   NEXUS_SUPABASE_ANON_KEY: previewEnv.NEXUS_SUPABASE_ANON_KEY
 };
+assert.equal(resolvePreviewConfig({
+  ...hostedQaEnv, NEXUS_ENTITY_DELTA_QA_ENABLED: 'false'
+}), null, 'the default hosted QA PR preview must receive no Supabase config when opt-in is absent');
+assert.equal(resolvePreviewConfig({
+  ...hostedQaEnv, NEXUS_ENTITY_DELTA_QA_ENABLED: undefined
+}), null, 'an unset hosted QA opt-in must keep the entire PR preview offline');
+assert.equal(resolvePreviewConfig({
+  ...hostedQaEnv, VERCEL_GIT_COMMIT_REF: 'feat/unapproved-preview'
+}), null, 'a different Vercel preview ref must receive no hosted QA Supabase config');
+assert.equal(resolvePreviewConfig({
+  ...hostedQaEnv, VERCEL_ENV: 'production'
+}), null, 'a production build of the QA branch must receive no Supabase config');
+assert.equal(resolvePreviewConfig({
+  ...hostedQaEnv, VERCEL_URL: ''
+}), null, 'a missing deployment origin must keep the dedicated QA preview offline');
+assert.equal(resolvePreviewConfig({
+  ...hostedQaEnv, VERCEL_URL: 'nexus-preview.vercel.app/path'
+}), null, 'an invalid deployment origin must keep the dedicated QA preview offline');
+assert.equal(resolvePreviewConfig({
+  ...hostedQaEnv, VERCEL_GIT_COMMIT_REF: undefined, VERCEL_ENV: undefined,
+  CF_PAGES: '1', CF_PAGES_BRANCH: hostedQaBranch
+}), null, 'the dedicated QA branch must not receive Supabase config from Cloudflare Pages');
+assert.throws(() => resolvePreviewConfig({
+  ...hostedQaEnv, NEXUS_SUPABASE_URL: 'https://another-staging-project.supabase.co'
+}), /exact approved nexus-sync-staging Supabase project/,
+  'the dedicated QA branch must reject any other staging project before injecting config');
+assert.throws(() => resolvePreviewConfig({
+  ...hostedQaEnv, NEXUS_SUPABASE_ANON_KEY: 'sb_secret_never_allowed'
+}), /publishable key or legacy anon JWT/,
+  'the dedicated QA branch must reject secret/service-role keys');
 const hostedQaConfig = resolvePreviewConfig(hostedQaEnv);
 assert.deepEqual(hostedQaConfig, {
   url: hostedQaProject,
