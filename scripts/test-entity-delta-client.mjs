@@ -1485,7 +1485,11 @@ assert.ok(cloudSyncSource.indexOf('writeRemoteSnapshot(',legacyQueueStart)>legac
         compacted_through_revision: 1, snapshot_updated_at: 'snapshot-stamp'
       }, error: null })
     },
-    storage: { readWorkspaceEntityRecovery: async () => ({ intent: null }) },
+    storage: {
+      readWorkspaceEntityDeltaCursor: async () => ({ ok: true, exists: false }),
+      readWorkspaceEntityOutboxGroups: async () => ({ ownerId: 'account-A', groups: [] }),
+      readWorkspaceEntityRecovery: async () => ({ intent: null })
+    },
     getActiveOwner: async () => 'account-A',
     getLocalOwner: async () => 'account-A',
     getLocalWorkspace: async () => payload,
