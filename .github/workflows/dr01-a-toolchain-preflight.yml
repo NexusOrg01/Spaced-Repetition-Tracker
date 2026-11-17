@@ -62,8 +62,8 @@ jobs:
           PGDG
 
           sudo apt-get update
-          pg_client_version="$(apt-cache madison postgresql-client-17 | awk 'NR == 1 { print $3 }')"
-          test -n "$pg_client_version"
+          pg_client_version="17.12-1.pgdg24.04+1"
+          apt-cache madison postgresql-client-17 | awk '{ print $3 }' | grep -Fx "$pg_client_version" >/dev/null
           sudo apt-get install -y --no-install-recommends "postgresql-client-17=$pg_client_version"
           printf 'PG_CLIENT_PACKAGE_VERSION=%s\n' "$pg_client_version" >> "$GITHUB_ENV"
 
