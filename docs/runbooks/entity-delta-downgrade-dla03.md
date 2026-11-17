@@ -48,8 +48,7 @@ SELECT
   s.head_revision,
   s.snapshot_revision,
   s.compacted_through_revision,
-  u.updated_at AS workspace_updated_at,
-  s.snapshot_updated_at,
+  u.updated_at AS snapshot_updated_at,
   (u.payload ? '__nexusDeltaSync') AS has_delta_marker,
   u.payload ->> '__nexusStorage' AS storage_format,
   u.payload ->> 'revisionId' AS active_chunk_revision,
@@ -61,7 +60,7 @@ JOIN public.nexus_workspace_sync_state AS s USING (user_id)
 WHERE u.user_id = :'owner_id'::uuid;
 \`\`\`
 
-Expected: exactly one owner row; mode = 'snapshot'; head_revision = snapshot_revision = compacted_through_revision; workspace_updated_at = snapshot_updated_at; has_delta_marker = false. For JSONB storage, storage_format and the chunk manifest fields are null. For a chunked workspace, storage_format = 'chunked-v1' and the manifest fields are populated.
+Expected: exactly one owner row; mode = 'snapshot'; head_revision = snapshot_revision = compacted_through_revision; has_delta_marker = false. For JSONB storage, storage_format and the chunk manifest fields are null. For a chunked workspace, storage_format = 'chunked-v1' and the manifest fields are populated.
 
 ### 2. No residual Delta operations or receipts for the owner
 
@@ -91,6 +90,7 @@ WITH active AS (
 SELECT
   a.revision_id,
   a.expected_chunk_count,
+  a.expected_total_bytes,
   count(c.chunk_index) AS actual_chunk_count,
   min(c.chunk_index) AS first_chunk_index,
   max(c.chunk_index) AS last_chunk_index,
