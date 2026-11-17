@@ -137,8 +137,9 @@ export function renderConfigScript(config, enableStagingEntityDelta = false, hos
     try {
       const origin = new URL(String(hostedQa.origin || ''));
       hostedQaEnabled = origin.protocol === 'https:' && origin.origin === String(hostedQa.origin) &&
-        origin.hostname.endsWith('.vercel.app') && !origin.username && !origin.password &&
-        !origin.search && !origin.hash && (origin.pathname === '/' || origin.pathname === '');
+        origin.hostname.endsWith('.vercel.app') && !origin.port &&
+        !origin.username && !origin.password && !origin.search && !origin.hash &&
+        (origin.pathname === '/' || origin.pathname === '');
       if (hostedQaEnabled) { hostedQaOrigin = origin.origin; hostedQaRef = HOSTED_QA_BRANCH; }
     } catch (_) { hostedQaEnabled = false; }
   }
