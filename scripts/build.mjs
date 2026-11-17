@@ -9,6 +9,7 @@ const output = resolve(root, 'dist');
 const LIVE_HOST = 'txugbdavblpettcnhcxl.supabase.co';
 const HOSTED_QA_BRANCH = 'feat/dla-01-hosted-qa-gate';
 const HOSTED_QA_PROJECT_URL = 'https://xuwfzibxhxzxxupprxsq.supabase.co';
+const HOSTED_QA_VERCEL_PROJECT_ID = 'prj_UgPzqFpvqBaKkKXi2Vm2COxqUsDi';
 const PREVIEW_BRANCHES = new Set(['feat/account-bound-offline-sync', 'ai-dev/rebuild-commerce-sync-integrity', 'ai-dev/fix-signin-preserve-offline-workspace', 'ai-dev/fix-commerce-pending-overwrite', 'ai-dev/rebuild-explore-curriculum-lifecycle', 'ai-dev/fresh-curriculum-sync-rebuild', 'android/capacitor-multistore-foundation']);
 const LOCAL_PHASE34_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 function isLocalPhase34Url(rawUrl) {
@@ -46,7 +47,9 @@ export function resolvePreviewConfig(env) {
   const isDedicatedHostedQaRef = env.VERCEL_GIT_COMMIT_REF === HOSTED_QA_BRANCH ||
     String(env.CF_PAGES_BRANCH || '').trim() === HOSTED_QA_BRANCH;
   if (isDedicatedHostedQaRef) {
-    if (env.VERCEL_ENV !== 'preview' ||
+    if (env.VERCEL !== '1' ||
+        env.VERCEL_PROJECT_ID !== HOSTED_QA_VERCEL_PROJECT_ID ||
+        env.VERCEL_ENV !== 'preview' ||
         env.VERCEL_GIT_COMMIT_REF !== HOSTED_QA_BRANCH ||
         env.NEXUS_ENTITY_DELTA_QA_ENABLED !== 'true') return null;
     const rawQaUrl = String(env.NEXUS_SUPABASE_URL || '').trim();
@@ -106,7 +109,9 @@ export function resolveStagingEntityDeltaEnabled(env, config) {
 }
 
 export function resolveHostedQaEntityDeltaEnabled(env, config) {
-  if (env.NEXUS_ENTITY_DELTA_QA_ENABLED !== 'true' ||
+  if (env.VERCEL !== '1' ||
+      env.VERCEL_PROJECT_ID !== HOSTED_QA_VERCEL_PROJECT_ID ||
+      env.NEXUS_ENTITY_DELTA_QA_ENABLED !== 'true' ||
       env.VERCEL_ENV !== 'preview' ||
       env.VERCEL_GIT_COMMIT_REF !== HOSTED_QA_BRANCH ||
       !config || config.url !== HOSTED_QA_PROJECT_URL) {
