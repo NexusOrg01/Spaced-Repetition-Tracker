@@ -61,9 +61,18 @@ DECLARE
   v_chunk_old_count bigint;
   v_chunk_new_count bigint;
   v_privileges integer;
+  v_search_path text[];
   v_injected_failure boolean := false;
   v_chunk_bytes_rejected boolean := false;
 BEGIN
+  SELECT proconfig INTO v_search_path
+  FROM pg_catalog.pg_proc
+  WHERE oid = 'public.nexus_disable_entity_delta(bigint,timestamp with time zone,jsonb)'::regprocedure;
+  IF NOT COALESCE(v_search_path @> ARRAY['search_path=""']::text[], false) THEN
+    RAISE EXCEPTION 'DLA-03 SECURITY DEFINER RPC must pin an empty search_path: %',
+      v_search_path;
+  END IF;
+
   INSERT INTO auth.users
     (id,aud,role,email,encrypted_password,email_confirmed_at,
      raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
@@ -311,7 +320,7 @@ BEGIN
   END IF;
 
   SELECT count(*) INTO v_privileges
-  FROM unnest(ARRAY['anon','authenticated']::text[]) AS roles(role_name)
+  FROM unnest(ARRAY['anon','authenticated','service_role']::text[]) AS roles(role_name)
   WHERE has_function_privilege(
     role_name,
     'public.nexus_disable_entity_delta(bigint,timestamp with time zone,jsonb)'::regprocedure,
