@@ -19,9 +19,9 @@ DLA-03 depends on DLA-02. The 17 November 2026 task tracker records DLA-02 as no
 3. Confirm there is no pending legacy snapshot, no unresolved recovery journal, and no unacknowledged entity outbox group. The coordinator repeats these checks after it acquires a persistent owner-scoped write lock.
 4. Invoke the local staging operator from the app console:
 
-   \`\`\`js
+   ```js
    await window.NexusCloudSync.downgradeEntityDeltaToSnapshot()
-   \`\`\`
+   ```
 
 5. A successful result must report ok: true and mode: "snapshot". The implementation checkpoints and compacts to the exact Delta head, publishes a full unmarked snapshot, verifies its read-back/hash, changes the owner mode and snapshot pointer in one SQL transaction, then commits the new local sync base and clears the local Delta cursor/journal atomically.
 6. On a retryable failure, keep the application data and browser storage intact. The durable downgrade journal and write lock are intentional. Restore connectivity or the missing local test dependency, then retry. A subsequent ordinary sync resumes a persisted downgrade before it attempts normal Delta sync.
@@ -41,7 +41,7 @@ Run these only against the disposable local database or a future explicitly auth
 
 ### 1. Owner mode, revisions and marker
 
-\`\`\`sql
+```sql
 SELECT
   u.user_id,
   s.mode,
@@ -58,25 +58,25 @@ SELECT
 FROM public.nexus_user_data AS u
 JOIN public.nexus_workspace_sync_state AS s USING (user_id)
 WHERE u.user_id = :'owner_id'::uuid;
-\`\`\`
+```
 
 Expected: exactly one owner row; mode = 'snapshot'; head_revision = snapshot_revision = compacted_through_revision; has_delta_marker = false. For JSONB storage, storage_format and the chunk manifest fields are null. For a chunked workspace, storage_format = 'chunked-v1' and the manifest fields are populated.
 
 ### 2. No residual Delta operations or receipts for the owner
 
-\`\`\`sql
+```sql
 SELECT
   (SELECT count(*) FROM public.nexus_workspace_operations
     WHERE user_id = :'owner_id'::uuid) AS residual_operations,
   (SELECT count(*) FROM public.nexus_workspace_operation_receipts
     WHERE user_id = :'owner_id'::uuid) AS residual_receipts;
-\`\`\`
+```
 
 Expected: both counts are zero. A non-zero count means the owner must not be treated as downgraded; investigate the checkpoint/compaction path rather than deleting rows manually.
 
 ### 3. Chunk manifest completeness (chunked workspaces only)
 
-\`\`\`sql
+```sql
 WITH active AS (
   SELECT
     user_id,
@@ -103,13 +103,13 @@ FROM active AS a
 LEFT JOIN public.nexus_user_data_chunks AS c
   ON c.user_id = a.user_id AND c.revision_id = a.revision_id
 GROUP BY a.revision_id, a.expected_chunk_count, a.expected_total_bytes;
-\`\`\`
+```
 
 Expected for a chunked owner: actual count equals the manifest count; first index is 0; last index is count minus 1; both declared chunk counts equal the manifest count; summed bytes equal the manifest byte total; and any_chunk_has_delta_marker = false. The client additionally verifies exact chunk reconstruction and SHA-256 against the manifest before it requests the mode switch.
 
 ### 4. Confirm the current browser-role grant boundary
 
-\`\`\`sql
+```sql
 SELECT
   has_function_privilege(
     'anon',
@@ -121,7 +121,7 @@ SELECT
     'public.nexus_disable_entity_delta(bigint,timestamp with time zone,jsonb)'::regprocedure,
     'EXECUTE'
   ) AS authenticated_can_execute;
-\`\`\`
+```
 
 Expected on this DLA-03 branch and while DLA-02 is incomplete: both values are false. Do not change this result with a manual grant. Any future QA grant must be part of the reviewed DLA-02 owner allowlist and its migration/test procedure.
 
