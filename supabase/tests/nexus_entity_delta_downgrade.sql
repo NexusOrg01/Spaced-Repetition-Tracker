@@ -77,7 +77,7 @@ BEGIN
     RAISE EXCEPTION 'DLA-03 JSONB operation fixture failed: %',v_operation;
   END IF;
 
-  v_expected := v_base;
+  v_expected := v_base || jsonb_build_object('testOwner','owner-A');
   v_result := public.nexus_disable_entity_delta(1,v_stamp,v_expected);
   IF v_result->>'code' <> 'verified_checkpoint_required' THEN
     RAISE EXCEPTION 'Downgrade accepted a Delta head that was not checkpointed: %',v_result;
@@ -89,7 +89,7 @@ BEGIN
   END IF;
 
   v_snapshot := public.nexus_publish_entity_snapshot(1,v_stamp,
-    v_base || jsonb_build_object('__nexusDeltaSync','entity-delta-v1'));
+    v_expected || jsonb_build_object('__nexusDeltaSync','entity-delta-v1'));
   IF v_snapshot->>'ok' <> 'true'
      OR (v_snapshot->>'snapshot_revision')::bigint <> 1
      OR (v_snapshot->>'compacted_through_revision')::bigint <> 1 THEN
