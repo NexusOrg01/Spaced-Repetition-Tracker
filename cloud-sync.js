@@ -36,7 +36,7 @@ function syncDiagSummary(payload){
 }
 const SYNC_DIAG_STAGES=new Set([
  'auth-event','cloud-chunk-read-error','cloud-read','cloud-read-error','cloud-write-complete','cloud-write-error',
- 'curriculum-install-save-requested','delta-sync-result','diagnostics-enabled','initialize-after-cloud-read',
+ 'curriculum-install-save-requested','delta-snapshot-downgrade-result','delta-sync-result','diagnostics-enabled','initialize-after-cloud-read',
  'initialize-error','initialize-finished','initialize-settled','initialize-start','local-save-queue-error',
  'local-save-queued','local-storage-flush','offline-account-base-unavailable','offline-account-pending-unavailable',
  'offline-account-queue-rebuilt','offline-account-recovery-error','offline-account-workspace-restored',
