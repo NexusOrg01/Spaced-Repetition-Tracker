@@ -852,6 +852,30 @@ async function runStagingEntityDeltaSync(ownerId,signal){
  const gateOpen=ownerMatches&&(localGateOpen||hostedQaGate);
  if(recoveryPending&&!gateOpen)return {blockedRecovery:true,reason:'staging_recovery_journal_pending'};
  if(!gateOpen)return {skipped:true,reason:'staging_delta_gate_closed'};
+ // DLA-01 deliberately leaves hosted workspaces in snapshot mode. Before
+ // attempting any Delta RPC, read this owner's state through the existing
+ // RLS-filtered SELECT grant. No row or snapshot mode means use the established
+ // snapshot/chunk writer. A read error or unknown mode fails closed; never
+ // downgrade a workspace that may already be in Delta mode.
+ if(!recoveryPending){
+  await assertActiveUser(ownerId);
+  let stateQuery=client.from('nexus_workspace_sync_state')
+   .select('mode').eq('user_id',ownerId);
+  stateQuery=attachAbortSignal(stateQuery,signal);
+  const stateRead=await stateQuery.maybeSingle();
+  if(stateRead.error)throw new Error(
+   'Could not safely verify this workspace sync mode. The snapshot writer was not started: '+
+   String(stateRead.error.message||stateRead.error.code||'remote state read failed')
+  );
+  await assertActiveUser(ownerId);
+  if(!stateRead.data||stateRead.data.mode==='snapshot'){
+   return {skipped:true,mode:'snapshot',
+    reason:stateRead.data?'server_snapshot_mode':'server_sync_state_missing'};
+  }
+  if(stateRead.data.mode!=='delta'){
+   throw new Error('The remote workspace has an unsupported sync mode. The snapshot writer was not started.');
+  }
+ }
  const delta=window.NexusEntityDeltaSync,chunkStorage=window.NexusCloudChunkStorage;
  if(!queue||!storage||!delta||typeof delta.createClient!=='function'||
     !chunkStorage||typeof chunkStorage.writeDeltaSnapshot!=='function'||
