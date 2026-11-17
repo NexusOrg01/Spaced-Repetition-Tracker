@@ -257,9 +257,11 @@ BEGIN
          updated_at = clock_timestamp()
    WHERE sync_state.user_id = v_uid;
 
+  -- This is a protocol-metadata-only pointer update. Keep the verified
+  -- checkpoint's updated_at unchanged so every device's committed local
+  -- Delta cursor remains aligned with snapshot_updated_at after the mode flip.
   UPDATE public.nexus_user_data AS workspace
-     SET payload = workspace.payload - '__nexusDeltaSync',
-         updated_at = clock_timestamp()
+     SET payload = workspace.payload - '__nexusDeltaSync'
    WHERE workspace.user_id = v_uid
    RETURNING workspace.updated_at INTO v_result_updated_at;
 
@@ -297,6 +299,6 @@ GRANT EXECUTE ON FUNCTION public.nexus_disable_entity_delta(
 COMMENT ON FUNCTION public.nexus_disable_entity_delta(
   uuid, bigint, timestamptz, bigint, bigint
 ) IS
-  'DLA-03 owner-scoped atomic Delta-to-snapshot downgrade. Requires an exact fully compacted head and active checkpoint, preserves chunk storage, and records an Auth-cascading idempotency receipt.';
+  'DLA-03 owner-scoped atomic Delta-to-snapshot downgrade. Requires an exact fully compacted head and active checkpoint, preserves chunk storage and checkpoint timestamp/cursor alignment, and records an Auth-cascading idempotency receipt.';
 
 COMMIT;
