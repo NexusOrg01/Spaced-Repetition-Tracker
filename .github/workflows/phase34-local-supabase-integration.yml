@@ -203,7 +203,8 @@ jobs:
             'public.nexus_publish_entity_operation(text,bigint,jsonb)',
             'public.nexus_read_entity_operations(bigint,integer,integer)',
             'public.nexus_publish_entity_snapshot(bigint,timestamp with time zone,jsonb)',
-            'public.nexus_compact_entity_operations(integer)'
+            'public.nexus_compact_entity_operations(integer)',
+            'public.nexus_disable_entity_delta(uuid,bigint,timestamp with time zone,bigint,bigint)'
           ]::text[]) AS signatures(signature)
           WHERE has_function_privilege('anon', signature, 'EXECUTE')
              OR has_function_privilege('authenticated', signature, 'EXECUTE')
