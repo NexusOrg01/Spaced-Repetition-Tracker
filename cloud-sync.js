@@ -862,7 +862,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   const qaOrigin=new URL(String(window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN||''));
   const qaProject=new URL(config().url);
   hostedQaGate=window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA===true&&
-   window.NEXUS_ENTITY_DELTA_SYNC_QA_REF==='feat/dla-01-hosted-qa-gate'&&
+   window.NEXUS_ENTITY_DELTA_SYNC_QA_REF==='feat/dla-03-safe-snapshot-downgrade'&&
    config().url==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&
    qaProject.origin==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&
    qaOrigin.protocol==='https:'&&qaOrigin.origin===String(window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN||'')&&
