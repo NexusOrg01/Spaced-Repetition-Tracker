@@ -197,6 +197,7 @@ const hostedQaBranch = 'feat/dla-01-hosted-qa-gate';
 const hostedQaProject = 'https://xuwfzibxhxzxxupprxsq.supabase.co';
 const hostedQaEnv = {
   VERCEL: '1',
+  VERCEL_PROJECT_ID: 'prj_UgPzqFpvqBaKkKXi2Vm2COxqUsDi',
   VERCEL_ENV: 'preview',
   VERCEL_GIT_COMMIT_REF: hostedQaBranch,
   VERCEL_URL: 'nexus-dla-01-git-feat-dla-01-hosted-qa-gate-recall-ed03.vercel.app',
@@ -207,6 +208,12 @@ const hostedQaEnv = {
 assert.equal(resolvePreviewConfig({
   ...hostedQaEnv, NEXUS_ENTITY_DELTA_QA_ENABLED: 'false'
 }), null, 'the default hosted QA PR preview must receive no Supabase config when opt-in is absent');
+assert.equal(resolvePreviewConfig({
+  ...hostedQaEnv, VERCEL: undefined
+}), null, 'a non-Vercel build must not receive hosted QA Supabase config even if other Vercel markers are copied');
+assert.equal(resolvePreviewConfig({
+  ...hostedQaEnv, VERCEL_PROJECT_ID: 'prj_unapproved_project'
+}), null, 'a different Vercel project must not receive hosted QA Supabase config');
 assert.equal(resolvePreviewConfig({
   ...hostedQaEnv, NEXUS_ENTITY_DELTA_QA_ENABLED: undefined
 }), null, 'an unset hosted QA opt-in must keep the entire PR preview offline');
@@ -254,6 +261,12 @@ assert.ok(renderConfigScript(hostedQaConfig, false, null).includes('window.NEXUS
 assert.equal(resolveHostedQaEntityDeltaEnabled({
   ...hostedQaEnv, NEXUS_ENTITY_DELTA_QA_ENABLED: 'false'
 }, hostedQaConfig).enabled, false, 'missing explicit hosted QA opt-in must leave Delta disabled');
+assert.equal(resolveHostedQaEntityDeltaEnabled({
+  ...hostedQaEnv, VERCEL: undefined
+}, hostedQaConfig).enabled, false, 'a non-Vercel platform must not generate an enabled hosted QA runtime gate');
+assert.equal(resolveHostedQaEntityDeltaEnabled({
+  ...hostedQaEnv, VERCEL_PROJECT_ID: 'prj_unapproved_project'
+}, hostedQaConfig).enabled, false, 'a different Vercel project must not generate an enabled hosted QA runtime gate');
 assert.equal(resolveHostedQaEntityDeltaEnabled({
   ...hostedQaEnv, VERCEL_GIT_COMMIT_REF: 'main'
 }, hostedQaConfig).enabled, false, 'production/main refs must not enable hosted QA');
