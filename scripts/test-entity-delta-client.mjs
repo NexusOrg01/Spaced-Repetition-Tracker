@@ -1202,9 +1202,10 @@ const hostedSnapshotMode=makeStagingRuntimeHarness({
   remoteState:{mode:'snapshot',protocol_version:1}
 });
 const hostedSnapshotResult=await hostedSnapshotMode.run('account-A',stagingSignal);
-assert.deepEqual(hostedSnapshotResult,
-  {skipped:true,mode:'snapshot',reason:'server_snapshot_mode'},
+assert.equal(hostedSnapshotResult.skipped,true,
   'a hosted QA workspace still in snapshot mode must use the established snapshot/chunk path');
+assert.equal(hostedSnapshotResult.mode,'snapshot');
+assert.equal(hostedSnapshotResult.reason,'server_snapshot_mode');
 assert.equal(hostedSnapshotMode.calls.createClient,0,
   'snapshot-mode workspaces must not invoke Delta RPCs');
 assert.equal(hostedSnapshotMode.calls.stateRead.filterValue,'account-A',
