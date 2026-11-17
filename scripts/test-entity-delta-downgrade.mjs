@@ -123,7 +123,10 @@ function fixture(options={}){
     commitLocalRecovery:async()=>({ok:true}),
     publishDowngradeSnapshot:async()=>({verified:true,markerRemoved:true,mode:'snapshot',
       headRevision:2,snapshotRevision:2,compactedThroughRevision:2,updated_at:'stamp-snapshot'}),
-    commitSnapshotDowngradeLocal:async()=>{baseCommits++;return [\n      {key:'nexus.cloud.sync-base.v1',value:'{}'},\n      {key:'nexus.cloud.remote-stamps.v1',value:'{}'}\n    ];}
+    commitSnapshotDowngradeLocal:async()=>{baseCommits++;return [
+      {key:'nexus.cloud.sync-base.v1',value:'{}'},
+      {key:'nexus.cloud.remote-stamps.v1',value:'{}'}
+    ];}
   });
   return {api,storage,calls,state,readIntent:()=>clone(intent),committedBaseEntries:()=>clone(committedBaseEntries),
     beginCalls:()=>beginCalls,completeCalls:()=>completeCalls,baseCommits:()=>baseCommits};
