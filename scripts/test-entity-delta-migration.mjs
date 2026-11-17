@@ -165,6 +165,7 @@ assert.doesNotMatch(pilotEligibility, /INSERT INTO nexus_private\.entity_delta_p
   'the committed migration must not pre-authorize any account');
 assert.ok(pilotEligibility.includes('pilot.user_id = v_uid'));
 assert.ok(pilotEligibility.includes('pilot.enabled IS TRUE'));
+assert.ok(pilotEligibility.includes('FOR SHARE;'), 'the allowlist decision must remain stable throughout enablement');
 assert.ok(pilotEligibility.includes("'pilot_not_enabled'"));
 assert.ok(pilotEligibility.includes('public.nexus_workspace_sync_state,'));
 assert.ok(pilotEligibility.includes('public.nexus_workspace_operations,'));
