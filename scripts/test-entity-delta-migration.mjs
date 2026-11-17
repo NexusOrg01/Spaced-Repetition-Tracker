@@ -18,6 +18,7 @@ const chunkManifestDeletionTest = read('supabase/tests/nexus_user_data_chunks_ac
 const activeManifestRaceRunner = read('scripts/test-active-manifest-race.mjs');
 const downgradeMigration = read('supabase/delta-rollout/20261117160000_owner_scoped_entity_delta_downgrade.sql');
 const downgradeSqlTest = read('supabase/tests/nexus_entity_delta_downgrade.sql');
+const downgradeRunbook = read('docs/runbooks/entity-delta-downgrade-dla03.md');
 
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_sync_state/);
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_operation_receipts/);
@@ -184,5 +185,15 @@ assert.match(read('scripts/prepare-phase34-local-supabase.mjs'), /supabase','del
   'the DLA-03 SQL must be copied only into the generated local test database');
 assert.doesNotMatch(read('scripts/prepare-phase34-local-supabase.mjs'), /nexus_disable_entity_delta.*GRANT/,
   'the local preparation script must not grant the new RPC to browser roles');
+
+assert.match(downgradeRunbook, /depends on DLA-02/i);
+assert.match(downgradeRunbook, /deliberately outside supabase\/migrations/i);
+assert.match(downgradeRunbook, /downgradeEntityDeltaToSnapshot/);
+assert.match(downgradeRunbook, /has_function_privilege/);
+assert.match(downgradeRunbook, /residual_operations/);
+assert.match(downgradeRunbook, /any_chunk_has_delta_marker/);
+assert.match(downgradeRunbook, /Read-only post-downgrade checks/);
+assert.doesNotMatch(downgradeRunbook, /GRANT EXECUTE ON FUNCTION/);
+
 
 console.log('Nexus entity-delta migration and staging-test contract checks passed.');
