@@ -1413,4 +1413,92 @@ assert.match(uploadGateBlock,/if\(!deltaResult\.skipped\)\{[\s\S]*?return true;/
 assert.ok(cloudSyncSource.indexOf('writeRemoteSnapshot(',legacyQueueStart)>legacyQueueStart,
   'the unchanged compatibility snapshot writer must remain available after a skipped delta gate');
 
+// DLA-03: an already-downgraded owner can verify snapshot mode idempotently
+// without invoking Delta synchronization or attempting another server transition.
+{
+  const payload = {
+    app: 'Nexus Spaced Repetition Tracker',
+    schema: 4,
+    state: { streams: [{ id: 'snapshot-stream' }], subjects: [], topics: [], history: [], exams: [] },
+    featureState: { journal: [], papers: [], goals: [], studyLogs: [] }
+  };
+  const rpcCalls = [];
+  const rpcState = {
+    mode: 'snapshot',
+    protocol_version: 1,
+    head_revision: 7,
+    snapshot_revision: 7,
+    compacted_through_revision: 7,
+    snapshot_updated_at: 'snapshot-mode-stamp'
+  };
+  const api = delta.createClient({
+    enabled: true,
+    client: {
+      auth: { getUser: async () => ({ data: { user: { id: 'account-A' } }, error: null }) },
+      rpc: async name => {
+        rpcCalls.push(name);
+        if (name === 'nexus_get_entity_sync_state') return { data: rpcState, error: null };
+        throw new Error('Unexpected RPC in idempotent snapshot mode: ' + name);
+      }
+    },
+    storage: {
+      readWorkspaceEntityDeltaCursor: async () => ({ ok: true, exists: false }),
+      readWorkspaceEntityOutboxGroups: async () => ({ ownerId: 'account-A', groups: [] }),
+      readWorkspaceEntityRecovery: async () => ({ intent: null })
+    },
+    getActiveOwner: async () => 'account-A',
+    getLocalOwner: async () => 'account-A',
+    getLocalBase: async () => ({ ...payload, serverVersion: 'snapshot-mode-stamp' }),
+    getLocalWorkspace: async () => payload,
+    getPendingSnapshot: async () => null,
+    readRemoteSnapshot: async () => ({ payload, updated_at: 'snapshot-mode-stamp' }),
+    sameWorkspace: async (left, right) => JSON.stringify(left.state) === JSON.stringify(right.state) &&
+      JSON.stringify(left.featureState) === JSON.stringify(right.featureState),
+    mergeWorkspace: (base, local) => local,
+    publishSnapshot: async () => { throw new Error('No Delta snapshot publication is allowed in snapshot mode.'); },
+    commitLocalRecovery: async () => { throw new Error('No Delta local recovery commit is allowed in snapshot mode.'); },
+    disableSnapshot: async () => { throw new Error('No second disable RPC is needed in snapshot mode.'); }
+  });
+  const result = await api.downgradeToSnapshot('account-A');
+  assert.equal(result.ok, true, 'the already-snapshot owner should pass read-only verification');
+  assert.equal(result.downgraded, true);
+  assert.equal(result.alreadyDowngraded, true);
+  assert.equal(result.mode, 'snapshot');
+  assert.equal(result.headRevision, 7);
+  assert.deepEqual(rpcCalls, ['nexus_get_entity_sync_state', 'nexus_get_entity_sync_state'],
+    'an already-snapshot account must be verified twice without issuing the transition RPC');
+}
+
+// A queued compatibility snapshot prevents a false success report even if the
+// remote owner is already in snapshot mode.
+{
+  const payload = {
+    state: { streams: [] },
+    featureState: { journal: [] }
+  };
+  const api = delta.createClient({
+    enabled: true,
+    client: {
+      auth: { getUser: async () => ({ data: { user: { id: 'account-A' } }, error: null }) },
+      rpc: async () => ({ data: {
+        mode: 'snapshot', head_revision: 1, snapshot_revision: 1,
+        compacted_through_revision: 1, snapshot_updated_at: 'snapshot-stamp'
+      }, error: null })
+    },
+    storage: { readWorkspaceEntityRecovery: async () => ({ intent: null }) },
+    getActiveOwner: async () => 'account-A',
+    getLocalOwner: async () => 'account-A',
+    getLocalWorkspace: async () => payload,
+    getPendingSnapshot: async () => ({ status: 'pending' }),
+    readRemoteSnapshot: async () => ({ payload, updated_at: 'snapshot-stamp' }),
+    sameWorkspace: async () => true,
+    publishSnapshot: async () => ({ verified: true }),
+    commitLocalRecovery: async () => ({ ok: true }),
+    disableSnapshot: async () => ({ data: { ok: true, mode: 'snapshot' } })
+  });
+  const result = await api.downgradeToSnapshot('account-A');
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'compatibility_snapshot_still_pending');
+}
+
 console.log('Nexus entity-delta client and cloud-sync integration tests passed: feature gate, baseline verification, stable receipt retry, owner checks, conflict safety, and strict remote-page validation and bounded three-way recovery preparation.');
