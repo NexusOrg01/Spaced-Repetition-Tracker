@@ -1712,10 +1712,20 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(checkpointRestart.api.getStatus().entityDowngradeLocked,true,
     'the checkpointed intent must continue holding the local account write lock after restart');
 
+  const baseEntry={key:'nexus.cloud.sync-base.v1',value:JSON.stringify({
+    [owner]:{state,featureState:features,serverVersion:'dla03-final-snapshot-stamp'}
+  })};
+  const stampEntry={key:'nexus.cloud.remote-stamps.v1',value:JSON.stringify({
+    [owner]:'dla03-final-snapshot-stamp'
+  })};
   const finished=await checkpointRestart.api.completeWorkspaceEntityDowngrade(
-    owner,intentId,4);
+    owner,intentId,4,[baseEntry,stampEntry]);
   assert.equal(finished.ok,true);
   assert.equal(finished.cleared,true);
+  assert.equal(checkpointRestart.context.window.localStorage.getItem(baseEntry.key),baseEntry.value,
+    'the verified snapshot becomes the local sync base in the same IndexedDB transaction that clears Delta metadata');
+  assert.equal(checkpointRestart.context.window.localStorage.getItem(stampEntry.key),stampEntry.value,
+    'the snapshot compare-and-swap timestamp is committed with the local sync base');
   assert.equal(checkpointRestart.api.getStatus().entityDowngradeLocked,false,
     'the downgrade lock must release only after the verified snapshot-mode receipt is adopted');
   assert.equal(await checkpointRestart.api.readWorkspaceEntityDowngrade(owner),null);
