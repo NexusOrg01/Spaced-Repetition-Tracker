@@ -14,7 +14,7 @@ const migrations=[
 '20261114093000_harden_nexus_entity_delta_record_identity.sql',
 '20261114103353_protect_active_nexus_chunk_manifests.sql',
 '20261115171500_validate_general_snapshot_candidates.sql',
-'20261117100000_add_entity_delta_pilot_eligibility.sql'
+'20261117083717_add_entity_delta_pilot_eligibility.sql'
 ];
 await rm(target,{recursive:true,force:true});
 await mkdir(target,{recursive:true});
