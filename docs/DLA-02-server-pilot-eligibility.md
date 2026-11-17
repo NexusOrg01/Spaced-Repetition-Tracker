@@ -17,7 +17,7 @@ The migration itself does not insert an account, change a workspace mode, or add
 
 ## Staging operator procedure
 
-Only run the following after the migration has been reviewed and applied to the isolated staging project `nexus-sync-staging`. Do not run it against `nexus-spaced-repetition` or any production environment.
+Only run the following after the migration has been reviewed, the exact QA owner identity has been reconciled against QA-01 and the latest task ledger, and an owner-approved staging action has been recorded. The live staging allowlist already has an enabled row; do not repeat the INSERT as a routine merge step. Do not run this procedure against `nexus-spaced-repetition` or any production environment.
 
 1. Confirm the intended staging Auth identity and workspace owner by a read-only query. Verify the workspace's mode is `snapshot`.
 2. Insert exactly that owner into the private allowlist with an explicit reason. Use the owner UUID obtained from the live staging Auth record; never copy a UUID from this document or a different environment.
@@ -41,9 +41,19 @@ SET enabled = EXCLUDED.enabled,
 
 The row is an eligibility decision only. It does not mean the user has been switched to Delta. DLA-03 must provide the verified owner-scoped downgrade/kill switch before any hosted Delta pilot; DLA-04 must then run the full two-device test matrix and cleanup report.
 
-## QA identity qualification
+## QA identity reconciliation — outstanding
 
-The DLA-01 implementation checkpoint explicitly records that the current staging-login workspace was owner-designated as the non-destructive QA workspace and that no separate synthetic Auth identity was created. This implementation follows that explicit designation; it must not be described as a newly created synthetic account. This is a documented deviation from the earlier roadmap's phrase “synthetic QA owner.” If the owner later requires a separate synthetic identity, create and independently verify that identity/workspace in staging before moving to DLA-04.
+The QA-01 owner-approved completion evidence records a specific scope decision: reuse the supplied existing staging login/workspace, rather than create a fifth Auth user. That supersedes the earlier roadmap wording that requested a new synthetic QA owner.
+
+A later read-only inspection of live `nexus-sync-staging` on 17 November 2026 found a different current state:
+
+- 5 Auth users, 5 workspace payloads and 5 sync-state rows.
+- Four pre-existing owners/workspaces have 5,495 chunk rows in total.
+- One additional Auth user and workspace were created on 17 November; that workspace currently has no chunk rows.
+- The private allowlist has two rows: one enabled and one disabled. The enabled row belongs to the additional same-day Auth user.
+- All five workspaces remain in `snapshot` mode; there are zero Delta operation rows and zero receipt rows.
+
+This read-only inventory confirms that the additional identity and enabled allowlist row exist, but it does not establish that creating and enabling this fifth identity was authorized under the QA-01 scope decision. The latest task tracker accordingly leaves hosted identity reconciliation pending. Do not describe the fifth identity as owner-approved, do not delete or reassign either allowlist row, and do not change staging data as part of a code merge. Before DLA-04, the owner must reconcile the difference and record the accepted QA owner/workspace in the active ledger.
 
 ## Tests
 
