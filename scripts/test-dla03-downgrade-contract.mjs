@@ -37,6 +37,10 @@ assert.ok(clientDowngrade.indexOf("if(state.mode==='snapshot')") <
   clientDowngrade.indexOf("let synchronized=await synchronize"),
   'An already-disabled account must be verified before the Delta synchronizer is called.');
 assert.match(clientDowngrade, /compatibility_snapshot_still_pending/);
+assert.match(clientDowngrade, /verifyDowngradedSnapshot/);
+assert.match(clientDowngrade, /downgraded_snapshot_cursor_not_verified/);
+assert.match(clientDowngrade, /downgraded_snapshot_outbox_not_empty/);
+assert.match(clientDowngrade, /cursor\\.snapshotUpdatedAt!==verified\\.remote\\.updated_at/);
 
 assert.match(client, /readWorkspaceEntityDeltaCursor/);
 assert.match(client, /readWorkspaceEntityOutboxGroups/);
