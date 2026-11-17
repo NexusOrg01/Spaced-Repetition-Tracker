@@ -110,6 +110,7 @@ class DeltaMemoryCloud extends MemoryCloud{
   this.syncStates=new Map();
   this.rpcCalls=[];
   this.failDeltaResponseAfterCommit=false;
+  this.failDowngradeResponseAfterCommit=false;
   this.compactionRemainingOperations=0;
   this.compactionRemainingReceipts=0;
   this.compactionError=null;
@@ -121,6 +122,55 @@ class DeltaMemoryCloud extends MemoryCloud{
    if(this.activeUser!==OWNER_A&&this.activeUser!==OWNER_B)return {data:null,error:{code:'42501',message:'authentication required'}};
    const state=this.syncStates.get(this.activeUser);
    return state?{data:{...state},error:null}:{data:null,error:{code:'PGRST116',message:'sync state missing'}};
+  }
+  if(name==='nexus_disable_entity_delta'){
+   const owner=this.activeUser,row=this.rows.get(owner),state=this.syncStates.get(owner),
+    candidate=args&&args.p_snapshot_payload;
+   if(!row||!state)return {data:null,error:{code:'55000',message:'downgrade state missing'}};
+   if(state.mode==='snapshot'&&state.head_revision===state.snapshot_revision&&
+      state.snapshot_revision===state.compacted_through_revision&&
+      JSON.stringify(row.payload)===JSON.stringify(candidate)&&
+      row.payload?.__nexusDeltaSync===undefined){
+    return {data:{ok:true,mode:'snapshot',already_downgraded:true,
+     head_revision:state.head_revision,snapshot_revision:state.snapshot_revision,
+     compacted_through_revision:state.compacted_through_revision,
+     snapshot_updated_at:row.updated_at,storage_mode:row.payload?.__nexusStorage==='chunked-v1'?'chunked':'jsonb'},error:null};
+   }
+   if(state.mode!=='delta'||row.payload?.__nexusDeltaSync!=='entity-delta-v1')
+    return {data:{ok:false,code:'delta_not_enabled'},error:null};
+   if(Number(args.p_expected_head_revision)!==state.head_revision||
+      args.p_expected_updated_at!==row.updated_at)
+    return {data:{ok:false,code:'revision_conflict',head_revision:state.head_revision,
+      snapshot_updated_at:row.updated_at},error:null};
+   if(state.head_revision!==state.snapshot_revision||
+      state.snapshot_revision!==state.compacted_through_revision)
+    return {data:{ok:false,code:'verified_checkpoint_required'},error:null};
+   if(!candidate||candidate.__nexusDeltaSync!==undefined)
+    return {data:{ok:false,code:'invalid_unmarked_snapshot'},error:null};
+   if(row.payload.__nexusStorage==='chunked-v1'&&candidate.__nexusStorage!=='chunked-v1')
+    return {data:{ok:false,code:'chunked_storage_must_be_preserved'},error:null};
+   if(candidate.__nexusStorage==='chunked-v1'){
+    const rows=this.chunks.filter(item=>item.user_id===owner&&item.revision_id===candidate.revisionId);
+    if(rows.length!==candidate.chunkCount||
+       rows.reduce((total,item)=>total+item.chunk_bytes,0)!==candidate.totalBytes)
+     return {data:{ok:false,code:'unmarked_chunk_manifest_incomplete'},error:null};
+   }else if(!candidate.state||!Array.isArray(candidate.state.streams)||
+      !candidate.featureState||typeof candidate.featureState!=='object'){
+    return {data:{ok:false,code:'invalid_unmarked_snapshot'},error:null};
+   }
+   const stamp='snapshot-downgrade-'+this.rpcCalls.length;
+   row.payload={...candidate};row.updated_at=stamp;
+   state.mode='snapshot';state.snapshot_revision=state.head_revision;
+   state.compacted_through_revision=state.head_revision;state.snapshot_updated_at=stamp;
+   const data={ok:true,mode:'snapshot',already_downgraded:false,
+    head_revision:state.head_revision,snapshot_revision:state.snapshot_revision,
+    compacted_through_revision:state.compacted_through_revision,
+    snapshot_updated_at:stamp,storage_mode:candidate.__nexusStorage==='chunked-v1'?'chunked':'jsonb'};
+   if(this.failDowngradeResponseAfterCommit){
+    this.failDowngradeResponseAfterCommit=false;
+    return {data:null,error:{code:'57014',message:'simulated lost downgrade response'}};
+   }
+   return {data,error:null};
   }
   if(name==='nexus_compact_entity_operations'){
    if(this.compactionError)return {data:null,error:this.compactionError};
@@ -501,4 +551,99 @@ assert.equal(wrongOwnerDelta.code,'NEXUS_ENTITY_DELTA_OWNER_MISMATCH',
 assert.equal(wrongOwnerDeltaCloud.rpcCalls.length,0,'wrong-owner recovery must not call any RPC');
 
 
-console.log('Cloud chunk storage tests passed: UTF-8 and 27 MB chunking, active-manifest retention, bounded/repeatable orphan cleanup, snapshot-mode legacy compatibility, JSONB and chunked delta downgrade rejection, CAS conflicts, corruption rejection, owner isolation, and interrupted-upload recovery.');
+
+const downgradeJsonCloud=new DeltaMemoryCloud();
+const downgradeJsonBaseline=seedDeltaCloud(downgradeJsonCloud);
+downgradeJsonCloud.syncStates.set(OWNER_A,{mode:'delta',protocol_version:1,
+ head_revision:4,snapshot_revision:4,compacted_through_revision:4,
+ snapshot_updated_at:'delta-baseline-stamp'});
+const downgradeJsonPayload={...downgradeJsonBaseline};
+delete downgradeJsonPayload.__nexusDeltaSync;
+const downgradeJson=await chunks.writeDowngradeSnapshot(downgradeJsonCloud,OWNER_A,
+ downgradeJsonPayload,4,'delta-baseline-stamp');
+assert.equal(downgradeJson.verified,true,
+ 'a JSONB downgrade must verify the owner-bound unmarked snapshot after the atomic mode switch');
+assert.equal(downgradeJson.markerRemoved,true);
+assert.equal(downgradeJson.mode,'snapshot');
+assert.equal(downgradeJson.storageMode,'jsonb');
+assert.equal(downgradeJsonCloud.syncStates.get(OWNER_A).mode,'snapshot');
+assert.equal(downgradeJsonCloud.rows.get(OWNER_A).payload.__nexusDeltaSync,undefined);
+assert.equal(downgradeJsonCloud.rpcCalls.filter(call=>call.name==='nexus_disable_entity_delta').length,1);
+
+const interruptedDowngradeCloud=new DeltaMemoryCloud();
+const interruptedBaseline=seedDeltaCloud(interruptedDowngradeCloud);
+interruptedDowngradeCloud.syncStates.set(OWNER_A,{mode:'delta',protocol_version:1,
+ head_revision:4,snapshot_revision:4,compacted_through_revision:4,
+ snapshot_updated_at:'delta-baseline-stamp'});
+interruptedDowngradeCloud.failDowngradeResponseAfterCommit=true;
+const interruptedDowngradePayload={...interruptedBaseline};
+delete interruptedDowngradePayload.__nexusDeltaSync;
+const interruptedDowngrade=await chunks.writeDowngradeSnapshot(interruptedDowngradeCloud,OWNER_A,
+ interruptedDowngradePayload,4,'delta-baseline-stamp');
+assert.equal(interruptedDowngrade.verified,true,
+ 'a lost mode-switch response must be adopted only after server state and snapshot read-back verification');
+assert.equal(interruptedDowngradeCloud.syncStates.get(OWNER_A).mode,'snapshot');
+assert.equal(interruptedDowngradeCloud.rows.get(OWNER_A).payload.__nexusDeltaSync,undefined);
+
+const chunkDowngradeCloud=new DeltaMemoryCloud();
+const chunkedBaselinePayload=makePayload('chunked-delta-baseline',12);
+const chunkedBaselineWrite=await chunks.writeSnapshot(chunkDowngradeCloud,OWNER_A,
+ chunkedBaselinePayload,null,'chunked-delta-baseline-stamp',backup);
+const oldChunkRevision=chunkedBaselineWrite.manifest.revisionId;
+chunkDowngradeCloud.rows.get(OWNER_A).payload.__nexusDeltaSync='entity-delta-v1';
+chunkDowngradeCloud.syncStates.set(OWNER_A,{mode:'delta',protocol_version:1,
+ head_revision:6,snapshot_revision:6,compacted_through_revision:6,
+ snapshot_updated_at:chunkedBaselineWrite.updated_at});
+const chunkDowngradePayload=makePayload('chunked-delta-downgrade',40);
+const chunkDowngrade=await chunks.writeDowngradeSnapshot(chunkDowngradeCloud,OWNER_A,
+ chunkDowngradePayload,6,chunkedBaselineWrite.updated_at);
+assert.equal(chunkDowngrade.verified,true);
+assert.equal(chunkDowngrade.storageMode,'chunked',
+ 'a chunked workspace must remain chunked through downgrade even when a compact payload could fit JSONB');
+assert.equal(chunkDowngrade.mode,'snapshot');
+assert.equal(chunkDowngrade.markerRemoved,true);
+assert.notEqual(chunkDowngrade.manifest.revisionId,oldChunkRevision,
+ 'downgrade must publish a fresh immutable unmarked revision, never edit the Delta chunks in place');
+assert.equal(chunkDowngradeCloud.rows.get(OWNER_A).payload.revisionId,chunkDowngrade.manifest.revisionId);
+assert.equal(chunkDowngradeCloud.rows.get(OWNER_A).payload.__nexusDeltaSync,undefined);
+assert.ok(chunkDowngradeCloud.chunks.some(row=>row.revision_id===oldChunkRevision),
+ 'the old Delta chunk revision must be retained after the active pointer changes');
+assert.deepEqual(await chunks.readSnapshot(chunkDowngradeCloud,OWNER_A,chunkDowngrade.manifest),
+ chunkDowngradePayload,'the new active unmarked chunk revision must reconstruct the exact candidate');
+assert.equal(chunkDowngradeCloud.chunks.filter(row=>row.revision_id===chunkDowngrade.manifest.revisionId)
+ .some(row=>row.chunk_data.includes('__nexusDeltaSync')) ,false,
+ 'the serialized chunk data itself must not retain the Delta marker');
+
+const interruptedChunkDowngradeCloud=new DeltaMemoryCloud();
+const interruptedChunkBaseline=await chunks.writeSnapshot(interruptedChunkDowngradeCloud,OWNER_A,
+ chunkedBaselinePayload,null,'chunked-delta-baseline-stamp',backup);
+interruptedChunkDowngradeCloud.rows.get(OWNER_A).payload.__nexusDeltaSync='entity-delta-v1';
+interruptedChunkDowngradeCloud.syncStates.set(OWNER_A,{mode:'delta',protocol_version:1,
+ head_revision:6,snapshot_revision:6,compacted_through_revision:6,
+ snapshot_updated_at:interruptedChunkBaseline.updated_at});
+interruptedChunkDowngradeCloud.failChunkBatch=interruptedChunkDowngradeCloud.chunkBatchCount+1;
+const interruptedChunkDowngrade=await chunks.writeDowngradeSnapshot(interruptedChunkDowngradeCloud,OWNER_A,
+ chunkDowngradePayload,6,interruptedChunkBaseline.updated_at).then(()=>null,error=>error);
+assert.ok(interruptedChunkDowngrade,'an interrupted unmarked chunk upload must fail closed');
+assert.equal(interruptedChunkDowngradeCloud.syncStates.get(OWNER_A).mode,'delta',
+ 'an incomplete unmarked chunk upload must not switch the owner to snapshot mode');
+assert.equal(interruptedChunkDowngradeCloud.rows.get(OWNER_A).payload.revisionId,
+ interruptedChunkBaseline.manifest.revisionId,
+ 'the prior Delta manifest must remain active when downgrade chunk upload is interrupted');
+assert.equal(interruptedChunkDowngradeCloud.rpcCalls.some(call=>call.name==='nexus_disable_entity_delta'),false,
+ 'a failed chunk upload must never call the atomic mode-switch RPC');
+
+const staleDowngradeCloud=new DeltaMemoryCloud();
+const staleDowngradeBaseline=seedDeltaCloud(staleDowngradeCloud);
+staleDowngradeCloud.syncStates.set(OWNER_A,{mode:'delta',protocol_version:1,
+ head_revision:5,snapshot_revision:4,compacted_through_revision:4,
+ snapshot_updated_at:'delta-baseline-stamp'});
+const staleDowngradePayload={...staleDowngradeBaseline};
+delete staleDowngradePayload.__nexusDeltaSync;
+const staleDowngrade=await chunks.writeDowngradeSnapshot(staleDowngradeCloud,OWNER_A,
+ staleDowngradePayload,4,'delta-baseline-stamp').then(()=>null,error=>error);
+assert.equal(staleDowngrade.code,'NEXUS_CLOUD_CONFLICT');
+assert.equal(staleDowngradeCloud.syncStates.get(OWNER_A).mode,'delta',
+ 'a stale head must not downgrade the account');
+
+console.log('Cloud chunk storage tests passed: UTF-8 and 27 MB chunking, active-manifest retention, bounded/repeatable orphan cleanup, snapshot-mode legacy compatibility, owner-scoped JSONB/chunked downgrade, interrupted publish, response-loss recovery and existing delta downgrade rejection, CAS conflicts, corruption rejection, owner isolation, and interrupted-upload recovery.');
