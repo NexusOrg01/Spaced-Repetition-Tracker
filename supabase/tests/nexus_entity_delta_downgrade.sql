@@ -67,6 +67,7 @@ BEGIN
   IF v_enable->>'ok' <> 'true' OR v_enable->>'mode' <> 'delta' THEN
     RAISE EXCEPTION 'DLA-03 JSONB fixture could not enable Delta: %',v_enable;
   END IF;
+  SELECT updated_at INTO v_stamp FROM public.nexus_user_data WHERE user_id=v_uid_a;
 
   v_operation := public.nexus_publish_entity_operation('dla03-json-operation',0,
     jsonb_build_array(jsonb_build_object(
@@ -158,6 +159,7 @@ BEGIN
   IF v_enable->>'ok' <> 'true' OR v_enable->>'mode' <> 'delta' THEN
     RAISE EXCEPTION 'DLA-03 chunked fixture could not enable Delta: %',v_enable;
   END IF;
+  SELECT updated_at INTO v_stamp FROM public.nexus_user_data WHERE user_id=v_uid_b;
 
   v_delta_chunk := (v_base || jsonb_build_object('__nexusDeltaSync','entity-delta-v1'))::text;
   INSERT INTO public.nexus_user_data_chunks
