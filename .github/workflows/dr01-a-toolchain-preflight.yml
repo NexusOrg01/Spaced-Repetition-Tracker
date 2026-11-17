@@ -1,0 +1,179 @@
+name: DR01-A production recovery toolchain preflight
+
+on:
+  push:
+    branches:
+      - ops/dr01-a-toolchain-preflight
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nexus-dr01-a-production-preflight
+  cancel-in-progress: false
+
+jobs:
+  dr01-a-preflight:
+    name: Pinned recovery tools and read-only production probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: nexus-production-migrations
+
+    steps:
+      - name: Verify Docker daemon and encryption tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v docker
+          docker --version
+          docker info --format 'Docker Engine {{.ServerVersion}}'
+          docker compose version
+          command -v gpg
+          gpg --version | head -n 1
+
+      - name: Install pinned Supabase CLI and PostgreSQL 17 client
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          npm install --global --no-audit --no-fund supabase@3.0.0
+
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ca-certificates curl gnupg
+
+          key_file="$RUNNER_TEMP/pgdg.asc"
+          curl --fail --silent --show-error --location \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            --output "$key_file"
+
+          fingerprint="$(gpg --show-keys --with-colons "$key_file" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+
+          sudo install -d -m 0755 /usr/share/postgresql-common/pgdg
+          sudo install -m 0644 "$key_file" /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          sudo tee /etc/apt/sources.list.d/pgdg.sources >/dev/null <<'PGDG'
+          Types: deb
+          URIs: https://apt.postgresql.org/pub/repos/apt
+          Suites: noble-pgdg
+          Architectures: amd64
+          Components: main
+          Signed-By: /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          PGDG
+
+          sudo apt-get update
+          pg_client_version="$(apt-cache madison postgresql-client-17 | awk 'NR == 1 { print $3 }')"
+          test -n "$pg_client_version"
+          sudo apt-get install -y --no-install-recommends "postgresql-client-17=$pg_client_version"
+          printf 'PG_CLIENT_PACKAGE_VERSION=%s\n' "$pg_client_version" >> "$GITHUB_ENV"
+
+      - name: Record installed tool versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## DR01-A toolchain"
+            echo ""
+            echo "- Runner: Ubuntu 24.04 x64"
+            echo "- Node.js: $(node --version)"
+            echo "- npm: $(npm --version)"
+            echo "- Docker CLI: $(docker --version)"
+            echo "- Docker Engine: $(docker info --format '{{.ServerVersion}}')"
+            echo "- Docker Compose: $(docker compose version --short)"
+            echo "- Supabase CLI: $(supabase --version)"
+            echo "- PostgreSQL client package: $(dpkg-query -W -f='${Version}' postgresql-client-17)"
+            echo "- pg_dump: $(/usr/lib/postgresql/17/bin/pg_dump --version)"
+            echo "- pg_restore: $(/usr/lib/postgresql/17/bin/pg_restore --version)"
+            echo "- psql: $(/usr/lib/postgresql/17/bin/psql --version)"
+            echo "- GnuPG: $(gpg --version | head -n 1)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify production target and connect using read-only SQL
+        shell: bash
+        env:
+          NEXUS_PRODUCTION_DATABASE_URL: ${{ secrets.NEXUS_PRODUCTION_DATABASE_URL }}
+          PRODUCTION_PROJECT_REF: txugbdavblpettcnhcxl
+        run: |
+          set -euo pipefail
+          set +x
+
+          python3 - <<'PY'
+          import os
+          import shlex
+          import tempfile
+          from urllib.parse import unquote, urlsplit
+
+          project_ref = os.environ["PRODUCTION_PROJECT_REF"]
+          raw_url = os.environ.get("NEXUS_PRODUCTION_DATABASE_URL", "")
+          if not raw_url:
+              raise SystemExit("NEXUS_PRODUCTION_DATABASE_URL is missing from the protected environment.")
+
+          try:
+              parsed = urlsplit(raw_url)
+              host = (parsed.hostname or "").lower()
+              user = unquote(parsed.username or "")
+              password = unquote(parsed.password or "")
+              database = unquote(parsed.path.lstrip("/"))
+              port = parsed.port or 5432
+          except Exception:
+              raise SystemExit("The production connection URL is malformed; the value was not displayed.")
+
+          direct_target = host == f"db.{project_ref}.supabase.co"
+          pooler_target = host.endswith(".pooler.supabase.com") and user.endswith(f".{project_ref}")
+          if parsed.scheme not in ("postgres", "postgresql") or not (direct_target or pooler_target):
+              raise SystemExit("The connection URL does not identify the expected production Supabase project.")
+          if not user or not password or database != "postgres":
+              raise SystemExit("The production connection URL is missing required connection fields.")
+          if parsed.fragment:
+              raise SystemExit("The connection URL contains a fragment; encode reserved password characters, including #, before saving it.")
+
+          def pgpass_escape(value: str) -> str:
+              return value.replace("\\", "\\\\").replace(":", "\\:")
+
+          fd, pgpass_path = tempfile.mkstemp(prefix="nexus-dr01-a-", suffix=".pgpass", dir=os.environ["RUNNER_TEMP"])
+          os.fchmod(fd, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as handle:
+              handle.write(":".join(pgpass_escape(part) for part in (host, str(port), database, user, password)) + "\n")
+
+          env_script = os.path.join(os.environ["RUNNER_TEMP"], "nexus-dr01-a-pg-env.sh")
+          values = {
+              "PGHOST": host,
+              "PGPORT": str(port),
+              "PGDATABASE": database,
+              "PGUSER": user,
+              "PGPASSFILE": pgpass_path,
+          }
+          with open(env_script, "w", encoding="utf-8") as handle:
+              for key, value in values.items():
+                  handle.write(f"export {key}={shlex.quote(value)}\n")
+          os.chmod(env_script, 0o600)
+          PY
+
+          source "$RUNNER_TEMP/nexus-dr01-a-pg-env.sh"
+          trap 'rm -f "$PGPASSFILE" "$RUNNER_TEMP/nexus-dr01-a-pg-env.sh"' EXIT
+
+          export PGSSLMODE=require
+          export PGCONNECT_TIMEOUT=15
+          export PGAPPNAME=nexus-dr01-a-read-only-preflight
+          export PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=15000'
+
+          probe="$(/usr/lib/postgresql/17/bin/psql -X -w -qAt -v ON_ERROR_STOP=1 \
+            -c "BEGIN READ ONLY; SELECT current_database() || '|' || current_setting('server_version') || '|' || current_setting('transaction_read_only'); ROLLBACK;")"
+
+          IFS='|' read -r db server_version read_only <<< "$probe"
+          test "$db" = "postgres"
+          [[ "$server_version" == 17.* ]]
+          test "$read_only" = "on"
+
+          {
+            echo "## DR01-A production connectivity"
+            echo ""
+            echo "- Target project reference: `$PRODUCTION_PROJECT_REF` (matched against the connection URL)"
+            echo "- Database: `$db`"
+            echo "- Server version: `$server_version` (PostgreSQL 17)"
+            echo "- TLS: required"
+            echo "- Transaction mode: read-only"
+            echo "- Probe: metadata-only SELECT inside BEGIN READ ONLY / ROLLBACK"
+            echo "- No export, restore, migration, schema change, or production write was performed."
+            echo "- Connection material was not printed, persisted as an artifact, or included in the job summary."
+          } >> "$GITHUB_STEP_SUMMARY"
