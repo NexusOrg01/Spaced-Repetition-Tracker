@@ -7,6 +7,9 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = resolve(root, 'dist');
 const LIVE_HOST = 'txugbdavblpettcnhcxl.supabase.co';
+const HOSTED_QA_BRANCH = 'feat/dla-01-hosted-qa-gate';
+const HOSTED_QA_PROJECT_URL = 'https://xuwfzibxhxzxxupprxsq.supabase.co';
+const HOSTED_QA_VERCEL_PROJECT_ID = 'prj_UgPzqFpvqBaKkKXi2Vm2COxqUsDi';
 const PREVIEW_BRANCHES = new Set(['feat/account-bound-offline-sync', 'ai-dev/rebuild-commerce-sync-integrity', 'ai-dev/fix-signin-preserve-offline-workspace', 'ai-dev/fix-commerce-pending-overwrite', 'ai-dev/rebuild-explore-curriculum-lifecycle', 'ai-dev/fresh-curriculum-sync-rebuild', 'android/capacitor-multistore-foundation']);
 const LOCAL_PHASE34_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 function isLocalPhase34Url(rawUrl) {
@@ -40,6 +43,35 @@ export function resolvePreviewConfig(env) {
     if(!rawUrl||!key||!isLocalPhase34Url(rawUrl)) throw new Error('Local Phase 3.4 mode requires the local Supabase API on loopback port 54321 and a local anon/publishable key.');
     if(!isAllowedAnonKey(key)) throw new Error('Local Phase 3.4 mode accepts only a publishable key or legacy anon JWT; secret/service-role keys are forbidden.');
     return {url:new URL(rawUrl).origin,key};
+  }
+  const isDedicatedHostedQaRef = env.VERCEL_GIT_COMMIT_REF === HOSTED_QA_BRANCH ||
+    String(env.CF_PAGES_BRANCH || '').trim() === HOSTED_QA_BRANCH;
+  if (isDedicatedHostedQaRef) {
+    if (env.VERCEL !== '1' ||
+        env.VERCEL_PROJECT_ID !== HOSTED_QA_VERCEL_PROJECT_ID ||
+        env.VERCEL_ENV !== 'preview' ||
+        env.VERCEL_GIT_COMMIT_REF !== HOSTED_QA_BRANCH ||
+        env.NEXUS_ENTITY_DELTA_QA_ENABLED !== 'true') return null;
+    const rawQaUrl = String(env.NEXUS_SUPABASE_URL || '').trim();
+    const qaKey = String(env.NEXUS_SUPABASE_ANON_KEY || '').trim();
+    const qaHost = String(env.VERCEL_URL || '').trim().toLowerCase();
+    if (!rawQaUrl || !qaKey || !qaHost || qaHost.includes('/') || qaHost.includes('@') ||
+        qaHost.includes('?') || qaHost.includes('#')) return null;
+    let qaOrigin;
+    try {
+      const parsedHost = new URL('https://' + qaHost);
+      if (parsedHost.hostname !== qaHost || !parsedHost.hostname.endsWith('.vercel.app') ||
+          parsedHost.port || parsedHost.username || parsedHost.password || parsedHost.search ||
+          parsedHost.hash || (parsedHost.pathname !== '/' && parsedHost.pathname !== '')) return null;
+      qaOrigin = parsedHost.origin;
+    } catch { return null; }
+    if (rawQaUrl !== HOSTED_QA_PROJECT_URL) {
+      throw new Error('The dedicated hosted QA branch must use the exact approved nexus-sync-staging Supabase project.');
+    }
+    if (!isAllowedAnonKey(qaKey)) {
+      throw new Error('The dedicated hosted QA branch accepts only a publishable key or legacy anon JWT; secret/service-role keys are forbidden.');
+    }
+    return { url: new URL(rawQaUrl).origin, key: qaKey };
   }
   const allowedVercelPreview = env.VERCEL_ENV === 'preview' && PREVIEW_BRANCHES.has(String(env.VERCEL_GIT_COMMIT_REF || ''));
   // CF_PAGES is normally set by Pages, but some build wrappers omit it. The exact
@@ -76,14 +108,54 @@ export function resolveStagingEntityDeltaEnabled(env, config) {
     !isHostedDeploymentEnvironment(env)&&!!config&&isLocalPhase34Url(config.url);
 }
 
-export function renderConfigScript(config, enableStagingEntityDelta = false) {
+export function resolveHostedQaEntityDeltaEnabled(env, config) {
+  if (env.VERCEL !== '1' ||
+      env.VERCEL_PROJECT_ID !== HOSTED_QA_VERCEL_PROJECT_ID ||
+      env.NEXUS_ENTITY_DELTA_QA_ENABLED !== 'true' ||
+      env.VERCEL_ENV !== 'preview' ||
+      env.VERCEL_GIT_COMMIT_REF !== HOSTED_QA_BRANCH ||
+      !config || config.url !== HOSTED_QA_PROJECT_URL) {
+    return { enabled: false, origin: '', ref: '' };
+  }
+  const deploymentHost = String(env.VERCEL_URL || '').trim().toLowerCase();
+  if (!deploymentHost || deploymentHost.includes('/') || deploymentHost.includes('@') ||
+      deploymentHost.includes('?') || deploymentHost.includes('#')) {
+    return { enabled: false, origin: '', ref: '' };
+  }
+  let deploymentUrl;
+  try { deploymentUrl = new URL('https://' + deploymentHost); }
+  catch { return { enabled: false, origin: '', ref: '' }; }
+  if (deploymentUrl.protocol !== 'https:' || deploymentUrl.hostname !== deploymentHost ||
+      !deploymentUrl.hostname.endsWith('.vercel.app') || deploymentUrl.port ||
+      deploymentUrl.username || deploymentUrl.password || deploymentUrl.search ||
+      deploymentUrl.hash || (deploymentUrl.pathname !== '/' && deploymentUrl.pathname !== '')) {
+    return { enabled: false, origin: '', ref: '' };
+  }
+  return { enabled: true, origin: deploymentUrl.origin, ref: HOSTED_QA_BRANCH };
+}
+
+export function renderConfigScript(config, enableStagingEntityDelta = false, hostedQa = null) {
   const enabled = enableStagingEntityDelta === true && !!config && isLocalPhase34Url(config.url);
+  let hostedQaEnabled = false, hostedQaOrigin = '', hostedQaRef = '';
+  if (hostedQa && hostedQa.enabled === true && config && config.url === HOSTED_QA_PROJECT_URL &&
+      hostedQa.ref === HOSTED_QA_BRANCH) {
+    try {
+      const origin = new URL(String(hostedQa.origin || ''));
+      hostedQaEnabled = origin.protocol === 'https:' && origin.origin === String(hostedQa.origin) &&
+        origin.hostname.endsWith('.vercel.app') && !origin.port &&
+        !origin.username && !origin.password && !origin.search && !origin.hash &&
+        (origin.pathname === '/' || origin.pathname === '');
+      if (hostedQaEnabled) { hostedQaOrigin = origin.origin; hostedQaRef = HOSTED_QA_BRANCH; }
+    } catch (_) { hostedQaEnabled = false; }
+  }
   return "/* Generated at build time; do not edit or commit project credentials. */\n" +
     "(function(){'use strict';window.NEXUS_ENTITY_DELTA_SYNC_STAGING=" + String(enabled) +
+    ";window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=" + String(hostedQaEnabled) +
+    ";window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN=" + JSON.stringify(hostedQaOrigin) +
+    ";window.NEXUS_ENTITY_DELTA_SYNC_QA_REF=" + JSON.stringify(hostedQaRef) +
     ";const config=" + JSON.stringify(config) +
     ";if(!config)return;try{localStorage.setItem('nexus.cloud.config.v1',JSON.stringify(config));}catch(_){}})();\n";
 }
-
 
 async function verifySafeAuthStorage() {
   const source = await readFile(join(root, 'cloud-sync.js'), 'utf8');
@@ -159,13 +231,15 @@ async function copySiteFiles() {
   }
   const config = resolvePreviewConfig(process.env);
   const stagingEntityDeltaEnabled = resolveStagingEntityDeltaEnabled(process.env, config);
+  const hostedQaEntityDelta = resolveHostedQaEntityDeltaEnabled(process.env, config);
   await writeFile(join(output, 'nexus-build-config.js'),
-    renderConfigScript(config, stagingEntityDeltaEnabled), 'utf8');
+    renderConfigScript(config, stagingEntityDeltaEnabled, hostedQaEntityDelta), 'utf8');
   assert.ok(await readdir(output).then(items => items.includes('index.html')), 'static build must include index.html');
   if (config) {
     if(isLocalPhase34Url(config.url)){
       console.log('Built explicitly opted-in local Phase 3.4 Supabase config. Target is accepted only on loopback.');
       if(stagingEntityDeltaEnabled) console.log('Local Phase 3.4 entity-delta gate is enabled for this local build only.');
+      if(hostedQaEntityDelta.enabled) console.log('Hosted entity-delta QA gate is enabled for the exact dedicated Vercel preview origin.');
     }else{
       console.log('Built isolated Supabase config for the designated Preview branch.');
     }
