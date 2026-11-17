@@ -228,9 +228,11 @@ function fixture(options={}){
   const journal={ownerId:owner,intentId:'wrong-readback',phase:'checkpointed',
     checkpointHeadRevision:5,checkpointGeneration:'generation-A',
     checkpointUpdatedAt:checkpointStamp};
-  const h=fixture({intent:journal,state:{mode:'snapshot',protocol_version:1,head_revision:5,
-    snapshot_revision:5,compacted_through_revision:5,snapshot_updated_at:checkpointStamp}});
-  h.api = h.api; // retain the fixture API; replace the server read-back through a second client below.
+  const h=fixture({intent:journal,remoteStamp:checkpointStamp,
+    state:{mode:'snapshot',protocol_version:1,head_revision:5,
+      snapshot_revision:5,compacted_through_revision:5,snapshot_updated_at:checkpointStamp},
+    cursor:{ownerId:owner,generation:'generation-A',workspaceRevision:9,publishRevision:5,
+      acknowledgedSequence:12,remoteHeadRevision:5,snapshotUpdatedAt:checkpointStamp,requiresPull:false}});
   const contextPayload={state:{streams:[{id:'different'}]},featureState:{journal:[],papers:[],goals:[],studyLogs:[]}};
   const rejectingStorage={...h.storage};
   const result = await (async()=>{
