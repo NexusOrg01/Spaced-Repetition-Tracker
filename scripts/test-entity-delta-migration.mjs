@@ -16,6 +16,8 @@ const chunkManifestProtection = read('supabase/migrations/20261114103353_protect
 const generalSnapshotIntegrity = read('supabase/migrations/20261115171500_validate_general_snapshot_candidates.sql');
 const chunkManifestDeletionTest = read('supabase/tests/nexus_user_data_chunks_active_manifest.sql');
 const activeManifestRaceRunner = read('scripts/test-active-manifest-race.mjs');
+const downgradeMigration = read('supabase/delta-rollout/20261117160000_owner_scoped_entity_delta_downgrade.sql');
+const downgradeSqlTest = read('supabase/tests/nexus_entity_delta_downgrade.sql');
 
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_sync_state/);
 assert.match(schema, /CREATE TABLE IF NOT EXISTS public\.nexus_workspace_operation_receipts/);
@@ -148,5 +150,39 @@ assert.match(integration, /nexus_publish_entity_snapshot/);
 assert.match(integration, /nexus_compact_entity_operations/);
 assert.match(integration, /UPDATE public\.nexus_user_data[\s\S]*payload = payload - '__nexusDeltaSync'[\s\S]*SQLSTATE '55000'/,
   'the rollback-only integration fixture must exercise a legacy snapshot downgrade attempt');
+
+
+assert.match(downgradeMigration, /CREATE OR REPLACE FUNCTION public\.nexus_disable_entity_delta/);
+assert.match(downgradeMigration, /v_uid uuid := auth\.uid\(\)/,
+  'the downgrade must derive its owner from the authenticated Supabase identity');
+assert.match(downgradeMigration, /FROM public\.nexus_user_data WHERE user_id = v_uid FOR UPDATE/);
+assert.match(downgradeMigration, /FROM public\.nexus_workspace_sync_state WHERE user_id = v_uid FOR UPDATE/);
+assert.match(downgradeMigration, /v_state\.head_revision <> v_state\.snapshot_revision/);
+assert.match(downgradeMigration, /v_state\.snapshot_revision <> v_state\.compacted_through_revision/);
+assert.match(downgradeMigration, /remaining_operations/);
+assert.match(downgradeMigration, /remaining_receipts/);
+assert.match(downgradeMigration, /SET mode = 'snapshot'/);
+assert.match(downgradeMigration, /p_snapshot_payload ->> '__nexusDeltaSync' IS NOT NULL/);
+assert.match(downgradeMigration, /unmarked_chunk_manifest_incomplete/);
+assert.match(downgradeMigration, /REVOKE ALL ON FUNCTION public\.nexus_disable_entity_delta\(bigint, timestamptz, jsonb\)[\s\S]*FROM PUBLIC, anon, authenticated/);
+assert.doesNotMatch(downgradeMigration, /GRANT EXECUTE ON FUNCTION/,
+  'DLA-03 cannot grant a browser role ahead of the DLA-02 allowlist');
+assert.ok(downgradeMigration.includes('BEGIN;') && downgradeMigration.trimEnd().endsWith('COMMIT;'),
+  'the DLA-03 mode and snapshot-pointer change must be one SQL transaction');
+assert.ok(downgradeSqlTest.includes('BEGIN;') && downgradeSqlTest.trimEnd().endsWith('ROLLBACK;'),
+  'DLA-03 SQL tests must be rollback-only');
+assert.match(downgradeSqlTest, /verified_checkpoint_required/);
+assert.match(downgradeSqlTest, /revision_conflict/);
+assert.match(downgradeSqlTest, /already_downgraded/);
+assert.match(downgradeSqlTest, /nexus_compact_entity_operations/);
+assert.match(downgradeSqlTest, /unmarked_chunk_manifest_incomplete/);
+assert.match(downgradeSqlTest, /Cross-owner downgrade attempt/);
+assert.match(downgradeSqlTest, /has_function_privilege/);
+assert.match(downgradeSqlTest, /v_chunk_old_count <> 1 OR v_chunk_new_count <> 1/,
+  'the downgrade fixture must prove old and newly published chunks are retained');
+assert.match(read('scripts/prepare-phase34-local-supabase.mjs'), /supabase','delta-rollout'/,
+  'the DLA-03 SQL must be copied only into the generated local test database');
+assert.doesNotMatch(read('scripts/prepare-phase34-local-supabase.mjs'), /nexus_disable_entity_delta.*GRANT/,
+  'the local preparation script must not grant the new RPC to browser roles');
 
 console.log('Nexus entity-delta migration and staging-test contract checks passed.');
