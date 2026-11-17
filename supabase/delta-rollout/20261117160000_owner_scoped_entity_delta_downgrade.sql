@@ -28,6 +28,8 @@ DECLARE
   v_min_count integer;
   v_max_count integer;
   v_sum_bytes bigint;
+  v_invalid_chunk_byte_count boolean;
+  v_chunk_delta_marker_present boolean;
   v_operations bigint;
   v_receipts bigint;
 BEGIN
@@ -143,12 +145,24 @@ BEGIN
       RETURN jsonb_build_object('ok', false, 'code', 'chunk_manifest_out_of_bounds');
     END IF;
 
+    WITH ordered_chunks AS (
+      SELECT chunk_index, chunk_count, chunk_bytes, chunk_data,
+        lag(right(chunk_data, 18)) OVER (ORDER BY chunk_index) AS previous_marker_suffix
+        FROM public.nexus_user_data_chunks
+       WHERE user_id = v_uid
+         AND revision_id = (p_snapshot_payload ->> 'revisionId')::uuid
+    )
     SELECT count(*), min(chunk_index), max(chunk_index),
-      min(chunk_count), max(chunk_count), COALESCE(sum(chunk_bytes), 0)
-      INTO v_rows, v_min_index, v_max_index, v_min_count, v_max_count, v_sum_bytes
-      FROM public.nexus_user_data_chunks
-     WHERE user_id = v_uid
-       AND revision_id = (p_snapshot_payload ->> 'revisionId')::uuid;
+      min(chunk_count), max(chunk_count), COALESCE(sum(octet_length(chunk_data)), 0),
+      COALESCE(bool_or(chunk_bytes <> octet_length(chunk_data)), false),
+      COALESCE(bool_or(
+        position('"__nexusDeltaSync"' IN chunk_data) > 0
+        OR position('"__nexusDeltaSync"' IN
+          COALESCE(previous_marker_suffix, '') || left(chunk_data, 18)) > 0
+      ), false)
+      INTO v_rows, v_min_index, v_max_index, v_min_count, v_max_count, v_sum_bytes,
+        v_invalid_chunk_byte_count, v_chunk_delta_marker_present
+      FROM ordered_chunks;
 
     IF v_rows <> v_chunk_count OR v_min_index <> 0
        OR v_max_index <> v_chunk_count - 1
@@ -157,6 +171,14 @@ BEGIN
       RETURN jsonb_build_object('ok', false, 'code', 'unmarked_chunk_manifest_incomplete',
         'expected_chunks', v_chunk_count, 'actual_chunks', v_rows,
         'expected_bytes', v_total_bytes, 'actual_bytes', v_sum_bytes);
+    END IF;
+
+    IF v_invalid_chunk_byte_count THEN
+      RETURN jsonb_build_object('ok', false, 'code', 'unmarked_chunk_byte_count_mismatch');
+    END IF;
+
+    IF v_chunk_delta_marker_present THEN
+      RETURN jsonb_build_object('ok', false, 'code', 'unmarked_chunk_data_has_delta_marker');
     END IF;
   ELSIF jsonb_typeof(p_snapshot_payload -> 'state') IS DISTINCT FROM 'object'
      OR jsonb_typeof(p_snapshot_payload #> '{state,streams}') IS DISTINCT FROM 'array'
