@@ -1040,6 +1040,225 @@
       }
     }
 
+    async function downgradeToSnapshot(ownerId,downgradeOptions={}){
+      if(!enabled)return {ok:false,skipped:true,reason:'feature_disabled'};
+      const owner=String(ownerId||'').trim();
+      const disableSnapshot=typeof options.disableSnapshot==='function'
+        ?options.disableSnapshot
+        :(userId,args)=>client.rpc('nexus_disable_entity_delta',args);
+      const maxGroups=boundedLimit(downgradeOptions.maxGroups,100,100);
+      const maxBytes=boundedLimit(downgradeOptions.maxBytes,MAX_RECONCILIATION_BYTES,
+        MAX_RECONCILIATION_BYTES,1024);
+      const signal=downgradeOptions.signal||null;
+      if(!owner||!client||typeof client.rpc!=='function'||
+         !storage||typeof storage.readWorkspaceEntityDeltaCursor!=='function'||
+         typeof storage.readWorkspaceEntityOutboxGroups!=='function'||
+         typeof storage.readWorkspaceEntityRecovery!=='function'||
+         typeof getPendingSnapshot!=='function'||typeof getLocalWorkspace!=='function'||
+         typeof sameWorkspace!=='function'||typeof readRemoteSnapshot!=='function'||
+         typeof publishSnapshot!=='function'||typeof commitLocalRecovery!=='function'||
+         typeof disableSnapshot!=='function')
+        return unavailable('snapshot_downgrade_dependencies_unavailable');
+      function failed(reason,extra={}){return {ok:false,downgraded:false,retryable:true,reason,...extra};}
+      async function readState(){
+        await assertOwner(owner);
+        const result=await client.rpc('nexus_get_entity_sync_state');
+        if(result&&result.error)throw Object.assign(new Error('The owner sync state could not be verified.'),{
+          code:String(result.error.code||'unknown')});
+        await assertOwner(owner);
+        if(!result||!result.data||typeof result.data!=='object')
+          throw new Error('The owner sync state is unavailable.');
+        return result.data;
+      }
+      async function readVerifiedSnapshot(expectedMode,expectedHead){
+        await assertOwner(owner);
+        const state=await readState();
+        const remote=await readRemoteSnapshot(owner,signal);
+        await assertOwner(owner);
+        const head=safeInteger(state.head_revision),snapshot=safeInteger(state.snapshot_revision),
+          floor=safeInteger(state.compacted_through_revision);
+        if(state.mode!==expectedMode||head===null||snapshot!==head||floor!==head||
+           head!==expectedHead||!remote||typeof remote.updated_at!=='string'||!remote.updated_at||
+           remote.updated_at!==state.snapshot_updated_at||!isRecord(remote.payload)||
+           !isRecord(remote.payload.state)||!isRecord(remote.payload.featureState))
+          return {ok:false,reason:'downgrade_snapshot_readback_mismatch',state,remote};
+        if(expectedMode==='delta'&&remote.payload.__nexusDeltaSync!=='entity-delta-v1')
+          return {ok:false,reason:'delta_checkpoint_marker_missing',state,remote};
+        if(expectedMode==='snapshot'&&Object.prototype.hasOwnProperty.call(remote.payload,'__nexusDeltaSync'))
+          return {ok:false,reason:'snapshot_mode_marker_still_present',state,remote};
+        const local=await getLocalWorkspace(owner);
+        if(!isRecord(local)||!(await sameWorkspace(local,remote.payload)))
+          return {ok:false,reason:'local_workspace_differs_from_verified_checkpoint',state,remote};
+        return {ok:true,state,remote,local,headRevision:head};
+      }
+      try{
+        await assertOwner(owner);
+        let journal=await storage.readWorkspaceEntityRecovery(owner);
+        if(journal&&journal.intent){
+          const resumed=await publishConflictRecovery(owner,{signal,maxGroups,maxBytes});
+          if(!resumed||resumed.ok!==true)
+            return failed('existing_recovery_journal_not_resolved',{recovery:resumed||null});
+          await assertOwner(owner);
+        }
+        let synchronized=await synchronize(owner,{
+          signal,maxRounds:50,maxGroups:100,maxBytes:MAX_BYTES
+        });
+        if(!synchronized||synchronized.ok!==true){
+          const needsRecovery=!!(synchronized&&(synchronized.conflict||synchronized.snapshotRequired||
+            synchronized.requiresSnapshotReconciliation||
+            synchronized.reason==='compatibility_snapshot_still_pending'||
+            synchronized.reason==='local_and_remote_changes_overlap'||
+            synchronized.reason==='local_and_remote_changes_overlap_after_partial_publish'));
+          if(!needsRecovery)
+            return failed(synchronized&&synchronized.reason||'delta_sync_not_complete',
+              {synchronization:synchronized||null});
+          const reconciled=await publishConflictRecovery(owner,{signal,maxGroups,maxBytes});
+          if(!reconciled||reconciled.ok!==true)
+            return failed('local_changes_not_reconciled_before_downgrade',{recovery:reconciled||null});
+        }
+        await assertOwner(owner);
+        if(await getPendingSnapshot(owner))return failed('compatibility_snapshot_still_pending');
+        journal=await storage.readWorkspaceEntityRecovery(owner);
+        if(journal&&journal.intent)
+          return failed('recovery_journal_still_pending',{phase:journal.intent.phase||'unknown'});
+
+        let state=await readState();
+        if(state.mode==='snapshot'){
+          const head=safeInteger(state.head_revision);
+          if(head===null)return failed('snapshot_mode_revision_invalid');
+          const verified=await readVerifiedSnapshot('snapshot',head);
+          if(!verified.ok)return failed(verified.reason);
+          return {ok:true,downgraded:true,alreadyDowngraded:true,mode:'snapshot',
+            headRevision:head,snapshotRevision:head,updated_at:verified.remote.updated_at};
+        }
+        const initialHead=safeInteger(state.head_revision),initialSnapshot=safeInteger(state.snapshot_revision),
+          initialFloor=safeInteger(state.compacted_through_revision);
+        if(state.mode!=='delta'||Number(state.protocol_version)!==1||
+           initialHead===null||initialSnapshot===null||initialFloor===null||
+           initialFloor>initialSnapshot||initialSnapshot>initialHead||
+           typeof state.snapshot_updated_at!=='string'||!state.snapshot_updated_at)
+          return failed('remote_delta_state_invalid');
+
+        let cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
+        if(!cursorResult||cursorResult.ok!==true||!cursorResult.cursor)
+          return failed(cursorResult&&cursorResult.reason||'local_delta_cursor_unavailable');
+        let cursor=cursorResult.cursor;
+        if(cursor.ownerId!==owner||cursor.generation!==cursorResult.generation||
+           cursor.snapshotUpdatedAt!==state.snapshot_updated_at||
+           Number(cursor.publishRevision)!==initialHead||
+           Number(cursor.remoteHeadRevision)!==initialHead||cursor.requiresPull!==false)
+          return failed('local_delta_cursor_not_fully_reconciled');
+        let outbox=await storage.readWorkspaceEntityOutboxGroups(owner,
+          Number(cursor.acknowledgedSequence),1000,MAX_BYTES-65536);
+        if(!outbox||outbox.unavailable||outbox.snapshotRequired||outbox.ownerId!==owner||
+           outbox.generation!==cursor.generation||
+           Number(outbox.workspaceRevision)!==Number(cursor.workspaceRevision)||
+           !Array.isArray(outbox.groups)||outbox.groups.length||outbox.hasMore===true)
+          return failed(outbox&&outbox.reason||'local_outbox_not_empty');
+        if(await getPendingSnapshot(owner))return failed('compatibility_snapshot_still_pending');
+        journal=await storage.readWorkspaceEntityRecovery(owner);
+        if(journal&&journal.intent)
+          return failed('recovery_journal_still_pending',{phase:journal.intent.phase||'unknown'});
+
+        const checkpoint=await publishConflictRecovery(owner,{signal,maxGroups,maxBytes});
+        if(!checkpoint||checkpoint.ok!==true)
+          return failed(checkpoint&&checkpoint.reason||'final_snapshot_checkpoint_failed',
+            {checkpoint:checkpoint||null});
+        const expectedHead=safeInteger(checkpoint.headRevision);
+        if(expectedHead===null||safeInteger(checkpoint.snapshotRevision)!==expectedHead)
+          return failed('final_snapshot_checkpoint_revision_mismatch',{checkpoint});
+
+        let compaction=checkpoint.compaction||null;
+        for(let attempt=0;(!compaction||compaction.complete!==true)&&attempt<12;attempt++){
+          if(typeof compactOperations!=='function')
+            return failed('operation_compaction_unavailable',{compaction});
+          await assertOwner(owner);
+          compaction=await compactOperations(owner,expectedHead,signal);
+          await assertOwner(owner);
+          if(!compaction||compaction.ok!==true)
+            return failed(compaction&&compaction.reason||'operation_compaction_failed',{compaction});
+        }
+        if(!compaction||compaction.complete!==true||compaction.pending===true)
+          return failed('operation_compaction_still_pending',{compaction});
+
+        state=await readState();
+        const verifiedCheckpoint=await readVerifiedSnapshot('delta',expectedHead);
+        if(!verifiedCheckpoint.ok)return failed(verifiedCheckpoint.reason,{state});
+        if(state.snapshot_updated_at!==verifiedCheckpoint.remote.updated_at||
+           Number(state.head_revision)!==expectedHead||
+           Number(state.snapshot_revision)!==expectedHead||
+           Number(state.compacted_through_revision)!==expectedHead)
+          return failed('final_checkpoint_changed_before_downgrade');
+
+        cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
+        cursor=cursorResult&&cursorResult.cursor;
+        if(!cursorResult||cursorResult.ok!==true||!cursor||cursor.ownerId!==owner||
+           cursor.generation!==cursorResult.generation||
+           cursor.snapshotUpdatedAt!==state.snapshot_updated_at||
+           Number(cursor.publishRevision)!==expectedHead||
+           Number(cursor.remoteHeadRevision)!==expectedHead||cursor.requiresPull!==false)
+          return failed('local_cursor_changed_before_downgrade');
+        outbox=await storage.readWorkspaceEntityOutboxGroups(owner,
+          Number(cursor.acknowledgedSequence),1000,MAX_BYTES-65536);
+        if(!outbox||outbox.unavailable||outbox.snapshotRequired||outbox.ownerId!==owner||
+           outbox.generation!==cursor.generation||
+           Number(outbox.workspaceRevision)!==Number(cursor.workspaceRevision)||
+           !Array.isArray(outbox.groups)||outbox.groups.length||outbox.hasMore===true)
+          return failed(outbox&&outbox.reason||'local_outbox_changed_before_downgrade');
+        if(await getPendingSnapshot(owner))
+          return failed('compatibility_snapshot_appeared_before_downgrade');
+        journal=await storage.readWorkspaceEntityRecovery(owner);
+        if(journal&&journal.intent)
+          return failed('recovery_journal_appeared_before_downgrade',{phase:journal.intent.phase||'unknown'});
+
+        const cryptoRef=root&&root.crypto;
+        if(!cryptoRef||typeof cryptoRef.randomUUID!=='function')
+          return failed('secure_downgrade_request_id_unavailable');
+        const requestId=cryptoRef.randomUUID();
+        const request={p_request_id:requestId,p_expected_head_revision:expectedHead,
+          p_expected_snapshot_updated_at:state.snapshot_updated_at,
+          p_expected_snapshot_revision:expectedHead,
+          p_expected_compacted_through_revision:expectedHead};
+        await assertOwner(owner);
+        let disabled=await disableSnapshot(owner,request,signal);
+        if(disabled&&disabled.error){
+          const afterError=await readState();
+          if(afterError.mode==='snapshot'){
+            const confirmed=await readVerifiedSnapshot('snapshot',expectedHead);
+            if(confirmed.ok)return {ok:true,downgraded:true,alreadyDowngraded:true,
+              mode:'snapshot',headRevision:expectedHead,snapshotRevision:expectedHead,
+              updated_at:confirmed.remote.updated_at,requestId};
+            return failed('downgrade_commit_ambiguous_but_snapshot_not_verified',{
+              errorCode:String(disabled.error.code||'unknown'),verification:confirmed.reason});
+          }
+          if(afterError.mode!=='delta'||Number(afterError.head_revision)!==expectedHead||
+             Number(afterError.snapshot_revision)!==expectedHead||
+             Number(afterError.compacted_through_revision)!==expectedHead||
+             afterError.snapshot_updated_at!==state.snapshot_updated_at)
+            return failed('downgrade_commit_ambiguous_state_changed',{
+              errorCode:String(disabled.error.code||'unknown')});
+          await assertOwner(owner);
+          disabled=await disableSnapshot(owner,request,signal);
+        }
+        if(disabled&&disabled.error)
+          return failed('downgrade_rpc_failed',{errorCode:String(disabled.error.code||'unknown')});
+        const receipt=disabled&&disabled.data;
+        if(!receipt||receipt.ok!==true||receipt.mode!=='snapshot')
+          return failed(receipt&&receipt.code||'downgrade_rpc_receipt_invalid',{receipt:receipt||null});
+        await assertOwner(owner);
+        const finalState=await readVerifiedSnapshot('snapshot',expectedHead);
+        if(!finalState.ok)return failed(finalState.reason,{receipt});
+        return {ok:true,downgraded:true,alreadyDowngraded:receipt.already_disabled===true||
+          receipt.already_applied===true,mode:'snapshot',headRevision:expectedHead,
+          snapshotRevision:expectedHead,updated_at:finalState.remote.updated_at,
+          requestId,compaction};
+      }catch(error){
+        return failed('snapshot_downgrade_failed',{
+          retryable:true,errorCode:String(error&&error.code||'unknown'),
+          errorMessage:String(error&&error.message||'unknown').slice(0,180)});
+      }
+    }
+
     async function synchronize(ownerId,syncOptions={}){
       if(!enabled)return {ok:true,skipped:true,reason:'feature_disabled'};
       const owner=String(ownerId||'').trim();
@@ -1106,7 +1325,7 @@
     }
 
     return Object.freeze({readRemotePage,applyRemotePage,publishPending,prepareConflictRecovery,
-      publishConflictRecovery,synchronize});
+      publishConflictRecovery,downgradeToSnapshot,synchronize});
   }
 
   root.NexusEntityDeltaSync=Object.freeze({createClient,validateRemotePage,reconstructRemoteSnapshot,
