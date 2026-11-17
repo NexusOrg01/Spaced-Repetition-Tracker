@@ -557,3 +557,13 @@ The DLA-01 hosted QA gate record identifies the existing staging-login workspace
 - A workspace may be eligible without being activated. The owner-designated staging workspace remains snapshot-mode and no live Delta publication was made.
 - DLA-03's server-side downgrade/kill switch remains a required gate before persistent hosted activation. DLA-04's authenticated two-device pilot must follow only after DLA-01/02/03 acceptance.
 - No production Supabase migration, grant, allowlist row, workspace-mode change, production deployment, APK build, or merge was performed.
+
+### DLA-02 current-head and staging identity reconciliation (17 November 2026)
+
+This is the superseding code/CI and staging-identity note for the DLA-02 branch. The earlier DLA-02 staging summary above records a four-user inventory and the existing-login scope; it must not be treated as the latest hosted inventory.
+
+- The latest recorded read-only inventory on this branch found five Auth users/workspaces, including one additional same-day identity with no chunk rows; the allowlist had one enabled row belonging to that additional identity and one disabled historical row. All five workspaces remained in snapshot mode with zero Delta operation/receipt rows.
+- QA-01 owner-approved evidence selected the existing staging login/workspace and did not authorize creation of a fifth Auth user. The additional identity and enabled allowlist row are observed but not accepted as the approved QA identity. The tracker therefore leaves identity reconciliation pending. Do not delete, reassign, enable, disable, or otherwise alter staging rows as part of this PR or its merge.
+- Exact DLA-02 head: `a061f8b015bc72a08678a3f185f9ee53fde9aef3`. Authenticated local Supabase/Chromium run [#141](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/44078536681) and catalogue validation [#1622](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/44078536799) passed, including disposable fixture/allowlist cleanup and RPC-grant revocation.
+- The current Vercel check is blocked by the provider's deployment-per-day rate limit. The code remains default-off outside the exact DLA-01 hosted gate; this PR does not authorize persistent Delta activation or a production migration/grant.
+- This PR remains dependent on PR #132. Retargeting/rebasing and exact-head revalidation are required if its base changes before merge.
