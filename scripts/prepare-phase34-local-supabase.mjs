@@ -29,7 +29,7 @@ else config='project_id = "nexus-phase34-local"\n'+config;
 await writeFile(configPath,config,'utf8');
 const dir=join(supa,'migrations');await mkdir(dir,{recursive:true});
 await cp(join(root,'supabase','local-phase34','20261108000000_phase34_local_workspace_baseline.sql'),join(dir,'20261108000000_phase34_local_workspace_baseline.sql'));
-for(const m of migrations.filter(value=>!value.startsWith('//')))await cp(join(root,'supabase','migrations',m),join(dir,m));
+for(const m of migrations)await cp(join(root,'supabase','migrations',m),join(dir,m));
 const pilotMigration='20261117083717_add_entity_delta_pilot_eligibility.sql';
 await cp(join(root,'supabase','pilot-migrations',pilotMigration),join(dir,pilotMigration));
 const fixtures=join(target,'test-fixtures');await mkdir(fixtures,{recursive:true});
