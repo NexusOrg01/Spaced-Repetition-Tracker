@@ -62,6 +62,7 @@ DECLARE
   v_chunk_new_count bigint;
   v_privileges integer;
   v_injected_failure boolean := false;
+  v_chunk_bytes_rejected boolean := false;
 BEGIN
   INSERT INTO auth.users
     (id,aud,role,email,encrypted_password,email_confirmed_at,
@@ -253,18 +254,18 @@ BEGIN
     RAISE EXCEPTION 'Downgrade accepted Delta-marked serialized chunk data: %',v_result;
   END IF;
 
-  -- Declared chunk bytes must match the real UTF-8 byte count, not just add up
-  -- to the manifest total. The fixture then restores its correct byte count.
-  UPDATE public.nexus_user_data_chunks
-     SET chunk_bytes = chunk_bytes + 1
-   WHERE user_id = v_uid_b AND revision_id = v_unmarked_revision;
-  v_result := public.nexus_disable_entity_delta(0,v_stamp,v_unmarked_manifest);
-  IF v_result->>'code' <> 'unmarked_chunk_byte_count_mismatch' THEN
-    RAISE EXCEPTION 'Downgrade accepted an incorrect per-chunk byte count: %',v_result;
+  -- The table-level constraint independently rejects a caller that tries to
+  -- lie about a chunk's byte count. The RPC repeats this integrity check too.
+  BEGIN
+    UPDATE public.nexus_user_data_chunks
+       SET chunk_bytes = chunk_bytes + 1
+     WHERE user_id = v_uid_b AND revision_id = v_unmarked_revision;
+  EXCEPTION WHEN check_violation THEN
+    v_chunk_bytes_rejected := true;
+  END;
+  IF NOT v_chunk_bytes_rejected THEN
+    RAISE EXCEPTION 'The chunk table accepted a false per-chunk byte count.';
   END IF;
-  UPDATE public.nexus_user_data_chunks
-     SET chunk_bytes = octet_length(chunk_data)
-   WHERE user_id = v_uid_b AND revision_id = v_unmarked_revision;
 
   IF NOT EXISTS (
     SELECT 1 FROM public.nexus_workspace_sync_state
