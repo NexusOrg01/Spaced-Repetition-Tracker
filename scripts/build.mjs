@@ -9,7 +9,7 @@ const output = resolve(root, 'dist');
 const LIVE_HOST = 'txugbdavblpettcnhcxl.supabase.co';
 const HOSTED_QA_BRANCH = 'feat/dla-01-hosted-qa-gate';
 const HOSTED_QA_PROJECT_URL = 'https://xuwfzibxhxzxxupprxsq.supabase.co';
-const PREVIEW_BRANCHES = new Set(['feat/account-bound-offline-sync', 'ai-dev/rebuild-commerce-sync-integrity', 'ai-dev/fix-signin-preserve-offline-workspace', 'ai-dev/fix-commerce-pending-overwrite', 'ai-dev/rebuild-explore-curriculum-lifecycle', 'ai-dev/fresh-curriculum-sync-rebuild', 'android/capacitor-multistore-foundation', HOSTED_QA_BRANCH]);
+const PREVIEW_BRANCHES = new Set(['feat/account-bound-offline-sync', 'ai-dev/rebuild-commerce-sync-integrity', 'ai-dev/fix-signin-preserve-offline-workspace', 'ai-dev/fix-commerce-pending-overwrite', 'ai-dev/rebuild-explore-curriculum-lifecycle', 'ai-dev/fresh-curriculum-sync-rebuild', 'android/capacitor-multistore-foundation']);
 const LOCAL_PHASE34_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 function isLocalPhase34Url(rawUrl) {
   try { const url=new URL(String(rawUrl||'').trim()); return url.protocol==='http:'&&LOCAL_PHASE34_HOSTS.has(url.hostname.toLowerCase())&&url.port==='54321'&&!url.username&&!url.password&&!url.search&&!url.hash&&(url.pathname===''||url.pathname==='/'); }
@@ -42,6 +42,33 @@ export function resolvePreviewConfig(env) {
     if(!rawUrl||!key||!isLocalPhase34Url(rawUrl)) throw new Error('Local Phase 3.4 mode requires the local Supabase API on loopback port 54321 and a local anon/publishable key.');
     if(!isAllowedAnonKey(key)) throw new Error('Local Phase 3.4 mode accepts only a publishable key or legacy anon JWT; secret/service-role keys are forbidden.');
     return {url:new URL(rawUrl).origin,key};
+  }
+  const isDedicatedHostedQaRef = env.VERCEL_GIT_COMMIT_REF === HOSTED_QA_BRANCH ||
+    String(env.CF_PAGES_BRANCH || '').trim() === HOSTED_QA_BRANCH;
+  if (isDedicatedHostedQaRef) {
+    if (env.VERCEL_ENV !== 'preview' ||
+        env.VERCEL_GIT_COMMIT_REF !== HOSTED_QA_BRANCH ||
+        env.NEXUS_ENTITY_DELTA_QA_ENABLED !== 'true') return null;
+    const rawQaUrl = String(env.NEXUS_SUPABASE_URL || '').trim();
+    const qaKey = String(env.NEXUS_SUPABASE_ANON_KEY || '').trim();
+    const qaHost = String(env.VERCEL_URL || '').trim().toLowerCase();
+    if (!rawQaUrl || !qaKey || !qaHost || qaHost.includes('/') || qaHost.includes('@') ||
+        qaHost.includes('?') || qaHost.includes('#')) return null;
+    let qaOrigin;
+    try {
+      const parsedHost = new URL('https://' + qaHost);
+      if (parsedHost.hostname !== qaHost || !parsedHost.hostname.endsWith('.vercel.app') ||
+          parsedHost.port || parsedHost.username || parsedHost.password || parsedHost.search ||
+          parsedHost.hash || (parsedHost.pathname !== '/' && parsedHost.pathname !== '')) return null;
+      qaOrigin = parsedHost.origin;
+    } catch { return null; }
+    if (rawQaUrl !== HOSTED_QA_PROJECT_URL) {
+      throw new Error('The dedicated hosted QA branch must use the exact approved nexus-sync-staging Supabase project.');
+    }
+    if (!isAllowedAnonKey(qaKey)) {
+      throw new Error('The dedicated hosted QA branch accepts only a publishable key or legacy anon JWT; secret/service-role keys are forbidden.');
+    }
+    return { url: new URL(rawQaUrl).origin, key: qaKey, hostedQaOrigin: qaOrigin };
   }
   const allowedVercelPreview = env.VERCEL_ENV === 'preview' && PREVIEW_BRANCHES.has(String(env.VERCEL_GIT_COMMIT_REF || ''));
   // CF_PAGES is normally set by Pages, but some build wrappers omit it. The exact
