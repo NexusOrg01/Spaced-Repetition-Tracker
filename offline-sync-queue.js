@@ -112,6 +112,19 @@ function rememberBase(s,owner,payload,serverVersion){
  write(s,[{key:BASE,value:JSON.stringify(map)}]);
  return true;
 }
+function prepareDowngradeBaseCommit(s,owner,payload,serverVersion){
+ if(!s||!owner||!obj(payload)||!obj(payload.state)||!obj(payload.featureState)||
+    typeof serverVersion!=='string'||!serverVersion)
+  throw fail('A verified owner-bound snapshot is required for the local downgrade commit.');
+ const key=String(owner),bases=readOwnerMap(s,BASE,'The last-synced workspace base'),
+  sm=stamps(s);
+ bases[key]={state:payload.state,featureState:payload.featureState,serverVersion};
+ sm[key]=serverVersion;
+ return [
+  {key:BASE,value:JSON.stringify(bases)},
+  {key:STAMP,value:JSON.stringify(sm)}
+ ];
+}
 function archiveConflicts(s,owner,conflicts,metadata={}){
  if(!owner||!Array.isArray(conflicts)||!conflicts.length)return 0;
  const map=readOwnerMap(s,CONFLICTS,'The sync conflict recovery archive');
@@ -232,5 +245,5 @@ function compactMetadata(s){
 }
 function summary(s,owner){const q=read(s),x=owner?q.pending[String(owner)]:null;return {schemaVersion:SCHEMA,pendingForOwner:!!(x&&x.status==='pending'),localSequence:x&&x.status==='pending'?x.localSequence:null,archivedForOwner:q.archived.filter(a=>a&&a.ownerUserId===String(owner)).length};}
 function allPending(s){const q=read(s);return Object.keys(q.pending).map(k=>q.pending[k]).filter(x=>x&&x.status==='pending');}
-return {KEY,OWNER,STAMP,BASE,CONFLICTS,QUARANTINE,SCHEMA,commitWorkspace,forgetAccount,compactMetadata,getPending,hasPending:(s,o)=>!!getPending(s,o),getAllPending:allPending,rebase,rebaseWithBase,archive,acknowledge,rememberStamp,getStamp,getBase,rememberBase,archiveConflicts,commitVerifiedEntityDeltaSnapshot,getConflictHistory,summary};
+return {KEY,OWNER,STAMP,BASE,CONFLICTS,QUARANTINE,SCHEMA,commitWorkspace,forgetAccount,compactMetadata,getPending,hasPending:(s,o)=>!!getPending(s,o),getAllPending:allPending,rebase,rebaseWithBase,archive,acknowledge,rememberStamp,getStamp,getBase,rememberBase,prepareDowngradeBaseCommit,archiveConflicts,commitVerifiedEntityDeltaSnapshot,getConflictHistory,summary};
 });
