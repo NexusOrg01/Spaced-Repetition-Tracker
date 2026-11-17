@@ -835,7 +835,21 @@ async function runStagingEntityDeltaSync(ownerId,signal){
  const localHost=['localhost','127.0.0.1','::1','[::1]'].includes(String(location.hostname||'').toLowerCase());
  let localSupabase=false;
  try{const localUrl=new URL(config().url);localSupabase=localUrl.protocol==='http:'&&['localhost','127.0.0.1','::1','[::1]'].includes(localUrl.hostname.toLowerCase())&&localUrl.port==='54321'&&!localUrl.username&&!localUrl.password&&!localUrl.search&&!localUrl.hash&&(localUrl.pathname===''||localUrl.pathname==='/');}catch(_){localSupabase=false;}
- const gateOpen=window.NEXUS_ENTITY_DELTA_SYNC_STAGING===true&&localHost&&localSupabase;
+ const localGateOpen=window.NEXUS_ENTITY_DELTA_SYNC_STAGING===true&&localHost&&localSupabase;
+ let hostedQaGate=false;
+ try{
+  const qaOrigin=new URL(String(window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN||''));
+  const qaProject=new URL(config().url);
+  hostedQaGate=window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA===true&&
+   window.NEXUS_ENTITY_DELTA_SYNC_QA_REF==='feat/dla-01-hosted-qa-gate'&&
+   config().url==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&
+   qaProject.origin==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&
+   qaOrigin.protocol==='https:'&&qaOrigin.origin===String(window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN||'')&&
+   qaOrigin.hostname.endsWith('.vercel.app')&&qaOrigin.origin===String(location.origin||'');
+ }catch(_){hostedQaGate=false;}
+ const authenticatedOwner=session&&session.user&&typeof session.user.id==='string'?session.user.id:'';
+ const ownerMatches=!!ownerId&&authenticatedOwner===ownerId&&localStorage.getItem(OWNER_KEY)===ownerId;
+ const gateOpen=ownerMatches&&(localGateOpen||hostedQaGate);
  if(recoveryPending&&!gateOpen)return {blockedRecovery:true,reason:'staging_recovery_journal_pending'};
  if(!gateOpen)return {skipped:true,reason:'staging_delta_gate_closed'};
  const delta=window.NexusEntityDeltaSync,chunkStorage=window.NexusCloudChunkStorage;
