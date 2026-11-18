@@ -61,7 +61,7 @@ function sanitizeSyncDiagEvent(event){
   for(const key of flags){if(typeof input[key]==='boolean')workspace[key]=input[key];}
   if(Object.keys(workspace).length)safe.workspace=workspace;
  }
- const countFields=['durationMs','chunkCount','payloadUtf8Bytes','cleanupDeletedCount','baseTopicCount','localTopicCount','remoteTopicCount','conflictCount','payloadCharacters','appliedCount','publishedCount','acknowledgedCount','rounds','topicCount','workspaceRevision','projectionWorkspaceRevision','cursorPublishRevision','cursorRemoteHeadRevision','cursorAcknowledgedSequence','recoverySnapshotRevision','recoveryHeadRevision'];
+ const countFields=['durationMs','chunkCount','payloadUtf8Bytes','cleanupDeletedCount','baseTopicCount','localTopicCount','remoteTopicCount','conflictCount','payloadCharacters','appliedCount','publishedCount','acknowledgedCount','rounds','topicCount','workspaceRevision','projectionWorkspaceRevision','snapshotRevision','headRevision','cursorPublishRevision','cursorRemoteHeadRevision','cursorAcknowledgedSequence','recoverySnapshotRevision','recoveryHeadRevision'];
  for(const key of countFields){
   if(!Object.prototype.hasOwnProperty.call(event,key))continue;
   const value=event[key];
