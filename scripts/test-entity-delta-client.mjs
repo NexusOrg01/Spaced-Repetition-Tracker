@@ -37,6 +37,9 @@ function harness(options={}){
   }:null;
   const receipts=new Map(),calls=[],acknowledgements=[],queueAcknowledgements=[];
   const storage={
+    async applyWorkspaceEntityDeltaGroup(owner,group,expected,head){
+      return {ok:true,cursor:cursor?{...cursor}:null,workspace:payload};
+    },
     async readWorkspaceEntityDeltaCursor(){
       return cursor?{ok:true,exists:true,cursor:{...cursor},generation:cursor.generation,workspaceRevision:cursor.workspaceRevision}:
         {ok:true,exists:false,generation:'generation-A',workspaceRevision:1};
