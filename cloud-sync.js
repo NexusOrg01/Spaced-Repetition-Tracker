@@ -934,8 +934,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    projectionRebuildAttempted=true;
    try{
     await assertActiveUser(ownerId);
-    if(localStorage.getItem(OWNER_KEY)!==ownerId||
-       typeof window.NexusRebuildEntityProjection!=='function'){
+    if(localStorage.getItem(OWNER_KEY)!==ownerId){
      throw new Error('The active owner-bound local projection rebuild is unavailable.');
     }
     const rebuilt=await storage.syncWorkspaceEntities(ownerId,null,{replace:true});
