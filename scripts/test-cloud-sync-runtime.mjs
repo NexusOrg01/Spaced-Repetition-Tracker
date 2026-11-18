@@ -63,6 +63,19 @@ assert.ok(!initializationSource.includes("localPayload=snapshot();const remote=a
   !initializationSource.includes('sameWorkspace(localPayload,latestLocalPayload)'),
   'account initialization must not deep-clone and compare the entire local workspace twice before any account decision');
 
+const uploadStart=source.indexOf('async function upload(){');
+const uploadEnd=source.indexOf('let localQueueHealthy=',uploadStart);
+assert.ok(uploadStart>=0&&uploadEnd>uploadStart,'the cloud upload coordinator must be available for restore-path checks');
+const uploadSource=source.slice(uploadStart,uploadEnd);
+assert.ok(uploadSource.includes('if(!pending&&deltaResult&&deltaResult.skipped)')&&
+  uploadSource.includes('verifiedBase.serverVersion===lastRemoteStamp')&&
+  uploadSource.includes('await sameWorkspace(verifiedBase,snapshot())'),
+  'a no-change cloud restore must be verified against its committed base without rewriting the compatibility snapshot');
+assert.ok(initializationSource.includes('if(ready&&remote&&remote.payload&&!deltaSyncAttemptedDuringInitialization)')&&
+  initializationSource.includes('const restoredSync=await upload()'),
+  'a device that restores an existing cloud snapshot must run its initial sync coordinator even when it has no pending snapshot');
+
+
 const restoreBaseStart=source.indexOf('function restoreMissingQueueBaseFromVerifiedRemote(');
 const restoreBaseEnd=source.indexOf('async function initializeSession(s){',restoreBaseStart);
 assert.ok(restoreBaseStart>=0&&restoreBaseEnd>restoreBaseStart,
@@ -1761,5 +1774,33 @@ assert.ok(queue.hasPending(storage,accountF.id),
 assert.match(getElement('cloudHelpText').textContent,/database upgrade|chunk-storage upgrade/i,
   'the user must be told that a database upgrade is required rather than seeing an unexplained sync failure');
 missingChunkTable=false;
+
+// A second device that has no local pending snapshot must still enter the
+// sync coordinator after restoring an existing cloud workspace. In snapshot
+// mode (or when the preview gate is closed), an unchanged restore must not
+// cause a redundant full-snapshot write or advance the cloud timestamp.
+const accountG={id:'account-G',email:'g@example.test'};
+const payloadG=payloadFor('cloud-restored-G');
+const stampG='2026-11-18T15:00:00.000Z';
+rows.set(accountG.id,{user_id:accountG.id,payload:payloadG,updated_at:stampG});
+storage.removeItem(OWNER);
+storage.setItem(STATE_KEY,JSON.stringify(payloadG.state));
+storage.setItem(FEATURE_KEY,JSON.stringify(payloadG.featureState));
+context.state=payloadG.state;
+activeSession={user:accountG};
+networkAvailable=true;
+const diagBeforeRestore=JSON.parse(storage.getItem('nexus.syncdiag.session.v1')||'[]');
+const uploadStartsBefore=diagBeforeRestore.filter(event=>event&&event.stage==='upload-start').length;
+await window.NexusCloudSync.reconnect();
+const diagAfterRestore=JSON.parse(storage.getItem('nexus.syncdiag.session.v1')||'[]');
+const uploadStartsAfter=diagAfterRestore.filter(event=>event&&event.stage==='upload-start').length;
+assert.ok(uploadStartsAfter>uploadStartsBefore,
+  'a clean second-device cloud restore must run the initial sync coordinator');
+assert.equal(rows.get(accountG.id).updated_at,stampG,
+  'a no-change restore in snapshot mode must not rewrite the cloud snapshot');
+assert.equal(queue.hasPending(storage,accountG.id),false,
+  'a no-change restore must not create a compatibility snapshot queue entry');
+assert.equal(getElement('cloudStatus').textContent,'Synced',
+  'the clean second-device restore must settle in the synced state');
 
 console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, target-account pending-snapshot isolation, first-login conflict gating, auth-session queue recovery, 77,144-record second-device deletion reconciliation, and pre-migration chunk-table compatibility.');
