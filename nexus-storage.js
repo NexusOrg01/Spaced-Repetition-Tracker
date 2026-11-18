@@ -432,6 +432,11 @@
             ownerId: row.ownerId,
             state,
             featureState,
+            // Keep the exact committed JSON alongside the parsed workspace. Projection
+            // rebuilds use these bytes to detect a newer snapshot without relying on the
+            // global IndexedDB revision, which also advances for unrelated queue writes.
+            trackerJson: row.tracker,
+            featureStateJson: row.featureState,
             revision: Number.isSafeInteger(Number(row.revision)) ? Number(row.revision) : 0,
             workspaceRevision: Number.isSafeInteger(Number(row.workspaceRevision))
               ? Number(row.workspaceRevision)
@@ -462,6 +467,24 @@
           ? Number(row.workspaceRevision)
           : (Number.isSafeInteger(Number(row.revision)) ? Number(row.revision) : null);
         set(value);
+      };
+    });
+  }
+
+  // The workspace row revision advances for tracker/Study Hub snapshot writes only.
+  // Unlike the database-wide revision, it is unaffected by offline-queue metadata.
+  function readWorkspaceSnapshotRevision(ownerId) {
+    if (!enabled || !database) return Promise.resolve(null);
+    return transaction([WORKSPACES], 'readonly', (tx, set) => {
+      const request = tx.objectStore(WORKSPACES).get(workspaceKey(ownerId));
+      request.onsuccess = () => {
+        const row = request.result;
+        if (!validWorkspaceRow(row, ownerId)) {
+          set(null);
+          return;
+        }
+        const value = Number(row.revision);
+        set(Number.isSafeInteger(value) && value >= 0 ? value : null);
       };
     });
   }
@@ -721,6 +744,28 @@
        Number(options.expectedRevision)!==sourceRevision){
       throw new Error('A matching expectedRevision is required. Read the active local revision and retry from a fresh workspace snapshot.');
     }
+    const hasSourceSnapshotGuard=
+      typeof options.trackerSnapshotJson==='string'&&
+      typeof options.featureSnapshotJson==='string';
+    const sourceWorkspaceSnapshotRevision=hasSourceSnapshotGuard
+      ?(Number.isSafeInteger(Number(options.sourceWorkspaceSnapshotRevision))
+        ?Number(options.sourceWorkspaceSnapshotRevision)
+        :await readWorkspaceSnapshotRevision(owner))
+      :null;
+    if(hasSourceSnapshotGuard&&!Number.isSafeInteger(sourceWorkspaceSnapshotRevision)){
+      const error=new Error('A valid durable workspace snapshot revision is required before entity migration.');
+      error.nexusEntityProjectionFailureReason='snapshot-unavailable';
+      throw entityProjectionFailure(error,'preflight');
+    }
+    const sourceWorkspaceIsCurrent=async()=>{
+      if(!enabled||!database||committedOwnerId!==owner||entityRemovalOwners.has(owner))return false;
+      if(!hasSourceSnapshotGuard)return revision===sourceRevision;
+      if(cache.get(TRACKER_KEY)!==options.trackerSnapshotJson||
+         cache.get(FEATURE_KEY)!==options.featureSnapshotJson)return false;
+      const currentSnapshotRevision=await readWorkspaceSnapshotRevision(owner);
+      return Number.isSafeInteger(currentSnapshotRevision)&&
+        currentSnapshotRevision===sourceWorkspaceSnapshotRevision;
+    };
     const deferActivation=options.deferActivation===true;
     const recoveryIntentId=String(options.recoveryIntentId||'');
     const manifestKey=entityManifestKey(owner),generation=entityGeneration();
@@ -728,6 +773,11 @@
       const request=tx.objectStore('migrationMeta').get(manifestKey);
       request.onsuccess=()=>set(request.result||null);
     });
+    if(hasSourceSnapshotGuard&&!(await sourceWorkspaceIsCurrent())){
+      const error=new Error('The compatibility workspace changed before its entity projection rebuild could start.');
+      error.nexusEntityProjectionFailureReason='source-snapshot-changed';
+      throw entityProjectionFailure(error,'preflight');
+    }
     if(deferActivation&&(!recoveryIntentId||!previous||previous.status!=='ready'||!previous.activeGeneration||
        (previous.pendingGeneration&&previous.pendingRecoveryIntentId!==recoveryIntentId)||
        (!previous.pendingGeneration&&previous.pendingRecoveryIntentId&&previous.pendingRecoveryIntentId!==recoveryIntentId))){
@@ -769,8 +819,10 @@
           failureStage='write-row-batch';
           await writeWorkspaceEntityBatch(batch.splice(0,batch.length));
           failureStage='generate-rows';
-          if(!enabled||committedOwnerId!==owner||revision!==sourceRevision){
-            throw new Error('The active workspace changed during entity migration. The previous entity generation remains active.');
+          if(!(await sourceWorkspaceIsCurrent())){
+            const error=new Error('The active workspace changed during entity migration. The previous entity generation remains active.');
+            if(hasSourceSnapshotGuard)error.nexusEntityProjectionFailureReason='source-snapshot-changed';
+            throw error;
           }
           await new Promise(resolve=>root.setTimeout(resolve,0));
         }
@@ -780,8 +832,10 @@
         await writeWorkspaceEntityBatch(batch.splice(0,batch.length));
       }
       failureStage='verify-publication';
-      if(!enabled||committedOwnerId!==owner||revision!==sourceRevision){
-        throw new Error('The active workspace changed during entity migration. The previous entity generation remains active.');
+      if(!(await sourceWorkspaceIsCurrent())){
+        const error=new Error('The active workspace changed during entity migration. The previous entity generation remains active.');
+        if(hasSourceSnapshotGuard)error.nexusEntityProjectionFailureReason='source-snapshot-changed';
+        throw error;
       }
       failureStage='publish-manifest';
       await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
@@ -791,7 +845,11 @@
           // Revalidate inside the publication transaction: a local save or account
           // handoff between the preflight check and this callback must not publish
           // a stale entity generation as the active account workspace.
-          if(!enabled||committedOwnerId!==owner||revision!==sourceRevision||
+          if(!enabled||committedOwnerId!==owner||
+             (hasSourceSnapshotGuard
+               ?(cache.get(TRACKER_KEY)!==options.trackerSnapshotJson||
+                 cache.get(FEATURE_KEY)!==options.featureSnapshotJson)
+               :revision!==sourceRevision)||
              !current||current.pendingGeneration!==generation){
             try{tx.abort();}catch(_){}
             return;
@@ -2122,6 +2180,14 @@
       if(!Number.isSafeInteger(sourceWorkspaceRevision)){
         throw new Error('The active compatibility workspace is not durably available for entity synchronization.');
       }
+      const sourceWorkspaceSnapshotRevision=await readWorkspaceSnapshotRevision(owner);
+      if(!Number.isSafeInteger(sourceWorkspaceSnapshotRevision)){
+        throw new Error('The active compatibility workspace snapshot revision is unavailable.');
+      }
+      const guardedTrackerSnapshotJson=trackerSnapshotJson!==null
+        ?trackerSnapshotJson:cache.get(TRACKER_KEY);
+      const guardedFeatureSnapshotJson=featureSnapshotJson!==null
+        ?featureSnapshotJson:cache.get(FEATURE_KEY);
       let manifest=await readEntityManifest(owner);
       if(manifest&&manifest.pendingRecoveryIntentId){
         throw new Error('An entity-delta snapshot recovery is being committed. Record-level synchronization is paused to protect the staged generation.');
@@ -2135,12 +2201,17 @@
       // revision immediately after the entity generation. If multiple snapshot
       // commits were missed, or a caller supplied changes without advancing the
       // mutation marker, rebuild from the latest compatibility snapshot.
-      const canApplyIncrementally=entityRevisionChanged&&capturedChanges.length>0&&workspaceRevisionDelta===1;
+      // null means "replace from the complete compatibility snapshot", not an empty
+      // change list. Never read .length from the null replacement sentinel.
+      const canApplyIncrementally=entityRevisionChanged&&
+        Array.isArray(capturedChanges)&&capturedChanges.length>0&&workspaceRevisionDelta===1;
       const needsReplacement=replace||!manifest||manifest.status!=='ready'||!manifest.activeGeneration||
         (entityRevisionChanged&&!canApplyIncrementally)||
         (!entityRevisionChanged&&capturedChanges.length>0);
       if(needsReplacement){
         let stateSnapshot=null,featureSnapshot=null;
+        let sourceTrackerSnapshotJson=guardedTrackerSnapshotJson;
+        let sourceFeatureSnapshotJson=guardedFeatureSnapshotJson;
         if(trackerSnapshotJson!==null&&featureSnapshotJson!==null){
           stateSnapshot=JSON.parse(trackerSnapshotJson);
           featureSnapshot=JSON.parse(featureSnapshotJson);
@@ -2151,9 +2222,17 @@
           }
           stateSnapshot=compatibility.state;
           featureSnapshot=compatibility.featureState;
+          sourceTrackerSnapshotJson=compatibility.trackerJson||sourceTrackerSnapshotJson;
+          sourceFeatureSnapshotJson=compatibility.featureStateJson||sourceFeatureSnapshotJson;
+        }
+        if(typeof sourceTrackerSnapshotJson!=='string'||typeof sourceFeatureSnapshotJson!=='string'){
+          throw new Error('The exact committed compatibility snapshot is unavailable for projection verification.');
         }
         const result=await migrateWorkspaceEntities(owner,stateSnapshot,featureSnapshot,{
-          expectedRevision:sourceRevision,sourceWorkspaceRevision
+          // Re-read the database-wide revision immediately before entering migration.
+          // Queue-only writes may advance it while the workspace revision stays stable.
+          expectedRevision:revision,sourceWorkspaceRevision,sourceWorkspaceSnapshotRevision,
+          trackerSnapshotJson:sourceTrackerSnapshotJson,featureSnapshotJson:sourceFeatureSnapshotJson
         });
         entitySyncError=null;entitySyncLastSuccessAt=timestamp();
         return {...result,mode:'snapshot-backfill'};
@@ -2194,7 +2273,16 @@
           if(!result||result.ownerId!==owner)throw new Error('An entity-change batch could not be committed.');
           applied+=batch.length;batches++;
         }
-        if(revision!==sourceRevision)throw new Error('The local workspace changed while its entity projection was being updated.');
+        const sourceSnapshotsStillCurrent=
+          typeof guardedTrackerSnapshotJson==='string'&&
+          typeof guardedFeatureSnapshotJson==='string'&&
+          cache.get(TRACKER_KEY)===guardedTrackerSnapshotJson&&
+          cache.get(FEATURE_KEY)===guardedFeatureSnapshotJson;
+        const currentWorkspaceSnapshotRevision=await readWorkspaceSnapshotRevision(owner);
+        if(!enabled||committedOwnerId!==owner||!sourceSnapshotsStillCurrent||
+           currentWorkspaceSnapshotRevision!==sourceWorkspaceSnapshotRevision){
+          throw new Error('The local workspace changed while its entity projection was being updated.');
+        }
         await updateEntityManifest(owner,activeGeneration,current=>({
           ...current,status:'ready',sourceRevision:sourceRevision,sourceWorkspaceRevision,
           lastEntitySyncAt:timestamp(),updatedAt:timestamp()
