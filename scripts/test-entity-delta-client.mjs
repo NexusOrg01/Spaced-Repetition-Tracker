@@ -1171,9 +1171,16 @@ function makeStagingRuntimeHarness({
   const cursor={ownerId:'account-A',generation:'projection-generation-a',workspaceRevision:0,
     snapshotUpdatedAt:'verified-snapshot-stamp',publishRevision:3,
     remoteHeadRevision:3,acknowledgedSequence:0,requiresPull:false};
+  let pendingSnapshot={ownerUserId:'account-A',status:'pending',operationId:'shadow-snapshot-operation',
+    baseServerVersion:'verified-snapshot-stamp',payload};
   const queue={
     getBase(_local,owner){calls.localBaseOwner=owner;return {baseServerVersion:'base-stamp'};},
-    getPending(_local,owner){calls.pendingOwner=owner;return {pending:true};},
+    getPending(_local,owner){calls.pendingOwner=owner;return pendingSnapshot;},
+    acknowledge(_local,owner,operationId,baseVersion,serverVersion){
+      calls.shadowSnapshotAcknowledgement={owner,operationId,baseVersion,serverVersion};
+      if(pendingSnapshot&&pendingSnapshot.operationId===operationId)pendingSnapshot=null;
+      return {acknowledged:true};
+    },
     commitVerifiedEntityDeltaSnapshot(...args){calls.localCommit=args;return {ok:true};}
   };
   let projectionIndex=0;
@@ -1326,6 +1333,10 @@ assert.equal(activeHostedQa.calls.createClient,1);
 assert.equal(activeHostedQa.calls.outboxOwner,'account-A',
   'a successful hosted Delta sync must verify the owner-scoped outbox after synchronization');
 assert.equal(activeHostedQa.calls.outboxAfterSequence,0);
+assert.deepEqual(activeHostedQa.calls.shadowSnapshotAcknowledgement,{
+  owner:'account-A',operationId:'shadow-snapshot-operation',
+  baseVersion:'verified-snapshot-stamp',serverVersion:'verified-snapshot-stamp'
+},'a clean Delta cursor and empty outbox must acknowledge the matching compatibility shadow');
 
 const hostedCursorMismatch=makeStagingRuntimeHarness({
   gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
