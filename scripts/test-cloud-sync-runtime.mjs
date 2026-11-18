@@ -71,6 +71,14 @@ assert.ok(uploadSource.includes('if(!pending&&deltaResult&&deltaResult.skipped)'
   uploadSource.includes('verifiedBase.serverVersion===lastRemoteStamp')&&
   uploadSource.includes('await sameWorkspace(verifiedBase,snapshot())'),
   'a no-change cloud restore must be verified against its committed base without rewriting the compatibility snapshot');
+const deltaSyncStart=source.indexOf('async function runStagingEntityDeltaSync');
+const deltaSyncEnd=source.indexOf('async function upload(){',deltaSyncStart);
+const deltaSyncSource=source.slice(deltaSyncStart,deltaSyncEnd);
+assert.ok(deltaSyncSource.includes('cursor.requiresPull===false')&&
+  deltaSyncSource.includes('Number(cursor.publishRevision)===Number(cursor.remoteHeadRevision)')&&
+  deltaSyncSource.includes('outbox.groups.length||outbox.hasMore===true'),
+  'a Delta sync must not be reported successful until the local cursor is current and its outbox is empty');
+
 assert.ok(initializationSource.includes('if(ready&&remote&&remote.payload&&!deltaSyncAttemptedDuringInitialization)')&&
   initializationSource.includes('const restoredSync=await upload()'),
   'a device that restores an existing cloud snapshot must run its initial sync coordinator even when it has no pending snapshot');
