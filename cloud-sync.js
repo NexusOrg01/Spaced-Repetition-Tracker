@@ -77,7 +77,9 @@ function sanitizeSyncDiagEvent(event){
   event:['INITIAL_SESSION','SIGNED_IN','SIGNED_OUT','TOKEN_REFRESHED','USER_UPDATED'],
   errorCategory:['conflict','timeout','queue-limit','queue-unavailable','other'],
   projectionRebuildMode:['snapshot-backfill','incremental','unchanged','skipped','other'],
-  projectionRebuildErrorCategory:['conflict','timeout','queue-limit','queue-unavailable','other']
+  projectionRebuildErrorCategory:['conflict','timeout','queue-limit','queue-unavailable','other'],
+  projectionRebuildFailureStage:['preflight','stage-manifest','generate-rows','write-row-batch','publish-manifest','verify-publication','read-compatibility-workspace','sync-workspace-entities','post-rebuild-readiness','other'],
+  projectionRebuildFailureReason:['missing-stable-record-id','duplicate-stable-record-id','indexeddb-write-failed','manifest-stage-write-failed','manifest-publish-failed','manifest-verification-failed','snapshot-unavailable','workspace-revision-invalid','entity-recovery-pending','owner-unavailable','rebuild-not-completed','projection-not-current','other']
  };
  for(const key of Object.keys(enums)){
   if(typeof event[key]!=='string')continue;
@@ -928,7 +930,8 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
     phase:'local-publish'};
   }
   let projectionRebuildAttempted=false,projectionRebuildOk=false,
-      projectionRebuildMode='other',projectionRebuildErrorCategory='other';
+      projectionRebuildMode='other',projectionRebuildErrorCategory='other',
+      projectionRebuildFailureStage='other',projectionRebuildFailureReason='other';
   if(projection&&projection.ok!==true&&
      (projection.reason==='entity_projection_unavailable'||projection.reason==='stale_entity_projection')){
    projectionRebuildAttempted=true;
@@ -941,22 +944,43 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
     await assertActiveUser(ownerId);
     if(localStorage.getItem(OWNER_KEY)!==ownerId||!rebuilt||
        rebuilt.skipped===true||rebuilt.ok===false){
-     throw new Error('The local entity projection rebuild did not complete.');
+     const error=new Error('The local entity projection rebuild did not complete.');
+     error.nexusEntityProjectionFailureStage='sync-workspace-entities';
+     error.nexusEntityProjectionFailureReason=
+      rebuilt&&rebuilt.reason==='indexeddb-unavailable'?'rebuild-not-completed':'rebuild-not-completed';
+     throw error;
     }
     if(['snapshot-backfill','incremental','unchanged','skipped'].includes(rebuilt.mode)){
      projectionRebuildMode=rebuilt.mode;
     }
     projection=await storage.waitForWorkspaceEntitySync(ownerId);
     projectionRebuildOk=!!(projection&&projection.ok===true);
-    if(!projectionRebuildOk)throw new Error('The rebuilt local entity projection is not current.');
+    if(!projectionRebuildOk){
+     const error=new Error('The rebuilt local entity projection is not current.');
+     error.nexusEntityProjectionFailureStage='post-rebuild-readiness';
+     error.nexusEntityProjectionFailureReason='projection-not-current';
+     throw error;
+    }
    }catch(error){
     projectionRebuildErrorCategory=syncDiagErrorCategory(error);
+    const allowedFailureStages=new Set(['preflight','stage-manifest','generate-rows','write-row-batch',
+     'publish-manifest','verify-publication','read-compatibility-workspace',
+     'sync-workspace-entities','post-rebuild-readiness']);
+    const allowedFailureReasons=new Set(['missing-stable-record-id','duplicate-stable-record-id',
+     'indexeddb-write-failed','manifest-stage-write-failed','manifest-publish-failed',
+     'manifest-verification-failed','snapshot-unavailable','workspace-revision-invalid',
+     'entity-recovery-pending','owner-unavailable','rebuild-not-completed','projection-not-current']);
+    projectionRebuildFailureStage=allowedFailureStages.has(error&&error.nexusEntityProjectionFailureStage)
+     ?error.nexusEntityProjectionFailureStage:'other';
+    projectionRebuildFailureReason=allowedFailureReasons.has(error&&error.nexusEntityProjectionFailureReason)
+     ?error.nexusEntityProjectionFailureReason:'other';
     projection={...(projection&&typeof projection==='object'?projection:{}),
      ok:false,snapshotRequired:true,reason:'entity_projection_rebuild_failed'};
    }
    if(typeof syncDiag==='function')syncDiag('entity-projection-rebuild',null,{
     projectionRebuildAttempted,projectionRebuildOk,
     projectionRebuildMode,projectionRebuildErrorCategory,
+    projectionRebuildFailureStage,projectionRebuildFailureReason,
     reason:projection&&projection.ok===true?null:
      (projection&&projection.reason||'entity_projection_rebuild_failed'),
     workspaceRevision:projection&&projection.workspaceRevision,
