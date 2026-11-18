@@ -793,7 +793,7 @@ async function initializeSession(s){syncDiag('initialize-start',diagnosticWorksp
 // Capture the local workspace once, after the asynchronous cloud read. This includes
 // any offline edits made while the request was in flight without retaining a stale
 // deep clone and then cloning/comparing the complete large workspace a second time.
-let localPayload=snapshot();owner=localStorage.getItem(OWNER_KEY)||'';
+let localPayload=snapshot();let deltaSyncAttemptedDuringInitialization=false;owner=localStorage.getItem(OWNER_KEY)||'';
 if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,remote&&remote.updated_at||null);let pendingForUser=window.NexusOfflineSyncQueue?window.NexusOfflineSyncQueue.getPending(localStorage,newUserId):null;const restoredQueueBase=restoreMissingQueueBaseFromVerifiedRemote(window.NexusOfflineSyncQueue,newUserId,pendingForUser,remote);if(restoredQueueBase)syncDiag('baseline-restored-from-remote',null,{baselineRestored:true,reason:'queued-base-version-matches-remote-snapshot'});let adoptedUnassignedLocalWorkspace=false;if(!owner&&hasLocalWork(localPayload)&&!pendingForUser&&!(remote&&remote.payload)){const accountPayload={state:emptyState(),featureState:{}};const mergedState=mergeState(localPayload.state,accountPayload.state);const mergedFeatures=window.NexusMergeFeatureState(localPayload.featureState||{},accountPayload.featureState||{},{});await applyWorkspaceSnapshot(mergedState,mergedFeatures,newUserId);const baseVersion=pendingForUser?(pendingForUser.baseServerVersion||null):(remote&&remote.updated_at||null);if(!window.NexusOfflineSyncQueue||typeof window.NexusOfflineSyncQueue.rebase!=='function')throw new Error('Safe account-bound offline sync queue is unavailable. The guest workspace remains saved locally.');window.NexusOfflineSyncQueue.rebase(localStorage,newUserId,snapshot(),baseVersion,'merge-unassigned-local-workspace');pendingForUser=window.NexusOfflineSyncQueue.getPending(localStorage,newUserId);owner=newUserId;localPayload=snapshot();adoptedUnassignedLocalWorkspace=true;}if(pendingForUser&&owner!==newUserId&&!hasUnassignedWorkspaceChanges(owner,newUserId,localPayload)){await applyWorkspaceSnapshot(normalizeState(pendingForUser.payload.state),window.NexusNormalizeFeatureState(pendingForUser.payload.featureState||{}),newUserId);owner=newUserId;localPayload=snapshot();}if(pendingForUser&&remote&&remote.payload&&(await sameWorkspace(remote.payload,pendingForUser.payload))&&!hasMissingBaselineCurriculumIntent(newUserId,pendingForUser.payload,remote.payload)){window.NexusOfflineSyncQueue.rememberBase(localStorage,newUserId,remote.payload,remote.updated_at||null);window.NexusOfflineSyncQueue.acknowledge(localStorage,newUserId,pendingForUser.operationId,pendingForUser.baseServerVersion,remote.updated_at);pendingForUser=null;}let unassignedPendingConflict=false;
 if(!owner&&pendingForUser&&hasLocalWork(localPayload)&&(!remote||!remote.payload||!(await sameWorkspace(remote.payload,pendingForUser.payload)))){
  const pendingPayload=normalizeWorkspacePayload(pendingForUser.payload);
@@ -825,6 +825,8 @@ if(!owner&&pendingForUser&&hasLocalWork(localPayload)&&(!remote||!remote.payload
    localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;return;
   }
   ready=true;lastUserId=newUserId;localStorage.setItem(OWNER_KEY,newUserId);
+  const handoffDeltaSync=await upload();deltaSyncAttemptedDuringInitialization=true;
+  if(!handoffDeltaSync){ready=false;status('Sync not verified');say('The target account workspace was restored, but its initial sync-mode reconciliation was not verified. Local data is preserved; reconnect to retry.');return;}
   say('Loaded this account’s workspace. Any pending changes from the previous account remain isolated and will sync when that account is active again.');
   await flushDurableLocalWrites();status('Synced');return;
  }
@@ -842,13 +844,18 @@ if(!owner&&pendingForUser&&hasLocalWork(localPayload)&&(!remote||!remote.payload
    localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;return;
   }
   ready=true;lastUserId=newUserId;localStorage.setItem(OWNER_KEY,newUserId);
+  const handoffDeltaSync=await upload();deltaSyncAttemptedDuringInitialization=true;
+  if(!handoffDeltaSync){ready=false;status('Sync not verified');say('The target account workspace was restored, but its initial sync-mode reconciliation was not verified. Local data is preserved; reconnect to retry.');return;}
   say('Restored this account’s last verified workspace and reconciled it with the latest cloud data. Previous-account changes remain isolated.');
   await flushDurableLocalWrites();status('Synced');return;
  }
  if(remote&&remote.payload){
   await applyRemote(remote.payload,newUserId,remote.updated_at||null);lastRemoteStamp=remote.updated_at||null;
   if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,lastRemoteStamp);
-  ready=true;say('Loaded this account’s cloud workspace. Offline changes belonging to the previous account remain saved separately.');
+  ready=true;localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;
+  const handoffDeltaSync=await upload();deltaSyncAttemptedDuringInitialization=true;
+  if(!handoffDeltaSync){ready=false;status('Sync not verified');say('The target account workspace was restored, but its initial sync-mode reconciliation was not verified. Local data is preserved; reconnect to retry.');return;}
+  say('Loaded this account’s cloud workspace. Offline changes belonging to the previous account remain saved separately.');
  }else{
   await resetToEmpty(newUserId);if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,null);
   ready=true;enqueueInitialSnapshot(newUserId);
@@ -860,7 +867,7 @@ if(!owner&&pendingForUser&&hasLocalWork(localPayload)&&(!remote||!remote.payload
  if(ready){await flushDurableLocalWrites();status('Synced');}
  return;
 }
-const localData={state:localPayload.state,featureState:localPayload.featureState||{}},remoteData=remote&&remote.payload?{state:remote.payload.state,featureState:remote.payload.featureState||{}}:null;let localHasWork=(pendingForUser?(!remoteData||!(await sameWorkspace(localData,remoteData))):(remoteData?!(await sameWorkspace(localData,remoteData)):hasLocalWork(localPayload)));let pendingAutomaticallySynced=false,cloudWorkspaceAutoLoaded=false,deltaSyncAttemptedDuringInitialization=false;if(adoptedUnassignedLocalWorkspace){
+const localData={state:localPayload.state,featureState:localPayload.featureState||{}},remoteData=remote&&remote.payload?{state:remote.payload.state,featureState:remote.payload.featureState||{}}:null;let localHasWork=(pendingForUser?(!remoteData||!(await sameWorkspace(localData,remoteData))):(remoteData?!(await sameWorkspace(localData,remoteData)):hasLocalWork(localPayload)));let pendingAutomaticallySynced=false,cloudWorkspaceAutoLoaded=false;if(adoptedUnassignedLocalWorkspace){
 // The guest workspace has already been explicitly classified as this first account's
 // local workspace above. Do not send it through the generic local-vs-cloud choice dialog
 // a second time: that dialog can restore an empty cloud and discard the curriculum on refresh.
