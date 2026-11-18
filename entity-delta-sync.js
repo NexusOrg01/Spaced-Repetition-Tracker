@@ -549,7 +549,6 @@
          typeof storage.readWorkspaceEntityDeltaCursor!=='function'||
          typeof storage.initializeWorkspaceEntityDeltaCursor!=='function'||
          typeof storage.applyWorkspaceEntityDeltaGroup!=='function'||
-         typeof storage.readWorkspaceEntityOutboxGroups!=='function'||
          typeof getLocalBase!=='function'||typeof getLocalWorkspace!=='function'||
          typeof getPendingSnapshot!=='function'||typeof sameWorkspace!=='function'){
         return unavailable('remote_apply_dependencies_unavailable');
@@ -609,6 +608,9 @@
           return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_outside_retention'};
         }
         if(pendingCheck.pending){
+          if(typeof storage.readWorkspaceEntityOutboxGroups!=='function'){
+            return {ok:false,snapshotRequired:true,reason:'local_outbox_reader_unavailable'};
+          }
           // Ordinary app saves also leave a legacy compatibility snapshot in the
           // browser queue. When the exact payload is represented by the current
           // owner-bound projection and its Delta outbox is empty, it is only a
