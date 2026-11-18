@@ -45,6 +45,28 @@ assert.deepEqual(safeEvent,{
 const sanitizedJson=JSON.stringify(safeEvent);
 for(const forbidden of ['PRIVATE','person@example.com','operationId','errorMessage','errorCode','arbitraryNested','topicName','notes'])assert.equal(sanitizedJson.includes(forbidden),false,`sanitized event must exclude ${forbidden}`);
 assert.equal(safeEvent.errorCategory,'conflict','conflict classification remains available without raw server codes');
+const projectionEvent={
+ at:'2026-11-18T05:46:10.000Z',stage:'entity-projection-rebuild',
+ projectionRebuildAttempted:true,projectionRebuildOk:true,
+ projectionRebuildMode:'snapshot-backfill',projectionRebuildErrorCategory:'other',
+ workspaceRevision:5,projectionWorkspaceRevision:5,projectionRevisionMatches:true,
+ reason:'entity_projection_unavailable',
+ errorMessage:'PRIVATE DATABASE DETAIL',ownerId:'PRIVATE-OWNER'
+};
+vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(projectionEvent)+')',sanitizerSandbox,
+ {filename:'sync-diagnostic-projection-sanitizer-test.js'});
+const safeProjectionEvent=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.deepEqual(safeProjectionEvent,{
+ at:projectionEvent.at,stage:'entity-projection-rebuild',
+ projectionRebuildAttempted:true,projectionRebuildOk:true,
+ projectionRebuildMode:'snapshot-backfill',projectionRebuildErrorCategory:'other',
+ workspaceRevision:5,projectionWorkspaceRevision:5,projectionRevisionMatches:true,
+ reason:'entity_projection_unavailable'
+},'projection diagnostics must preserve only safe owner-free rebuild and revision facts');
+for(const forbidden of ['PRIVATE','ownerId','errorMessage'])assert.equal(
+ JSON.stringify(safeProjectionEvent).includes(forbidden),false,
+ 'projection diagnostics must not expose owner identity or raw rebuild errors'
+);
 assert.equal(vm.runInContext('sanitizeSyncDiagEvent({at:"2026-11-17T01:00:00.000Z",stage:"untrusted-stage",errorMessage:"leak"})',sanitizerSandbox),null,'unknown diagnostic stages must be rejected');
 
 const collectorStart=source.indexOf('async function collectSyncOperationalDiagnostics(){');
