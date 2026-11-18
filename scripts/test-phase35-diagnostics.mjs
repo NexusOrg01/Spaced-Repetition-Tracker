@@ -94,6 +94,23 @@ assert.deepEqual(safeRecoveryTrigger,{
  appliedCount:0,publishedCount:0,acknowledgedCount:0,rounds:1
 },'recovery trigger diagnostics must expose only the allowlisted failure cause and aggregate counters');
 
+const recoveryFailureEvent={
+ at:'2026-11-18T12:00:29.058Z',stage:'snapshot-recovery-complete',ok:false,resumed:false,
+ recoveryReason:'remote_snapshot_baseline_unverified',snapshotRevision:null,headRevision:null,
+ errorMessage:'PRIVATE SERVER DETAIL',ownerId:'PRIVATE-OWNER'
+};
+vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(recoveryFailureEvent)+')',sanitizerSandbox,
+ {filename:'sync-diagnostic-recovery-failure-sanitizer-test.js'});
+const safeRecoveryFailure=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.deepEqual(safeRecoveryFailure,{
+ at:recoveryFailureEvent.at,stage:'snapshot-recovery-complete',ok:false,resumed:false,
+ recoveryReason:'remote_snapshot_baseline_unverified',snapshotRevision:null,headRevision:null
+},'recovery completion diagnostics must preserve the safe failure reason without exposing server details');
+vm.runInContext('result=sanitizeSyncDiagEvent({at:"2026-11-18T12:00:29.060Z",stage:"delta-sync-result",ok:false,reason:"local_snapshot_baseline_mismatch"})',sanitizerSandbox);
+const safeBaselineFailure=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.equal(safeBaselineFailure.reason,'local_snapshot_baseline_mismatch',
+ 'delta sync diagnostics must preserve the allowlisted snapshot baseline mismatch reason');
+
 const recoveryVerificationEvent={
  at:'2026-11-18T08:37:34.000Z',stage:'delta-recovery-verification',
  ok:true,recoveryTriggerReason:'local_snapshot_baseline_mismatch',
