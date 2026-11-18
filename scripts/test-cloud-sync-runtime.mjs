@@ -103,16 +103,15 @@ assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-A',restorePen
 assert.equal(rememberBaseCalls,1,
   'an already aligned baseline must not be rewritten');
 restoredBase={owner:'owner-A',state:{streams:[{id:'stale-local-base'}]},
- featureState:{},serverVersion:'older-cloud-stamp'};
-assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-A',restorePending,restoreRemote),true,
-  'a stale local merge base must be repaired when the pending queue and verified remote snapshot prove the exact baseline revision');
-assert.deepEqual(restoredBase.state,restoreRemote.payload.state,
-  'a repaired stale base must use the verified remote snapshot');
-assert.equal(restoredBase.serverVersion,restoreRemote.updated_at);
-assert.equal(rememberBaseCalls,2);
+ featureState:{goals:[{id:'baseline-only-goal'}]},serverVersion:'older-cloud-stamp'};
 assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-A',restorePending,restoreRemote),false,
-  'the newly repaired base must remain stable on repeated initialization');
-assert.equal(rememberBaseCalls,2);
+  'an existing older verified base must not be overwritten by a newer but potentially incomplete cloud snapshot');
+assert.deepEqual(restoredBase.state,{streams:[{id:'stale-local-base'}]},
+  'the original baseline records must remain available for three-way repair');
+assert.deepEqual(restoredBase.featureState,{goals:[{id:'baseline-only-goal'}]},
+  'baseline-only Study Hub data must remain preserved');
+assert.equal(restoredBase.serverVersion,'older-cloud-stamp');
+assert.equal(rememberBaseCalls,1);
 restoredBase=null;
 assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-A',
  {...restorePending,baseServerVersion:'older-cloud-stamp'},restoreRemote),false,
