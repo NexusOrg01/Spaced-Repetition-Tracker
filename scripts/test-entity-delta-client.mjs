@@ -1516,6 +1516,17 @@ assert.equal(pendingRecovery.calls.recovery.owner,'account-A');
 assert.equal(pendingRecovery.calls.recovery.options.maxGroups,100);
 assert.equal(pendingRecovery.calls.recovery.options.maxBytes,8*1048576);
 
+const recoveryWithPendingOutbox=makeStagingRuntimeHarness({
+  gate:true,recoveryIntent:{intentId:'recovery-intent-pending-outbox',phase:'staged'},
+  outboxReadResult:{ownerId:'account-A',generation:'projection-generation-a',workspaceRevision:0,
+    groups:[{operationId:'unacknowledged-recovery-operation'}],hasMore:false,snapshotRequired:false}
+});
+const recoveryWithPendingOutboxResult=await recoveryWithPendingOutbox.run('account-A',stagingSignal);
+assert.equal(recoveryWithPendingOutboxResult.ok,false,
+  'a recovered cursor must not be accepted while local Delta operations remain unacknowledged');
+assert.equal(recoveryWithPendingOutboxResult.reason,'post_recovery_delta_sync_failed');
+assert.equal(recoveryWithPendingOutboxResult.verificationReason,'outbox_not_clear');
+
 const overlapRecovery=makeStagingRuntimeHarness({
   gate:true,
   syncResult:[
