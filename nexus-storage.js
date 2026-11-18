@@ -838,16 +838,31 @@
         throw error;
       }
       failureStage='publish-manifest';
-      await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
-        const store=tx.objectStore('migrationMeta'),request=store.get(manifestKey);
-        request.onsuccess=()=>{
-          const current=request.result;
-          // Revalidate inside the publication transaction: a local save or account
-          // handoff between the preflight check and this callback must not publish
-          // a stale entity generation as the active account workspace.
+      await transaction(['migrationMeta',WORKSPACES],'readwrite',(tx,set)=>{
+        const store=tx.objectStore('migrationMeta'),workspaces=tx.objectStore(WORKSPACES);
+        const manifestRequest=store.get(manifestKey);
+        const workspaceRequest=hasSourceSnapshotGuard
+          ?workspaces.get(workspaceKey(owner)):null;
+        const values={manifest:null,workspace:null};let remaining=hasSourceSnapshotGuard?2:1;
+        const publish=()=>{
+          remaining--;if(remaining!==0)return;
+          const current=values.manifest,workspace=values.workspace;
+          const snapshotRowIsCurrent=!hasSourceSnapshotGuard||(
+            validWorkspaceRow(workspace,owner)&&
+            workspace.tracker===options.trackerSnapshotJson&&
+            workspace.featureState===options.featureSnapshotJson&&
+            Number.isSafeInteger(Number(workspace.revision))&&
+            Number(workspace.revision)===sourceWorkspaceSnapshotRevision&&
+            Number.isSafeInteger(Number(workspace.workspaceRevision))&&
+            Number(workspace.workspaceRevision)===sourceWorkspaceRevision
+          );
+          // Validate the exact workspace row inside the same IndexedDB transaction
+          // that publishes the new manifest. This closes the cross-tab race between
+          // the last preflight read and manifest publication.
           if(!enabled||committedOwnerId!==owner||
              (hasSourceSnapshotGuard
-               ?(cache.get(TRACKER_KEY)!==options.trackerSnapshotJson||
+               ?(!snapshotRowIsCurrent||
+                 cache.get(TRACKER_KEY)!==options.trackerSnapshotJson||
                  cache.get(FEATURE_KEY)!==options.featureSnapshotJson)
                :revision!==sourceRevision)||
              !current||current.pendingGeneration!==generation){
@@ -884,6 +899,10 @@
           });
           set({staged:false,generation,rowCount,counts,sourceRevision:revision,sourceWorkspaceRevision});
         };
+        manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;publish();};
+        if(workspaceRequest){
+          workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;publish();};
+        }
       });
       failureStage='verify-publication';
       let prunedRows=0,prunedOutboxRows=0;
