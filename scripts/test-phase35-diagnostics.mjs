@@ -49,6 +49,7 @@ const projectionEvent={
  at:'2026-11-18T05:46:10.000Z',stage:'entity-projection-rebuild',
  projectionRebuildAttempted:true,projectionRebuildOk:true,
  projectionRebuildMode:'snapshot-backfill',projectionRebuildErrorCategory:'other',
+ projectionRebuildFailureStage:'write-row-batch',projectionRebuildFailureReason:'indexeddb-write-failed',
  workspaceRevision:5,projectionWorkspaceRevision:5,projectionRevisionMatches:true,
  reason:'entity_projection_unavailable',
  errorMessage:'PRIVATE DATABASE DETAIL',ownerId:'PRIVATE-OWNER'
@@ -60,6 +61,7 @@ assert.deepEqual(safeProjectionEvent,{
  at:projectionEvent.at,stage:'entity-projection-rebuild',
  projectionRebuildAttempted:true,projectionRebuildOk:true,
  projectionRebuildMode:'snapshot-backfill',projectionRebuildErrorCategory:'other',
+ projectionRebuildFailureStage:'write-row-batch',projectionRebuildFailureReason:'indexeddb-write-failed',
  workspaceRevision:5,projectionWorkspaceRevision:5,projectionRevisionMatches:true,
  reason:'entity_projection_unavailable'
 },'projection diagnostics must preserve only safe owner-free rebuild and revision facts');
