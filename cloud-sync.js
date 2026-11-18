@@ -72,7 +72,7 @@ function sanitizeSyncDiagEvent(event){
  for(const key of booleanFields){if(typeof event[key]==='boolean')safe[key]=event[key];}
  const enums={
   storageMode:['chunked','legacy-schema-compatibility','legacy','empty'],
-  reason:['local-save','curriculum-install','sync','resume-existing-journal','conflict-or-snapshot-required','local-outbox-changed-during-merge','entity_projection_unavailable','stale_entity_projection','entity_projection_owner_unavailable','entity_projection_rebuild_failed'],
+  reason:['local-save','curriculum-install','sync','resume-existing-journal','conflict-or-snapshot-required','local-outbox-changed-during-merge','entity_projection_unavailable','stale_entity_projection','entity_projection_owner_unavailable','entity_projection_rebuild_failed','staging_delta_gate_closed','staging_recovery_journal_pending','server_snapshot_mode','server_sync_state_missing'],
   source:['active-local-workspace'],
   event:['INITIAL_SESSION','SIGNED_IN','SIGNED_OUT','TOKEN_REFRESHED','USER_UPDATED'],
   errorCategory:['conflict','timeout','queue-limit','queue-unavailable','other'],
@@ -1112,6 +1112,7 @@ async function upload(){
      publishedCount:Number.isSafeInteger(deltaResult.publishedCount)?deltaResult.publishedCount:null,
      acknowledgedCount:Number.isSafeInteger(deltaResult.acknowledgedCount)?deltaResult.acknowledgedCount:null,
      rounds:Number.isSafeInteger(deltaResult.rounds)?deltaResult.rounds:null,compactionPending,cleanupPending,
+     reason:typeof deltaResult.reason==='string'?deltaResult.reason:null,
      cleanupDeletedCount:Number.isSafeInteger(deltaResult.cleanupDeletedCount)?deltaResult.cleanupDeletedCount:
       (compaction&&Number.isSafeInteger(compaction.deletedOperations)?compaction.deletedOperations:null)});
    }
