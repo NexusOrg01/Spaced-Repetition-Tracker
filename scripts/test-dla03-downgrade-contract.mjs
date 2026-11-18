@@ -79,7 +79,7 @@ assert.match(docs, /checkpoint's `nexus_user_data\.updated_at` value/);
 assert.match(lifecycle, /rowAfterDowngrade\.updated_at, downgradeExpectedUpdatedAt/);
 
 
-assert.match(prepare, /20261117131900_add_entity_delta_snapshot_downgrade\.sql/);
+assert.match(prepare, /20261117143610_add_entity_delta_snapshot_downgrade\.sql/);
 assert.match(workflow, /entity-delta-sync\.js/);
 assert.match(workflow, /cloud-chunk-storage\.js/);
 assert.match(workflow, /nexus_disable_entity_delta/);
