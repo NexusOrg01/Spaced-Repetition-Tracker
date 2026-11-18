@@ -111,6 +111,15 @@ const safeBaselineFailure=JSON.parse(JSON.stringify(sanitizerSandbox.result));
 assert.equal(safeBaselineFailure.reason,'local_snapshot_baseline_mismatch',
  'delta sync diagnostics must preserve the allowlisted snapshot baseline mismatch reason');
 
+vm.runInContext('result=sanitizeSyncDiagEvent({at:"2026-11-18T12:20:00.000Z",stage:"baseline-restored-from-remote",baselineRestored:true,reason:"queued-base-version-matches-remote-snapshot",ownerId:"PRIVATE"})',sanitizerSandbox);
+const safeRestoredBaseline=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.deepEqual(safeRestoredBaseline,{
+ at:'2026-11-18T12:20:00.000Z',stage:'baseline-restored-from-remote',
+ baselineRestored:true,reason:'queued-base-version-matches-remote-snapshot'
+},'baseline-recovery diagnostics must record only the successful safe restore flag and allowlisted reason');
+assert.equal(JSON.stringify(safeRestoredBaseline).includes('PRIVATE'),false,
+ 'baseline-recovery diagnostics must not expose account identifiers or private values');
+
 const recoveryVerificationEvent={
  at:'2026-11-18T08:37:34.000Z',stage:'delta-recovery-verification',
  ok:true,recoveryTriggerReason:'local_snapshot_baseline_mismatch',
