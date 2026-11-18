@@ -1091,7 +1091,7 @@ function makeStagingRuntimeHarness({
       calls.projectionOwners.push(owner);
       const index=Math.min(projectionIndex++,projectionResults.length-1);
       return projectionResults[index]||{ok:false,reason:'entity_projection_unavailable'};
-    }
+    },
     async syncWorkspaceEntities(owner,changes,options){
       calls.projectionRebuild++;
       assert.equal(owner,'account-A');
