@@ -1092,6 +1092,13 @@ function makeStagingRuntimeHarness({
       const index=Math.min(projectionIndex++,projectionResults.length-1);
       return projectionResults[index]||{ok:false,reason:'entity_projection_unavailable'};
     }
+    async syncWorkspaceEntities(owner,changes,options){
+      calls.projectionRebuild++;
+      assert.equal(owner,'account-A');
+      assert.equal(changes,null);
+      assert.equal(options&&options.replace,true);
+      return projectionRebuildResult;
+    }
   };
   const window={
     NEXUS_ENTITY_DELTA_SYNC_STAGING:gate,
@@ -1100,10 +1107,6 @@ function makeStagingRuntimeHarness({
     NEXUS_ENTITY_DELTA_SYNC_QA_REF:hostedQaRef,
     NexusOfflineSyncQueue:queue,
     NexusStorage:storage,
-    async NexusRebuildEntityProjection(){
-      calls.projectionRebuild++;
-      return projectionRebuildResult;
-    },
     NexusEntityDeltaSync:{
       createClient(options){
         calls.createClient++;
