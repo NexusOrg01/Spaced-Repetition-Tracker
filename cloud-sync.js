@@ -79,6 +79,7 @@ function sanitizeSyncDiagEvent(event){
    'stale_entity_projection','entity_projection_unavailable','invalid_local_outbox_row',
    'missing_local_operation_marker','invalid_local_operation_marker','local_outbox_sequence_gap',
    'operation_group_exceeds_batch','local_outbox_requires_snapshot','local_outbox_generation_mismatch',
+   'compatibility_snapshot_acknowledger_unavailable','compatibility_snapshot_acknowledgement_failed',
    'invalid_local_operation_group','invalid_remote_sync_state','unsupported_remote_sync_state',
    'remote_snapshot_required','empty_remote_page_before_server_head','remote_entity_apply_failed',
    'remote_changes_must_be_applied_first','local_and_remote_changes_overlap',
@@ -916,7 +917,8 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
  const delta=window.NexusEntityDeltaSync,chunkStorage=window.NexusCloudChunkStorage;
  if(!queue||!storage||!delta||typeof delta.createClient!=='function'||
     !chunkStorage||typeof chunkStorage.writeDeltaSnapshot!=='function'||
-    typeof queue.commitVerifiedEntityDeltaSnapshot!=='function'){
+    typeof queue.commitVerifiedEntityDeltaSnapshot!=='function'||
+    typeof storage.waitForWorkspaceEntitySync!=='function'){
   throw new Error('Staging entity-delta recovery dependencies are incomplete. The existing local snapshot and outbox were left unchanged.');
  }
  const makeClient=delta.createClient({
@@ -926,6 +928,8 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   getLocalBase:userId=>queue.getBase(localStorage,userId),
   getLocalWorkspace:()=>snapshot(),
   getPendingSnapshot:userId=>queue.getPending(localStorage,userId),
+  acknowledgePendingSnapshot:(userId,pending,snapshotStamp)=>
+   queue.acknowledge(localStorage,userId,pending.operationId,pending.baseServerVersion,snapshotStamp),
   readRemoteSnapshot:async(userId,requestSignal)=>{
    const remote=await fetchRemote(userId,null,requestSignal||signal||null);
    if(!remote||!remote.payload)return null;
@@ -966,6 +970,18 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
     conflicts,{baseServerVersion:metadata.baseServerVersion},
     {intentId:metadata.intentId,candidateDigest:metadata.candidateDigest})
  });
+ if(!recoveryPending){
+  const projection=await storage.waitForWorkspaceEntitySync(ownerId);
+  if(!projection||projection.ok!==true){
+   return {ok:false,snapshotRequired:true,
+    reason:projection&&projection.reason||'entity_projection_unavailable',
+    phase:'local-publish',diagnostics:{
+     workspaceRevision:projection&&projection.workspaceRevision,
+     projectionWorkspaceRevision:projection&&projection.projectionWorkspaceRevision,
+     projectionRevisionMatches:!!(projection&&projection.ok===true)
+    }};
+  }
+ }
  if(action&&action.downgrade===true){
   const result=await makeClient.downgradeToSnapshot(ownerId,{signal,maxGroups:100,maxBytes:8*1048576});
   if(typeof syncDiag==='function')syncDiag('delta-snapshot-downgrade-result',null,{
