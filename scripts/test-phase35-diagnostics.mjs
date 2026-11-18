@@ -148,7 +148,8 @@ assert.deepEqual(safeRecoveryVerification,{
 },'post-recovery diagnostics must expose stable cursor/counter evidence without account data or raw exceptions');
 
 for(const verificationReason of ['delta_sync_not_verified','delta_sync_skipped','cursor_not_current','outbox_not_clear']){
- vm.runInContext('result=sanitizeSyncDiagEvent({at:"2026-11-18T08:37:35.000Z",stage:"delta-recovery-verification",ok:false,verificationReason})',sanitizerSandbox,
+ const verificationFixture={at:'2026-11-18T08:37:35.000Z',stage:'delta-recovery-verification',ok:false,verificationReason};
+ vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(verificationFixture)+')',sanitizerSandbox,
   {filename:'sync-diagnostic-verification-reason-sanitizer-test.js'});
  const safeReason=JSON.parse(JSON.stringify(sanitizerSandbox.result));
  assert.equal(safeReason.verificationReason,verificationReason,
