@@ -36,7 +36,7 @@ function syncDiagSummary(payload){
 }
 const SYNC_DIAG_STAGES=new Set([
  'auth-event','cloud-chunk-read-error','cloud-read','cloud-read-error','cloud-write-complete','cloud-write-error',
- 'curriculum-install-save-requested','delta-snapshot-downgrade-result','delta-sync-result','diagnostics-enabled','initialize-after-cloud-read',
+ 'curriculum-install-save-requested','delta-snapshot-downgrade-result','delta-sync-pre-recovery','delta-sync-result','diagnostics-enabled','initialize-after-cloud-read',
  'initialize-error','initialize-finished','initialize-settled','initialize-start','local-save-queue-error',
  'local-save-queued','local-storage-flush','offline-account-base-unavailable','offline-account-pending-unavailable',
  'offline-account-queue-rebuilt','offline-account-recovery-error','offline-account-workspace-restored',
@@ -61,18 +61,30 @@ function sanitizeSyncDiagEvent(event){
   for(const key of flags){if(typeof input[key]==='boolean')workspace[key]=input[key];}
   if(Object.keys(workspace).length)safe.workspace=workspace;
  }
- const countFields=['durationMs','chunkCount','payloadUtf8Bytes','cleanupDeletedCount','baseTopicCount','localTopicCount','remoteTopicCount','conflictCount','payloadCharacters','appliedCount','publishedCount','acknowledgedCount','rounds','topicCount'];
+ const countFields=['durationMs','chunkCount','payloadUtf8Bytes','cleanupDeletedCount','baseTopicCount','localTopicCount','remoteTopicCount','conflictCount','payloadCharacters','appliedCount','publishedCount','acknowledgedCount','rounds','topicCount','workspaceRevision','projectionWorkspaceRevision'];
  for(const key of countFields){
   if(!Object.prototype.hasOwnProperty.call(event,key))continue;
   const value=event[key];
   if(value===null)safe[key]=null;
   else if(Number.isSafeInteger(value)&&value>=0)safe[key]=Math.min(value,100000000);
  }
- const booleanFields=['hasPayload','hasUpdatedAt','chunkStorageUnavailable','cleanupBacklogMayRemain','cleanupFailed','priorQueueRetainedForRecovery','storageEnabled','cooperative','queueRebuilt','ready','remoteHadPayload','remoteHasPayload','hasSession','ownerPresent','ok','resumed','hasQueue','skipped','fromPending','hasPending','matchesAttempted','readbackHasPayload','hadPending','compactionPending','cleanupPending'];
+ const booleanFields=['hasPayload','hasUpdatedAt','chunkStorageUnavailable','cleanupBacklogMayRemain','cleanupFailed','priorQueueRetainedForRecovery','storageEnabled','cooperative','queueRebuilt','ready','remoteHadPayload','remoteHasPayload','hasSession','ownerPresent','ok','resumed','hasQueue','skipped','fromPending','hasPending','matchesAttempted','readbackHasPayload','hadPending','compactionPending','cleanupPending','snapshotRequired','snapshotBaselineMatches','pendingSnapshot','cursorAvailable','cursorGenerationMatches','cursorSnapshotBaselineMatches','projectionRevisionMatches'];
  for(const key of booleanFields){if(typeof event[key]==='boolean')safe[key]=event[key];}
  const enums={
   storageMode:['chunked','legacy-schema-compatibility','legacy','empty'],
-  reason:['local-save','curriculum-install','sync','resume-existing-journal','conflict-or-snapshot-required','local-outbox-changed-during-merge'],
+  reason:['local-save','curriculum-install','sync','resume-existing-journal','conflict-or-snapshot-required','local-outbox-changed-during-merge',
+   'local_snapshot_baseline_mismatch','compatibility_snapshot_still_pending','local_delta_cursor_unavailable',
+   'remote_delta_history_precedes_local_baseline','local_workspace_differs_from_verified_snapshot',
+   'cursor_initialization_failed','local_delta_cursor_generation_mismatch','local_delta_cursor_outside_retention',
+   'stale_entity_projection','entity_projection_unavailable','invalid_local_outbox_row',
+   'missing_local_operation_marker','invalid_local_operation_marker','local_outbox_sequence_gap',
+   'operation_group_exceeds_batch','local_outbox_requires_snapshot','local_outbox_generation_mismatch',
+   'invalid_local_operation_group','invalid_remote_sync_state','unsupported_remote_sync_state',
+   'remote_snapshot_required','empty_remote_page_before_server_head','remote_entity_apply_failed',
+   'remote_changes_must_be_applied_first','local_and_remote_changes_overlap',
+   'local_and_remote_changes_overlap_after_partial_publish','invalid_server_operation_receipt',
+   'local_receipt_acknowledgement_failed','remote_state_read_failed','unknown'],
+  phase:['remote-pull','local-publish','unknown'],
   source:['active-local-workspace'],
   event:['INITIAL_SESSION','SIGNED_IN','SIGNED_OUT','TOKEN_REFRESHED','USER_UPDATED'],
   errorCategory:['conflict','timeout','queue-limit','queue-unavailable','other']
@@ -982,7 +994,23 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    result.reason==='local_and_remote_changes_overlap'||
    result.reason==='local_and_remote_changes_overlap_after_partial_publish'));
  if(needsRecovery){
-  if(typeof syncDiag==='function')syncDiag('snapshot-recovery-start',null,{reason:'conflict-or-snapshot-required'});
+  if(typeof syncDiag==='function'){
+   const diagnostic=result&&result.diagnostics&&typeof result.diagnostics==='object'?result.diagnostics:{};
+   syncDiag('delta-sync-pre-recovery',null,{
+    phase:result&&result.phase||'unknown',
+    reason:result&&result.reason||'unknown',
+    snapshotRequired:result&&result.snapshotRequired===true,
+    snapshotBaselineMatches:diagnostic.snapshotBaselineMatches,
+    pendingSnapshot:diagnostic.pendingSnapshot,
+    cursorAvailable:diagnostic.cursorAvailable,
+    cursorGenerationMatches:diagnostic.cursorGenerationMatches,
+    cursorSnapshotBaselineMatches:diagnostic.cursorSnapshotBaselineMatches,
+    workspaceRevision:diagnostic.workspaceRevision,
+    projectionWorkspaceRevision:diagnostic.projectionWorkspaceRevision,
+    projectionRevisionMatches:diagnostic.projectionRevisionMatches
+   });
+   syncDiag('snapshot-recovery-start',null,{reason:'conflict-or-snapshot-required'});
+  }
   const recovered=await makeClient.publishConflictRecovery(ownerId,{
    signal,maxGroups:100,maxBytes:8*1048576
   });
@@ -1015,6 +1043,8 @@ async function upload(){
      (compaction&&typeof compaction.cleanupPending==='boolean'?compaction.cleanupPending:
       (compaction&&compaction.cleanup&&typeof compaction.cleanup.pending==='boolean'?compaction.cleanup.pending:null));
     syncDiag('delta-sync-result',null,{skipped:deltaResult.skipped===true,ok:deltaResult.ok===true,
+     phase:deltaResult.phase||'unknown',reason:deltaResult.reason||'unknown',
+     snapshotRequired:deltaResult.snapshotRequired===true,
      appliedCount:Number.isSafeInteger(deltaResult.appliedCount)?deltaResult.appliedCount:null,
      publishedCount:Number.isSafeInteger(deltaResult.publishedCount)?deltaResult.publishedCount:null,
      acknowledgedCount:Number.isSafeInteger(deltaResult.acknowledgedCount)?deltaResult.acknowledgedCount:null,

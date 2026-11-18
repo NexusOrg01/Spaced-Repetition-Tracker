@@ -45,6 +45,33 @@ assert.deepEqual(safeEvent,{
 const sanitizedJson=JSON.stringify(safeEvent);
 for(const forbidden of ['PRIVATE','person@example.com','operationId','errorMessage','errorCode','arbitraryNested','topicName','notes'])assert.equal(sanitizedJson.includes(forbidden),false,`sanitized event must exclude ${forbidden}`);
 assert.equal(safeEvent.errorCategory,'conflict','conflict classification remains available without raw server codes');
+
+const deltaDiagnosticInput={
+ at:'2026-11-18T04:40:00.000Z',stage:'delta-sync-pre-recovery',
+ phase:'local-publish',reason:'stale_entity_projection',snapshotRequired:true,
+ snapshotBaselineMatches:true,pendingSnapshot:false,cursorAvailable:true,
+ cursorGenerationMatches:true,cursorSnapshotBaselineMatches:true,
+ workspaceRevision:23,projectionWorkspaceRevision:22,projectionRevisionMatches:false,
+ accountId:'PRIVATE-ACCOUNT',operationId:'PRIVATE-OPERATION',
+ errorMessage:'PRIVATE DATA',rawPayload:{topicName:'PRIVATE TOPIC'}
+};
+vm.runInContext(sanitizerSource+'\\nresult=sanitizeSyncDiagEvent('+JSON.stringify(deltaDiagnosticInput)+')',
+  sanitizerSandbox,{filename:'sync-delta-pre-recovery-diagnostic-test.js'});
+const safeDeltaDiagnostic=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.deepEqual(safeDeltaDiagnostic,{
+ at:deltaDiagnosticInput.at,stage:'delta-sync-pre-recovery',
+ phase:'local-publish',reason:'stale_entity_projection',snapshotRequired:true,
+ snapshotBaselineMatches:true,pendingSnapshot:false,cursorAvailable:true,
+ cursorGenerationMatches:true,cursorSnapshotBaselineMatches:true,
+ workspaceRevision:23,projectionWorkspaceRevision:22,projectionRevisionMatches:false
+},'pre-recovery diagnostics must retain only allowlisted reason, phase, revisions and booleans');
+const unknownReason=vm.runInContext(
+ 'sanitizeSyncDiagEvent({at:"2026-11-18T04:40:00.000Z",stage:"delta-sync-pre-recovery",reason:"PRIVATE USER DATA"})',
+ sanitizerSandbox
+);
+assert.equal(unknownReason.reason,'other','unrecognized reason text must be collapsed to a fixed safe enum');
+assert.equal(JSON.stringify(safeDeltaDiagnostic).includes('PRIVATE'),false,
+  'account, operation and workspace content must not enter the diagnostic export');
 assert.equal(vm.runInContext('sanitizeSyncDiagEvent({at:"2026-11-17T01:00:00.000Z",stage:"untrusted-stage",errorMessage:"leak"})',sanitizerSandbox),null,'unknown diagnostic stages must be rejected');
 
 const collectorStart=source.indexOf('async function collectSyncOperationalDiagnostics(){');

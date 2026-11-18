@@ -1172,7 +1172,7 @@
       after=Number.isSafeInteger(rawAfter)&&rawAfter>=0?rawAfter:0,
       changeLimit=Math.max(1,Math.min(1000,Math.floor(Number(maxChanges)||1000))),
       byteLimit=Math.max(1024,Math.min(1048576,Math.floor(Number(maxBytes)||921600)));
-    const empty={ownerId:owner,generation:null,workspaceRevision:null,groups:[],
+    const empty={ownerId:owner,generation:null,workspaceRevision:null,projectionWorkspaceRevision:null,groups:[],
       throughSequence:after,changeCount:0,bytes:0,hasMore:false,snapshotRequired:false};
     if(!Number.isSafeInteger(rawAfter)||rawAfter<0){
       return {...empty,snapshotRequired:true,reason:'invalid_local_cursor'};
@@ -1185,9 +1185,14 @@
       return {...empty,snapshotRequired:true,reason:'entity_projection_unavailable'};
     }
     const workspaceRevision=await readWorkspaceRevision(owner);
+    const projectionWorkspaceRevision=manifest.sourceWorkspaceRevision===null||
+      manifest.sourceWorkspaceRevision===undefined?null:
+      (Number.isSafeInteger(Number(manifest.sourceWorkspaceRevision))?
+        Number(manifest.sourceWorkspaceRevision):null);
     if(!Number.isSafeInteger(workspaceRevision)||
-       Number(manifest.sourceWorkspaceRevision)!==workspaceRevision){
-      return {...empty,snapshotRequired:true,reason:'stale_entity_projection'};
+       projectionWorkspaceRevision!==workspaceRevision){
+      return {...empty,generation:manifest.activeGeneration,workspaceRevision,
+        projectionWorkspaceRevision,snapshotRequired:true,reason:'stale_entity_projection'};
     }
     const sequenceRange=entityOutboxSequenceRange(owner,after);
     if(!sequenceRange)return {...empty,generation:manifest.activeGeneration,workspaceRevision};

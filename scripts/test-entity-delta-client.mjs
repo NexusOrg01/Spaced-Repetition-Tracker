@@ -16,7 +16,7 @@ vm.runInContext(mergeSource,sandbox,{filename:'workspace-sync-merge.js'});
 vm.runInContext(source,sandbox,{filename:'entity-delta-sync.js'});
 const factory=window.NexusEntityDeltaSync.createClient;
 const payload={state:{streams:[],subjects:[],topics:[],history:[],exams:[]},featureState:{journal:[],papers:[],goals:[],studyLogs:[]}};
-const base={...payload,serverVersion:'snapshot-stamp'};
+const base={...payload,serverVersion:options.localBaseServerVersion||'snapshot-stamp'};
 const makeGroup=(operationId,firstSequence,changes)=>({
   operationId,firstSequence,lastSequence:firstSequence+changes.length-1,
   changeCount:changes.length,changes
@@ -44,7 +44,12 @@ function harness(options={}){
       return {ok:true,created:true,cursor:{...cursor}};
     },
     async readWorkspaceEntityOutboxGroups(owner,afterSequence){
-      if(options.batchSnapshotRequired)return {ownerId:owner,snapshotRequired:true,reason:'fixture_snapshot_required'};
+      if(options.batchSnapshotRequired)return {
+        ownerId:owner,snapshotRequired:true,
+        reason:options.batchSnapshotReason||'fixture_snapshot_required',
+        workspaceRevision:options.workspaceRevision??2,
+        projectionWorkspaceRevision:options.projectionWorkspaceRevision??1
+      };
       const pending=groups.filter(group=>group.lastSequence>afterSequence);
       return {ownerId:owner,generation:'generation-A',workspaceRevision:2,
         groups:pending,throughSequence:pending.length?pending[pending.length-1].lastSequence:afterSequence,
@@ -180,6 +185,30 @@ function harness(options={}){
   const result=await h.client.publishPending('account-A');
   assert.equal(result.snapshotRequired,true);
   assert.equal(h.acknowledgements.length,0);
+}
+{
+  const h=harness({state:{snapshot_updated_at:'new-server-baseline'}});
+  const result=await h.client.synchronize('account-A');
+  assert.equal(result.ok,false);
+  assert.equal(result.reason,'local_snapshot_baseline_mismatch');
+  assert.equal(result.phase,'remote-pull');
+  assert.equal(result.snapshotRequired,true);
+  assert.equal(result.diagnostics.snapshotBaselineMatches,false,
+    'a baseline mismatch must be distinguishable from a publication-side blocker');
+}
+{
+  const h=harness({batchSnapshotRequired:true,batchSnapshotReason:'stale_entity_projection',
+    workspaceRevision:23,projectionWorkspaceRevision:22});
+  const result=await h.client.synchronize('account-A');
+  assert.equal(result.ok,false);
+  assert.equal(result.reason,'stale_entity_projection');
+  assert.equal(result.phase,'local-publish');
+  assert.equal(result.snapshotRequired,true);
+  assert.deepEqual(result.diagnostics,{
+    snapshotBaselineMatches:true,pendingSnapshot:false,cursorAvailable:true,
+    cursorGenerationMatches:true,cursorSnapshotBaselineMatches:true,
+    workspaceRevision:23,projectionWorkspaceRevision:22,projectionRevisionMatches:false
+  },'a stale entity projection must expose only safe revision and cursor-match facts');
 }
 {
   const h=harness({failAcknowledgement:true});
