@@ -919,24 +919,23 @@ if(ready){await flushDurableLocalWrites();status('Synced');}syncDiag('initialize
 }}}
 
 async function sameWorkspace(a,b){if(!a||!b)return false;const merger=window.NexusWorkspaceSyncMerge;if(!merger||typeof merger.sameAsync!=='function')throw new Error('Safe large-workspace comparison is unavailable.');return merger.sameAsync({state:a.state||{},featureState:a.featureState||{}},{state:b.state||{},featureState:b.featureState||{}});}
-async function acknowledgeDeltaShadowSnapshot(queue,userId,pending,serverVersion){
- if(!queue||typeof queue.getPending!=='function'||typeof queue.acknowledge!=='function'||
-    !pending||pending.ownerUserId!==userId||pending.status!=='pending'||
-    pending.baseServerVersion!==serverVersion||localStorage.getItem(OWNER_KEY)!==userId)return false;
- await assertActiveUser(userId);
- const current=queue.getPending(localStorage,userId);
- if(!current||current.status!=='pending'||current.ownerUserId!==userId||
-    current.operationId!==pending.operationId||current.baseServerVersion!==serverVersion||
-    !(await sameWorkspace(current.payload,snapshot())))return false;
- await assertActiveUser(userId);
- const acknowledgement=queue.acknowledge(localStorage,userId,current.operationId,
-   current.baseServerVersion,serverVersion);
- if(!acknowledgement||acknowledgement.acknowledged!==true)return false;
- await flushDurableLocalWrites();
- return localStorage.getItem(OWNER_KEY)===userId;
-}
 async function runStagingEntityDeltaSync(ownerId,signal,action={}){
  const queue=window.NexusOfflineSyncQueue,storage=window.NexusStorage;
+ async function acknowledgeDeltaShadowSnapshot(queue,userId,pending,serverVersion){
+  if(!queue||typeof queue.getPending!=='function'||typeof queue.acknowledge!=='function'||
+     !pending||pending.ownerUserId!==userId||pending.status!=='pending'||
+     pending.baseServerVersion!==serverVersion||localStorage.getItem(OWNER_KEY)!==userId)return false;
+  await assertActiveUser(userId);
+  const current=queue.getPending(localStorage,userId);
+  if(!current||current.status!=='pending'||current.ownerUserId!==userId||
+     current.operationId!==pending.operationId||current.baseServerVersion!==serverVersion||
+     !(await sameWorkspace(current.payload,snapshot())))return false;
+  await assertActiveUser(userId);
+  const acknowledgement=queue.acknowledge(localStorage,userId,current.operationId,
+    current.baseServerVersion,serverVersion);
+  return !!(acknowledgement&&acknowledgement.acknowledged===true)&&
+    localStorage.getItem(OWNER_KEY)===userId;
+ }
  const recovery=storage&&typeof storage.readWorkspaceEntityRecovery==='function'
   ?await storage.readWorkspaceEntityRecovery(ownerId):null;
  const recoveryPending=!!(recovery&&recovery.intent);
