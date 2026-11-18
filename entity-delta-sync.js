@@ -323,6 +323,8 @@
     const getActiveOwner=options.getActiveOwner,getLocalOwner=options.getLocalOwner;
     const getLocalBase=options.getLocalBase,getLocalWorkspace=options.getLocalWorkspace;
     const getPendingSnapshot=options.getPendingSnapshot,sameWorkspace=options.sameWorkspace;
+    const acknowledgePendingSnapshot=typeof options.acknowledgePendingSnapshot==='function'
+      ?options.acknowledgePendingSnapshot:null;
     const applyWorkspace=options.applyWorkspace;
     const mergeWorkspace=options.mergeWorkspace||null;
     const readRemoteSnapshot=typeof options.readRemoteSnapshot==='function'?options.readRemoteSnapshot:null;
@@ -352,6 +354,40 @@
     }
     function unavailable(reason,extra={}){
       return {ok:false,reason,...extra};
+    }
+    async function readCompatiblePendingSnapshot(owner,snapshotUpdatedAt){
+      const pending=await getPendingSnapshot(owner);
+      if(!pending)return {ok:true,pending:null};
+      if(pending.ownerUserId!==owner||pending.status!=='pending'||
+         typeof pending.operationId!=='string'||!pending.operationId||
+         typeof pending.baseServerVersion!=='string'||
+         pending.baseServerVersion!==snapshotUpdatedAt){
+        return {ok:false,reason:'compatibility_snapshot_still_pending'};
+      }
+      return {ok:true,pending};
+    }
+    async function acknowledgeCompatiblePendingSnapshot(owner,pending,snapshotUpdatedAt){
+      if(!pending)return {ok:true,morePending:false};
+      if(!acknowledgePendingSnapshot)
+        return {ok:false,reason:'compatibility_snapshot_acknowledger_unavailable'};
+      try{
+        await assertOwner(owner);
+        const result=await acknowledgePendingSnapshot(owner,pending,snapshotUpdatedAt);
+        await assertOwner(owner);
+        const remaining=await getPendingSnapshot(owner);
+        if(!remaining)return {ok:true,morePending:false,acknowledged:!!(result&&result.acknowledged===true)};
+        if(remaining.ownerUserId!==owner||remaining.status!=='pending'||
+           typeof remaining.operationId!=='string'||!remaining.operationId||
+           remaining.baseServerVersion!==snapshotUpdatedAt)
+          return {ok:false,reason:'compatibility_snapshot_acknowledgement_failed'};
+        if(remaining.operationId===pending.operationId&&
+           !(result&&(result.acknowledged===true||result.rebased===true)))
+          return {ok:false,reason:'compatibility_snapshot_acknowledgement_failed'};
+        return {ok:true,morePending:true,acknowledged:!!(result&&result.acknowledged===true),
+          rebased:!!(result&&result.rebased===true)};
+      }catch(_error){
+        return {ok:false,reason:'compatibility_snapshot_acknowledgement_failed'};
+      }
     }
     async function readRemotePage(ownerId,afterRevision,readOptions={}){
       if(!enabled)return {ok:true,skipped:true,reason:'feature_disabled'};
@@ -410,9 +446,10 @@
           return {ok:false,snapshotRequired:true,reason:'local_snapshot_baseline_mismatch',
             diagnostics:{snapshotBaselineMatches:false}};
         }
-        const pendingSnapshot=await getPendingSnapshot(owner);
-        if(pendingSnapshot)return {ok:false,snapshotRequired:true,reason:'compatibility_snapshot_still_pending',
+        const pendingCheck=await readCompatiblePendingSnapshot(owner,state.snapshot_updated_at);
+        if(!pendingCheck.ok)return {ok:false,snapshotRequired:true,reason:pendingCheck.reason,
           diagnostics:{snapshotBaselineMatches:true,pendingSnapshot:true}};
+        const pendingSnapshot=pendingCheck.pending;
         const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
         if(!cursorResult||cursorResult.ok!==true){
           return {ok:false,snapshotRequired:!!(cursorResult&&cursorResult.snapshotRequired),
@@ -486,7 +523,13 @@
         }
         if(!batch.groups.length){
           if(head>Number(cursor.publishRevision))return {ok:false,requiresPull:true,reason:'remote_changes_must_be_applied_first'};
+          const compatibilityAck=await acknowledgeCompatiblePendingSnapshot(
+            owner,pendingSnapshot,state.snapshot_updated_at);
+          if(!compatibilityAck.ok)return {ok:false,snapshotRequired:true,
+            reason:compatibilityAck.reason||'compatibility_snapshot_acknowledgement_failed',
+            publishedCount:0,acknowledgedCount:0};
           return {ok:true,idle:true,publishedCount:0,acknowledgedCount:0,
+            morePending:compatibilityAck.morePending===true,
             throughSequence:cursor.acknowledgedSequence};
         }
         const maxGroups=Math.max(1,Math.min(100,Math.floor(Number(publishOptions.maxGroups)||20)));
@@ -538,8 +581,17 @@
               throughSequence:cursor.acknowledgedSequence};
           }
         }
+        const outboxMorePending=batch.hasMore===true||groups.length<batch.groups.length;
+        let compatibilityAck={ok:true,morePending:false};
+        if(!outboxMorePending&&cursor.requiresPull!==true){
+          compatibilityAck=await acknowledgeCompatiblePendingSnapshot(
+            owner,pendingSnapshot,state.snapshot_updated_at);
+          if(!compatibilityAck.ok)return {ok:false,snapshotRequired:true,
+            reason:compatibilityAck.reason||'compatibility_snapshot_acknowledgement_failed',
+            publishedCount,acknowledgedCount};
+        }
         return {ok:true,publishedCount,acknowledgedCount,
-          morePending:batch.hasMore===true||groups.length<batch.groups.length,
+          morePending:outboxMorePending||compatibilityAck.morePending===true,
           throughSequence:cursor.acknowledgedSequence,
           requiresPull:cursor.requiresPull===true};
       }catch(error){
@@ -584,8 +636,9 @@
           return {ok:false,snapshotRequired:true,reason:'local_snapshot_baseline_mismatch',
             diagnostics:{snapshotBaselineMatches:false}};
         }
-        if(await getPendingSnapshot(owner)){
-          return {ok:false,snapshotRequired:true,reason:'compatibility_snapshot_still_pending',
+        const pendingCheck=await readCompatiblePendingSnapshot(owner,state.snapshot_updated_at);
+        if(!pendingCheck.ok){
+          return {ok:false,snapshotRequired:true,reason:pendingCheck.reason,
             diagnostics:{snapshotBaselineMatches:true,pendingSnapshot:true}};
         }
         const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
@@ -1387,7 +1440,7 @@
             appliedCount,publishedCount,acknowledgedCount,rounds:round+1};
         }
         if(push.requiresPull===true||push.morePending===true){
-          if(published<1&&!push.requiresPull){
+          if(published<1&&!push.requiresPull&&!push.morePending){
             return {ok:false,retryable:true,reason:'local_publish_made_no_progress',
               appliedCount,publishedCount,acknowledgedCount,rounds:round+1};
           }
