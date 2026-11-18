@@ -1050,11 +1050,13 @@ function makeStagingRuntimeHarness({
   missingChunkStorage=false,hostedQaGate=false,hostedQaOrigin='',hostedQaBranchOrigin='',
   browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/dla04-entity-projection-guard',
   remoteState={mode:'delta',protocol_version:1},remoteStateError=null,
+  cursorReadResult=null,outboxReadResult=null,
   projectionResults=[{ok:true,workspaceRevision:4,projectionWorkspaceRevision:4}],
   projectionRebuildResult={ownerId:'account-A',mode:'snapshot-backfill'},
   projectionRebuildError=null
 }={}){
   const calls={createClient:0,synchronize:null,synchronizeCount:0,recovery:null,cursorOwner:null,
+    outboxOwner:null,outboxAfterSequence:null,
     localBaseOwner:null,pendingOwner:null,chunkWrite:null,localCommit:null,
     stateRead:null,projectionOwners:[],projectionRebuild:0,projectionDiagnostics:[],
     renderCount:0,hubRenderCount:0,featureUpdate:null,fsrsSettings:null};
@@ -1088,11 +1090,11 @@ function makeStagingRuntimeHarness({
     },
     async readWorkspaceEntityDeltaCursor(owner){
       calls.cursorOwner=owner;
-      return {ok:true,exists:true,generation:cursor.generation,cursor};
+      return cursorReadResult||{ok:true,exists:true,generation:cursor.generation,cursor};
     },
     async readWorkspaceEntityOutboxGroups(owner,afterSequence){
       calls.outboxOwner=owner;calls.outboxAfterSequence=afterSequence;
-      return {ownerId:owner,generation:cursor.generation,workspaceRevision:cursor.workspaceRevision,
+      return outboxReadResult||{ownerId:owner,generation:cursor.generation,workspaceRevision:cursor.workspaceRevision,
         groups:[],hasMore:false,snapshotRequired:false};
     },
     async waitForWorkspaceEntitySync(owner){
@@ -1227,6 +1229,32 @@ assert.equal(activeHostedQa.calls.stateRead.filterValue,'account-A');
 assert.equal(activeHostedQa.calls.stateRead.signal,stagingSignal,
   'the remote state preflight must retain the caller abort signal');
 assert.equal(activeHostedQa.calls.createClient,1);
+assert.equal(activeHostedQa.calls.outboxOwner,'account-A',
+  'a successful hosted Delta sync must verify the owner-scoped outbox after synchronization');
+assert.equal(activeHostedQa.calls.outboxAfterSequence,0);
+
+const hostedCursorMismatch=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
+  hostedQaGate:true,hostedQaOrigin,browserOrigin:hostedQaOrigin,
+  remoteState:{mode:'delta',protocol_version:1},
+  cursorReadResult:{ok:false,snapshotRequired:true,reason:'local_delta_cursor_mismatch'}
+});
+const hostedCursorMismatchResult=await hostedCursorMismatch.run('account-A',stagingSignal);
+assert.equal(hostedCursorMismatchResult.ok,false,
+  'a successful coordinator response must not mask a missing or invalid durable cursor');
+assert.equal(hostedCursorMismatchResult.reason,'local_delta_cursor_mismatch');
+
+const hostedOutboxPending=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
+  hostedQaGate:true,hostedQaOrigin,browserOrigin:hostedQaOrigin,
+  remoteState:{mode:'delta',protocol_version:1},
+  outboxReadResult:{ownerId:'account-A',generation:'projection-generation-a',workspaceRevision:0,
+    groups:[{operationId:'unacknowledged-local-operation'}],hasMore:false,snapshotRequired:false}
+});
+const hostedOutboxPendingResult=await hostedOutboxPending.run('account-A',stagingSignal);
+assert.equal(hostedOutboxPendingResult.ok,false,
+  'a successful coordinator response must not mask unacknowledged local outbox work');
+assert.equal(hostedOutboxPendingResult.reason,'local_outbox_pending');
 
 const hostedQaBranchOrigin='https://nexus-dla-04-branch.vercel.app';
 const activeHostedQaBranchAlias=makeStagingRuntimeHarness({
