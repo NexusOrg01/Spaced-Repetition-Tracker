@@ -147,6 +147,13 @@ assert.deepEqual(safeRecoveryVerification,{
  cursorRequiresPull:false
 },'post-recovery diagnostics must expose stable cursor/counter evidence without account data or raw exceptions');
 
+for(const verificationReason of ['delta_sync_not_verified','delta_sync_skipped','cursor_not_current','outbox_not_clear']){
+ vm.runInContext('result=sanitizeSyncDiagEvent({at:"2026-11-18T08:37:35.000Z",stage:"delta-recovery-verification",ok:false,verificationReason})',sanitizerSandbox,
+  {filename:'sync-diagnostic-verification-reason-sanitizer-test.js'});
+ const safeReason=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+ assert.equal(safeReason.verificationReason,verificationReason,
+  'diagnostics must preserve the allowlisted reason that explains failed cursor/outbox verification');
+}
 
 const collectorStart=source.indexOf('async function collectSyncOperationalDiagnostics(){');
 const collectorEnd=source.indexOf('\nasync function downloadSyncDiagnostics()',collectorStart);
