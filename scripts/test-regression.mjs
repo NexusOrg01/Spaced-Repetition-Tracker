@@ -50,6 +50,17 @@ assert.equal(revisionHelperSandbox.createRevisionEntry('account-b').key,
 assert.equal(revisionHelperSandbox.createRevisionEntry(null),null,
   'unassigned guest workspaces must not receive an owner-bound revision marker');
 
+const topicSaveStart=appCore.indexOf('function saveTopic(e){');
+const topicSaveEnd=appCore.indexOf('  function deleteTopic(id){',topicSaveStart);
+assert.ok(topicSaveStart>=0&&topicSaveEnd>topicSaveStart,
+  'the primary topic save handler must remain available for entity-sync regression checks');
+const topicSaveSource=appCore.slice(topicSaveStart,topicSaveEnd);
+assert.ok(topicSaveSource.includes("save({entityChanges:[trackerEntityPutChange('topics',editTopicId?getTopic(editTopicId):state.topics[state.topics.length-1],editTopicId?'keep':'append')]})"),
+  'adding or editing a topic must submit an explicit topics entity change to the durable projection');
+assert.ok(appCore.includes('window.NexusCloudSync?.noteEntitySyncResult?.(result,null)')&&
+  appCore.includes('window.NexusCloudSync?.noteEntitySyncResult?.(null,error)'),
+  'successful and failed entity projection saves must be represented in privacy-safe diagnostics');
+
 assert.ok(appCore.includes('const revisionEntry=workspaceEntityRevisionEntry();')&&
   appCore.includes('if(revisionEntry)entries.push(revisionEntry);')&&
   appCore.includes('queue.commitWorkspace(localStorage,entries,{state:data,featureState}'),

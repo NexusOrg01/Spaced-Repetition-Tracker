@@ -120,6 +120,42 @@ const safeBaselineFailure=JSON.parse(JSON.stringify(sanitizerSandbox.result));
 assert.equal(safeBaselineFailure.reason,'local_snapshot_baseline_mismatch',
  'delta sync diagnostics must preserve the allowlisted snapshot baseline mismatch reason');
 
+const entitySyncEvent={
+ at:'2026-11-18T18:10:00.000Z',stage:'entity-sync-result',ok:true,skipped:false,
+ entitySyncMode:'incremental',appliedCount:1,batchCount:1,
+ ownerId:'PRIVATE-OWNER',topicName:'PRIVATE TOPIC',errorMessage:'PRIVATE INDEXEDDB ERROR'
+};
+vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(entitySyncEvent)+')',sanitizerSandbox,
+ {filename:'sync-diagnostic-entity-sync-sanitizer-test.js'});
+const safeEntitySync=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.deepEqual(safeEntitySync,{
+ at:entitySyncEvent.at,stage:'entity-sync-result',ok:true,skipped:false,
+ appliedCount:1,batchCount:1,entitySyncMode:'incremental'
+},'entity-sync diagnostics must retain the safe projection outcome and bounded counts only');
+for(const forbidden of ['PRIVATE','ownerId','topicName','errorMessage'])assert.equal(
+ JSON.stringify(safeEntitySync).includes(forbidden),false,
+ 'entity-sync diagnostics must not expose workspace identity, topic data, or raw exceptions'
+);
+const projectionBaselineFailure={
+ at:'2026-11-18T18:10:01.000Z',stage:'snapshot-recovery-start',
+ reason:'conflict-or-snapshot-required',
+ triggerReason:'compatibility_snapshot_not_represented_by_delta_projection',
+ triggerConflict:false,triggerSnapshotRequired:true,triggerRequiresSnapshotReconciliation:false,
+ publishedCount:0,acknowledgedCount:0,ownerId:'PRIVATE'
+};
+vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(projectionBaselineFailure)+')',sanitizerSandbox,
+ {filename:'sync-diagnostic-projection-baseline-reason-test.js'});
+const safeProjectionBaselineFailure=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.equal(safeProjectionBaselineFailure.triggerReason,
+ 'compatibility_snapshot_not_represented_by_delta_projection',
+ 'the exact compatibility snapshot/projection mismatch must survive the diagnostic allowlist');
+assert.equal(Object.prototype.hasOwnProperty.call(safeProjectionBaselineFailure,'ownerId'),false,
+ 'the precise recovery reason must be retained without exposing owner identity');
+vm.runInContext('result=sanitizeSyncDiagEvent({at:"2026-11-18T18:10:02.000Z",stage:"delta-sync-result",reason:"compatibility_snapshot_not_represented_by_delta_projection"})',sanitizerSandbox);
+const safeProjectionDeltaFailure=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.equal(safeProjectionDeltaFailure.reason,'compatibility_snapshot_not_represented_by_delta_projection',
+ 'Delta result diagnostics must preserve the allowlisted projection mismatch reason');
+
 vm.runInContext('result=sanitizeSyncDiagEvent({at:"2026-11-18T12:20:00.000Z",stage:"baseline-restored-from-remote",baselineRestored:true,reason:"queued-base-version-matches-remote-snapshot",ownerId:"PRIVATE"})',sanitizerSandbox);
 const safeRestoredBaseline=JSON.parse(JSON.stringify(sanitizerSandbox.result));
 assert.deepEqual(safeRestoredBaseline,{
