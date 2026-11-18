@@ -974,7 +974,9 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
     !chunkStorage||typeof chunkStorage.writeDeltaSnapshot!=='function'||
     typeof queue.commitVerifiedEntityDeltaSnapshot!=='function'||
     typeof storage.waitForWorkspaceEntitySync!=='function'||
-    typeof storage.syncWorkspaceEntities!=='function'){
+    typeof storage.syncWorkspaceEntities!=='function'||
+    typeof storage.readWorkspaceEntityDeltaCursor!=='function'||
+    typeof storage.readWorkspaceEntityOutboxGroups!=='function'){
   throw new Error('Staging entity-delta recovery dependencies are incomplete. The existing local snapshot and outbox were left unchanged.');
  }
  // A cloud restore/account attach can commit the compatibility snapshot while
