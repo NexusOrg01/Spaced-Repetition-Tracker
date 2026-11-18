@@ -16,7 +16,6 @@ vm.runInContext(mergeSource,sandbox,{filename:'workspace-sync-merge.js'});
 vm.runInContext(source,sandbox,{filename:'entity-delta-sync.js'});
 const factory=window.NexusEntityDeltaSync.createClient;
 const payload={state:{streams:[],subjects:[],topics:[],history:[],exams:[]},featureState:{journal:[],papers:[],goals:[],studyLogs:[]}};
-const base={...payload,serverVersion:options.localBaseServerVersion||'snapshot-stamp'};
 const makeGroup=(operationId,firstSequence,changes)=>({
   operationId,firstSequence,lastSequence:firstSequence+changes.length-1,
   changeCount:changes.length,changes
@@ -25,6 +24,7 @@ const putChange=(collection,id)=>({
   collection,id,operation:'put',position:0,value:{id,name:id}
 });
 function harness(options={}){
+  const base={...payload,serverVersion:options.localBaseServerVersion||'snapshot-stamp'};
   let activeOwner='account-A',localOwner='account-A';
   const state={mode:'delta',protocol_version:1,head_revision:0,snapshot_revision:0,
     compacted_through_revision:0,snapshot_updated_at:'snapshot-stamp',...(options.state||{})};

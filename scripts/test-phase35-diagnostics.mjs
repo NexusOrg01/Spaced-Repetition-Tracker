@@ -55,7 +55,7 @@ const deltaDiagnosticInput={
  accountId:'PRIVATE-ACCOUNT',operationId:'PRIVATE-OPERATION',
  errorMessage:'PRIVATE DATA',rawPayload:{topicName:'PRIVATE TOPIC'}
 };
-vm.runInContext(sanitizerSource+'\\nresult=sanitizeSyncDiagEvent('+JSON.stringify(deltaDiagnosticInput)+')',
+vm.runInContext(sanitizerSource+'\nresult=sanitizeSyncDiagEvent('+JSON.stringify(deltaDiagnosticInput)+')',
   sanitizerSandbox,{filename:'sync-delta-pre-recovery-diagnostic-test.js'});
 const safeDeltaDiagnostic=JSON.parse(JSON.stringify(sanitizerSandbox.result));
 assert.deepEqual(safeDeltaDiagnostic,{
