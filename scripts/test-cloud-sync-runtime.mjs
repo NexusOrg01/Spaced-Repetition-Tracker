@@ -23,6 +23,21 @@ const commercePack = commerceCatalogue.packs.find(pack => pack.id === 'sl-al-com
 const workspaceMerge = require('../workspace-sync-merge.js');
 const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
 
+// Hosted Delta must actively pull remote edits; local-save and reconnect-only triggers
+// leave an already-open second device stale indefinitely. Poll only after the gated
+// Delta path has returned a mechanically verified success, and pause while hidden/offline.
+assert.ok(source.includes('REMOTE_DELTA_POLL_INTERVAL_MS=15000'),
+  'hosted Delta sessions must use a bounded low-frequency remote polling interval');
+assert.match(source,/function scheduleDeltaRemotePoll\(\)[\s\S]*?hostedDeltaPollingEnabled[\s\S]*?isUnsafeCloudOrigin\(\)[\s\S]*?navigator\.onLine[\s\S]*?document\.hidden[\s\S]*?await upload\(\)[\s\S]*?finally\{scheduleDeltaRemotePoll\(\);\}/,
+  'remote polling must be gated to eligible hosted Delta sessions, online/visible tabs and one upload coordinator');
+assert.match(source,/if\(deltaResult&&deltaResult\.ok===true\)\{hostedDeltaPollingEnabled=true;\}/,
+  'remote polling may only activate after verified Delta synchronization succeeds');
+assert.ok(source.includes('if(pending||hostedDeltaPollingEnabled)schedule();')&&
+  source.includes("window.addEventListener('focus',resumeAfterConnectivity)"),
+  'returning to an active tab must immediately pull remote changes even when its local queue is empty');
+assert.match(source,/async function acknowledgeDeltaShadowSnapshot\([\s\S]*?current\.operationId!==pending\.operationId[\s\S]*?sameWorkspace\(current\.payload,snapshot\(\)\)[\s\S]*?queue\.acknowledge\(/,
+  'a compatibility snapshot may be retired only after matching owner, operation, server stamp and current workspace');
+
 const syncMarkerLimitMatch=source.match(/const MAX_SYNC_CURRICULUM_MARKERS=(\d+);/);
 const mergeStateStart=source.indexOf('function mergeState(local,remote){');
 const mergeStateEnd=source.indexOf('function hasLocalWork(',mergeStateStart);
