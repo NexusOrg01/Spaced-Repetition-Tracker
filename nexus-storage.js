@@ -2153,6 +2153,35 @@
     return task;
   }
 
+  async function waitForWorkspaceEntitySync(ownerId){
+    const owner=String(ownerId||'').trim();
+    if(!owner||entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner)
+      return {ok:false,snapshotRequired:true,reason:'entity_projection_owner_unavailable'};
+    try{
+      // Drain the serialized projection queue after its last compatibility write.
+      // This prevents Delta from observing an older ready generation while a newer
+      // local save is still waiting to be indexed.
+      await entitySyncSerial.catch(()=>undefined);
+      if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner)
+        return {ok:false,snapshotRequired:true,reason:'entity_projection_owner_unavailable'};
+      const manifest=await readEntityManifest(owner);
+      const workspaceRevision=await readWorkspaceRevision(owner);
+      const projectionWorkspaceRevision=manifest&&Number.isSafeInteger(Number(manifest.sourceWorkspaceRevision))
+        ?Number(manifest.sourceWorkspaceRevision):null;
+      const ready=!!(manifest&&manifest.status==='ready'&&manifest.activeGeneration&&
+        Number.isSafeInteger(workspaceRevision)&&projectionWorkspaceRevision===workspaceRevision);
+      return {
+        ok:ready,snapshotRequired:!ready,
+        reason:ready?null:(!manifest||!manifest.activeGeneration
+          ?'entity_projection_unavailable':'stale_entity_projection'),
+        workspaceRevision:Number.isSafeInteger(workspaceRevision)?workspaceRevision:null,
+        projectionWorkspaceRevision
+      };
+    }catch(_error){
+      return {ok:false,snapshotRequired:true,reason:'entity_projection_unavailable'};
+    }
+  }
+
   async function beginWorkspaceEntityRecovery(ownerId,input){
     const owner=entityOwnerKey(ownerId),intentId=String(input&&input.intentId||'').trim(),
       candidateDigest=String(input&&input.candidateDigest||''),baseUpdatedAt=String(input&&input.baseUpdatedAt||''),
@@ -3002,6 +3031,7 @@
     deleteWorkspaceEntities,
     writeWorkspaceEntityChanges,
     syncWorkspaceEntities,
+    waitForWorkspaceEntitySync,
     readWorkspaceEntityOutbox,
     readWorkspaceEntityOutboxGroups,
     acknowledgeWorkspaceEntityOutbox,
