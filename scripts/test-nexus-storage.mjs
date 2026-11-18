@@ -1119,6 +1119,64 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(rebuiltWorkspace.state.topics.length,401);
   assert.equal(rebuiltWorkspace.featureState.journal[0].id,'projection-journal');
   assert.equal((await loaded.api.readWorkspaceEntityOutbox(owner,0,20)).length,0);
+
+  // A real workspace edit during a rebuild must abort publication of that stale
+  // candidate, retain the prior active generation in the manifest, and allow a
+  // later retry to build from the newer committed compatibility snapshot.
+  const manifestKey='workspace-entities:'+encodeURIComponent(owner);
+  const metaStore=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  const activeBeforeRace=metaStore.get(manifestKey);
+  const changedTopic={id:'projection-topic-added-during-rebuild',
+    subjectId:'projection-subject',name:'Committed during projection rebuild'};
+  const changedTracker={...trackerState,topics:[...trackerState.topics,changedTopic]};
+  const markerKey=loaded.api.getWorkspaceEntityRevisionKey(owner);
+  let workspaceChangeCommitted=false;
+  const schedulerBeforeWorkspaceRace=loaded.context.window.setTimeout;
+  loaded.context.window.setTimeout=(callback,delay)=>{
+    return schedulerBeforeWorkspaceRace(async()=>{
+      if(!workspaceChangeCommitted){
+        workspaceChangeCommitted=true;
+        await loaded.api.commitLocalStorageEntries([
+          {key:'recall.study.tracker.v1',value:JSON.stringify(changedTracker)},
+          {key:'recall.study.features.v1',value:featureJson},
+          {key:markerKey,value:'workspace-change-during-projection-rebuild'}
+        ]);
+        await loaded.api.flush();
+      }
+      callback();
+    },delay);
+  };
+  let interruptedRebuildError=null;
+  try{
+    await loaded.api.syncWorkspaceEntities(owner,null,{replace:true});
+  }catch(error){
+    interruptedRebuildError=error;
+  }finally{
+    loaded.context.window.setTimeout=schedulerBeforeWorkspaceRace;
+  }
+  assert.equal(workspaceChangeCommitted,true,
+    'the test must commit a real workspace update while replacement rows are being written');
+  assert.ok(interruptedRebuildError,
+    'a replacement built from a superseded compatibility snapshot must not be published');
+  assert.equal(interruptedRebuildError.nexusEntityProjectionFailureReason,'source-snapshot-changed',
+    'a superseded rebuild must retain its safe source-change failure classification');
+  const manifestAfterRace=metaStore.get(manifestKey);
+  assert.equal(manifestAfterRace.status,'ready',
+    'the prior manifest must remain ready after a superseded replacement is aborted');
+  assert.equal(manifestAfterRace.activeGeneration,activeBeforeRace.activeGeneration,
+    'a superseded replacement must not replace the previously active generation');
+  assert.equal(manifestAfterRace.pendingGeneration,null,
+    'an interrupted replacement must clear only its own pending generation');
+  assert.equal(await loaded.api.readWorkspaceEntities(owner),null,
+    'a stale projection must remain unavailable until a fresh generation matches the new workspace revision');
+
+  const retryAfterWorkspaceChange=await loaded.api.syncWorkspaceEntities(owner,null,{replace:true});
+  assert.equal(retryAfterWorkspaceChange.mode,'snapshot-backfill',
+    'a retry must rebuild from the latest committed compatibility snapshot');
+  const finalWorkspace=await loaded.api.readWorkspaceEntities(owner);
+  assert.ok(finalWorkspace,'the retry must publish a verified entity generation');
+  assert.equal(finalWorkspace.state.topics.length,402);
+  assert.equal(finalWorkspace.state.topics.at(-1).id,changedTopic.id);
 }
 
 // Permanent account deletion must remove only the selected owner's entity rows,
