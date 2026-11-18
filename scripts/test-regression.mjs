@@ -60,6 +60,9 @@ assert.ok(topicSaveSource.includes("save({entityChanges:[trackerEntityPutChange(
 assert.ok(appCore.includes('window.NexusCloudSync?.noteEntitySyncResult?.(result,null)')&&
   appCore.includes('window.NexusCloudSync?.noteEntitySyncResult?.(null,error)'),
   'successful and failed entity projection saves must be represented in privacy-safe diagnostics');
+assert.ok(cloudSync.includes('noteEntitySyncResult:(result,error)=>')&&
+  cloudSync.includes("'entity-sync-result'"),
+  'the cloud sync diagnostics API must expose the privacy-safe entity projection outcome reporter');
 
 assert.ok(appCore.includes('const revisionEntry=workspaceEntityRevisionEntry();')&&
   appCore.includes('if(revisionEntry)entries.push(revisionEntry);')&&
