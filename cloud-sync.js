@@ -1123,14 +1123,25 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    cursor.ownerId===ownerId&&cursor.generation===cursorResult.generation&&
    typeof cursor.snapshotUpdatedAt==='string'&&cursor.snapshotUpdatedAt.length>0&&
    Number.isSafeInteger(Number(cursor.publishRevision))&&
+   Number.isSafeInteger(Number(cursor.acknowledgedSequence))&&
    Number.isSafeInteger(Number(cursor.remoteHeadRevision))&&
    Number(cursor.publishRevision)===Number(cursor.remoteHeadRevision)&&
    cursor.requiresPull===false);
-  const verified=!!(verification&&verification.ok===true&&verification.skipped!==true&&cursorCurrent);
+  const outbox=cursorCurrent?await storage.readWorkspaceEntityOutboxGroups(
+   ownerId,Number(cursor.acknowledgedSequence),1000,1048576):null;
+  await assertActiveUser(ownerId);
+  const outboxCurrent=!!(outbox&&!outbox.unavailable&&!outbox.snapshotRequired&&
+   outbox.ownerId===ownerId&&outbox.generation===cursor.generation&&
+   Number(outbox.workspaceRevision)===Number(cursor.workspaceRevision)&&
+   Array.isArray(outbox.groups)&&outbox.groups.length===0&&outbox.hasMore!==true);
+  const verified=!!(verification&&verification.ok===true&&verification.skipped!==true&&
+   cursorCurrent&&outboxCurrent);
   if(typeof syncDiag==='function')syncDiag('delta-recovery-verification',null,{
    ok:verified,reason:verified?null:'post_recovery_delta_sync_failed',
    recoveryTriggerReason:triggerReason||'other',
-   verificationReason:verification&&typeof verification.reason==='string'?verification.reason:'other',
+   verificationReason:verification&&typeof verification.reason==='string'?verification.reason:
+    (outboxCurrent?'other':cursorCurrent?'outbox_not_clear':'cursor_not_current'),
+   outboxPending:!!(outbox&&((Array.isArray(outbox.groups)&&outbox.groups.length>0)||outbox.hasMore===true)),
    appliedCount:Number.isSafeInteger(verification&&verification.appliedCount)?verification.appliedCount:null,
    publishedCount:Number.isSafeInteger(verification&&verification.publishedCount)?verification.publishedCount:null,
    acknowledgedCount:Number.isSafeInteger(verification&&verification.acknowledgedCount)?verification.acknowledgedCount:null,
@@ -1142,7 +1153,8 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   });
   if(!verified)return {ok:false,retryable:true,snapshotRequired:true,
    reason:'post_recovery_delta_sync_failed',recoveryTriggerReason:triggerReason||'other',
-   verificationReason:verification&&verification.reason||'cursor_not_current'};
+   verificationReason:verification&&verification.reason||
+    (outboxCurrent?'cursor_not_current':cursorCurrent?'outbox_not_clear':'cursor_not_current')};
   return {...verification,recovered:true,recoveryResumed:resumed===true,
    recoveryTriggerReason:triggerReason||'other',
    recoverySnapshotRevision:Number.isSafeInteger(Number(recovered&&recovered.snapshotRevision))
