@@ -1072,7 +1072,7 @@ function makeStagingRuntimeHarness({
   const localStorage={getItem:key=>key==='owner-key'?localOwner:null};
   const payload={state:{streams:[],subjects:[],topics:[],history:[],exams:[]},
     featureState:{journal:[],papers:[],goals:[],studyLogs:[]}};
-  const cursor={ownerId:'account-A',generation:'projection-generation-a',
+  const cursor={ownerId:'account-A',generation:'projection-generation-a',workspaceRevision:0,
     snapshotUpdatedAt:'verified-snapshot-stamp',publishRevision:3,
     remoteHeadRevision:3,acknowledgedSequence:0,requiresPull:false};
   const queue={
@@ -1088,7 +1088,12 @@ function makeStagingRuntimeHarness({
     },
     async readWorkspaceEntityDeltaCursor(owner){
       calls.cursorOwner=owner;
-      return {ok:true,generation:cursor.generation,cursor};
+      return {ok:true,exists:true,generation:cursor.generation,cursor};
+    },
+    async readWorkspaceEntityOutboxGroups(owner,afterSequence){
+      calls.outboxOwner=owner;calls.outboxAfterSequence=afterSequence;
+      return {ownerId:owner,generation:cursor.generation,workspaceRevision:cursor.workspaceRevision,
+        groups:[],hasMore:false,snapshotRequired:false};
     },
     async waitForWorkspaceEntitySync(owner){
       calls.projectionOwners.push(owner);
