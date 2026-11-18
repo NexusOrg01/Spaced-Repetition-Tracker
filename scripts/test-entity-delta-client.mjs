@@ -166,6 +166,16 @@ function harness(options={}){
   }]);
 }
 {
+  const h=harness({pendingSnapshot:true});
+  const result=await h.client.synchronize('account-A',{maxRounds:5});
+  assert.equal(result.ok,true,
+    'the normal pull-publish coordinator must complete a current-baseline save without snapshot recovery');
+  assert.equal(result.publishedCount,1);
+  assert.equal(result.acknowledgedCount,1);
+  assert.equal(h.pendingCompatibilitySnapshot(),null);
+  assert.equal(h.queueAcknowledgements.length,1);
+}
+{
   const h=harness({pendingSnapshot:true,pendingSnapshotBase:'older-snapshot-stamp'});
   const result=await h.client.publishPending('account-A');
   assert.equal(result.snapshotRequired,true,
