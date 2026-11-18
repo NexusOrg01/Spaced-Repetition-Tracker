@@ -96,17 +96,24 @@ function harness(options={}){
       return {data:receipt,error:null};
     }
   };
+  const pendingSnapshot=options.pendingSnapshot&&typeof options.pendingSnapshot==='object'
+    ?options.pendingSnapshot:(options.pendingSnapshot?{status:'pending'}:null);
+  const shadowAcknowledgements=[];
   const clientFactory=overrides=>factory({
     enabled:options.enabled!==false,client,storage,
     getActiveOwner:()=>activeOwner,getLocalOwner:()=>localOwner,
     getLocalBase:async()=>base,getLocalWorkspace:async()=>payload,
-    getPendingSnapshot:async()=>options.pendingSnapshot?{status:'pending'}:null,
+    getPendingSnapshot:async()=>pendingSnapshot,
+    acknowledgePendingSnapshot:async(owner,pending,serverVersion)=>{
+      shadowAcknowledgements.push({owner,pending,serverVersion});
+      return options.acknowledgePendingSnapshot===false?false:true;
+    },
     sameWorkspace:async(a,b)=>JSON.stringify(a.state)===JSON.stringify(b.state)&&
       JSON.stringify(a.featureState)===JSON.stringify(b.featureState),
     ...overrides
   });
   return {state,groups,cursor:()=>cursor,client:clientFactory(),calls,acknowledgements,
-    setActiveOwner:value=>{activeOwner=value;},setLocalOwner:value=>{localOwner=value;},
+    shadowAcknowledgements,setActiveOwner:value=>{activeOwner=value;},setLocalOwner:value=>{localOwner=value;},
     receipts};
 }
 
@@ -126,7 +133,33 @@ function harness(options={}){
   const h=harness({pendingSnapshot:true});
   const result=await h.client.publishPending('account-A');
   assert.equal(result.snapshotRequired,true);
-  assert.equal(h.cursor(),null,'a pending compatibility snapshot must block delta publication');
+  assert.equal(h.cursor(),null,'an invalid or unverifiable compatibility snapshot must still fail closed');
+}
+{
+  const pending={status:'pending',ownerUserId:'account-A',baseServerVersion:'snapshot-stamp',payload};
+  const h=harness({pendingSnapshot:pending});
+  const result=await h.client.publishPending('account-A');
+  assert.equal(result.ok,true,
+    'a compatibility queue snapshot that exactly matches the verified owner and current local projection must not block Delta operation publication');
+  assert.equal(result.publishedCount,1);
+  assert.equal(h.acknowledgements.length,1);
+}
+{
+  const pending={status:'pending',ownerUserId:'account-A',baseServerVersion:'stale-stamp',payload};
+  const h=harness({pendingSnapshot:pending});
+  const result=await h.client.publishPending('account-A');
+  assert.equal(result.snapshotRequired,true,
+    'a compatibility queue item based on a different snapshot revision must not be treated as a harmless shadow');
+  assert.equal(h.acknowledgements.length,0);
+}
+{
+  const pending={status:'pending',ownerUserId:'account-A',baseServerVersion:'snapshot-stamp',
+    payload:{...payload,state:{...payload.state,topics:[{id:'unprojected-local-edit'}]}}};
+  const h=harness({pendingSnapshot:pending});
+  const result=await h.client.publishPending('account-A');
+  assert.equal(result.snapshotRequired,true,
+    'a compatibility queue item that differs from the current projection must be preserved for recovery');
+  assert.equal(h.acknowledgements.length,0);
 }
 {
   const h=harness({groups:[
