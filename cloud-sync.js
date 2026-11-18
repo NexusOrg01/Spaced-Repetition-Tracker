@@ -763,10 +763,9 @@ async function recoverCachedWorkspaceForOfflineAccount(userId){
 }
 function restoreMissingQueueBaseFromVerifiedRemote(queue,userId,pending,remote){
  // A queued snapshot records the exact server version it was created against.
- // When that version is still the verified remote snapshot but its local merge
- // base is missing (for example, after browser storage was only partly restored),
- // restore that base before Delta sync. Never infer a base from a different stamp,
- // and never replace an existing base.
+ // When that version is still the verified remote snapshot, it is the authoritative
+ // merge base whether the local copy is missing or carries a different server stamp.
+ // This repairs partial browser-storage restoration without guessing across revisions.
  if(!queue||!userId||!pending||pending.ownerUserId!==userId||
     typeof pending.baseServerVersion!=='string'||!pending.baseServerVersion||
     !remote||typeof remote.updated_at!=='string'||!remote.updated_at||
@@ -777,7 +776,7 @@ function restoreMissingQueueBaseFromVerifiedRemote(queue,userId,pending,remote){
     Array.isArray(remote.payload.featureState)||
     typeof queue.getBase!=='function'||typeof queue.rememberBase!=='function')return false;
  const existing=queue.getBase(localStorage,userId);
- if(existing)return false;
+ if(existing&&existing.serverVersion===remote.updated_at)return false;
  queue.rememberBase(localStorage,userId,{
   state:remote.payload.state,featureState:remote.payload.featureState
  },remote.updated_at);
