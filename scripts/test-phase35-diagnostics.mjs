@@ -70,6 +70,13 @@ for(const forbidden of ['PRIVATE','ownerId','errorMessage'])assert.equal(
  'projection diagnostics must not expose owner identity or raw rebuild errors'
 );
 assert.equal(vm.runInContext('sanitizeSyncDiagEvent({at:"2026-11-17T01:00:00.000Z",stage:"untrusted-stage",errorMessage:"leak"})',sanitizerSandbox),null,'unknown diagnostic stages must be rejected');
+vm.runInContext('result=sanitizeSyncDiagEvent({at:"2026-11-18T08:22:00.000Z",stage:"delta-sync-result",skipped:true,ok:false,reason:"staging_delta_gate_closed",errorMessage:"PRIVATE"})',sanitizerSandbox);
+const safeSkippedDeltaEvent=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.equal(safeSkippedDeltaEvent.reason,'staging_delta_gate_closed',
+ 'diagnostics must preserve the allowlisted reason for a skipped Delta attempt');
+assert.equal(Object.prototype.hasOwnProperty.call(safeSkippedDeltaEvent,'errorMessage'),false,
+ 'skipped-Delta diagnostics must still exclude raw exception text');
+
 
 const collectorStart=source.indexOf('async function collectSyncOperationalDiagnostics(){');
 const collectorEnd=source.indexOf('\nasync function downloadSyncDiagnostics()',collectorStart);
