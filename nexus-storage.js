@@ -548,6 +548,28 @@
     for(const key of Object.keys(snapshot||{}))if(!collections.includes(key))rootValue[key]=snapshot[key];
     return rootValue;
   }
+  function entityProjectionFailure(error,stage){
+    const target=error instanceof Error?error:new Error('Local entity projection rebuild failed.');
+    const defaults={
+      'stage-manifest':'manifest-stage-write-failed',
+      'write-row-batch':'indexeddb-write-failed',
+      'publish-manifest':'manifest-publish-failed',
+      'verify-publication':'manifest-verification-failed'
+    };
+    try{
+      target.nexusEntityProjectionFailureStage=stage;
+      if(!target.nexusEntityProjectionFailureReason){
+        target.nexusEntityProjectionFailureReason=defaults[stage]||'other';
+      }
+      return target;
+    }catch(_){
+      const wrapped=new Error('Local entity projection rebuild failed.');
+      wrapped.cause=target;
+      wrapped.nexusEntityProjectionFailureStage=stage;
+      wrapped.nexusEntityProjectionFailureReason=defaults[stage]||'other';
+      return wrapped;
+    }
+  }
   function* generateWorkspaceEntityRows(ownerId,generation,state,featureState){
     const trackerRoot=entityRootValue(state,TRACKER_ENTITY_COLLECTIONS);
     const featureRoot=entityRootValue(featureState,FEATURE_ENTITY_COLLECTIONS);
@@ -562,8 +584,16 @@
       for(let position=0;position<records.length;position++){
         const record=records[position];
         const id=record&&record.id!==undefined&&record.id!==null?String(record.id):'';
-        if(!id)throw new Error('Entity migration requires a stable record ID for '+collection+' at position '+position+'.');
-        if(seen.has(id))throw new Error('Entity migration found a duplicate stable record ID in '+collection+': '+id+'.');
+        if(!id){
+          const error=new Error('Entity migration requires a stable record ID for '+collection+' at position '+position+'.');
+          error.nexusEntityProjectionFailureReason='missing-stable-record-id';
+          throw error;
+        }
+        if(seen.has(id)){
+          const error=new Error('Entity migration found a duplicate stable record ID in '+collection+'.');
+          error.nexusEntityProjectionFailureReason='duplicate-stable-record-id';
+          throw error;
+        }
         seen.add(id);
         yield {key:entityRecordKey(ownerId,generation,collection,id),ownerId,generation,
           entityRow:true,collection,entityId:id,position,value:record};
@@ -700,6 +730,9 @@
        (!previous.pendingGeneration&&previous.pendingRecoveryIntentId&&previous.pendingRecoveryIntentId!==recoveryIntentId))){
       throw new Error('A verified active entity generation and recovery intent are required before staging snapshot recovery.');
     }
+    const counts={},positionBounds={},batch=[];
+    let rowCount=0,failureStage='stage-manifest';
+    try{
     await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
       tx.objectStore('migrationMeta').put({
         // Retain the prior generation's integrity metadata (rowCount, counts,
@@ -720,9 +753,7 @@
       });
       set(true);
     });
-    const counts={},positionBounds={},batch=[];
-    let rowCount=0;
-    try{
+      failureStage='generate-rows';
       for(const row of generateWorkspaceEntityRows(owner,generation,stateSnapshot,featureSnapshot)){
         batch.push(row);rowCount++;
         if(row.collection!=='_meta'){
@@ -732,17 +763,24 @@
           bounds.max=Math.max(bounds.max,row.position);
         }
         if(batch.length>=ENTITY_BATCH_SIZE){
+          failureStage='write-row-batch';
           await writeWorkspaceEntityBatch(batch.splice(0,batch.length));
+          failureStage='generate-rows';
           if(!enabled||committedOwnerId!==owner||revision!==sourceRevision){
             throw new Error('The active workspace changed during entity migration. The previous entity generation remains active.');
           }
           await new Promise(resolve=>root.setTimeout(resolve,0));
         }
       }
-      if(batch.length)await writeWorkspaceEntityBatch(batch.splice(0,batch.length));
+      if(batch.length){
+        failureStage='write-row-batch';
+        await writeWorkspaceEntityBatch(batch.splice(0,batch.length));
+      }
+      failureStage='verify-publication';
       if(!enabled||committedOwnerId!==owner||revision!==sourceRevision){
         throw new Error('The active workspace changed during entity migration. The previous entity generation remains active.');
       }
+      failureStage='publish-manifest';
       await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
         const store=tx.objectStore('migrationMeta'),request=store.get(manifestKey);
         request.onsuccess=()=>{
@@ -786,6 +824,7 @@
           set({staged:false,generation,rowCount,counts,sourceRevision:revision,sourceWorkspaceRevision});
         };
       });
+      failureStage='verify-publication';
       let prunedRows=0,prunedOutboxRows=0;
       if(deferActivation){
         const intent=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
@@ -827,7 +866,7 @@
           };
         });
       }catch(_){}
-      throw error;
+      throw entityProjectionFailure(error,failureStage);
     }
   }
   async function readWorkspaceEntities(ownerId,options={}){
