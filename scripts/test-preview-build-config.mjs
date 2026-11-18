@@ -193,7 +193,7 @@ assert.ok(renderConfigScript(existingStagingConfig,true).includes('window.NEXUS_
 assert.ok(renderConfigScript(null,true).includes('window.NEXUS_ENTITY_DELTA_SYNC_STAGING=false'));
 
 
-const hostedQaBranch = 'feat/dla-03-safe-snapshot-downgrade';
+const hostedQaBranch = 'fix/dla04-entity-projection-guard';
 const hostedQaProject = 'https://xuwfzibxhxzxxupprxsq.supabase.co';
 const hostedQaEnv = {
   VERCEL: '1',
@@ -254,7 +254,7 @@ assert.deepEqual(hostedQaGate, {
 }, 'hosted QA must require the explicit flag, exact branch, exact project, and deployment-specific Vercel origin');
 const hostedQaConfigScript = renderConfigScript(hostedQaConfig, false, hostedQaGate);
 assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=true'));
-assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_REF="feat/dla-03-safe-snapshot-downgrade"'));
+assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_REF="fix/dla04-entity-projection-guard"'));
 assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN="https://nexus-dla-03-git-feat-dla-03-safe-snapshot-downgrade-recall-ed03.vercel.app"'));
 assert.ok(renderConfigScript(hostedQaConfig, false, null).includes('window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=false'));
 
