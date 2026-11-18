@@ -36,7 +36,7 @@ function syncDiagSummary(payload){
 }
 const SYNC_DIAG_STAGES=new Set([
  'auth-event','cloud-chunk-read-error','cloud-read','cloud-read-error','cloud-write-complete','cloud-write-error',
- 'curriculum-install-save-requested','delta-snapshot-downgrade-result','delta-sync-result','diagnostics-enabled','entity-projection-rebuild','initialize-after-cloud-read',
+ 'curriculum-install-save-requested','delta-snapshot-downgrade-result','delta-sync-result','delta-recovery-verification','diagnostics-enabled','entity-projection-rebuild','initialize-after-cloud-read',
  'initialize-error','initialize-finished','initialize-settled','initialize-start','local-save-queue-error',
  'local-save-queued','local-storage-flush','offline-account-base-unavailable','offline-account-pending-unavailable',
  'offline-account-queue-rebuilt','offline-account-recovery-error','offline-account-workspace-restored',
@@ -61,18 +61,21 @@ function sanitizeSyncDiagEvent(event){
   for(const key of flags){if(typeof input[key]==='boolean')workspace[key]=input[key];}
   if(Object.keys(workspace).length)safe.workspace=workspace;
  }
- const countFields=['durationMs','chunkCount','payloadUtf8Bytes','cleanupDeletedCount','baseTopicCount','localTopicCount','remoteTopicCount','conflictCount','payloadCharacters','appliedCount','publishedCount','acknowledgedCount','rounds','topicCount','workspaceRevision','projectionWorkspaceRevision'];
+ const countFields=['durationMs','chunkCount','payloadUtf8Bytes','cleanupDeletedCount','baseTopicCount','localTopicCount','remoteTopicCount','conflictCount','payloadCharacters','appliedCount','publishedCount','acknowledgedCount','rounds','topicCount','workspaceRevision','projectionWorkspaceRevision','cursorPublishRevision','cursorRemoteHeadRevision','cursorAcknowledgedSequence','recoverySnapshotRevision','recoveryHeadRevision'];
  for(const key of countFields){
   if(!Object.prototype.hasOwnProperty.call(event,key))continue;
   const value=event[key];
   if(value===null)safe[key]=null;
   else if(Number.isSafeInteger(value)&&value>=0)safe[key]=Math.min(value,100000000);
  }
- const booleanFields=['hasPayload','hasUpdatedAt','chunkStorageUnavailable','cleanupBacklogMayRemain','cleanupFailed','priorQueueRetainedForRecovery','storageEnabled','cooperative','queueRebuilt','ready','remoteHadPayload','remoteHasPayload','hasSession','ownerPresent','ok','resumed','hasQueue','skipped','fromPending','hasPending','matchesAttempted','readbackHasPayload','hadPending','compactionPending','cleanupPending','projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches'];
+ const booleanFields=['hasPayload','hasUpdatedAt','chunkStorageUnavailable','cleanupBacklogMayRemain','cleanupFailed','priorQueueRetainedForRecovery','storageEnabled','cooperative','queueRebuilt','ready','remoteHadPayload','remoteHasPayload','hasSession','ownerPresent','ok','resumed','hasQueue','skipped','fromPending','hasPending','matchesAttempted','readbackHasPayload','hadPending','compactionPending','cleanupPending','projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches','recovered','triggerConflict','triggerSnapshotRequired','triggerRequiresSnapshotReconciliation','cursorRequiresPull'];
  for(const key of booleanFields){if(typeof event[key]==='boolean')safe[key]=event[key];}
  const enums={
   storageMode:['chunked','legacy-schema-compatibility','legacy','empty'],
-  reason:['local-save','curriculum-install','sync','resume-existing-journal','conflict-or-snapshot-required','local-outbox-changed-during-merge','entity_projection_unavailable','stale_entity_projection','entity_projection_owner_unavailable','entity_projection_rebuild_failed','staging_delta_gate_closed','staging_recovery_journal_pending','server_snapshot_mode','server_sync_state_missing'],
+  reason:['local-save','curriculum-install','sync','resume-existing-journal','conflict-or-snapshot-required','local-outbox-changed-during-merge','entity_projection_unavailable','stale_entity_projection','entity_projection_owner_unavailable','entity_projection_rebuild_failed','staging_delta_gate_closed','staging_recovery_journal_pending','server_snapshot_mode','server_sync_state_missing','post_recovery_delta_sync_failed'],
+  triggerReason:['local_snapshot_baseline_mismatch','compatibility_snapshot_still_pending','local_workspace_differs_from_verified_snapshot','remote_delta_history_precedes_local_baseline','local_delta_cursor_unavailable','local_delta_cursor_generation_mismatch','local_delta_cursor_outside_retention','remote_changes_must_be_applied_first','local_outbox_requires_snapshot','local_outbox_pending','local_and_remote_changes_overlap','local_and_remote_changes_overlap_after_partial_publish','invalid_remote_sync_state','unsupported_remote_sync_state','remote_state_changed_during_reconciliation','remote_pull_made_no_progress','local_publish_made_no_progress','delta_sync_round_limit','resume-existing-journal','other'],
+  recoveryTriggerReason:['local_snapshot_baseline_mismatch','compatibility_snapshot_still_pending','local_workspace_differs_from_verified_snapshot','remote_delta_history_precedes_local_baseline','local_delta_cursor_unavailable','local_delta_cursor_generation_mismatch','local_delta_cursor_outside_retention','remote_changes_must_be_applied_first','local_outbox_requires_snapshot','local_outbox_pending','local_and_remote_changes_overlap','local_and_remote_changes_overlap_after_partial_publish','invalid_remote_sync_state','unsupported_remote_sync_state','remote_state_changed_during_reconciliation','remote_pull_made_no_progress','local_publish_made_no_progress','delta_sync_round_limit','resume-existing-journal','other'],
+  verificationReason:['local_snapshot_baseline_mismatch','compatibility_snapshot_still_pending','local_workspace_differs_from_verified_snapshot','remote_delta_history_precedes_local_baseline','local_delta_cursor_unavailable','local_delta_cursor_generation_mismatch','local_delta_cursor_outside_retention','remote_changes_must_be_applied_first','local_outbox_requires_snapshot','local_outbox_pending','remote_pull_made_no_progress','local_publish_made_no_progress','delta_sync_round_limit','account_or_remote_apply_verification_failed','account_or_publisher_verification_failed','other'],
   source:['active-local-workspace'],
   event:['INITIAL_SESSION','SIGNED_IN','SIGNED_OUT','TOKEN_REFRESHED','USER_UPDATED'],
   errorCategory:['conflict','timeout','queue-limit','queue-unavailable','other'],
@@ -1057,6 +1060,44 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
     conflicts,{baseServerVersion:metadata.baseServerVersion},
     {intentId:metadata.intentId,candidateDigest:metadata.candidateDigest})
  });
+ const verifyRecoveredDelta=async(recovered,triggerReason,resumed)=>{
+  const verification=await makeClient.synchronize(ownerId,{
+   signal,maxRounds:20,maxGroups:20,maxBytes:1048576
+  });
+  const cursorResult=await storage.readWorkspaceEntityDeltaCursor(ownerId);
+  const cursor=cursorResult&&cursorResult.cursor||null;
+  const cursorCurrent=!!(cursorResult&&cursorResult.ok===true&&cursor&&
+   cursor.ownerId===ownerId&&cursor.generation===cursorResult.generation&&
+   typeof cursor.snapshotUpdatedAt==='string'&&cursor.snapshotUpdatedAt.length>0&&
+   Number.isSafeInteger(Number(cursor.publishRevision))&&
+   Number.isSafeInteger(Number(cursor.remoteHeadRevision))&&
+   Number(cursor.publishRevision)===Number(cursor.remoteHeadRevision)&&
+   cursor.requiresPull===false);
+  const verified=!!(verification&&verification.ok===true&&verification.skipped!==true&&cursorCurrent);
+  if(typeof syncDiag==='function')syncDiag('delta-recovery-verification',null,{
+   ok:verified,reason:verified?null:'post_recovery_delta_sync_failed',
+   recoveryTriggerReason:triggerReason||'other',
+   verificationReason:verification&&typeof verification.reason==='string'?verification.reason:'other',
+   appliedCount:Number.isSafeInteger(verification&&verification.appliedCount)?verification.appliedCount:null,
+   publishedCount:Number.isSafeInteger(verification&&verification.publishedCount)?verification.publishedCount:null,
+   acknowledgedCount:Number.isSafeInteger(verification&&verification.acknowledgedCount)?verification.acknowledgedCount:null,
+   rounds:Number.isSafeInteger(verification&&verification.rounds)?verification.rounds:null,
+   cursorPublishRevision:cursor&&Number.isSafeInteger(Number(cursor.publishRevision))?Number(cursor.publishRevision):null,
+   cursorRemoteHeadRevision:cursor&&Number.isSafeInteger(Number(cursor.remoteHeadRevision))?Number(cursor.remoteHeadRevision):null,
+   cursorAcknowledgedSequence:cursor&&Number.isSafeInteger(Number(cursor.acknowledgedSequence))?Number(cursor.acknowledgedSequence):null,
+   cursorRequiresPull:cursor&&typeof cursor.requiresPull==='boolean'?cursor.requiresPull:null
+  });
+  if(!verified)return {ok:false,retryable:true,snapshotRequired:true,
+   reason:'post_recovery_delta_sync_failed',recoveryTriggerReason:triggerReason||'other',
+   verificationReason:verification&&verification.reason||'cursor_not_current'};
+  return {...verification,recovered:true,recoveryResumed:resumed===true,
+   recoveryTriggerReason:triggerReason||'other',
+   recoverySnapshotRevision:Number.isSafeInteger(Number(recovered&&recovered.snapshotRevision))
+    ?Number(recovered.snapshotRevision):null,
+   recoveryHeadRevision:Number.isSafeInteger(Number(recovered&&recovered.headRevision))
+    ?Number(recovered.headRevision):null,
+   cursor};
+ };
  if(action&&action.downgrade===true){
   const result=await makeClient.downgradeToSnapshot(ownerId,{signal,maxGroups:100,maxBytes:8*1048576});
   if(typeof syncDiag==='function')syncDiag('delta-snapshot-downgrade-result',null,{
@@ -1065,12 +1106,20 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   return result||{ok:false,retryable:true,reason:'snapshot_downgrade_unavailable'};
  }
  if(recoveryPending){
-   if(typeof syncDiag==='function')syncDiag('snapshot-recovery-start',null,{reason:'resume-existing-journal'});
+   if(typeof syncDiag==='function')syncDiag('snapshot-recovery-start',null,{
+    reason:'resume-existing-journal',triggerReason:'resume-existing-journal'
+   });
    const resumed=await makeClient.publishConflictRecovery(ownerId,{
     signal,maxGroups:100,maxBytes:8*1048576
    });
-   if(typeof syncDiag==='function')syncDiag('snapshot-recovery-complete',null,{ok:!!(resumed&&resumed.ok===true),resumed:true});
-   return resumed||{ok:false,retryable:true,reason:'staging_recovery_resume_failed'};
+   if(typeof syncDiag==='function')syncDiag('snapshot-recovery-complete',null,{
+    ok:!!(resumed&&resumed.ok===true),resumed:true,
+    recoveryReason:resumed&&resumed.reason||'other',
+    snapshotRevision:Number.isSafeInteger(Number(resumed&&resumed.snapshotRevision))?Number(resumed.snapshotRevision):null,
+    headRevision:Number.isSafeInteger(Number(resumed&&resumed.headRevision))?Number(resumed.headRevision):null
+   });
+   if(!resumed||resumed.ok!==true)return resumed||{ok:false,retryable:true,reason:'staging_recovery_resume_failed'};
+   return verifyRecoveredDelta(resumed,'resume-existing-journal',true);
   }
   let result=await makeClient.synchronize(ownerId,{signal,maxRounds:20,maxGroups:20,maxBytes:1048576});
  if(result&&result.skipped&&result.mode==='snapshot')return {skipped:true,reason:'legacy_snapshot_server'};
@@ -1085,12 +1134,27 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    result.reason==='local_and_remote_changes_overlap'||
    result.reason==='local_and_remote_changes_overlap_after_partial_publish'));
  if(needsRecovery){
-  if(typeof syncDiag==='function')syncDiag('snapshot-recovery-start',null,{reason:'conflict-or-snapshot-required'});
+  const triggerReason=typeof result.reason==='string'?result.reason:'other';
+  if(typeof syncDiag==='function')syncDiag('snapshot-recovery-start',null,{
+   reason:'conflict-or-snapshot-required',triggerReason,
+   triggerConflict:result.conflict===true,
+   triggerSnapshotRequired:result.snapshotRequired===true,
+   triggerRequiresSnapshotReconciliation:result.requiresSnapshotReconciliation===true,
+   appliedCount:Number.isSafeInteger(result.appliedCount)?result.appliedCount:null,
+   publishedCount:Number.isSafeInteger(result.publishedCount)?result.publishedCount:null,
+   acknowledgedCount:Number.isSafeInteger(result.acknowledgedCount)?result.acknowledgedCount:null,
+   rounds:Number.isSafeInteger(result.rounds)?result.rounds:null
+  });
   const recovered=await makeClient.publishConflictRecovery(ownerId,{
    signal,maxGroups:100,maxBytes:8*1048576
   });
-  if(typeof syncDiag==='function')syncDiag('snapshot-recovery-complete',null,{ok:!!(recovered&&recovered.ok===true),resumed:false});
-  if(recovered&&recovered.ok===true)return recovered;
+  if(typeof syncDiag==='function')syncDiag('snapshot-recovery-complete',null,{
+   ok:!!(recovered&&recovered.ok===true),resumed:false,
+   recoveryReason:recovered&&recovered.reason||'other',
+   snapshotRevision:Number.isSafeInteger(Number(recovered&&recovered.snapshotRevision))?Number(recovered.snapshotRevision):null,
+   headRevision:Number.isSafeInteger(Number(recovered&&recovered.headRevision))?Number(recovered.headRevision):null
+  });
+  if(recovered&&recovered.ok===true)return verifyRecoveredDelta(recovered,triggerReason,false);
   return recovered||{ok:false,retryable:true,reason:'staging_conflict_recovery_failed'};
  }
  return result||{ok:false,retryable:true,reason:'staging_delta_sync_unavailable'};
@@ -1123,6 +1187,10 @@ async function upload(){
      acknowledgedCount:Number.isSafeInteger(deltaResult.acknowledgedCount)?deltaResult.acknowledgedCount:null,
      rounds:Number.isSafeInteger(deltaResult.rounds)?deltaResult.rounds:null,compactionPending,cleanupPending,
      reason:typeof deltaResult.reason==='string'?deltaResult.reason:null,
+     recovered:deltaResult.recovered===true,
+     recoveryTriggerReason:typeof deltaResult.recoveryTriggerReason==='string'?deltaResult.recoveryTriggerReason:'other',
+     recoverySnapshotRevision:Number.isSafeInteger(deltaResult.recoverySnapshotRevision)?deltaResult.recoverySnapshotRevision:null,
+     recoveryHeadRevision:Number.isSafeInteger(deltaResult.recoveryHeadRevision)?deltaResult.recoveryHeadRevision:null,
      cleanupDeletedCount:Number.isSafeInteger(deltaResult.cleanupDeletedCount)?deltaResult.cleanupDeletedCount:
       (compaction&&Number.isSafeInteger(compaction.deletedOperations)?compaction.deletedOperations:null)});
    }
