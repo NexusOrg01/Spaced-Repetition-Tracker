@@ -1267,14 +1267,11 @@ async function upload(){
   // owner, verify that the local snapshot already matches cloud and avoid
   // rewriting an unchanged compatibility snapshot just to complete sign-in.
   if(!pending&&deltaResult&&deltaResult.skipped){
-   const currentRemote=await fetchRemote(uploadUserId,null,uploadScope.signal);
-   await assertUploadOwner();
-   if(currentRemote&&currentRemote.payload&&await sameWorkspace(currentRemote.payload,snapshot())){
-    lastRemoteStamp=currentRemote.updated_at||null;
-    if(queue){
-     queue.rememberBase(localStorage,uploadUserId,currentRemote.payload,lastRemoteStamp);
-     queue.rememberStamp(localStorage,uploadUserId,lastRemoteStamp);
-    }
+   const verifiedBase=queue&&typeof queue.getBase==='function'
+    ?queue.getBase(localStorage,uploadUserId):null;
+   if(verifiedBase&&verifiedBase.serverVersion===lastRemoteStamp&&
+      await sameWorkspace(verifiedBase,snapshot())){
+    if(queue)queue.rememberStamp(localStorage,uploadUserId,lastRemoteStamp);
     await flushDurableLocalWrites();status('Synced');uploaded=true;return true;
    }
   }
