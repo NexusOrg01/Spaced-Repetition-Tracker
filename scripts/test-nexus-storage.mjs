@@ -1045,6 +1045,82 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'entity operations must not replace or disable the existing snapshot-backed storage path');
 }
 
+// Snapshot replacement is used by hosted Delta recovery with a null change list.
+// It must backfill successfully, and unrelated queue writes during a large rebuild
+// must not invalidate the workspace-specific source revision.
+{
+  const owner='entity-projection-rebuild-owner';
+  const trackerState={
+    schema:3,
+    streams:[{id:'projection-stream',name:'Commerce'}],
+    subjects:[{id:'projection-subject',streamId:'projection-stream',name:'Accounting'}],
+    topics:Array.from({length:401},(_,index)=>({
+      id:'projection-topic-'+index,subjectId:'projection-subject',name:'Projection topic '+index
+    })),
+    history:[],exams:[],settings:{theme:'dark'}
+  };
+  const featureState={
+    version:1,journal:[{id:'projection-journal',text:'Projection backfill regression'}],
+    papers:[],goals:[],studyLogs:[],selectedTopicIds:[]
+  };
+  const trackerJson=JSON.stringify(trackerState),featureJson=JSON.stringify(featureState);
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',trackerJson],
+    ['recall.study.features.v1',featureJson],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB();
+  const loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true,
+    'the hosted projection-rebuild fixture must initialize durable IndexedDB');
+
+  // This is the exact call shape used by cloud-sync.js for an absent or stale
+  // projection. The null argument requests a complete replacement, not a delta.
+  const firstBackfill=await loaded.api.syncWorkspaceEntities(owner,null,{replace:true});
+  assert.equal(firstBackfill.mode,'snapshot-backfill',
+    'a null change list with replace:true must perform a complete entity backfill');
+  const firstWorkspace=await loaded.api.readWorkspaceEntities(owner);
+  assert.ok(firstWorkspace,'the null-triggered backfill must publish a readable generation');
+  assert.equal(firstWorkspace.state.topics.length,401);
+  assert.equal(firstWorkspace.featureState.journal.length,1);
+  assert.equal((await loaded.api.readWorkspaceEntityOutbox(owner,0,20)).length,0,
+    'a snapshot projection rebuild must not manufacture incremental outbox operations');
+
+  // The database-wide revision also advances for unrelated managed preferences.
+  // Such a write must not abort a projection whose workspace snapshot is unchanged.
+  let unrelatedWriteCommitted=false;
+  const originalScheduler=loaded.context.window.setTimeout;
+  loaded.context.window.setTimeout=(callback,delay)=>{
+    return originalScheduler(async()=>{
+      if(!unrelatedWriteCommitted){
+        unrelatedWriteCommitted=true;
+        await loaded.api.commitLocalStorageEntries([{
+          key:'nexus.test.unrelated-during-projection-rebuild',value:'committed'
+        }]);
+        await loaded.api.flush();
+      }
+      callback();
+    },delay);
+  };
+  let replacement;
+  try{
+    replacement=await loaded.api.syncWorkspaceEntities(owner,null,{replace:true});
+  }finally{
+    loaded.context.window.setTimeout=originalScheduler;
+  }
+  assert.equal(unrelatedWriteCommitted,true,
+    'the test must commit an unrelated IndexedDB write while replacement rows are being staged');
+  assert.equal(replacement.mode,'snapshot-backfill',
+    'unrelated queue/preferences writes must not invalidate a complete workspace projection rebuild');
+  const rebuiltWorkspace=await loaded.api.readWorkspaceEntities(owner);
+  assert.ok(rebuiltWorkspace,'the replacement generation must remain readable after the unrelated write');
+  assert.notEqual(rebuiltWorkspace.generation,firstWorkspace.generation,
+    'replace:true must publish a new complete generation rather than silently keeping the old one');
+  assert.equal(rebuiltWorkspace.state.topics.length,401);
+  assert.equal(rebuiltWorkspace.featureState.journal[0].id,'projection-journal');
+  assert.equal((await loaded.api.readWorkspaceEntityOutbox(owner,0,20)).length,0);
+}
+
 // Permanent account deletion must remove only the selected owner's entity rows,
 // outbox operations and publication metadata. It must not touch another account.
 {
