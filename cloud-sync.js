@@ -921,6 +921,11 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
     phase:'local-publish'};
   }
   let projection=await storage.waitForWorkspaceEntitySync(ownerId);
+  await assertActiveUser(ownerId);
+  if(localStorage.getItem(OWNER_KEY)!==ownerId){
+   return {ok:false,snapshotRequired:true,reason:'entity_projection_owner_unavailable',
+    phase:'local-publish'};
+  }
   let projectionRebuildAttempted=false,projectionRebuildOk=false,
       projectionRebuildMode='other',projectionRebuildErrorCategory='other';
   if(projection&&projection.ok!==true&&
