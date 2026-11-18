@@ -1051,11 +1051,12 @@ function makeStagingRuntimeHarness({
   browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/dla04-entity-projection-guard',
   remoteState={mode:'delta',protocol_version:1},remoteStateError=null,
   projectionResults=[{ok:true,workspaceRevision:4,projectionWorkspaceRevision:4}],
-  projectionRebuildResult={ownerId:'account-A',mode:'snapshot-backfill'}
+  projectionRebuildResult={ownerId:'account-A',mode:'snapshot-backfill'},
+  projectionRebuildError=null
 }={}){
   const calls={createClient:0,synchronize:null,recovery:null,cursorOwner:null,
     localBaseOwner:null,pendingOwner:null,chunkWrite:null,localCommit:null,
-    stateRead:null,projectionOwners:[],projectionRebuild:0,
+    stateRead:null,projectionOwners:[],projectionRebuild:0,projectionDiagnostics:[],
     renderCount:0,hubRenderCount:0,featureUpdate:null,fsrsSettings:null};
   const stateQuery={
     select(columns){calls.stateRead={...calls.stateRead,columns};return this;},
@@ -1097,6 +1098,7 @@ function makeStagingRuntimeHarness({
       assert.equal(owner,'account-A');
       assert.equal(changes,null);
       assert.equal(options&&options.replace,true);
+      if(projectionRebuildError)throw projectionRebuildError;
       return projectionRebuildResult;
     }
   };
@@ -1157,6 +1159,7 @@ function makeStagingRuntimeHarness({
     },
     URL,
     syncDiagErrorCategory:()=> 'other',
+    syncDiag:(stage,_owner,details)=>calls.projectionDiagnostics.push({stage,details}),
     snapshot:()=>payload,
     sameWorkspace:()=>true,
     normalizeState:value=>({...value}),
@@ -1352,6 +1355,27 @@ assert.equal(projectionBackfillFailure.calls.createClient,0,
   'a failed local projection rebuild must fail closed before any Delta RPC client is created');
 assert.equal(projectionBackfillFailure.calls.chunkWrite,null,
   'projection failure must not trigger a remote snapshot publication');
+const projectionBackfillFailureEvent=projectionBackfillFailure.calls.projectionDiagnostics.find(
+  event=>event.stage==='entity-projection-rebuild');
+assert.equal(projectionBackfillFailureEvent.details.projectionRebuildFailureStage,'sync-workspace-entities');
+assert.equal(projectionBackfillFailureEvent.details.projectionRebuildFailureReason,'rebuild-not-completed');
+
+const projectionStorageFailure=new Error('PRIVATE INDEXEDDB DETAIL');
+projectionStorageFailure.nexusEntityProjectionFailureStage='write-row-batch';
+projectionStorageFailure.nexusEntityProjectionFailureReason='indexeddb-write-failed';
+const projectionBackfillStorageFailure=makeStagingRuntimeHarness({
+  gate:true,
+  projectionResults:[{ok:false,reason:'stale_entity_projection',workspaceRevision:8,projectionWorkspaceRevision:6}],
+  projectionRebuildError:projectionStorageFailure
+});
+const projectionBackfillStorageFailureResult=await projectionBackfillStorageFailure.run('account-A',stagingSignal);
+assert.equal(projectionBackfillStorageFailureResult.ok,false);
+const projectionBackfillStorageFailureEvent=projectionBackfillStorageFailure.calls.projectionDiagnostics.find(
+  event=>event.stage==='entity-projection-rebuild');
+assert.equal(projectionBackfillStorageFailureEvent.details.projectionRebuildFailureStage,'write-row-batch');
+assert.equal(projectionBackfillStorageFailureEvent.details.projectionRebuildFailureReason,'indexeddb-write-failed');
+assert.equal(JSON.stringify(projectionBackfillStorageFailureEvent).includes('PRIVATE'),false,
+  'diagnostics must never forward the raw local IndexedDB exception');
 
 const activeStaging=makeStagingRuntimeHarness({gate:true});
 const activeResult=await activeStaging.run('account-A',stagingSignal);
