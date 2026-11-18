@@ -209,6 +209,9 @@ const window = {
   NexusOfflineSyncQueue: queue,
   NexusCloudSyncRecovery: recovery,
   NexusCurriculumIntegrity: curriculumIntegrity,
+  // In a browser, the named global is also exposed as a window property.
+  // Mirror that relationship so recovery tests exercise the real catalogue guard.
+  NexusCurriculumPacks: commerceCatalogue.packs,
   NexusRepairCurriculumState: data => {
     const normalized = context.normalizeState(data);
     return curriculumIntegrity.repair(normalized, commerceCatalogue.packs, {
