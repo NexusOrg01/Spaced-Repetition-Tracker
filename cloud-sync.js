@@ -863,16 +863,26 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
  const localGateOpen=window.NEXUS_ENTITY_DELTA_SYNC_STAGING===true&&localHost&&localSupabase;
  let hostedQaGate=false;
  try{
-  const qaOrigin=new URL(String(window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN||''));
   const qaProject=new URL(config().url);
+  const qaOrigins=[
+   window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN,
+   window.NEXUS_ENTITY_DELTA_SYNC_QA_BRANCH_ORIGIN
+  ].filter(value=>typeof value==='string'&&value.length>0);
+  const exactQaOriginMatches=qaOrigins.some(value=>{
+   try{
+    const candidate=new URL(value);
+    return candidate.protocol==='https:'&&candidate.origin===value&&
+     candidate.hostname.endsWith('.vercel.app')&&!candidate.port&&!candidate.username&&
+     !candidate.password&&!candidate.search&&!candidate.hash&&
+     (candidate.pathname===''||candidate.pathname==='/')&&
+     candidate.origin===String(location.origin||'');
+   }catch(_){return false;}
+  });
   hostedQaGate=window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA===true&&
    window.NEXUS_ENTITY_DELTA_SYNC_QA_REF==='fix/dla04-entity-projection-guard'&&
    config().url==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&
    qaProject.origin==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&
-   qaOrigin.protocol==='https:'&&qaOrigin.origin===String(window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN||'')&&
-   qaOrigin.hostname.endsWith('.vercel.app')&&!qaOrigin.port&&!qaOrigin.username&&
-   !qaOrigin.password&&!qaOrigin.search&&!qaOrigin.hash&&
-   (qaOrigin.pathname===''||qaOrigin.pathname==='/')&&qaOrigin.origin===String(location.origin||'');
+   exactQaOriginMatches;
  }catch(_){hostedQaGate=false;}
  const authenticatedOwner=session&&session.user&&typeof session.user.id==='string'?session.user.id:'';
  const ownerMatches=!!ownerId&&authenticatedOwner===ownerId&&localStorage.getItem(OWNER_KEY)===ownerId;
