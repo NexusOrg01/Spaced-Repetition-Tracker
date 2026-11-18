@@ -323,6 +323,8 @@
     const getActiveOwner=options.getActiveOwner,getLocalOwner=options.getLocalOwner;
     const getLocalBase=options.getLocalBase,getLocalWorkspace=options.getLocalWorkspace;
     const getPendingSnapshot=options.getPendingSnapshot,sameWorkspace=options.sameWorkspace;
+    const acknowledgePendingSnapshot=typeof options.acknowledgePendingSnapshot==='function'
+      ?options.acknowledgePendingSnapshot:null;
     const applyWorkspace=options.applyWorkspace;
     const mergeWorkspace=options.mergeWorkspace||null;
     const readRemoteSnapshot=typeof options.readRemoteSnapshot==='function'?options.readRemoteSnapshot:null;
@@ -352,6 +354,27 @@
     }
     function unavailable(reason,extra={}){
       return {ok:false,reason,...extra};
+    }
+    async function validatePendingCompatibilitySnapshot(owner,serverVersion,localWorkspace){
+      if(typeof getPendingSnapshot!=='function')return {ok:true,pending:null};
+      const pending=await getPendingSnapshot(owner);
+      if(!pending)return {ok:true,pending:null};
+      if(pending.status!=='pending'||pending.ownerUserId!==owner||
+         pending.baseServerVersion!==serverVersion||
+         !isRecord(pending.payload)||!isRecord(pending.payload.state)||
+         !isRecord(pending.payload.featureState)||!isRecord(localWorkspace)||
+         !(await sameWorkspace(pending.payload,localWorkspace))){
+        return {ok:false,reason:'compatibility_snapshot_not_represented_by_delta_projection'};
+      }
+      return {ok:true,pending};
+    }
+    async function acknowledgeShadowCompatibilitySnapshot(owner,pending,serverVersion){
+      if(!pending)return true;
+      if(!acknowledgePendingSnapshot)return false;
+      await assertOwner(owner);
+      const acknowledged=await acknowledgePendingSnapshot(owner,pending,serverVersion);
+      await assertOwner(owner);
+      return acknowledged===true||!!(acknowledged&&acknowledged.ok===true);
     }
     async function readRemotePage(ownerId,afterRevision,readOptions={}){
       if(!enabled)return {ok:true,skipped:true,reason:'feature_disabled'};
@@ -408,8 +431,9 @@
         if(!base||base.serverVersion!==state.snapshot_updated_at){
           return {ok:false,snapshotRequired:true,reason:'local_snapshot_baseline_mismatch'};
         }
-        const pendingSnapshot=await getPendingSnapshot(owner);
-        if(pendingSnapshot)return {ok:false,snapshotRequired:true,reason:'compatibility_snapshot_still_pending'};
+        const localWorkspace=await getLocalWorkspace(owner);
+        const pendingCheck=await validatePendingCompatibilitySnapshot(owner,state.snapshot_updated_at,localWorkspace);
+        if(!pendingCheck.ok)return {ok:false,snapshotRequired:true,reason:pendingCheck.reason};
         const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
         if(!cursorResult||cursorResult.ok!==true){
           return {ok:false,snapshotRequired:!!(cursorResult&&cursorResult.snapshotRequired),
@@ -525,6 +549,7 @@
          typeof storage.readWorkspaceEntityDeltaCursor!=='function'||
          typeof storage.initializeWorkspaceEntityDeltaCursor!=='function'||
          typeof storage.applyWorkspaceEntityDeltaGroup!=='function'||
+         typeof storage.readWorkspaceEntityOutboxGroups!=='function'||
          typeof getLocalBase!=='function'||typeof getLocalWorkspace!=='function'||
          typeof getPendingSnapshot!=='function'||typeof sameWorkspace!=='function'){
         return unavailable('remote_apply_dependencies_unavailable');
@@ -550,9 +575,9 @@
         if(!base||base.serverVersion!==state.snapshot_updated_at){
           return {ok:false,snapshotRequired:true,reason:'local_snapshot_baseline_mismatch'};
         }
-        if(await getPendingSnapshot(owner)){
-          return {ok:false,snapshotRequired:true,reason:'compatibility_snapshot_still_pending'};
-        }
+        const localWorkspace=await getLocalWorkspace(owner);
+        const pendingCheck=await validatePendingCompatibilitySnapshot(owner,state.snapshot_updated_at,localWorkspace);
+        if(!pendingCheck.ok)return {ok:false,snapshotRequired:true,reason:pendingCheck.reason};
         const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
         if(!cursorResult||cursorResult.ok!==true){
           return {ok:false,snapshotRequired:!!(cursorResult&&cursorResult.snapshotRequired),
@@ -582,6 +607,27 @@
         }
         if(Number(cursor.publishRevision)<floor||Number(cursor.publishRevision)>head){
           return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_outside_retention'};
+        }
+        if(pendingCheck.pending){
+          // Ordinary app saves also leave a legacy compatibility snapshot in the
+          // browser queue. When the exact payload is represented by the current
+          // owner-bound projection and its Delta outbox is empty, it is only a
+          // shadow copy. Clear it before applying remote deletes; otherwise stale
+          // snapshots trigger unnecessary recovery and can resurrect deleted rows.
+          const outbox=await storage.readWorkspaceEntityOutboxGroups(
+            owner,Number(cursor.acknowledgedSequence),1000,MAX_BYTES-65536);
+          if(!outbox||outbox.unavailable||outbox.snapshotRequired||
+             outbox.ownerId!==owner||outbox.generation!==cursor.generation||
+             Number(outbox.workspaceRevision)!==Number(cursor.workspaceRevision)||
+             !Array.isArray(outbox.groups)){
+            return {ok:false,snapshotRequired:true,reason:outbox&&outbox.reason||'local_outbox_unavailable'};
+          }
+          if(outbox.groups.length===0&&outbox.hasMore!==true){
+            const cleared=await acknowledgeShadowCompatibilitySnapshot(
+              owner,pendingCheck.pending,state.snapshot_updated_at);
+            if(!cleared)return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'compatibility_snapshot_shadow_acknowledgement_failed'};
+          }
         }
         if(cursor.requiresPull!==true&&Number(cursor.publishRevision)===head){
           return {ok:true,idle:true,appliedCount:0,cursor};
