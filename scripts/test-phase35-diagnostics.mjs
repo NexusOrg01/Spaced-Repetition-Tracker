@@ -77,6 +77,41 @@ assert.equal(safeSkippedDeltaEvent.reason,'staging_delta_gate_closed',
 assert.equal(Object.prototype.hasOwnProperty.call(safeSkippedDeltaEvent,'errorMessage'),false,
  'skipped-Delta diagnostics must still exclude raw exception text');
 
+const recoveryTriggerEvent={
+ at:'2026-11-18T08:37:24.000Z',stage:'snapshot-recovery-start',
+ reason:'conflict-or-snapshot-required',triggerReason:'local_snapshot_baseline_mismatch',
+ triggerConflict:false,triggerSnapshotRequired:true,triggerRequiresSnapshotReconciliation:false,
+ appliedCount:0,publishedCount:0,acknowledgedCount:0,rounds:1,
+ ownerId:'PRIVATE-OWNER',operationId:'PRIVATE-OPERATION'
+};
+vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(recoveryTriggerEvent)+')',sanitizerSandbox,
+ {filename:'sync-diagnostic-recovery-trigger-sanitizer-test.js'});
+const safeRecoveryTrigger=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.deepEqual(safeRecoveryTrigger,{
+ at:recoveryTriggerEvent.at,stage:'snapshot-recovery-start',
+ reason:'conflict-or-snapshot-required',triggerReason:'local_snapshot_baseline_mismatch',
+ triggerConflict:false,triggerSnapshotRequired:true,triggerRequiresSnapshotReconciliation:false,
+ appliedCount:0,publishedCount:0,acknowledgedCount:0,rounds:1
+},'recovery trigger diagnostics must expose only the allowlisted failure cause and aggregate counters');
+
+const recoveryVerificationEvent={
+ at:'2026-11-18T08:37:34.000Z',stage:'delta-recovery-verification',
+ ok:true,recoveryTriggerReason:'local_snapshot_baseline_mismatch',
+ verificationReason:'other',appliedCount:0,publishedCount:0,acknowledgedCount:0,rounds:1,
+ cursorPublishRevision:3,cursorRemoteHeadRevision:3,cursorAcknowledgedSequence:0,
+ cursorRequiresPull:false,ownerId:'PRIVATE-OWNER',errorMessage:'PRIVATE'
+};
+vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(recoveryVerificationEvent)+')',sanitizerSandbox,
+ {filename:'sync-diagnostic-recovery-verification-sanitizer-test.js'});
+const safeRecoveryVerification=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.deepEqual(safeRecoveryVerification,{
+ at:recoveryVerificationEvent.at,stage:'delta-recovery-verification',
+ ok:true,recoveryTriggerReason:'local_snapshot_baseline_mismatch',
+ verificationReason:'other',appliedCount:0,publishedCount:0,acknowledgedCount:0,rounds:1,
+ cursorPublishRevision:3,cursorRemoteHeadRevision:3,cursorAcknowledgedSequence:0,
+ cursorRequiresPull:false
+},'post-recovery diagnostics must expose stable cursor/counter evidence without account data or raw exceptions');
+
 
 const collectorStart=source.indexOf('async function collectSyncOperationalDiagnostics(){');
 const collectorEnd=source.indexOf('\nasync function downloadSyncDiagnostics()',collectorStart);
