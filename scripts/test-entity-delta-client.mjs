@@ -1048,12 +1048,15 @@ function makeStagingRuntimeHarness({
   gate=false,localOrigin=true,stagingUrl=stagingSupabaseUrl,recoveryIntent=null,
   syncResult={ok:true,publishedCount:1},recoveryResult={ok:true,recovered:true},
   missingChunkStorage=false,hostedQaGate=false,hostedQaOrigin='',
-  browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='feat/dla-03-safe-snapshot-downgrade',
-  remoteState={mode:'delta',protocol_version:1},remoteStateError=null
+  browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/dla04-entity-projection-guard',
+  remoteState={mode:'delta',protocol_version:1},remoteStateError=null,
+  projectionResults=[{ok:true,workspaceRevision:4,projectionWorkspaceRevision:4}],
+  projectionRebuildResult={ownerId:'account-A',mode:'snapshot-backfill'}
 }={}){
   const calls={createClient:0,synchronize:null,recovery:null,cursorOwner:null,
     localBaseOwner:null,pendingOwner:null,chunkWrite:null,localCommit:null,
-    stateRead:null,renderCount:0,hubRenderCount:0,featureUpdate:null,fsrsSettings:null};
+    stateRead:null,projectionOwners:[],projectionRebuild:0,
+    renderCount:0,hubRenderCount:0,featureUpdate:null,fsrsSettings:null};
   const stateQuery={
     select(columns){calls.stateRead={...calls.stateRead,columns};return this;},
     eq(column,value){calls.stateRead={...calls.stateRead,filterColumn:column,filterValue:value};return this;},
@@ -1074,6 +1077,7 @@ function makeStagingRuntimeHarness({
     getPending(_local,owner){calls.pendingOwner=owner;return {pending:true};},
     commitVerifiedEntityDeltaSnapshot(...args){calls.localCommit=args;return {ok:true};}
   };
+  let projectionIndex=0;
   const storage={
     async readWorkspaceEntityRecovery(owner){
       assert.equal(owner,'account-A');
@@ -1082,6 +1086,11 @@ function makeStagingRuntimeHarness({
     async readWorkspaceEntityDeltaCursor(owner){
       calls.cursorOwner=owner;
       return {ok:true,cursor};
+    },
+    async waitForWorkspaceEntitySync(owner){
+      calls.projectionOwners.push(owner);
+      const index=Math.min(projectionIndex++,projectionResults.length-1);
+      return projectionResults[index]||{ok:false,reason:'entity_projection_unavailable'};
     }
   };
   const window={
@@ -1091,6 +1100,10 @@ function makeStagingRuntimeHarness({
     NEXUS_ENTITY_DELTA_SYNC_QA_REF:hostedQaRef,
     NexusOfflineSyncQueue:queue,
     NexusStorage:storage,
+    async NexusRebuildEntityProjection(){
+      calls.projectionRebuild++;
+      return projectionRebuildResult;
+    },
     NexusEntityDeltaSync:{
       createClient(options){
         calls.createClient++;
@@ -1140,6 +1153,7 @@ function makeStagingRuntimeHarness({
       origin:browserOrigin||(localOrigin?'http://127.0.0.1:54321':'https://deploy-preview-126--nexussrt.netlify.app')
     },
     URL,
+    syncDiagErrorCategory:()=> 'other',
     snapshot:()=>payload,
     sameWorkspace:()=>true,
     normalizeState:value=>({...value}),
@@ -1302,6 +1316,39 @@ await assert.rejects(
   /Staging entity-delta recovery dependencies are incomplete/,
   'an opted-in but incomplete runtime must fail closed rather than falling through to snapshot upload'
 );
+
+const projectionBackfill=makeStagingRuntimeHarness({
+  gate:true,
+  projectionResults:[
+    {ok:false,snapshotRequired:true,reason:'entity_projection_unavailable',
+      workspaceRevision:5,projectionWorkspaceRevision:null},
+    {ok:true,workspaceRevision:5,projectionWorkspaceRevision:5}
+  ],
+  projectionRebuildResult:{ownerId:'account-A',mode:'snapshot-backfill'}
+});
+const projectionBackfillResult=await projectionBackfill.run('account-A',stagingSignal);
+assert.equal(projectionBackfillResult.ok,true,
+  'a missing local entity projection must be rebuilt once before the Delta coordinator starts');
+assert.equal(projectionBackfill.calls.projectionRebuild,1);
+assert.deepEqual(projectionBackfill.calls.projectionOwners,['account-A','account-A']);
+assert.equal(projectionBackfill.calls.createClient,1,
+  'the Delta client must not be created until the owner-scoped projection is verified ready');
+
+const projectionBackfillFailure=makeStagingRuntimeHarness({
+  gate:true,
+  projectionResults:[{ok:false,snapshotRequired:true,reason:'stale_entity_projection',
+    workspaceRevision:8,projectionWorkspaceRevision:7}],
+  projectionRebuildResult:{ok:false,error:'synthetic local rebuild failure'}
+});
+const projectionBackfillFailureResult=await projectionBackfillFailure.run('account-A',stagingSignal);
+assert.equal(projectionBackfillFailureResult.ok,false);
+assert.equal(projectionBackfillFailureResult.skipped,undefined);
+assert.equal(projectionBackfillFailureResult.reason,'entity_projection_rebuild_failed');
+assert.equal(projectionBackfillFailure.calls.projectionRebuild,1);
+assert.equal(projectionBackfillFailure.calls.createClient,0,
+  'a failed local projection rebuild must fail closed before any Delta RPC client is created');
+assert.equal(projectionBackfillFailure.calls.chunkWrite,null,
+  'projection failure must not trigger a remote snapshot publication');
 
 const activeStaging=makeStagingRuntimeHarness({gate:true});
 const activeResult=await activeStaging.run('account-A',stagingSignal);
