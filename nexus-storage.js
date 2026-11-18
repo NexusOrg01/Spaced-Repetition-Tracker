@@ -410,7 +410,7 @@
     });
   }
 
-  function readWorkspace(ownerId) {
+  function readWorkspace(ownerId, options={}) {
     if (!enabled || !database) return Promise.resolve(null);
     return transaction([WORKSPACES], 'readonly', (tx, set) => {
       const request = tx.objectStore(WORKSPACES).get(workspaceKey(ownerId));
@@ -432,11 +432,11 @@
             ownerId: row.ownerId,
             state,
             featureState,
-            // Keep the exact committed JSON alongside the parsed workspace. Projection
-            // rebuilds use these bytes to detect a newer snapshot without relying on the
-            // global IndexedDB revision, which also advances for unrelated queue writes.
-            trackerJson: row.tracker,
-            featureStateJson: row.featureState,
+            // Expose exact committed bytes only to the internal projection rebuild.
+            // Preserve the public getWorkspace result shape for all other callers.
+            ...(options.includeRawSnapshot===true
+              ?{trackerJson:row.tracker,featureStateJson:row.featureState}
+              :{}),
             revision: Number.isSafeInteger(Number(row.revision)) ? Number(row.revision) : 0,
             workspaceRevision: Number.isSafeInteger(Number(row.workspaceRevision))
               ? Number(row.workspaceRevision)
@@ -2216,7 +2216,7 @@
           stateSnapshot=JSON.parse(trackerSnapshotJson);
           featureSnapshot=JSON.parse(featureSnapshotJson);
         }else{
-          const compatibility=await readWorkspace(owner);
+          const compatibility=await readWorkspace(owner,{includeRawSnapshot:true});
           if(!compatibility||!compatibility.state||!compatibility.featureState){
             throw new Error('A complete compatibility workspace is required to initialize the entity projection.');
           }
