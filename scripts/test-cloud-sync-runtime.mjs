@@ -100,6 +100,22 @@ assert.equal(checkBaselineIntent('installed:topic:sl-al-commerce-si:'+commercePa
 assert.equal(checkBaselineIntent('installed:subject:sl-al-commerce-si:'+commercePack.subjects[0].id,[],[],['deleted:subject:sl-al-commerce-si:'+commercePack.subjects[0].id]),false,
   'an explicit subject deletion tombstone must suppress baseline restoration');
 
+assert.equal(checkBaselineIntent('installed:pack:sl-al-commerce-si',['installed:pack:sl-al-commerce-si']),true,
+  'a local baseline install marker must not mask that the newer remote snapshot lost the full-pack marker');
+assert.equal(checkBaselineIntent('installed:subject:sl-al-commerce-si:'+commercePack.subjects[0].id,
+  ['installed:subject:sl-al-commerce-si:'+commercePack.subjects[0].id]),true,
+  'a local subject marker must not mask a missing remote subject marker');
+assert.equal(checkBaselineIntent('installed:topic:sl-al-commerce-si:'+commercePack.subjects[0].id+':'+JSON.stringify(commercePack.subjects[0].topics[0]),
+  ['installed:topic:sl-al-commerce-si:'+commercePack.subjects[0].id+':'+JSON.stringify(commercePack.subjects[0].topics[0])]),true,
+  'a local topic marker must not mask a missing remote topic marker');
+assert.equal(checkBaselineIntent('installed:subject:sl-al-commerce-si:'+commercePack.subjects[0].id,[],
+  ['installed:pack:sl-al-commerce-si']),false,
+  'a remote full-pack marker covers a narrower baseline subject marker');
+assert.equal(checkBaselineIntent('installed:topic:sl-al-commerce-si:'+commercePack.subjects[0].id+':'+JSON.stringify(commercePack.subjects[0].topics[0]),[],
+  ['installed:subject:sl-al-commerce-si:'+commercePack.subjects[0].id]),false,
+  'a remote subject marker covers a narrower baseline topic marker');
+
+
 assert.ok(source.includes("const normalizedBase=savedBase?normalizeWorkspacePayload({...savedBase,schema:4}):null;"),
   'a last-verified workspace base is already normalized and must not receive a second legacy normalization pass that creates false concurrent-edit conflicts');
 

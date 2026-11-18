@@ -618,12 +618,15 @@ function hasMissingBaselineCurriculumIntent(userId,localPayload,remotePayload){
  if(!baseState||!baseState.settings)return false;
  const markers=value=>new Set(Array.isArray(value?.settings?.installedCurricula)?value.settings.installedCurricula:[]);
  const tombstones=value=>new Set(Array.isArray(value?.settings?.curriculumTombstones)?value.settings.curriculumTombstones:[]);
- const baseline=markers(baseState),current=new Set([...markers(localPayload?.state),...markers(remotePayload?.state)]);
+ const baseline=markers(baseState),remote=markers(remotePayload?.state);
  const deleted=new Set([...tombstones(localPayload?.state),...tombstones(remotePayload?.state)]);
  const packs=Array.isArray(window.NexusCurriculumPacks)?window.NexusCurriculumPacks:[];
  const findPack=packId=>packs.find(item=>item&&String(item.id)===packId&&Array.isArray(item.subjects))||null;
  for(const marker of baseline){
-  if(!marker.startsWith('installed:')||current.has(marker))continue;
+  // The cloud snapshot is the object being checked for lost install intent. A
+  // matching local marker must not mask its absence remotely: reconciliation may
+  // otherwise acknowledge a newer, incomplete snapshot over the verified base.
+  if(!marker.startsWith('installed:')||remote.has(marker))continue;
   const token=marker.slice('installed:'.length),parts=token.split(':');
   const scope=parts[0],packId=parts[1];
   if(!packId||deleted.has('deleted:pack:'+packId))continue;
@@ -633,18 +636,19 @@ function hasMissingBaselineCurriculumIntent(userId,localPayload,remotePayload){
   // repair; leave the baseline marker untouched for a future catalogue migration.
   if(!pack)continue;
   if(scope==='pack'){
-   // A full-pack marker is intentionally replaced with per-subject markers
-   // when a subject is deleted. Only reconcile if a shipped, unaffected subject's
-   // install intent has also disappeared.
+   // A full-pack marker may be represented by per-subject markers after a subject
+   // deletion. Treat remote coverage as complete only when every shipped, unaffected
+   // subject is represented there; markers retained locally do not prove cloud health.
    if(pack.subjects.some(subject=>subject&&
       !deleted.has('deleted:subject:'+packId+':'+subject.id)&&
-      !current.has('installed:subject:'+packId+':'+subject.id)))return true;
+      !remote.has('installed:subject:'+packId+':'+subject.id)))return true;
    continue;
   }
   if(scope==='subject'){
    const subjectId=parts[2];
    const subject=pack.subjects.find(item=>item&&String(item.id)===String(subjectId));
-   if(subject&&!deleted.has('deleted:subject:'+packId+':'+subjectId))return true;
+   if(subject&&!deleted.has('deleted:subject:'+packId+':'+subjectId)&&
+      !remote.has('installed:pack:'+packId))return true;
    continue;
   }
   if(scope==='topic'){
@@ -653,7 +657,9 @@ function hasMissingBaselineCurriculumIntent(userId,localPayload,remotePayload){
    const knownTopic=!!(subject&&Array.isArray(subject.topics)&&
     subject.topics.some(name=>JSON.stringify(String(name))===nameToken));
    if(knownTopic&&!deleted.has('deleted:subject:'+packId+':'+subjectId)&&
-      !deleted.has('deleted:topic:'+packId+':'+subjectId+':'+nameToken))return true;
+      !deleted.has('deleted:topic:'+packId+':'+subjectId+':'+nameToken)&&
+      !remote.has('installed:pack:'+packId)&&
+      !remote.has('installed:subject:'+packId+':'+subjectId))return true;
   }
  }
  return false;
