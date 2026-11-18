@@ -315,6 +315,67 @@ function harness(options={}){
   assert.ok(applied.some(item=>item.uiApplied===1),'the optional in-memory workspace callback must run after durable application');
 }
 {
+  const events=[];
+  let activeOwner='account-A';
+  const localPayload={state:{streams:[],subjects:[],topics:[{id:'topic-to-delete',name:'Old topic'}],history:[],exams:[]},
+    featureState:{journal:[],papers:[],goals:[],studyLogs:[]}};
+  let cursor={ownerId:'account-A',generation:'generation-A',workspaceRevision:1,publishRevision:0,
+    acknowledgedSequence:0,remoteHeadRevision:0,snapshotUpdatedAt:'snapshot-stamp',requiresPull:false};
+  const storage={
+    async readWorkspaceEntityDeltaCursor(){
+      return {ok:true,exists:true,cursor:{...cursor},generation:cursor.generation,workspaceRevision:cursor.workspaceRevision};
+    },
+    async initializeWorkspaceEntityDeltaCursor(){throw new Error('the deletion fixture has an existing verified cursor');},
+    async readWorkspaceEntityOutboxGroups(owner,afterSequence){
+      events.push('read-local-outbox');
+      return {ownerId:owner,generation:cursor.generation,workspaceRevision:cursor.workspaceRevision,
+        groups:[],throughSequence:afterSequence,hasMore:false,snapshotRequired:false};
+    },
+    async applyWorkspaceEntityDeltaGroup(owner,group,expected,head){
+      events.push('apply-remote-delete');
+      assert.equal(owner,'account-A');
+      assert.equal(group.changes[0].operation,'delete');
+      cursor={...cursor,publishRevision:group.revision,remoteHeadRevision:head,requiresPull:false};
+      return {ok:true,cursor:{...cursor},workspace:{ownerId:owner,
+        state:{...localPayload.state,topics:[]},featureState:localPayload.featureState}};
+    }
+  };
+  const client={
+    auth:{async getUser(){return {data:{user:{id:activeOwner}},error:null};}},
+    async rpc(name,args){
+      events.push(name);
+      if(name==='nexus_get_entity_sync_state')return {data:{mode:'delta',protocol_version:1,
+        head_revision:1,snapshot_revision:0,compacted_through_revision:0,snapshot_updated_at:'snapshot-stamp'},error:null};
+      if(name==='nexus_read_entity_operations')return {data:{mode:'delta',snapshot_required:false,
+        head_revision:1,snapshot_revision:0,compacted_through_revision:0,next_revision:1,bytes:100,
+        groups:[{revision:1,operation_id:'delete-topic-operation',changes:[
+          {ordinal:0,collection:'topics',id:'topic-to-delete',operation:'delete',position:null,value:null}
+        ]}]},error:null};
+      return {data:null,error:{code:'unexpected_rpc'}};
+    }
+  };
+  const pending={status:'pending',ownerUserId:'account-A',baseServerVersion:'snapshot-stamp',payload:localPayload};
+  const api=factory({enabled:true,client,storage,
+    getActiveOwner:()=>activeOwner,getLocalOwner:()=>activeOwner,
+    getLocalBase:async()=>({serverVersion:'snapshot-stamp',...payload}),
+    getLocalWorkspace:async()=>localPayload,getPendingSnapshot:async()=>pending,
+    acknowledgePendingSnapshot:async(owner,item,version)=>{
+      events.push('acknowledge-shadow');
+      assert.equal(owner,'account-A');assert.equal(item.operationId,undefined);
+      assert.equal(version,'snapshot-stamp');return true;
+    },
+    sameWorkspace:async(a,b)=>JSON.stringify(a.state)===JSON.stringify(b.state)&&
+      JSON.stringify(a.featureState)===JSON.stringify(b.featureState),
+    applyWorkspace:async workspace=>events.push('render-deleted-workspace-'+workspace.state.topics.length)
+  });
+  const result=await api.applyRemotePage('account-A');
+  assert.equal(result.ok,true,'a verified shadow snapshot with no pending Delta outbox must not force a false conflict recovery');
+  assert.equal(result.appliedCount,1,'the remote tombstone must be applied as a normal Delta group');
+  assert.deepEqual(events.slice(0,3),['nexus_get_entity_sync_state','read-local-outbox','acknowledge-shadow'],
+    'the exact compatibility shadow must be acknowledged before applying the remote delete');
+  assert.ok(events.includes('render-deleted-workspace-0'),'the deleted workspace must be applied to the live app view');
+}
+{
   let activeOwner='account-A',readCalled=false;
   const client={auth:{async getUser(){return {data:{user:{id:activeOwner}},error:null};}},
     async rpc(name){if(name==='nexus_get_entity_sync_state')return {data:{mode:'snapshot'},error:null};readCalled=true;return {data:null,error:null};}};
