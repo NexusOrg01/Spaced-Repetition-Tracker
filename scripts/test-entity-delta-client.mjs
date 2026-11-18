@@ -30,7 +30,12 @@ function harness(options={}){
     compacted_through_revision:0,snapshot_updated_at:'snapshot-stamp',...(options.state||{})};
   const groups=(options.groups||[makeGroup('op-one',11,[putChange('topics','topic-one')])]).map(group=>({...group,changes:group.changes.map(change=>({...change}))}));
   let cursor=options.initialCursor?{...options.initialCursor}:null,ambiguousOnce=!!options.ambiguousOnce,changeOwnerOnPublish=!!options.changeOwnerOnPublish;
-  const receipts=new Map(),calls=[],acknowledgements=[];
+  let pendingCompatibilitySnapshot=options.pendingSnapshot?{
+    ownerUserId:'account-A',operationId:'compatibility-op',
+    baseServerVersion:options.pendingSnapshotBase===undefined?'snapshot-stamp':options.pendingSnapshotBase,
+    status:'pending',localSequence:10
+  }:null;
+  const receipts=new Map(),calls=[],acknowledgements=[],queueAcknowledgements=[];
   const storage={
     async readWorkspaceEntityDeltaCursor(){
       return cursor?{ok:true,exists:true,cursor:{...cursor},generation:cursor.generation,workspaceRevision:cursor.workspaceRevision}:
@@ -105,12 +110,22 @@ function harness(options={}){
     enabled:options.enabled!==false,client,storage,
     getActiveOwner:()=>activeOwner,getLocalOwner:()=>localOwner,
     getLocalBase:async()=>base,getLocalWorkspace:async()=>payload,
-    getPendingSnapshot:async()=>options.pendingSnapshot?{status:'pending'}:null,
+    getPendingSnapshot:async()=>pendingCompatibilitySnapshot?{...pendingCompatibilitySnapshot}:null,
+    acknowledgePendingSnapshot:async(owner,pending,stamp)=>{
+      queueAcknowledgements.push({owner,operationId:pending.operationId,stamp});
+      if(pendingCompatibilitySnapshot&&owner===pendingCompatibilitySnapshot.ownerUserId&&
+         pending.operationId===pendingCompatibilitySnapshot.operationId){
+        pendingCompatibilitySnapshot=null;
+        return {acknowledged:true,rebased:false};
+      }
+      return {acknowledged:false,rebased:false};
+    },
     sameWorkspace:async(a,b)=>JSON.stringify(a.state)===JSON.stringify(b.state)&&
       JSON.stringify(a.featureState)===JSON.stringify(b.featureState),
     ...overrides
   });
   return {state,groups,cursor:()=>cursor,client:clientFactory(),calls,acknowledgements,
+    queueAcknowledgements,pendingCompatibilitySnapshot:()=>pendingCompatibilitySnapshot,
     setActiveOwner:value=>{activeOwner=value;},setLocalOwner:value=>{localOwner=value;},
     receipts};
 }
@@ -129,9 +144,34 @@ function harness(options={}){
 }
 {
   const h=harness({pendingSnapshot:true});
+  const result=await h.client.applyRemotePage('account-A');
+  assert.equal(result.ok,true,
+    'a compatibility queue based on the exact verified snapshot baseline must not block remote pull');
+  assert.ok(h.pendingCompatibilitySnapshot(),
+    'the compatibility queue remains present until local Delta publication is verified');
+}
+{
+  const h=harness({pendingSnapshot:true});
   const result=await h.client.publishPending('account-A');
-  assert.equal(result.snapshotRequired,true);
-  assert.equal(h.cursor(),null,'a pending compatibility snapshot must block delta publication');
+  assert.equal(result.ok,true,
+    'a current-baseline compatibility queue must coexist with successful Delta publication');
+  assert.equal(result.publishedCount,1);
+  assert.equal(h.pendingCompatibilitySnapshot(),null,
+    'the compatibility snapshot is acknowledged only after its entity outbox has a verified receipt');
+  assert.deepEqual(h.queueAcknowledgements,[{
+    owner:'account-A',operationId:'compatibility-op',stamp:'snapshot-stamp'
+  }]);
+}
+{
+  const h=harness({pendingSnapshot:true,pendingSnapshotBase:'older-snapshot-stamp'});
+  const result=await h.client.publishPending('account-A');
+  assert.equal(result.snapshotRequired,true,
+    'a compatibility queue based on an obsolete snapshot must still require recovery');
+  assert.equal(result.reason,'compatibility_snapshot_still_pending');
+  assert.equal(h.cursor(),null,'a stale queue must not initialize or publish a Delta cursor');
+  assert.equal(h.calls.some(call=>call.name==='nexus_publish_entity_operation'),false);
+  assert.equal(h.queueAcknowledgements.length,0,
+    'an obsolete compatibility queue must never be acknowledged as a current Delta save');
 }
 {
   const h=harness({groups:[
