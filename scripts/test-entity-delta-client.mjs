@@ -1088,7 +1088,7 @@ function makeStagingRuntimeHarness({
     },
     async readWorkspaceEntityDeltaCursor(owner){
       calls.cursorOwner=owner;
-      return {ok:true,cursor};
+      return {ok:true,generation:cursor.generation,cursor};
     },
     async waitForWorkspaceEntitySync(owner){
       calls.projectionOwners.push(owner);
