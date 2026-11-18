@@ -907,7 +907,8 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
  if(!queue||!storage||!delta||typeof delta.createClient!=='function'||
     !chunkStorage||typeof chunkStorage.writeDeltaSnapshot!=='function'||
     typeof queue.commitVerifiedEntityDeltaSnapshot!=='function'||
-    typeof storage.waitForWorkspaceEntitySync!=='function'){
+    typeof storage.waitForWorkspaceEntitySync!=='function'||
+    typeof storage.syncWorkspaceEntities!=='function'){
   throw new Error('Staging entity-delta recovery dependencies are incomplete. The existing local snapshot and outbox were left unchanged.');
  }
  // A cloud restore/account attach can commit the compatibility snapshot while
@@ -937,7 +938,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
        typeof window.NexusRebuildEntityProjection!=='function'){
      throw new Error('The active owner-bound local projection rebuild is unavailable.');
     }
-    const rebuilt=await window.NexusRebuildEntityProjection();
+    const rebuilt=await storage.syncWorkspaceEntities(ownerId,null,{replace:true});
     await assertActiveUser(ownerId);
     if(localStorage.getItem(OWNER_KEY)!==ownerId||!rebuilt||
        rebuilt.skipped===true||rebuilt.ok===false){
