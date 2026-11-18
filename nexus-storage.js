@@ -784,7 +784,7 @@
       throw new Error('A verified active entity generation and recovery intent are required before staging snapshot recovery.');
     }
     const counts={},positionBounds={},batch=[];
-    let rowCount=0,failureStage='stage-manifest';
+    let rowCount=0,failureStage='stage-manifest',publicationFailureReason=null;
     try{
     await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
       tx.objectStore('migrationMeta').put({
@@ -838,7 +838,7 @@
         throw error;
       }
       failureStage='publish-manifest';
-      let publicationFailureReason=null;
+      publicationFailureReason=null;
       await transaction(['migrationMeta',WORKSPACES],'readwrite',(tx,set)=>{
         const store=tx.objectStore('migrationMeta'),workspaces=tx.objectStore(WORKSPACES);
         const manifestRequest=store.get(manifestKey);
