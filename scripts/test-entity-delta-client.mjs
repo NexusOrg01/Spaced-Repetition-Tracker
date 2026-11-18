@@ -1054,7 +1054,7 @@ function makeStagingRuntimeHarness({
   projectionRebuildResult={ownerId:'account-A',mode:'snapshot-backfill'},
   projectionRebuildError=null
 }={}){
-  const calls={createClient:0,synchronize:null,recovery:null,cursorOwner:null,
+  const calls={createClient:0,synchronize:null,synchronizeCount:0,recovery:null,cursorOwner:null,
     localBaseOwner:null,pendingOwner:null,chunkWrite:null,localCommit:null,
     stateRead:null,projectionOwners:[],projectionRebuild:0,projectionDiagnostics:[],
     renderCount:0,hubRenderCount:0,featureUpdate:null,fsrsSettings:null};
@@ -1072,7 +1072,9 @@ function makeStagingRuntimeHarness({
   const localStorage={getItem:key=>key==='owner-key'?localOwner:null};
   const payload={state:{streams:[],subjects:[],topics:[],history:[],exams:[]},
     featureState:{journal:[],papers:[],goals:[],studyLogs:[]}};
-  const cursor={snapshotUpdatedAt:'verified-snapshot-stamp',snapshotRevision:3};
+  const cursor={ownerId:'account-A',generation:'projection-generation-a',
+    snapshotUpdatedAt:'verified-snapshot-stamp',publishRevision:3,
+    remoteHeadRevision:3,acknowledgedSequence:0,requiresPull:false};
   const queue={
     getBase(_local,owner){calls.localBaseOwner=owner;return {baseServerVersion:'base-stamp'};},
     getPending(_local,owner){calls.pendingOwner=owner;return {pending:true};},
@@ -1114,10 +1116,14 @@ function makeStagingRuntimeHarness({
       createClient(options){
         calls.createClient++;
         calls.clientOptions=options;
+        let synchronizeIndex=0;
         return {
           async synchronize(owner,syncOptions){
+            calls.synchronizeCount++;
             calls.synchronize={owner,options:syncOptions};
-            return syncResult;
+            const result=Array.isArray(syncResult)
+              ?syncResult[Math.min(synchronizeIndex++,syncResult.length-1)]:syncResult;
+            return result;
           },
           async publishConflictRecovery(owner,recoveryOptions){
             calls.recovery={owner,options:recoveryOptions};
@@ -1470,21 +1476,62 @@ const pendingRecovery=makeStagingRuntimeHarness({
 const resumedRecovery=await pendingRecovery.run('account-A',stagingSignal);
 assert.equal(resumedRecovery.recovered,true,
   'an existing journal must resume publication before any ordinary delta sync attempt');
-assert.equal(pendingRecovery.calls.synchronize,null);
+assert.equal(pendingRecovery.calls.synchronizeCount,1,
+  'a resumed snapshot recovery must pass one ordinary Delta sync verification before being marked complete');
+assert.equal(pendingRecovery.calls.synchronize.owner,'account-A');
 assert.equal(pendingRecovery.calls.recovery.owner,'account-A');
 assert.equal(pendingRecovery.calls.recovery.options.maxGroups,100);
 assert.equal(pendingRecovery.calls.recovery.options.maxBytes,8*1048576);
 
 const overlapRecovery=makeStagingRuntimeHarness({
   gate:true,
-  syncResult:{ok:false,conflict:true,requiresSnapshotReconciliation:true,
-    reason:'local_and_remote_changes_overlap'}
+  syncResult:[
+    {ok:false,conflict:true,requiresSnapshotReconciliation:true,
+      reason:'local_and_remote_changes_overlap',appliedCount:0,publishedCount:0,
+      acknowledgedCount:0,rounds:1},
+    {ok:true,appliedCount:0,publishedCount:0,acknowledgedCount:0,rounds:1}
+  ]
 });
 const overlapResult=await overlapRecovery.run('account-A',stagingSignal);
 assert.equal(overlapResult.recovered,true,
   'an overlap requiring three-way reconciliation must use the verified recovery publication path');
+assert.equal(overlapResult.recoveryTriggerReason,'local_and_remote_changes_overlap');
+assert.equal(overlapResult.appliedCount,0);
+assert.equal(overlapResult.publishedCount,0);
+assert.equal(overlapResult.acknowledgedCount,0);
+assert.equal(overlapResult.rounds,1,
+  'the successful result must contain the post-recovery ordinary sync counters, not null recovery fields');
+assert.equal(overlapRecovery.calls.synchronizeCount,2,
+  'the coordinator must verify the recovered workspace with one ordinary sync pass');
 assert.equal(overlapRecovery.calls.synchronize.owner,'account-A');
 assert.equal(overlapRecovery.calls.recovery.owner,'account-A');
+const overlapRecoveryStart=overlapRecovery.calls.projectionDiagnostics.find(
+  event=>event.stage==='snapshot-recovery-start');
+assert.equal(overlapRecoveryStart.details.triggerReason,'local_and_remote_changes_overlap');
+assert.equal(overlapRecoveryStart.details.triggerConflict,true);
+const overlapVerification=overlapRecovery.calls.projectionDiagnostics.find(
+  event=>event.stage==='delta-recovery-verification');
+assert.equal(overlapVerification.details.ok,true);
+assert.equal(overlapVerification.details.cursorPublishRevision,3);
+assert.equal(overlapVerification.details.cursorRemoteHeadRevision,3);
+
+const failedRecoveryVerification=makeStagingRuntimeHarness({
+  gate:true,
+  syncResult:[
+    {ok:false,snapshotRequired:true,reason:'local_snapshot_baseline_mismatch'},
+    {ok:false,snapshotRequired:true,reason:'local_snapshot_baseline_mismatch'}
+  ]
+});
+const failedRecoveryVerificationResult=await failedRecoveryVerification.run('account-A',stagingSignal);
+assert.equal(failedRecoveryVerificationResult.ok,false,
+  'a published recovery must not be reported as synced when the normal Delta path still rejects its baseline');
+assert.equal(failedRecoveryVerificationResult.reason,'post_recovery_delta_sync_failed');
+assert.equal(failedRecoveryVerificationResult.verificationReason,'local_snapshot_baseline_mismatch');
+assert.equal(failedRecoveryVerification.calls.synchronizeCount,2);
+const failedVerificationEvent=failedRecoveryVerification.calls.projectionDiagnostics.find(
+  event=>event.stage==='delta-recovery-verification');
+assert.equal(failedVerificationEvent.details.ok,false);
+assert.equal(failedVerificationEvent.details.verificationReason,'local_snapshot_baseline_mismatch');
 
 const snapshotOnlyServer=makeStagingRuntimeHarness({
   gate:true,syncResult:{ok:true,skipped:true,mode:'snapshot'}
