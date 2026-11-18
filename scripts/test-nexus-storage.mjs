@@ -747,19 +747,30 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     {key:'recall.study.features.v1',value:JSON.stringify(nextFeatures)},
     {key:ownerEntityRevisionKey,value:'incremental-fixture'}
   ]);
-  const incremental=await loaded.api.syncWorkspaceEntities('entity-owner-a',[
+  let releaseProjectionSync;
+  const projectionSyncGate=new Promise(resolve=>{releaseProjectionSync=resolve;});
+  const incrementalPromise=loaded.api.syncWorkspaceEntities('entity-owner-a',[
     {collection:'topics',id:appendedTopic.id,operation:'put',position:null,value:appendedTopic},
     {collection:'history',id:prependedReview.id,operation:'put',position:'prepend',value:prependedReview},
     {collection:'papers',id:appendedPaper.id,operation:'put',position:null,value:appendedPaper}
   ],{
     trackerRoot:{schema:3,settings:nextTracker.settings},
     featureRoot:{version:1,settings:nextFeatures.settings,selectedTopicIds:nextFeatures.selectedTopicIds},
-    trackerSnapshotJson:JSON.stringify(nextTracker),featureSnapshotJson:JSON.stringify(nextFeatures)
+    trackerSnapshotJson:JSON.stringify(nextTracker),featureSnapshotJson:JSON.stringify(nextFeatures),
+    durablePromise:projectionSyncGate
   });
+  const projectionBarrierPromise=loaded.api.waitForWorkspaceEntitySync('entity-owner-a');
+  let projectionBarrierSettled=false;
+  projectionBarrierPromise.then(()=>{projectionBarrierSettled=true;});
+  await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(projectionBarrierSettled,false,
+    'the Delta projection barrier must wait while an IndexedDB-backed entity update is still queued');
+  releaseProjectionSync();
+  const incremental=await incrementalPromise;
   assert.equal(incremental.mode,'incremental',
     'a ready entity generation must accept a delta rather than replacing the full generation');
   assert.equal(incremental.applied,5,'a delta must include changed records and both metadata roots');
-  const projectionBarrier=await loaded.api.waitForWorkspaceEntitySync('entity-owner-a');
+  const projectionBarrier=await projectionBarrierPromise;
   assert.equal(projectionBarrier.ok,true,
     'the Delta coordinator must be able to await a ready, fully indexed local entity generation');
   assert.equal(projectionBarrier.workspaceRevision,projectionBarrier.projectionWorkspaceRevision,
