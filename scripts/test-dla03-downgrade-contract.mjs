@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const read = path => readFile(new URL('../' + path, import.meta.url), 'utf8');
-const [migration, client, cloud, prepare, workflow, lifecycle, docs] = await Promise.all([
+const [migration, finalDowngrade, client, cloud, prepare, workflow, lifecycle, docs] = await Promise.all([
   read('supabase/pilot-migrations/20261117131900_add_entity_delta_snapshot_downgrade.sql'),
+  read('supabase/pilot-migrations/20261118094046_revoke_delta_pilot_eligibility_on_downgrade.sql'),
   read('entity-delta-sync.js'),
   read('cloud-sync.js'),
   read('scripts/prepare-phase34-local-supabase.mjs'),
@@ -29,9 +30,9 @@ assert.ok(
 assert.match(migration, /v_chunk_count > 900/);
 assert.match(migration, /result_snapshot_updated_at/);
 assert.match(migration, /already_applied/);
-const snapshotNoopBranch = migration.slice(
-  migration.indexOf("IF v_state.mode = 'snapshot' THEN"),
-  migration.indexOf("\n  IF v_state.mode <> 'delta' THEN")
+const snapshotNoopBranch = finalDowngrade.slice(
+  finalDowngrade.indexOf("IF v_state.mode = 'snapshot' THEN"),
+  finalDowngrade.indexOf("\n  IF v_state.mode <> 'delta' THEN")
 );
 assert.match(snapshotNoopBranch, /v_state.head_revision <> p_expected_head_revision/);
 assert.match(snapshotNoopBranch, /v_state.snapshot_revision <> p_expected_snapshot_revision/);
@@ -39,6 +40,9 @@ assert.match(snapshotNoopBranch, /v_state.compacted_through_revision <> p_expect
 assert.match(snapshotNoopBranch, /v_updated_at IS DISTINCT FROM p_expected_snapshot_updated_at/);
 assert.match(snapshotNoopBranch, /public\.nexus_workspace_operations/);
 assert.match(snapshotNoopBranch, /public\.nexus_workspace_operation_receipts/);
+assert.match(finalDowngrade, /PERFORM 1[\s\S]*nexus_private\.entity_delta_pilot_allowlist[\s\S]*FOR UPDATE/);
+assert.equal((finalDowngrade.match(/SET enabled = false/g) || []).length, 3,
+  'a verified downgrade and idempotent replays must revoke this owner’s allowlist eligibility');
 
 assert.match(client, /async function downgradeToSnapshot\(/);
 const clientDowngrade = client.slice(client.indexOf('async function downgradeToSnapshot'),
