@@ -99,9 +99,20 @@ assert.deepEqual(restoredBase.state,restoreRemote.payload.state,
 assert.deepEqual(restoredBase.featureState,restoreRemote.payload.featureState);
 assert.equal(rememberBaseCalls,1);
 assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-A',restorePending,restoreRemote),false,
-  'repeated initialization must not replace an already saved merge base');
+  'repeated initialization must not replace a baseline already aligned to the verified remote revision');
 assert.equal(rememberBaseCalls,1,
-  'an existing baseline must never be overwritten by this recovery helper');
+  'an already aligned baseline must not be rewritten');
+restoredBase={owner:'owner-A',state:{streams:[{id:'stale-local-base'}]},
+ featureState:{},serverVersion:'older-cloud-stamp'};
+assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-A',restorePending,restoreRemote),true,
+  'a stale local merge base must be repaired when the pending queue and verified remote snapshot prove the exact baseline revision');
+assert.deepEqual(restoredBase.state,restoreRemote.payload.state,
+  'a repaired stale base must use the verified remote snapshot');
+assert.equal(restoredBase.serverVersion,restoreRemote.updated_at);
+assert.equal(rememberBaseCalls,2);
+assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-A',restorePending,restoreRemote),false,
+  'the newly repaired base must remain stable on repeated initialization');
+assert.equal(rememberBaseCalls,2);
 restoredBase=null;
 assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-A',
  {...restorePending,baseServerVersion:'older-cloud-stamp'},restoreRemote),false,
