@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 
 const read = path => readFile(new URL('../' + path, import.meta.url), 'utf8');
 const [migration, finalDowngrade, client, cloud, prepare, workflow, lifecycle, docs] = await Promise.all([
-  read('supabase/pilot-migrations/20261117131900_add_entity_delta_snapshot_downgrade.sql'),
+  read('supabase/pilot-migrations/20261117143610_add_entity_delta_snapshot_downgrade.sql'),
   read('supabase/pilot-migrations/20261118094046_revoke_delta_pilot_eligibility_on_downgrade.sql'),
   read('entity-delta-sync.js'),
   read('cloud-sync.js'),

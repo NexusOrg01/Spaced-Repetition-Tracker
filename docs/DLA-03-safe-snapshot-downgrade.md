@@ -61,3 +61,6 @@ A stale/offline device's next Delta read returns `mode = snapshot` with no Delta
 The migration is in `supabase/pilot-migrations/`, not `supabase/migrations/` and not OPS-01's exact production schema-install allowlist. The local CI harness applies it only to a disposable local Supabase project. This PR does not apply it to `nexus-sync-staging` or production.
 
 DLA-03 completion does not complete DLA-04. The hosted QA identity mismatch recorded in the task tracker must be reconciled before the hosted pilot. Production canary, production migration, and live Delta activation remain separate, explicitly approved gates.
+
+
+Migration ledger alignment: the applied isolated-staging migration version is `20261117143610`; its exact SQL source is `20261117143610_add_entity_delta_snapshot_downgrade.sql`. This filename keeps future Supabase migration checks from treating the already-applied downgrade SQL as pending.
