@@ -1047,7 +1047,7 @@ const stagingFunctionSource=cloudSyncSource.slice(stagingFunctionStart,stagingFu
 function makeStagingRuntimeHarness({
   gate=false,localOrigin=true,stagingUrl=stagingSupabaseUrl,recoveryIntent=null,
   syncResult={ok:true,publishedCount:1},recoveryResult={ok:true,recovered:true},
-  missingChunkStorage=false,hostedQaGate=false,hostedQaOrigin='',
+  missingChunkStorage=false,hostedQaGate=false,hostedQaOrigin='',hostedQaBranchOrigin='',
   browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/dla04-entity-projection-guard',
   remoteState={mode:'delta',protocol_version:1},remoteStateError=null,
   projectionResults=[{ok:true,workspaceRevision:4,projectionWorkspaceRevision:4}],
@@ -1106,6 +1106,7 @@ function makeStagingRuntimeHarness({
     NEXUS_ENTITY_DELTA_SYNC_STAGING:gate,
     NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA:hostedQaGate,
     NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN:hostedQaOrigin,
+    NEXUS_ENTITY_DELTA_SYNC_QA_BRANCH_ORIGIN:hostedQaBranchOrigin,
     NEXUS_ENTITY_DELTA_SYNC_QA_REF:hostedQaRef,
     NexusOfflineSyncQueue:queue,
     NexusStorage:storage,
@@ -1215,6 +1216,27 @@ assert.equal(activeHostedQa.calls.stateRead.filterValue,'account-A');
 assert.equal(activeHostedQa.calls.stateRead.signal,stagingSignal,
   'the remote state preflight must retain the caller abort signal');
 assert.equal(activeHostedQa.calls.createClient,1);
+
+const hostedQaBranchOrigin='https://nexus-dla-04-branch.vercel.app';
+const activeHostedQaBranchAlias=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
+  hostedQaGate:true,hostedQaOrigin,hostedQaBranchOrigin,
+  browserOrigin:hostedQaBranchOrigin,
+  remoteState:{mode:'delta',protocol_version:1}
+});
+const branchAliasResult=await activeHostedQaBranchAlias.run('account-A',stagingSignal);
+assert.equal(branchAliasResult.ok,true,
+  'the exact build-validated Vercel branch alias must enter the same hosted QA gate');
+assert.equal(activeHostedQaBranchAlias.calls.createClient,1);
+
+const unrelatedHostedQaAlias=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
+  hostedQaGate:true,hostedQaOrigin,hostedQaBranchOrigin,
+  browserOrigin:'https://unrelated-preview.vercel.app'
+});
+assert.equal((await unrelatedHostedQaAlias.run('account-A',stagingSignal)).skipped,true,
+  'a different preview origin must remain blocked even when both approved exact origins are embedded');
+assert.equal(unrelatedHostedQaAlias.calls.createClient,0);
 
 const hostedSnapshotMode=makeStagingRuntimeHarness({
   gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
