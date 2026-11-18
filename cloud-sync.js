@@ -83,7 +83,7 @@ function sanitizeSyncDiagEvent(event){
   projectionRebuildMode:['snapshot-backfill','incremental','unchanged','skipped','other'],
   projectionRebuildErrorCategory:['conflict','timeout','queue-limit','queue-unavailable','other'],
   projectionRebuildFailureStage:['preflight','stage-manifest','generate-rows','write-row-batch','publish-manifest','verify-publication','read-compatibility-workspace','sync-workspace-entities','post-rebuild-readiness','other'],
-  projectionRebuildFailureReason:['missing-stable-record-id','duplicate-stable-record-id','indexeddb-write-failed','manifest-stage-write-failed','manifest-publish-failed','manifest-verification-failed','snapshot-unavailable','workspace-revision-invalid','entity-recovery-pending','owner-unavailable','rebuild-not-completed','projection-not-current','other']
+  projectionRebuildFailureReason:['missing-stable-record-id','duplicate-stable-record-id','indexeddb-write-failed','manifest-stage-write-failed','manifest-publish-failed','manifest-verification-failed','snapshot-unavailable','workspace-revision-invalid','entity-recovery-pending','owner-unavailable','rebuild-not-completed','projection-not-current','source-snapshot-changed','other']
  };
  for(const key of Object.keys(enums)){
   if(typeof event[key]!=='string')continue;
@@ -1019,7 +1019,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
     const allowedFailureReasons=new Set(['missing-stable-record-id','duplicate-stable-record-id',
      'indexeddb-write-failed','manifest-stage-write-failed','manifest-publish-failed',
      'manifest-verification-failed','snapshot-unavailable','workspace-revision-invalid',
-     'entity-recovery-pending','owner-unavailable','rebuild-not-completed','projection-not-current']);
+     'entity-recovery-pending','owner-unavailable','rebuild-not-completed','projection-not-current','source-snapshot-changed']);
     projectionRebuildFailureStage=allowedFailureStages.has(error&&error.nexusEntityProjectionFailureStage)
      ?error.nexusEntityProjectionFailureStage:'other';
     projectionRebuildFailureReason=allowedFailureReasons.has(error&&error.nexusEntityProjectionFailureReason)
