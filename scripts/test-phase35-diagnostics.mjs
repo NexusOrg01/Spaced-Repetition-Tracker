@@ -77,6 +77,15 @@ assert.equal(safeSkippedDeltaEvent.reason,'staging_delta_gate_closed',
 assert.equal(Object.prototype.hasOwnProperty.call(safeSkippedDeltaEvent,'errorMessage'),false,
  'skipped-Delta diagnostics must still exclude raw exception text');
 
+vm.runInContext('result=sanitizeSyncDiagEvent({at:"2026-11-18T14:30:00.000Z",stage:"entity-projection-rebuild",projectionRebuildAttempted:true,projectionRebuildOk:false,projectionRebuildFailureStage:"preflight",projectionRebuildFailureReason:"source-snapshot-changed",reason:"entity_projection_rebuild_failed",errorMessage:"PRIVATE"})',sanitizerSandbox,
+ {filename:'sync-diagnostic-projection-source-change-test.js'});
+const safeProjectionSourceChange=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.equal(safeProjectionSourceChange.projectionRebuildFailureStage,'preflight');
+assert.equal(safeProjectionSourceChange.projectionRebuildFailureReason,'source-snapshot-changed',
+ 'a workspace change during rebuild must remain distinguishable without exposing private snapshot data');
+assert.equal(Object.prototype.hasOwnProperty.call(safeProjectionSourceChange,'errorMessage'),false,
+ 'projection source-change diagnostics must never include raw errors');
+
 const recoveryTriggerEvent={
  at:'2026-11-18T08:37:24.000Z',stage:'snapshot-recovery-start',
  reason:'conflict-or-snapshot-required',triggerReason:'local_snapshot_baseline_mismatch',
