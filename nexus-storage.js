@@ -838,6 +838,7 @@
         throw error;
       }
       failureStage='publish-manifest';
+      let publicationFailureReason=null;
       await transaction(['migrationMeta',WORKSPACES],'readwrite',(tx,set)=>{
         const store=tx.objectStore('migrationMeta'),workspaces=tx.objectStore(WORKSPACES);
         const manifestRequest=store.get(manifestKey);
@@ -859,12 +860,14 @@
           // Validate the exact workspace row inside the same IndexedDB transaction
           // that publishes the new manifest. This closes the cross-tab race between
           // the last preflight read and manifest publication.
+          const sourceSnapshotChanged=hasSourceSnapshotGuard&&(
+            !snapshotRowIsCurrent||
+            cache.get(TRACKER_KEY)!==options.trackerSnapshotJson||
+            cache.get(FEATURE_KEY)!==options.featureSnapshotJson
+          );
+          if(sourceSnapshotChanged)publicationFailureReason='source-snapshot-changed';
           if(!enabled||committedOwnerId!==owner||
-             (hasSourceSnapshotGuard
-               ?(!snapshotRowIsCurrent||
-                 cache.get(TRACKER_KEY)!==options.trackerSnapshotJson||
-                 cache.get(FEATURE_KEY)!==options.featureSnapshotJson)
-               :revision!==sourceRevision)||
+             (hasSourceSnapshotGuard?sourceSnapshotChanged:revision!==sourceRevision)||
              !current||current.pendingGeneration!==generation){
             try{tx.abort();}catch(_){}
             return;
@@ -924,6 +927,9 @@
       return {ownerId:owner,generation,rowCount,counts,sourceRevision:revision,
         sourceWorkspaceRevision,prunedRows,prunedOutboxRows};
     }catch(error){
+      if(publicationFailureReason&&error&&typeof error==='object'){
+        error.nexusEntityProjectionFailureReason=publicationFailureReason;
+      }
       try{
         await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
           const store=tx.objectStore('migrationMeta'),request=store.get(manifestKey);
