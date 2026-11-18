@@ -624,8 +624,14 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     callback();
   },delay);
   await assert.rejects(loaded.api.migrateWorkspaceEntities('entity-owner-a',expandedState,afterChanges.featureState,
-    {expectedRevision:loaded.api.getStatus().revision}),/Synthetic IndexedDB quota\/transaction failure/,
-    'a failed later batch must leave the previous entity generation active');
+    {expectedRevision:loaded.api.getStatus().revision}),error=>{
+      assert.match(error.message,/Synthetic IndexedDB quota\/transaction failure/);
+      assert.equal(error.nexusEntityProjectionFailureStage,'write-row-batch',
+        'a later IndexedDB batch failure must identify the bounded row-write stage');
+      assert.equal(error.nexusEntityProjectionFailureReason,'indexeddb-write-failed',
+        'row-write failures must expose a safe category, not raw IndexedDB details');
+      return true;
+    },'a failed later batch must leave the previous entity generation active');
   loaded.context.window.setTimeout=originalScheduler;
   assert.ok(migrationYieldCount>=1,'the interrupted migration must yield after its first committed batch');
   assert.equal(readableGenerationDuringBuild.generation,afterChanges.generation,
@@ -668,8 +674,12 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     topics:resumedWorkspace.state.topics.concat([{...resumedWorkspace.state.topics[0]}])
   };
   await assert.rejects(loaded.api.migrateWorkspaceEntities('entity-owner-a',duplicateIdState,resumedWorkspace.featureState,
-    {expectedRevision:loaded.api.getStatus().revision}),/duplicate stable record ID/,
-    'entity migration must reject duplicate IDs rather than create records that later updates cannot address');
+    {expectedRevision:loaded.api.getStatus().revision}),error=>{
+      assert.match(error.message,/duplicate stable record ID/);
+      assert.equal(error.nexusEntityProjectionFailureReason,'duplicate-stable-record-id');
+      assert.equal(error.nexusEntityProjectionFailureStage,'generate-rows');
+      return true;
+    },'entity migration must reject duplicate IDs rather than create records that later updates cannot address');
   const afterDuplicateIdFailure=await loaded.api.readWorkspaceEntities('entity-owner-a');
   assert.equal(afterDuplicateIdFailure.generation,resumedMigration.generation,
     'a duplicate-ID migration must leave the previous complete generation active');
@@ -680,8 +690,12 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     topics:resumedWorkspace.state.topics.map((topic,index)=>index===0?{...topic,id:''}:topic)
   };
   await assert.rejects(loaded.api.migrateWorkspaceEntities('entity-owner-a',missingIdState,resumedWorkspace.featureState,
-    {expectedRevision:loaded.api.getStatus().revision}),/stable record ID/,
-    'entity migration must reject records without stable IDs');
+    {expectedRevision:loaded.api.getStatus().revision}),error=>{
+      assert.match(error.message,/stable record ID/);
+      assert.equal(error.nexusEntityProjectionFailureReason,'missing-stable-record-id');
+      assert.equal(error.nexusEntityProjectionFailureStage,'generate-rows');
+      return true;
+    },'entity migration must reject records without stable IDs');
   const afterMissingIdFailure=await loaded.api.readWorkspaceEntities('entity-owner-a');
   assert.equal(afterMissingIdFailure.generation,resumedMigration.generation,
     'a missing-ID migration must leave the previous complete generation active');
