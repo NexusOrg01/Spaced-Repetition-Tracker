@@ -1175,10 +1175,43 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   let result=await makeClient.synchronize(ownerId,{signal,maxRounds:20,maxGroups:20,maxBytes:1048576});
  if(result&&result.skipped&&result.mode==='snapshot')return {skipped:true,reason:'legacy_snapshot_server'};
  if(result&&result.ok===true){
-   const cursor=storage&&typeof storage.readWorkspaceEntityDeltaCursor==='function'
-    ?await storage.readWorkspaceEntityDeltaCursor(ownerId):null;
-   return {...result,cursor:cursor&&cursor.ok?cursor.cursor:null};
+  await assertActiveUser(ownerId);
+  if(localStorage.getItem(OWNER_KEY)!==ownerId){
+   return {ok:false,retryable:true,reason:'entity_projection_owner_unavailable'};
   }
+  const cursorResult=storage&&typeof storage.readWorkspaceEntityDeltaCursor==='function'
+   ?await storage.readWorkspaceEntityDeltaCursor(ownerId):null;
+  const cursor=cursorResult&&cursorResult.cursor||null;
+  if(!cursorResult||cursorResult.ok!==true||cursorResult.exists!==true||!cursor){
+   return {ok:false,retryable:true,snapshotRequired:true,
+    reason:cursorResult&&cursorResult.reason||'local_delta_cursor_unavailable'};
+  }
+  const cursorCurrent=cursor.ownerId===ownerId&&cursor.generation===cursorResult.generation&&
+   typeof cursor.snapshotUpdatedAt==='string'&&cursor.snapshotUpdatedAt.length>0&&
+   Number.isSafeInteger(Number(cursor.publishRevision))&&
+   Number.isSafeInteger(Number(cursor.acknowledgedSequence))&&
+   Number.isSafeInteger(Number(cursor.remoteHeadRevision))&&
+   Number(cursor.publishRevision)===Number(cursor.remoteHeadRevision)&&
+   cursor.requiresPull===false;
+  if(!cursorCurrent){
+   return {ok:false,retryable:true,snapshotRequired:true,
+    reason:'local_delta_cursor_generation_mismatch'};
+  }
+  const outbox=await storage.readWorkspaceEntityOutboxGroups(
+   ownerId,Number(cursor.acknowledgedSequence),1000,1048576);
+  await assertActiveUser(ownerId);
+  if(localStorage.getItem(OWNER_KEY)!==ownerId){
+   return {ok:false,retryable:true,reason:'entity_projection_owner_unavailable'};
+  }
+  if(!outbox||outbox.unavailable||outbox.snapshotRequired||
+     outbox.ownerId!==ownerId||outbox.generation!==cursor.generation||
+     Number(outbox.workspaceRevision)!==Number(cursor.workspaceRevision)||
+     !Array.isArray(outbox.groups)||outbox.groups.length||outbox.hasMore===true){
+   return {ok:false,retryable:true,snapshotRequired:!!(outbox&&outbox.snapshotRequired),
+    reason:outbox&&outbox.reason||'local_outbox_pending'};
+  }
+  return {...result,cursor};
+ }
  const needsRecovery=!!(result&&(result.conflict||result.snapshotRequired||
    result.requiresSnapshotReconciliation||
    result.reason==='compatibility_snapshot_still_pending'||
