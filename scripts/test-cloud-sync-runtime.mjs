@@ -63,6 +63,60 @@ assert.ok(!initializationSource.includes("localPayload=snapshot();const remote=a
   !initializationSource.includes('sameWorkspace(localPayload,latestLocalPayload)'),
   'account initialization must not deep-clone and compare the entire local workspace twice before any account decision');
 
+const restoreBaseStart=source.indexOf('function restoreMissingQueueBaseFromVerifiedRemote(');
+const restoreBaseEnd=source.indexOf('async function initializeSession(s){',restoreBaseStart);
+assert.ok(restoreBaseStart>=0&&restoreBaseEnd>restoreBaseStart,
+  'missing-queue-baseline recovery helper must be present before account initialization');
+let restoredBase=null,rememberBaseCalls=0;
+const restoreBaseSandbox={localStorage:{},result:null};
+vm.createContext(restoreBaseSandbox);
+const restoreBaseFunction=source.slice(restoreBaseStart,restoreBaseEnd);
+vm.runInContext(restoreBaseFunction+`
+globalThis.runRestoreBase=(queue,owner,pending,remote)=>
+ restoreMissingQueueBaseFromVerifiedRemote(queue,owner,pending,remote);
+`,restoreBaseSandbox,{filename:'verified-queue-baseline-recovery.js'});
+const restoreQueue={
+ getBase(){return restoredBase;},
+ rememberBase(_storage,owner,payload,serverVersion){
+  rememberBaseCalls++;
+  restoredBase={owner,state:payload.state,featureState:payload.featureState,serverVersion};
+ }
+};
+const restoreRemote={
+ updated_at:'2026-11-18T08:34:08.831801Z',
+ payload:{state:{streams:[{id:'verified-remote-stream'}]},featureState:{goals:[{id:'verified-remote-goal'}]}}
+};
+const restorePending={
+ ownerUserId:'owner-A',baseServerVersion:restoreRemote.updated_at,
+ payload:{state:{streams:[{id:'local-pending-stream'}]},featureState:{goals:[]}}
+};
+assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-A',restorePending,restoreRemote),true,
+  'a missing merge base must be restored when the queued snapshot names the exact currently verified remote revision');
+assert.equal(restoredBase.owner,'owner-A');
+assert.equal(restoredBase.serverVersion,restoreRemote.updated_at);
+assert.deepEqual(restoredBase.state,restoreRemote.payload.state,
+  'the restored merge base must come from the verified remote snapshot, not from pending local data');
+assert.deepEqual(restoredBase.featureState,restoreRemote.payload.featureState);
+assert.equal(rememberBaseCalls,1);
+assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-A',restorePending,restoreRemote),false,
+  'repeated initialization must not replace an already saved merge base');
+assert.equal(rememberBaseCalls,1,
+  'an existing baseline must never be overwritten by this recovery helper');
+restoredBase=null;
+assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-A',
+ {...restorePending,baseServerVersion:'older-cloud-stamp'},restoreRemote),false,
+ 'a queue based on a different remote revision must not be assigned the current cloud snapshot as its baseline');
+assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-B',restorePending,restoreRemote),false,
+ 'a pending snapshot must never seed another account\'s baseline');
+assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-A',restorePending,
+ {...restoreRemote,updated_at:null}),false,
+ 'an unversioned remote snapshot cannot be used as a verified merge baseline');
+const restoreBasePendingRead=initializationSource.indexOf('let pendingForUser=window.NexusOfflineSyncQueue?');
+const restoreBaseCall=initializationSource.indexOf('restoreMissingQueueBaseFromVerifiedRemote',restoreBasePendingRead);
+const autoResume=initializationSource.indexOf('canAutoResumePending(pendingForUser',restoreBasePendingRead);
+assert.ok(restoreBasePendingRead>=0&&restoreBaseCall>restoreBasePendingRead&&autoResume>restoreBaseCall,
+ 'baseline restoration must happen after the account-scoped pending snapshot is read and before its Delta auto-resume path');
+
 const baselineIntentStart=source.indexOf('function hasMissingBaselineCurriculumIntent(userId,localPayload,remotePayload){');
 const baselineIntentEnd=source.indexOf('async function reconcileOwnedWorkspace(',baselineIntentStart);
 assert.ok(baselineIntentStart>=0&&baselineIntentEnd>baselineIntentStart,
