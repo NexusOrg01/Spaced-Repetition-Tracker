@@ -1130,7 +1130,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   const outbox=cursorCurrent?await storage.readWorkspaceEntityOutboxGroups(
    ownerId,Number(cursor.acknowledgedSequence),1000,1048576):null;
   await assertActiveUser(ownerId);
-  const outboxCurrent=!!(outbox&&!outbox.unavailable&&!outbox.snapshotRequired&&
+  const outboxCurrent=!!(localStorage.getItem(OWNER_KEY)===ownerId&&outbox&&!outbox.unavailable&&!outbox.snapshotRequired&&
    outbox.ownerId===ownerId&&outbox.generation===cursor.generation&&
    Number(outbox.workspaceRevision)===Number(cursor.workspaceRevision)&&
    Array.isArray(outbox.groups)&&outbox.groups.length===0&&outbox.hasMore!==true);
