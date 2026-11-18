@@ -2207,7 +2207,7 @@
         Array.isArray(capturedChanges)&&capturedChanges.length>0&&workspaceRevisionDelta===1;
       const needsReplacement=replace||!manifest||manifest.status!=='ready'||!manifest.activeGeneration||
         (entityRevisionChanged&&!canApplyIncrementally)||
-        (!entityRevisionChanged&&capturedChanges.length>0);
+        (!entityRevisionChanged&&Array.isArray(capturedChanges)&&capturedChanges.length>0);
       if(needsReplacement){
         let stateSnapshot=null,featureSnapshot=null;
         let sourceTrackerSnapshotJson=guardedTrackerSnapshotJson;
@@ -2238,7 +2238,7 @@
         return {...result,mode:'snapshot-backfill'};
       }
 
-      const delta=capturedChanges.slice();
+      const delta=Array.isArray(capturedChanges)?capturedChanges.slice():[];
       if(trackerRoot||featureRoot){
         const currentRoots=await readWorkspaceEntityRoots(owner,manifest.activeGeneration);
         if(!currentRoots)throw new Error('The active entity metadata roots are unavailable; snapshot recovery is required.');
