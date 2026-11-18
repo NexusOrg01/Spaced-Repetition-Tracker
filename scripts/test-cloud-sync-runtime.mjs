@@ -62,6 +62,44 @@ assert.ok(initializationRemoteRead>=0&&initializationLocalSnapshot>initializatio
 assert.ok(!initializationSource.includes("localPayload=snapshot();const remote=await fetchRemote(newUserId);")&&
   !initializationSource.includes('sameWorkspace(localPayload,latestLocalPayload)'),
   'account initialization must not deep-clone and compare the entire local workspace twice before any account decision');
+
+const baselineIntentStart=source.indexOf('function hasMissingBaselineCurriculumIntent(userId,localPayload,remotePayload){');
+const baselineIntentEnd=source.indexOf('async function reconcileOwnedWorkspace(',baselineIntentStart);
+assert.ok(baselineIntentStart>=0&&baselineIntentEnd>baselineIntentStart,
+  'baseline curriculum-intent guard must be available for regression coverage');
+const baselineIntentSandbox={
+  baselineMarkers:[],
+  window:{
+    NexusOfflineSyncQueue:{getBase:()=>({state:{settings:{installedCurricula:baselineIntentSandbox.baselineMarkers}}})},
+    NexusCurriculumPacks:commerceCatalogue.packs
+  },
+  localStorage:{}
+};
+vm.createContext(baselineIntentSandbox);
+vm.runInContext(source.slice(baselineIntentStart,baselineIntentEnd)+
+  '\nglobalThis.checkMissingBaselineIntent=hasMissingBaselineCurriculumIntent;',
+  baselineIntentSandbox,{filename:'curriculum-baseline-intent.js'});
+const checkBaselineIntent=(marker,localInstalled=[],remoteInstalled=[],localDeleted=[],remoteDeleted=[])=>{
+  baselineIntentSandbox.baselineMarkers=[marker];
+  return baselineIntentSandbox.checkMissingBaselineIntent('account-A',
+    {state:{settings:{installedCurricula:localInstalled,curriculumTombstones:localDeleted}}},
+    {state:{settings:{installedCurricula:remoteInstalled,curriculumTombstones:remoteDeleted}}});
+};
+assert.equal(checkBaselineIntent('installed:pack:retired-catalogue-pack'),false,
+  'an obsolete pack absent from the shipped catalogue must not force compatibility snapshot recovery on every refresh');
+assert.equal(checkBaselineIntent('installed:subject:sl-al-commerce-si:retired-subject'),false,
+  'an obsolete subject absent from a shipped pack must not force an impossible recovery');
+assert.equal(checkBaselineIntent('installed:topic:sl-al-commerce-si:retired-subject:"Removed topic"'),false,
+  'an obsolete topic absent from the shipped subject must not force an impossible recovery');
+assert.equal(checkBaselineIntent('installed:pack:sl-al-commerce-si'),true,
+  'a missing full-pack install marker for a currently shipped pack must still trigger real reconciliation');
+assert.equal(checkBaselineIntent('installed:subject:sl-al-commerce-si:'+commercePack.subjects[0].id),true,
+  'a missing subject install marker for a currently shipped subject must still trigger reconciliation');
+assert.equal(checkBaselineIntent('installed:topic:sl-al-commerce-si:'+commercePack.subjects[0].id+':'+JSON.stringify(commercePack.subjects[0].topics[0])),true,
+  'a missing topic install marker for a currently shipped topic must still trigger reconciliation');
+assert.equal(checkBaselineIntent('installed:subject:sl-al-commerce-si:'+commercePack.subjects[0].id,[],[],['deleted:subject:sl-al-commerce-si:'+commercePack.subjects[0].id]),false,
+  'an explicit subject deletion tombstone must suppress baseline restoration');
+
 assert.ok(source.includes("const normalizedBase=savedBase?normalizeWorkspacePayload({...savedBase,schema:4}):null;"),
   'a last-verified workspace base is already normalized and must not receive a second legacy normalization pass that creates false concurrent-edit conflicts');
 

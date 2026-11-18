@@ -620,31 +620,39 @@ function hasMissingBaselineCurriculumIntent(userId,localPayload,remotePayload){
  const tombstones=value=>new Set(Array.isArray(value?.settings?.curriculumTombstones)?value.settings.curriculumTombstones:[]);
  const baseline=markers(baseState),current=new Set([...markers(localPayload?.state),...markers(remotePayload?.state)]);
  const deleted=new Set([...tombstones(localPayload?.state),...tombstones(remotePayload?.state)]);
- const packs=window.NexusCurriculumPacks||[];
+ const packs=Array.isArray(window.NexusCurriculumPacks)?window.NexusCurriculumPacks:[];
+ const findPack=packId=>packs.find(item=>item&&String(item.id)===packId&&Array.isArray(item.subjects))||null;
  for(const marker of baseline){
   if(!marker.startsWith('installed:')||current.has(marker))continue;
   const token=marker.slice('installed:'.length),parts=token.split(':');
   const scope=parts[0],packId=parts[1];
   if(!packId||deleted.has('deleted:pack:'+packId))continue;
+  const pack=findPack(packId);
+  // An old marker for a catalogue that is no longer shipped cannot be restored by
+  // this client. Do not repeatedly create compatibility snapshots for an impossible
+  // repair; leave the baseline marker untouched for a future catalogue migration.
+  if(!pack)continue;
   if(scope==='pack'){
-   const pack=packs.find(item=>String(item.id)===packId);
-   if(!pack||!Array.isArray(pack.subjects))return true;
    // A full-pack marker is intentionally replaced with per-subject markers
-   // when a subject is deleted. Only reconcile if an unaffected subject's
+   // when a subject is deleted. Only reconcile if a shipped, unaffected subject's
    // install intent has also disappeared.
-   if(pack.subjects.some(subject=>!deleted.has('deleted:subject:'+packId+':'+subject.id)&&
+   if(pack.subjects.some(subject=>subject&&
+      !deleted.has('deleted:subject:'+packId+':'+subject.id)&&
       !current.has('installed:subject:'+packId+':'+subject.id)))return true;
    continue;
   }
   if(scope==='subject'){
    const subjectId=parts[2];
-   if(subjectId&&!deleted.has('deleted:subject:'+packId+':'+subjectId))return true;
+   const subject=pack.subjects.find(item=>item&&String(item.id)===String(subjectId));
+   if(subject&&!deleted.has('deleted:subject:'+packId+':'+subjectId))return true;
    continue;
   }
   if(scope==='topic'){
-   const subjectId=parts[2];
-   const nameToken=parts.slice(3).join(':');
-   if(subjectId&&!deleted.has('deleted:subject:'+packId+':'+subjectId)&&
+   const subjectId=parts[2],nameToken=parts.slice(3).join(':');
+   const subject=pack.subjects.find(item=>item&&String(item.id)===String(subjectId));
+   const knownTopic=!!(subject&&Array.isArray(subject.topics)&&
+    subject.topics.some(name=>JSON.stringify(String(name))===nameToken));
+   if(knownTopic&&!deleted.has('deleted:subject:'+packId+':'+subjectId)&&
       !deleted.has('deleted:topic:'+packId+':'+subjectId+':'+nameToken))return true;
   }
  }
