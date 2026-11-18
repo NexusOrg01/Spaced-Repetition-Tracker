@@ -1798,11 +1798,11 @@ context.state=payloadG.state;
 activeSession={user:accountG};
 networkAvailable=true;
 const diagBeforeRestore=JSON.parse(storage.getItem('nexus.syncdiag.session.v1')||'[]');
-const uploadStartsBefore=diagBeforeRestore.filter(event=>event&&event.stage==='upload-start').length;
+const lastDiagnosticAtBefore=diagBeforeRestore.length?diagBeforeRestore[diagBeforeRestore.length-1].at:'';
 await window.NexusCloudSync.reconnect();
 const diagAfterRestore=JSON.parse(storage.getItem('nexus.syncdiag.session.v1')||'[]');
-const uploadStartsAfter=diagAfterRestore.filter(event=>event&&event.stage==='upload-start').length;
-assert.ok(uploadStartsAfter>uploadStartsBefore,
+assert.ok(diagAfterRestore.some(event=>event&&event.stage==='upload-start'&&
+  typeof event.at==='string'&&event.at>lastDiagnosticAtBefore),
   'a clean second-device cloud restore must run the initial sync coordinator');
 assert.equal(rows.get(accountG.id).updated_at,stampG,
   'a no-change restore in snapshot mode must not rewrite the cloud snapshot');
