@@ -1559,7 +1559,10 @@ assert.equal(wired.client,activeStaging.client);
 assert.equal(wired.getActiveOwner(),'account-A');
 assert.equal(wired.getLocalOwner(),'account-A');
 assert.equal(wired.getLocalBase('account-A').baseServerVersion,'base-stamp');
-assert.equal(wired.getPendingSnapshot('account-A').pending,true);
+assert.equal(wired.getPendingSnapshot('account-A'),null,
+  'a fully verified Delta cursor with an empty outbox must retire its matching compatibility shadow');
+assert.equal(typeof wired.acknowledgePendingSnapshot,'function',
+  'the Delta client must receive the owner-scoped compatibility shadow acknowledgement callback');
 assert.equal(wired.getLocalWorkspace(),activeStaging.payload,
   'the coordinator must read the active local compatibility workspace through the supplied accessor');
 
