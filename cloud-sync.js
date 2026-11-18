@@ -36,7 +36,7 @@ function syncDiagSummary(payload){
 }
 const SYNC_DIAG_STAGES=new Set([
  'auth-event','cloud-chunk-read-error','cloud-read','cloud-read-error','cloud-write-complete','cloud-write-error',
- 'curriculum-install-save-requested','delta-snapshot-downgrade-result','delta-sync-result','diagnostics-enabled','initialize-after-cloud-read',
+ 'curriculum-install-save-requested','delta-snapshot-downgrade-result','delta-sync-result','diagnostics-enabled','entity-projection-rebuild','initialize-after-cloud-read',
  'initialize-error','initialize-finished','initialize-settled','initialize-start','local-save-queue-error',
  'local-save-queued','local-storage-flush','offline-account-base-unavailable','offline-account-pending-unavailable',
  'offline-account-queue-rebuilt','offline-account-recovery-error','offline-account-workspace-restored',
@@ -61,21 +61,23 @@ function sanitizeSyncDiagEvent(event){
   for(const key of flags){if(typeof input[key]==='boolean')workspace[key]=input[key];}
   if(Object.keys(workspace).length)safe.workspace=workspace;
  }
- const countFields=['durationMs','chunkCount','payloadUtf8Bytes','cleanupDeletedCount','baseTopicCount','localTopicCount','remoteTopicCount','conflictCount','payloadCharacters','appliedCount','publishedCount','acknowledgedCount','rounds','topicCount'];
+ const countFields=['durationMs','chunkCount','payloadUtf8Bytes','cleanupDeletedCount','baseTopicCount','localTopicCount','remoteTopicCount','conflictCount','payloadCharacters','appliedCount','publishedCount','acknowledgedCount','rounds','topicCount','workspaceRevision','projectionWorkspaceRevision'];
  for(const key of countFields){
   if(!Object.prototype.hasOwnProperty.call(event,key))continue;
   const value=event[key];
   if(value===null)safe[key]=null;
   else if(Number.isSafeInteger(value)&&value>=0)safe[key]=Math.min(value,100000000);
  }
- const booleanFields=['hasPayload','hasUpdatedAt','chunkStorageUnavailable','cleanupBacklogMayRemain','cleanupFailed','priorQueueRetainedForRecovery','storageEnabled','cooperative','queueRebuilt','ready','remoteHadPayload','remoteHasPayload','hasSession','ownerPresent','ok','resumed','hasQueue','skipped','fromPending','hasPending','matchesAttempted','readbackHasPayload','hadPending','compactionPending','cleanupPending'];
+ const booleanFields=['hasPayload','hasUpdatedAt','chunkStorageUnavailable','cleanupBacklogMayRemain','cleanupFailed','priorQueueRetainedForRecovery','storageEnabled','cooperative','queueRebuilt','ready','remoteHadPayload','remoteHasPayload','hasSession','ownerPresent','ok','resumed','hasQueue','skipped','fromPending','hasPending','matchesAttempted','readbackHasPayload','hadPending','compactionPending','cleanupPending','projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches'];
  for(const key of booleanFields){if(typeof event[key]==='boolean')safe[key]=event[key];}
  const enums={
   storageMode:['chunked','legacy-schema-compatibility','legacy','empty'],
-  reason:['local-save','curriculum-install','sync','resume-existing-journal','conflict-or-snapshot-required','local-outbox-changed-during-merge'],
+  reason:['local-save','curriculum-install','sync','resume-existing-journal','conflict-or-snapshot-required','local-outbox-changed-during-merge','entity_projection_unavailable','stale_entity_projection','entity_projection_owner_unavailable','entity_projection_rebuild_failed'],
   source:['active-local-workspace'],
   event:['INITIAL_SESSION','SIGNED_IN','SIGNED_OUT','TOKEN_REFRESHED','USER_UPDATED'],
-  errorCategory:['conflict','timeout','queue-limit','queue-unavailable','other']
+  errorCategory:['conflict','timeout','queue-limit','queue-unavailable','other'],
+  projectionRebuildMode:['snapshot-backfill','incremental','unchanged','skipped','other'],
+  projectionRebuildErrorCategory:['conflict','timeout','queue-limit','queue-unavailable','other']
  };
  for(const key of Object.keys(enums)){
   if(typeof event[key]!=='string')continue;
@@ -904,8 +906,70 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
  const delta=window.NexusEntityDeltaSync,chunkStorage=window.NexusCloudChunkStorage;
  if(!queue||!storage||!delta||typeof delta.createClient!=='function'||
     !chunkStorage||typeof chunkStorage.writeDeltaSnapshot!=='function'||
-    typeof queue.commitVerifiedEntityDeltaSnapshot!=='function'){
+    typeof queue.commitVerifiedEntityDeltaSnapshot!=='function'||
+    typeof storage.waitForWorkspaceEntitySync!=='function'){
   throw new Error('Staging entity-delta recovery dependencies are incomplete. The existing local snapshot and outbox were left unchanged.');
+ }
+ // A cloud restore/account attach can commit the compatibility snapshot while
+ // the owner-scoped IndexedDB projection is absent or stale. Rebuild it locally
+ // once, under the same authenticated owner, before the Delta client reads the
+ // outbox. Never repair the remote cursor/base or fall through to snapshot upload.
+ if(!recoveryPending){
+  await assertActiveUser(ownerId);
+  if(localStorage.getItem(OWNER_KEY)!==ownerId){
+   return {ok:false,snapshotRequired:true,reason:'entity_projection_owner_unavailable',
+    phase:'local-publish'};
+  }
+  let projection=await storage.waitForWorkspaceEntitySync(ownerId);
+  let projectionRebuildAttempted=false,projectionRebuildOk=false,
+      projectionRebuildMode='other',projectionRebuildErrorCategory='other';
+  if(projection&&projection.ok!==true&&
+     (projection.reason==='entity_projection_unavailable'||projection.reason==='stale_entity_projection')){
+   projectionRebuildAttempted=true;
+   try{
+    await assertActiveUser(ownerId);
+    if(localStorage.getItem(OWNER_KEY)!==ownerId||
+       typeof window.NexusRebuildEntityProjection!=='function'){
+     throw new Error('The active owner-bound local projection rebuild is unavailable.');
+    }
+    const rebuilt=await window.NexusRebuildEntityProjection();
+    await assertActiveUser(ownerId);
+    if(localStorage.getItem(OWNER_KEY)!==ownerId||!rebuilt||
+       rebuilt.skipped===true||rebuilt.ok===false){
+     throw new Error('The local entity projection rebuild did not complete.');
+    }
+    if(['snapshot-backfill','incremental','unchanged','skipped'].includes(rebuilt.mode)){
+     projectionRebuildMode=rebuilt.mode;
+    }
+    projection=await storage.waitForWorkspaceEntitySync(ownerId);
+    projectionRebuildOk=!!(projection&&projection.ok===true);
+    if(!projectionRebuildOk)throw new Error('The rebuilt local entity projection is not current.');
+   }catch(error){
+    projectionRebuildErrorCategory=syncDiagErrorCategory(error);
+    projection={...(projection&&typeof projection==='object'?projection:{}),
+     ok:false,snapshotRequired:true,reason:'entity_projection_rebuild_failed'};
+   }
+   if(typeof syncDiag==='function')syncDiag('entity-projection-rebuild',null,{
+    projectionRebuildAttempted,projectionRebuildOk,
+    projectionRebuildMode,projectionRebuildErrorCategory,
+    reason:projection&&projection.ok===true?null:
+     (projection&&projection.reason||'entity_projection_rebuild_failed'),
+    workspaceRevision:projection&&projection.workspaceRevision,
+    projectionWorkspaceRevision:projection&&projection.projectionWorkspaceRevision,
+    projectionRevisionMatches:!!(projection&&projection.ok===true)
+   });
+  }
+  if(!projection||projection.ok!==true){
+   return {ok:false,snapshotRequired:true,
+    reason:projection&&projection.reason||'entity_projection_unavailable',
+    phase:'local-publish',
+    diagnostics:{
+     projectionRebuildAttempted,projectionRebuildOk,
+     workspaceRevision:projection&&projection.workspaceRevision,
+     projectionWorkspaceRevision:projection&&projection.projectionWorkspaceRevision,
+     projectionRevisionMatches:false
+    }};
+  }
  }
  const makeClient=delta.createClient({
   enabled:true,client,storage,
