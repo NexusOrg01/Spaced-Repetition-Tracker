@@ -549,7 +549,8 @@
     return rootValue;
   }
   function entityProjectionFailure(error,stage){
-    const target=error instanceof Error?error:new Error('Local entity projection rebuild failed.');
+    const source=error&&(typeof error==='object'||typeof error==='function')?error:null;
+    const target=source||new Error('Local entity projection rebuild failed.');
     const defaults={
       'stage-manifest':'manifest-stage-write-failed',
       'write-row-batch':'indexeddb-write-failed',
@@ -563,10 +564,12 @@
       }
       return target;
     }catch(_){
-      const wrapped=new Error('Local entity projection rebuild failed.');
-      wrapped.cause=target;
+      const wrapped=new Error(source&&typeof source.message==='string'
+        ?source.message:'Local entity projection rebuild failed.');
+      wrapped.cause=source;
       wrapped.nexusEntityProjectionFailureStage=stage;
-      wrapped.nexusEntityProjectionFailureReason=defaults[stage]||'other';
+      wrapped.nexusEntityProjectionFailureReason=
+        source&&source.nexusEntityProjectionFailureReason||defaults[stage]||'other';
       return wrapped;
     }
   }
