@@ -759,6 +759,11 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(incremental.mode,'incremental',
     'a ready entity generation must accept a delta rather than replacing the full generation');
   assert.equal(incremental.applied,5,'a delta must include changed records and both metadata roots');
+  const projectionBarrier=await loaded.api.waitForWorkspaceEntitySync('entity-owner-a');
+  assert.equal(projectionBarrier.ok,true,
+    'the Delta coordinator must be able to await a ready, fully indexed local entity generation');
+  assert.equal(projectionBarrier.workspaceRevision,projectionBarrier.projectionWorkspaceRevision,
+    'the projection barrier must expose matching workspace and entity-projection revisions');
   const incrementallyRestored=await loaded.api.readWorkspaceEntities('entity-owner-a');
   assert.ok(incrementallyRestored,
     'incremental updates must preserve the complete entity generation and its integrity metadata');
