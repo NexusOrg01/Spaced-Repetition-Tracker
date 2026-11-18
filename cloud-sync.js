@@ -5,7 +5,8 @@ const LIVE_SUPABASE_URL='https://txugbdavblpettcnhcxl.supabase.co',LIVE_APP_HOST
 function isPreviewDeploymentOrigin(){const host=location.hostname.toLowerCase();return host!==LIVE_APP_HOST&&(host.endsWith('.vercel.app')||host.endsWith('.netlify.app'));}
 const SYNC_DIAG_ENABLED=(()=>{try{const requested=new URLSearchParams(location.search).get('nexusSyncDiag')==='1';if(requested){localStorage.setItem('nexus.syncdiag.enabled','1');sessionStorage.setItem('nexus.syncdiag.enabled','1');}return requested||localStorage.getItem('nexus.syncdiag.enabled')==='1'||sessionStorage.getItem('nexus.syncdiag.enabled')==='1';}catch(_){return false;}})();
 const SYNC_DIAG_KEY='nexus.syncdiag.session.v1';
-const SYNC_REQUEST_TIMEOUT_MS=180000;
+const SYNC_REQUEST_TIMEOUT_MS=180000,REMOTE_DELTA_POLL_INTERVAL_MS=15000;
+let hostedDeltaPollingEnabled=false,remoteDeltaPollTimer=null;
 function createSyncAbortScope(){
  const controller=typeof AbortController==='function'?new AbortController():null;
  let expired=false;
@@ -241,7 +242,19 @@ function downloadConflictRecovery(){
 }
 function clearRetry(){if(retryTimer){clearTimeout(retryTimer);retryTimer=null;}retryAttempt=0;}
 function scheduleRetry(){if(retryTimer||isUnsafeCloudOrigin()||(typeof navigator!=='undefined'&&!navigator.onLine))return;const text=el('cloudStatus')?el('cloudStatus').textContent:'';const policy=window.NexusCloudSyncRecovery;if(policy&&!policy.shouldRetry(text))return;if(!policy&&/(cloud conflict|data choice required|account queue paused|not signed in)/i.test(text))return;const delay=policy?policy.retryDelay(retryAttempt):Math.min(300000,1500*Math.pow(2,Math.min(retryAttempt,8)));retryAttempt=Math.min(retryAttempt+1,8);retryTimer=setTimeout(()=>{retryTimer=null;if(typeof navigator!=='undefined'&&!navigator.onLine)return;if(syncing||initializing){scheduleRetry();return;}connect();},delay);}
-function resumeAfterConnectivity(){if(isUnsafeCloudOrigin()||(typeof navigator!=='undefined'&&!navigator.onLine))return;const text=el('cloudStatus')?el('cloudStatus').textContent:'';const policy=window.NexusCloudSyncRecovery;if(policy&&!policy.shouldRetry(text))return;if(syncing){pendingSync=true;return;}if(initializing)return;if(session&&ready){let pending=false;try{pending=!!(window.NexusOfflineSyncQueue&&window.NexusOfflineSyncQueue.hasPending(localStorage,session.user.id));}catch(e){status('Sync error');say('The local sync queue could not be read. Local data is preserved. Nexus will retry safely.');scheduleRetry();return;}if(pending)schedule();else status('Synced');}else connect();}
+function clearDeltaRemotePoll(){if(remoteDeltaPollTimer){clearTimeout(remoteDeltaPollTimer);remoteDeltaPollTimer=null;}}
+function scheduleDeltaRemotePoll(){
+ if(remoteDeltaPollTimer||!hostedDeltaPollingEnabled||isUnsafeCloudOrigin()||!session||!ready||initializing||
+    (typeof navigator!=='undefined'&&!navigator.onLine)||(typeof document!=='undefined'&&document.hidden))return;
+ remoteDeltaPollTimer=setTimeout(async()=>{
+  remoteDeltaPollTimer=null;
+  if(!hostedDeltaPollingEnabled||isUnsafeCloudOrigin()||!session||!ready||initializing||
+     (typeof navigator!=='undefined'&&!navigator.onLine)||(typeof document!=='undefined'&&document.hidden))return;
+  if(syncing){scheduleDeltaRemotePoll();return;}
+  try{await upload();}finally{scheduleDeltaRemotePoll();}
+ },REMOTE_DELTA_POLL_INTERVAL_MS);
+}
+function resumeAfterConnectivity(){if(isUnsafeCloudOrigin()||(typeof navigator!=='undefined'&&!navigator.onLine))return;const text=el('cloudStatus')?el('cloudStatus').textContent:'';const policy=window.NexusCloudSyncRecovery;if(policy&&!policy.shouldRetry(text))return;if(syncing){pendingSync=true;return;}if(initializing)return;if(session&&ready){let pending=false;try{pending=!!(window.NexusOfflineSyncQueue&&window.NexusOfflineSyncQueue.hasPending(localStorage,session.user.id));}catch(e){status('Sync error');say('The local sync queue could not be read. Local data is preserved. Nexus will retry safely.');scheduleRetry();return;}if(pending||hostedDeltaPollingEnabled)schedule();else status('Synced');scheduleDeltaRemotePoll();}else connect();}
 function loadSupabaseLibrary(){if(window.supabase&&window.supabase.createClient)return Promise.resolve();if(supabaseLoadPromise)return supabaseLoadPromise;supabaseLoadPromise=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3';script.async=true;script.onload=()=>window.supabase&&window.supabase.createClient?resolve():reject(new Error('Supabase client did not initialize.'));script.onerror=()=>reject(new Error('Could not load Supabase client. Check internet access.'));document.head.appendChild(script);});return supabaseLoadPromise;}
 function setControls(){const previewBlocked=isUnsafeCloudOrigin(),logged=!!session,connected=logged&&ready&&!initializing,busy=logged&&!connected;if(logged&&ready&&deletionServiceCheckedUser!==session.user.id)checkAccountDeletionService();const google=el('cloudGoogleSignInBtn'),email=el('cloudEmailSignInBtn'),out=el('cloudSignOutBtn');if(out){out.disabled=!logged;out.setAttribute('aria-disabled',String(!logged));}if(google){google.hidden=false;google.disabled=logged||previewBlocked;google.classList.toggle('auth-signin-busy',logged);google.setAttribute('aria-disabled',String(logged||previewBlocked));google.setAttribute('aria-label','Sign in with Google');const label=google.querySelector('span');if(label)label.textContent='Sign in with Google';}if(email){email.hidden=false;email.disabled=logged||previewBlocked;email.classList.toggle('auth-signin-busy',logged);email.setAttribute('aria-disabled',String(logged||previewBlocked));email.setAttribute('aria-label','Sign in with email');const label=email.querySelector('span');if(label)label.textContent='Sign in with email';}if(el('cloudAccount'))el('cloudAccount').textContent=previewBlocked?'Preview/local copy — cloud sync disabled':logged?(session.user.email||'Signed-in account'):'Not signed in — offline mode is available';if(el('cloudAccount'))el('cloudAccount').title=previewBlocked?'Use a separate Supabase test project to test cloud sync here.':logged?'Account ID: '+session.user.id:'Your data stays on this device while signed out.';if(previewBlocked)previewCloudBlockedMessage();updateConflictRecoveryButton();installSyncDiagnosticsButton();if(window.NexusRefreshDeletionOptions)window.NexusRefreshDeletionOptions();}
 function snapshot(){return {app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:clone(state),featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}};}
@@ -899,13 +912,29 @@ if(ready){await flushDurableLocalWrites();status('Synced');}syncDiag('initialize
   say('Cloud sync error: '+((e&&e.message)||'unknown error')+'. Local changes are preserved and sync is paused. If you signed into another account while offline, its workspace is not cached here. The previous account remains protected and hidden. Reconnect to load the correct account.');
  }
  console.error('Nexus account initialization failed',e);scheduleRetry();
-}finally{syncDiag('initialize-settled',diagnosticWorkspace(),{hasSession:!!(session&&session.user),ready,ownerPresent:!!localStorage.getItem(OWNER_KEY)});initializing=false;initializingUserId=null;setControls();if(hasQueuedSession){
+}finally{syncDiag('initialize-settled',diagnosticWorkspace(),{hasSession:!!(session&&session.user),ready,ownerPresent:!!localStorage.getItem(OWNER_KEY)});initializing=false;initializingUserId=null;setControls();scheduleDeltaRemotePoll();if(hasQueuedSession){
  const nextSession=queuedSession||session||null;queuedSession=null;hasQueuedSession=false;
  if(nextSession&&nextSession.user&&nextSession.user.id===lastUserId&&ready){session=nextSession;setControls();}
  else setTimeout(()=>initializeSession(nextSession),0);
 }}}
 
 async function sameWorkspace(a,b){if(!a||!b)return false;const merger=window.NexusWorkspaceSyncMerge;if(!merger||typeof merger.sameAsync!=='function')throw new Error('Safe large-workspace comparison is unavailable.');return merger.sameAsync({state:a.state||{},featureState:a.featureState||{}},{state:b.state||{},featureState:b.featureState||{}});}
+async function acknowledgeDeltaShadowSnapshot(queue,userId,pending,serverVersion){
+ if(!queue||typeof queue.getPending!=='function'||typeof queue.acknowledge!=='function'||
+    !pending||pending.ownerUserId!==userId||pending.status!=='pending'||
+    pending.baseServerVersion!==serverVersion||localStorage.getItem(OWNER_KEY)!==userId)return false;
+ await assertActiveUser(userId);
+ const current=queue.getPending(localStorage,userId);
+ if(!current||current.status!=='pending'||current.ownerUserId!==userId||
+    current.operationId!==pending.operationId||current.baseServerVersion!==serverVersion||
+    !(await sameWorkspace(current.payload,snapshot())))return false;
+ await assertActiveUser(userId);
+ const acknowledgement=queue.acknowledge(localStorage,userId,current.operationId,
+   current.baseServerVersion,serverVersion);
+ if(!acknowledgement||acknowledgement.acknowledged!==true)return false;
+ await flushDurableLocalWrites();
+ return localStorage.getItem(OWNER_KEY)===userId;
+}
 async function runStagingEntityDeltaSync(ownerId,signal,action={}){
  const queue=window.NexusOfflineSyncQueue,storage=window.NexusStorage;
  const recovery=storage&&typeof storage.readWorkspaceEntityRecovery==='function'
@@ -1073,6 +1102,8 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   getLocalBase:userId=>queue.getBase(localStorage,userId),
   getLocalWorkspace:()=>snapshot(),
   getPendingSnapshot:userId=>queue.getPending(localStorage,userId),
+  acknowledgePendingSnapshot:(userId,pending,serverVersion)=>
+   acknowledgeDeltaShadowSnapshot(queue,userId,pending,serverVersion),
   readRemoteSnapshot:async(userId,requestSignal)=>{
    const remote=await fetchRemote(userId,null,requestSignal||signal||null);
    if(!remote||!remote.payload)return null;
@@ -1226,6 +1257,13 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    return {ok:false,retryable:true,snapshotRequired:!!(outbox&&outbox.snapshotRequired),
     reason:outbox&&outbox.reason||'local_outbox_pending'};
   }
+  const pendingAfterDelta=queue&&typeof queue.getPending==='function'
+   ?queue.getPending(localStorage,ownerId):null;
+  if(pendingAfterDelta){
+   const acknowledged=await acknowledgeDeltaShadowSnapshot(queue,ownerId,pendingAfterDelta,cursor.snapshotUpdatedAt);
+   if(!acknowledged)return {ok:false,retryable:true,snapshotRequired:true,
+    reason:'compatibility_snapshot_acknowledgement_failed'};
+  }
   return {...result,cursor};
  }
  const needsRecovery=!!(result&&(result.conflict||result.snapshotRequired||
@@ -1274,6 +1312,8 @@ async function upload(){
   if(authError)throw new Error('Supabase could not verify the active login before cloud write: '+authError.message);
   if(!authData.user||authData.user.id!==uploadUserId||!session||session.user.id!==uploadUserId)throw new Error('The active Google/account session changed or could not be verified. Cloud write paused to protect the other account. Sign in again and retry.');
   const deltaResult=await runStagingEntityDeltaSync(uploadUserId,uploadScope.signal);
+   if(deltaResult&&deltaResult.skipped===true){hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();}
+   else if(deltaResult&&deltaResult.ok===true){hostedDeltaPollingEnabled=true;}
    if(deltaResult){
     const compaction=deltaResult.snapshotCompaction||deltaResult.compaction||(deltaResult.recovery&&deltaResult.recovery.compaction)||null;
     const compactionPending=compaction&&typeof compaction.pending==='boolean'?compaction.pending:
@@ -1427,7 +1467,7 @@ async function upload(){
   }
   else{ready=false;status('Sync error');say('Cloud upload failed or could not be verified. Local data and the pending snapshot are preserved. Nexus will retry automatically when the connection is available.');scheduleRetry();}
   console.error('Nexus cloud sync failed',e);
- }finally{uploadScope.clear();syncing=false;if(retryReconcileAfterConflict){retryReconcileAfterConflict=false;setTimeout(()=>{const activeConnect=connectPromise;if(activeConnect)activeConnect.then(()=>connect());else connect();},0);}if(pendingSync){pendingSync=false;if(ready)schedule();else scheduleRetry();}}
+ }finally{uploadScope.clear();syncing=false;scheduleDeltaRemotePoll();if(retryReconcileAfterConflict){retryReconcileAfterConflict=false;setTimeout(()=>{const activeConnect=connectPromise;if(activeConnect)activeConnect.then(()=>connect());else connect();},0);}if(pendingSync){pendingSync=false;if(ready)schedule();else scheduleRetry();}}
  return uploaded;
 }
 let localQueueHealthy=true,localMutationRevision=0;
@@ -1490,7 +1530,7 @@ function createSafeAuthStorage(storage){
    removeItem(key){return storage.removeItem(key);}
   };
 }
-async function ensureClient(){if(isUnsafeCloudOrigin())throw new Error('Cloud sync is disabled on this preview/local copy to protect real cloud data.');if(client)return client;const c=config();if(!window.supabase||!window.supabase.createClient)await loadSupabaseLibrary();if(!client){client=window.supabase.createClient(c.url,c.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,storage:createSafeAuthStorage(localStorage)}});client.auth.onAuthStateChange((event,newSession)=>{session=newSession||null;syncDiag('auth-event',diagnosticWorkspace(),{event,hasSession:!!(newSession&&newSession.user),ownerPresent:!!localStorage.getItem(OWNER_KEY)});if(event==='TOKEN_REFRESHED'||event==='USER_UPDATED'){session=newSession;setControls();return;}if(event==='SIGNED_OUT'){session=null;ready=false;deletionServiceCheckedUser=null;deletionServiceAvailable=false;clearTimeout(timer);clearRetry();if(initializing&&initializingUserId){queuedSession=null;hasQueuedSession=true;}status('Not signed in · offline ready');say('You can continue using your local data offline. Signing out does not erase it.');setControls();return;}if(event==='SIGNED_IN'||event==='INITIAL_SESSION'){
+async function ensureClient(){if(isUnsafeCloudOrigin())throw new Error('Cloud sync is disabled on this preview/local copy to protect real cloud data.');if(client)return client;const c=config();if(!window.supabase||!window.supabase.createClient)await loadSupabaseLibrary();if(!client){client=window.supabase.createClient(c.url,c.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,storage:createSafeAuthStorage(localStorage)}});client.auth.onAuthStateChange((event,newSession)=>{session=newSession||null;syncDiag('auth-event',diagnosticWorkspace(),{event,hasSession:!!(newSession&&newSession.user),ownerPresent:!!localStorage.getItem(OWNER_KEY)});if(event==='TOKEN_REFRESHED'||event==='USER_UPDATED'){session=newSession;setControls();return;}if(event==='SIGNED_OUT'){session=null;ready=false;hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();deletionServiceCheckedUser=null;deletionServiceAvailable=false;clearTimeout(timer);clearRetry();if(initializing&&initializingUserId){queuedSession=null;hasQueuedSession=true;}status('Not signed in · offline ready');say('You can continue using your local data offline. Signing out does not erase it.');setControls();return;}if(event==='SIGNED_IN'||event==='INITIAL_SESSION'){
  const uid=newSession&&newSession.user?newSession.user.id:null;
  // Auth callbacks update the active session synchronously. If an initialization
  // already queued a different/null session, this later event must replace it
@@ -1623,5 +1663,5 @@ window.NexusCloudSync={schedule,upload,reconnect:connect,getAccountState,deleteA
   const p=payload&&payload.state?payload:diagnosticWorkspace();
   syncDiag('workspace-saved-locally',p);
  },
- recordLocalSave:(payload)=>{const p=payload&&payload.state?payload:snapshot();syncDiag('workspace-saved-locally',p);recordWorkspaceSave(p,'local-save');},recordInstall:(payload)=>{const p=payload&&payload.state?payload:{state:payload||state,featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}};syncDiag('curriculum-install-save-requested',p);recordWorkspaceSave(p,'curriculum-install');}};window.addEventListener('online',resumeAfterConnectivity);window.addEventListener('offline',()=>{if(session){status('Offline · changes saved locally');say('You can continue studying. Local changes are queued for this account and will sync when the connection returns.');}});document.addEventListener('visibilitychange',()=>{if(!document.hidden)resumeAfterConnectivity();});window.addEventListener('pageshow',resumeAfterConnectivity);function startCloudSyncUi(){installSyncDiagnosticsButton();if(SYNC_DIAG_ENABLED&&document.body&&typeof MutationObserver!=='undefined'){const diagObserver=new MutationObserver(()=>{if(!el('nexusSyncDiagnosticsDownload'))installSyncDiagnosticsButton();});diagObserver.observe(document.body,{childList:true,subtree:true});}el('cloudGoogleSignInBtn')?.addEventListener('click',googleSignIn);el('cloudEmailSignInBtn')?.addEventListener('click',emailSignIn);el('cloudSignOutBtn')?.addEventListener('click',signOut);connect();}if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',startCloudSyncUi,{once:true});else startCloudSyncUi();
+ recordLocalSave:(payload)=>{const p=payload&&payload.state?payload:snapshot();syncDiag('workspace-saved-locally',p);recordWorkspaceSave(p,'local-save');},recordInstall:(payload)=>{const p=payload&&payload.state?payload:{state:payload||state,featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}};syncDiag('curriculum-install-save-requested',p);recordWorkspaceSave(p,'curriculum-install');}};window.addEventListener('online',resumeAfterConnectivity);window.addEventListener('focus',resumeAfterConnectivity);window.addEventListener('offline',()=>{clearDeltaRemotePoll();if(session){status('Offline · changes saved locally');say('You can continue studying. Local changes are queued for this account and will sync when the connection returns.');}});document.addEventListener('visibilitychange',()=>{if(!document.hidden)resumeAfterConnectivity();});window.addEventListener('pageshow',resumeAfterConnectivity);function startCloudSyncUi(){installSyncDiagnosticsButton();if(SYNC_DIAG_ENABLED&&document.body&&typeof MutationObserver!=='undefined'){const diagObserver=new MutationObserver(()=>{if(!el('nexusSyncDiagnosticsDownload'))installSyncDiagnosticsButton();});diagObserver.observe(document.body,{childList:true,subtree:true});}el('cloudGoogleSignInBtn')?.addEventListener('click',googleSignIn);el('cloudEmailSignInBtn')?.addEventListener('click',emailSignIn);el('cloudSignOutBtn')?.addEventListener('click',signOut);connect();}if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',startCloudSyncUi,{once:true});else startCloudSyncUi();
 })();
