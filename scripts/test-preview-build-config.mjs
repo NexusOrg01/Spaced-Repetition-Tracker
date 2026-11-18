@@ -201,6 +201,7 @@ const hostedQaEnv = {
   VERCEL_ENV: 'preview',
   VERCEL_GIT_COMMIT_REF: hostedQaBranch,
   VERCEL_URL: 'nexus-dla-03-git-feat-dla-03-safe-snapshot-downgrade-recall-ed03.vercel.app',
+  VERCEL_BRANCH_URL: 'nexus-app-git-fix-dla04-entity-projection-guard-recall-ed03.vercel.app',
   NEXUS_ENTITY_DELTA_QA_ENABLED: 'true',
   NEXUS_SUPABASE_URL: hostedQaProject,
   NEXUS_SUPABASE_ANON_KEY: previewEnv.NEXUS_SUPABASE_ANON_KEY
@@ -250,12 +251,15 @@ const hostedQaGate = resolveHostedQaEntityDeltaEnabled(hostedQaEnv, hostedQaConf
 assert.deepEqual(hostedQaGate, {
   enabled: true,
   origin: 'https://nexus-dla-03-git-feat-dla-03-safe-snapshot-downgrade-recall-ed03.vercel.app',
+  branchOrigin: 'https://nexus-app-git-fix-dla04-entity-projection-guard-recall-ed03.vercel.app',
   ref: hostedQaBranch
 }, 'hosted QA must require the explicit flag, exact branch, exact project, and deployment-specific Vercel origin');
 const hostedQaConfigScript = renderConfigScript(hostedQaConfig, false, hostedQaGate);
 assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=true'));
 assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_REF="fix/dla04-entity-projection-guard"'));
 assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN="https://nexus-dla-03-git-feat-dla-03-safe-snapshot-downgrade-recall-ed03.vercel.app"'));
+assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_BRANCH_ORIGIN="https://nexus-app-git-fix-dla04-entity-projection-guard-recall-ed03.vercel.app"'),
+  'the exact Vercel branch URL must also be embedded as an approved hosted QA origin');
 assert.ok(renderConfigScript(hostedQaConfig, false, null).includes('window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=false'));
 
 assert.equal(resolveHostedQaEntityDeltaEnabled({
@@ -299,6 +303,20 @@ assert.equal(renderConfigScript(hostedQaConfig, false, {
 }).includes('window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=true'), false,
   'config rendering must independently reject non-default QA deployment ports');
 assert.equal(resolveHostedQaEntityDeltaEnabled({
+  ...hostedQaEnv, VERCEL_BRANCH_URL: 'untrusted.example.com'
+},hostedQaConfig).branchOrigin,'',
+  'an invalid branch alias must be omitted rather than broadening the runtime origins');
+assert.equal(resolveHostedQaEntityDeltaEnabled({
+  ...hostedQaEnv, VERCEL_BRANCH_URL: 'nexus-preview.vercel.app/path'
+},hostedQaConfig).branchOrigin,'',
+  'branch aliases containing paths must be rejected');
+assert.equal(renderConfigScript(hostedQaConfig, false, {
+  enabled:true,ref:hostedQaBranch,
+  origin:'https://nexus-preview.vercel.app',
+  branchOrigin:'https://nexus-alias.vercel.app:4443'
+}).includes('nexus-alias.vercel.app'),false,
+  'config rendering must independently reject unsafe branch alias authorities');
+assert.equal(resolveHostedQaEntityDeltaEnabled({
   ...hostedQaEnv, VERCEL_GIT_COMMIT_REF: 'feat/another-preview'
 }, hostedQaConfig).enabled, false, 'generic public preview branches must not enable hosted QA');
 assert.equal(resolveHostedQaEntityDeltaEnabled({
@@ -318,11 +336,15 @@ assert.ok(renderConfigScript({
 }, false, hostedQaGate).includes('window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=false'),
   'config generation must independently fail closed when given a mismatched project');
 
-assert.ok(cloudSyncSource.includes("qaOrigin.hostname.endsWith('.vercel.app')&&!qaOrigin.port&&!qaOrigin.username"),
+assert.ok(cloudSyncSource.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_BRANCH_ORIGIN'),
+  'runtime validation must consider only the build-embedded branch alias');
+assert.ok(cloudSyncSource.includes('qaOrigins.some(value=>'),
+  'runtime validation must match an exact canonical or branch origin');
+assert.ok(cloudSyncSource.includes("candidate.hostname.endsWith('.vercel.app')&&!candidate.port&&!candidate.username"),
   'runtime validation must reject non-canonical deployment authorities');
-assert.ok(cloudSyncSource.includes('!qaOrigin.password&&!qaOrigin.search&&!qaOrigin.hash'),
+assert.ok(cloudSyncSource.includes('!candidate.password&&!candidate.search&&!candidate.hash'),
   'runtime validation must reject origin credentials, query strings and fragments');
-assert.ok(cloudSyncSource.includes("(qaOrigin.pathname===''||qaOrigin.pathname==='/')"),
+assert.ok(cloudSyncSource.includes("(candidate.pathname===''||candidate.pathname==='/')"),
   'runtime validation must bind only the root deployment origin');
 
 console.log('Preview-only Supabase configuration guard tests passed.');
