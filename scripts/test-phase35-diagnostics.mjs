@@ -192,6 +192,37 @@ for(const verificationReason of ['delta_sync_not_verified','delta_sync_skipped',
   'diagnostics must preserve the allowlisted reason that explains failed cursor/outbox verification');
 }
 
+const projectionFailureReasons=[
+ 'entity_projection_unavailable','stale_entity_projection',
+ 'entity_projection_owner_unavailable','entity_projection_rebuild_failed'
+];
+for(const reason of projectionFailureReasons){
+ const triggerFixture={at:'2026-11-19T08:00:00.000Z',stage:'snapshot-recovery-start',
+  reason:'conflict-or-snapshot-required',triggerReason:reason};
+ vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(triggerFixture)+')',sanitizerSandbox,
+  {filename:'sync-diagnostic-projection-trigger-sanitizer-test.js'});
+ const safeTrigger=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+ assert.equal(safeTrigger.triggerReason,reason,
+  'snapshot recovery diagnostics must preserve the actual entity-projection trigger instead of reducing it to other');
+
+ const verificationFixture={at:'2026-11-19T08:00:01.000Z',stage:'delta-recovery-verification',
+  ok:false,recoveryTriggerReason:reason,verificationReason:reason};
+ vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(verificationFixture)+')',sanitizerSandbox,
+  {filename:'sync-diagnostic-projection-verification-sanitizer-test.js'});
+ const safeVerification=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+ assert.equal(safeVerification.recoveryTriggerReason,reason,
+  'recovery verification must preserve the originating projection failure reason');
+ assert.equal(safeVerification.verificationReason,reason,
+  'recovery verification must preserve a projection verification failure reason');
+}
+
+const localOutboxFailure={at:'2026-11-19T08:00:02.000Z',stage:'delta-sync-result',
+ reason:'local_entity_outbox_unavailable',ok:false,publishedCount:0,acknowledgedCount:0};
+vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(localOutboxFailure)+')',sanitizerSandbox,
+ {filename:'sync-diagnostic-local-outbox-sanitizer-test.js'});
+assert.equal(JSON.parse(JSON.stringify(sanitizerSandbox.result)).reason,'local_entity_outbox_unavailable',
+ 'Delta diagnostics must preserve the storage layer outbox failure reason');
+
 const collectorStart=source.indexOf('async function collectSyncOperationalDiagnostics(){');
 const collectorEnd=source.indexOf('\nasync function downloadSyncDiagnostics()',collectorStart);
 assert.ok(collectorStart>0&&collectorEnd>collectorStart,'diagnostic collector must be present');
