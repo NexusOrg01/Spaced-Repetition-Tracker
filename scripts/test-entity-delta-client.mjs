@@ -384,7 +384,7 @@ function harness(options={}){
     groups:[makeGroup('local-save-after-cursor',11,[putChange('topics','topic-local')])]});
   const pull=await h.client.applyRemotePage('account-A');
   assert.equal(pull.ok,true,
-    'a newer local projection revision with a valid pending outbox must not force snapshot recovery');
+    'a newer local projection revision with a valid pending outbox must not force snapshot recovery: '+JSON.stringify(pull));
   assert.equal(pull.idle,true,
     'when the remote head is unchanged, remote apply should yield to the outbound publisher');
   assert.equal(h.shadowAcknowledgements.length,0,
