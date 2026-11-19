@@ -50,6 +50,11 @@ function harness(options={}){
         groups:pending,throughSequence:pending.length?pending[pending.length-1].lastSequence:afterSequence,
         hasMore:false,snapshotRequired:false};
     },
+    async applyWorkspaceEntityDeltaGroup(owner,group,afterRevision,headRevision){
+      cursor={...cursor,publishRevision:group.revision,remoteHeadRevision:headRevision,
+        requiresPull:headRevision>group.revision};
+      return {ok:true,applied:group.changes.length,cursor:{...cursor},workspace:payload};
+    },
     async applyWorkspaceEntityDeltaGroup(owner,group,expectedRevision,remoteHead){
       if(owner!==activeOwner||!cursor||cursor.publishRevision!==expectedRevision||
          group.revision!==expectedRevision+1){
