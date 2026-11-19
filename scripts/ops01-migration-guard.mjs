@@ -29,7 +29,7 @@ export function validateLocalMigrationSet(names){
 export function parseRemoteMigrationVersions(text){
  const found=[];
  for(const line of String(text).split(/\r?\n/)){
-  const columns=line.split('│');
+  const columns=line.split(/[│|]/);
   if(columns.length<3)continue;
   const version=columns[1].trim();
   if(/^\d{8,14}$/.test(version))found.push(version);
