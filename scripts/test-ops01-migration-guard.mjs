@@ -48,13 +48,32 @@ const actualCliRemoteText='   Local            | Remote           | Time (UTC)  
 assert.deepEqual(parseRemoteMigrationVersions(actualCliRemoteText),[...PRODUCTION_BASELINE].sort(),'Captured Supabase CLI v3.0.0 output with backtick-wrapped values must parse');
 const versions=OPS01_MIGRATIONS.map(name=>name.match(/^\d{8,14}(?=_)/)[0]);
 assert.deepEqual(versions.slice(0,2),['20261014','20261018'],'two legacy migrations have 8-digit versions');
-const dry=versions.map(v=>'Would apply '+v+'_migration.sql').join('\n');
-assert.equal(parseDryRunVersions(dry).length,11);
+const dry = [
+  'Target: custom Postgres (aws-0-ap-south-1.pooler.supabase.com:5432)',
+  'DRY RUN: migrations will *not* be pushed to the database.',
+  'Would push these migrations:',
+  ' • 20261014_one_active_syllabus_request_per_user.sql',
+  ' • 20261018_retire_community_wishlist.sql',
+  ' • 20261109052019_chunked_nexus_workspace_snapshots.sql',
+  ' • 20261109053246_tighten_nexus_workspace_chunk_limit.sql',
+  ' • 20261113095723_nexus_entity_delta_sync.sql',
+  ' • 20261113101625_harden_nexus_entity_delta_reads_and_compaction.sql',
+  ' • 20261113215301_defer_entity_delta_enablement_until_client_ready.sql',
+  ' • 20261113222129_revoke_unwired_entity_delta_rpc_execution.sql',
+  ' • 20261114093000_harden_nexus_entity_delta_record_identity.sql',
+  ' • 20261114103353_protect_active_nexus_chunk_manifests.sql',
+  ' • 20261115171500_validate_general_snapshot_candidates.sql',
+  'Finished supabase db push.'
+].join('\n');
+assert.deepEqual(parseDryRunVersions(dry),versions,'Supabase CLI v3.0.0 bullet-list output must be parsed');
 assert.equal(validateDryRun(remote,dry).pending.length,11);
+assert.throws(()=>validateDryRun(remote,''),/does not match the reviewed pending OPS-01 migration set/);
+assert.throws(()=>validateDryRun(remote,dry.replace(versions[10]+'_validate_general_snapshot_candidates.sql','20269999999999_unreviewed.sql')),/outside OPS-01|does not match/);
 assert.equal(validateRemoteMigrationSet([...remote,versions[0]]).applied,1);
 assert.throws(()=>validateRemoteMigrationSet([...remote,'20269999999999']),/unreviewed version/);
 assert.throws(()=>validateRemoteMigrationSet(remote,{complete:true}),/Not all OPS-01 migrations/);
-assert.throws(()=>validateDryRun(remote,dry.replace(versions[10],'20269999999999')),/outside OPS-01|does not match/);
+const workflow=readFileSync(new URL('../.github/workflows/ops-01-production-migrations.yml',import.meta.url),'utf8');
+assert.match(workflow,/supabase db push --dry-run[^\n]*2>&1\s*\|\s*tee/,'OPS-01 must capture both stdout and stderr before validating the dry-run');
 
 assert.equal(validateRiskAcceptanceRef('https://github.com/NexusOrg01/Spaced-Repetition-Tracker/pull/131#issuecomment-6957021229'),OPS01_RISK_ACCEPTANCE_REF);
 assert.equal(validateRiskAcceptanceRef(''),null);

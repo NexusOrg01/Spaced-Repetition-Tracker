@@ -108,7 +108,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          supabase db push --dry-run --remote="$SUPABASE_DB_URL" | tee "$RUNNER_TEMP/ops01-dry-run.txt"
+          # Supabase CLI emits target/diagnostic text to stderr and the migration list
+          # may be written to either stream. Capture both before exact allowlist validation.
+          supabase db push --dry-run --remote="$SUPABASE_DB_URL" 2>&1 | tee "$RUNNER_TEMP/ops01-dry-run.txt"
           node scripts/ops01-migration-guard.mjs --remote-file "$RUNNER_TEMP/ops01-migrations-before.txt" --dry-run-file "$RUNNER_TEMP/ops01-dry-run.txt"
       - name: Apply reviewed OPS-01 migrations
         if: inputs.operation == 'apply'
