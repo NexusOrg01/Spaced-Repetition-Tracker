@@ -851,7 +851,7 @@ if(typeof navigator!=='undefined'&&navigator.onLine===false){
   }else{
     ready=false;
     status('Offline workspace unavailable');
-    say('No saved workspace for this account could be verified on this device. Its cloud data remains hidden until an internet connection is available.');
+    say('No saved workspace for this account could be verified on this device. The previous account remains protected and hidden. This account’s cloud data remains hidden until an internet connection is available.');
   }
   setControls();
   return;

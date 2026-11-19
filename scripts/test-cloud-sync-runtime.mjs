@@ -1520,7 +1520,7 @@ for (const scenario of [
     'without a C-specific cached workspace, Nexus must not re-label B data as C data');
   assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id, 'cached-B-offline',
     'the prior workspace must not be overwritten when a new account has no cached data');
-  assert.equal(getElement('cloudStatus').textContent, 'Sync unavailable',
+  assert.equal(getElement('cloudStatus').textContent, 'Offline workspace unavailable',
     'missing target-account data while offline must keep sync blocked');
   assert.ok(getElement('cloudHelpText').textContent.includes('previous account remains protected and hidden'),
     'the offline no-cache path must explain why the previous workspace remains hidden');
