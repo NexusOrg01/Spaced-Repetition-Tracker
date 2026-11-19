@@ -61,9 +61,9 @@ for (const required of [
   "ownerBWorkspaceUnchanged:true"
 ]) assert.ok(ownerDriver.includes(required),
   'hosted Owner-B isolation driver must enforce: ' + required);
-assert.doesNotMatch(ownerDriver, /\\.from\\([^)]*\\)\\.(insert|update|upsert|delete)\\(/,
+assert.doesNotMatch(ownerDriver, /\.from\([^)]*\)\.(insert|update|upsert|delete)\(/,
   'Owner-B isolation checks must not write directly to workspace tables');
-assert.doesNotMatch(ownerDriver, /localStorage\\.(setItem|removeItem)|service_role|sb_secret_/,
+assert.doesNotMatch(ownerDriver, /localStorage\.(setItem|removeItem)|service_role|sb_secret_/,
   'Owner-B isolation checks must not mutate local account state or use privileged credentials');
 assert.ok(cloud.includes("Run Owner-B isolation checks") &&
   cloud.includes("runHostedQaOwnerIsolationChecks"),
