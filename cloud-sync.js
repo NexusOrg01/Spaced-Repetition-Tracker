@@ -2008,7 +2008,7 @@ function installHostedQaReplayPanel(){
 }
 
 async function signOut(){if(client)await client.auth.signOut();session=null;ready=false;clearTimeout(timer);clearRetry();status('Not signed in · offline ready');say('You are signed out. Continue using this device offline; data remains local.');setControls();}
-window.NexusCloudSync={schedule,upload,reconnect:connect,getAccountState,deleteAccount:deleteCurrentAccount,downgradeEntityDelta,runHostedQaReplayChecks,runHostedQaOwnerIsolationChecks,
+window.NexusCloudSync={schedule,upload,reconnect:connect,getAccountState,deleteAccount:deleteCurrentAccount,downgradeEntityDelta,
  noteCommittedLocalSave:(payload)=>{
   if(deletingAccount)return;
   // app-core has already committed this exact snapshot to the account-bound queue.
@@ -2017,6 +2017,7 @@ window.NexusCloudSync={schedule,upload,reconnect:connect,getAccountState,deleteA
   const p=payload&&payload.state?payload:diagnosticWorkspace();
   syncDiag('workspace-saved-locally',p);
  },
+ runHostedQaReplayChecks,runHostedQaOwnerIsolationChecks,
  noteEntitySyncResult:(result,error)=>{
   if(deletingAccount)return;
   const mode=result&&typeof result.mode==='string'?result.mode:
