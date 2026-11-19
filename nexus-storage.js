@@ -2113,26 +2113,35 @@
     if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner){
       return {ok:false,snapshotRequired:true,reason:'entity_projection_owner_unavailable'};
     }
-    // Drain any already queued local entity work before validating the manifest.
-    await entitySyncSerial.catch(()=>undefined);
-    if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner){
-      return {ok:false,snapshotRequired:true,reason:'entity_projection_owner_unavailable'};
+    // A save can enqueue another entity task while this wait is suspended. Drain
+    // until the serial tail is stable, then read the manifest/revision and confirm
+    // that no newer task was appended during those asynchronous reads. Otherwise
+    // the cloud coordinator can mistake an in-flight incremental update for a
+    // missing projection and start a destructive full-generation rebuild.
+    while(true){
+      const queued=entitySyncSerial;
+      await queued.catch(()=>undefined);
+      if(queued!==entitySyncSerial)continue;
+      if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner){
+        return {ok:false,snapshotRequired:true,reason:'entity_projection_owner_unavailable'};
+      }
+      const manifest=await readEntityManifest(owner);
+      const workspaceRevision=await readWorkspaceRevision(owner);
+      if(queued!==entitySyncSerial)continue;
+      const projectionWorkspaceRevision=manifest&&Number.isSafeInteger(Number(manifest.sourceWorkspaceRevision))
+        ?Number(manifest.sourceWorkspaceRevision):null;
+      if(!manifest||manifest.status!=='ready'||!manifest.activeGeneration){
+        return {ok:false,snapshotRequired:true,reason:'entity_projection_unavailable',
+          workspaceRevision:Number.isSafeInteger(workspaceRevision)?workspaceRevision:null,
+          projectionWorkspaceRevision};
+      }
+      if(!Number.isSafeInteger(workspaceRevision)||projectionWorkspaceRevision!==workspaceRevision){
+        return {ok:false,snapshotRequired:true,reason:'stale_entity_projection',
+          workspaceRevision:Number.isSafeInteger(workspaceRevision)?workspaceRevision:null,
+          projectionWorkspaceRevision};
+      }
+      return {ok:true,workspaceRevision,projectionWorkspaceRevision};
     }
-    const manifest=await readEntityManifest(owner);
-    const workspaceRevision=await readWorkspaceRevision(owner);
-    const projectionWorkspaceRevision=manifest&&Number.isSafeInteger(Number(manifest.sourceWorkspaceRevision))
-      ?Number(manifest.sourceWorkspaceRevision):null;
-    if(!manifest||manifest.status!=='ready'||!manifest.activeGeneration){
-      return {ok:false,snapshotRequired:true,reason:'entity_projection_unavailable',
-        workspaceRevision:Number.isSafeInteger(workspaceRevision)?workspaceRevision:null,
-        projectionWorkspaceRevision};
-    }
-    if(!Number.isSafeInteger(workspaceRevision)||projectionWorkspaceRevision!==workspaceRevision){
-      return {ok:false,snapshotRequired:true,reason:'stale_entity_projection',
-        workspaceRevision:Number.isSafeInteger(workspaceRevision)?workspaceRevision:null,
-        projectionWorkspaceRevision};
-    }
-    return {ok:true,workspaceRevision,projectionWorkspaceRevision};
   }
   async function updateEntityManifest(ownerId,expectedGeneration,update){
     const owner=entityOwnerKey(ownerId),key=entityManifestKey(owner);
