@@ -81,7 +81,13 @@ export function validateRemoteMigrationSet(remoteVersions,{complete=false}={}){
  return {applied:versions.length-pending.length,pending};
 }
 export function parseDryRunVersions(text){
- return [...new Set((String(text).match(/(?<!\d)\d{8,14}(?!\d)/g)||[]))].sort();
+ const normalized=String(text).replace(/\x1B\[[0-?]*[ -/]*[@-~]/g,'');
+ const found=[];
+ for(const line of normalized.split(/\r?\n/)){
+  const match=line.match(/^\s*[•*-]\s+`?(\d{8,14})_[^`\s]+\.sql`?\s*$/);
+  if(match)found.push(match[1]);
+ }
+ return [...new Set(found)].sort();
 }
 export function validateDryRun(remoteVersions,dryRunText){
  const remote=validateRemoteMigrationSet(remoteVersions);
