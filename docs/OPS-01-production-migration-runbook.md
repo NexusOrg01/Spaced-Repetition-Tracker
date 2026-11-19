@@ -48,9 +48,21 @@ On 17 November 2026 the owner additionally authorized disposal of existing works
 
 A failed migration or data-destructive forward fix could permanently lose the existing production data. There is no isolated recovery project and no verified point-in-time restore under this waiver. If post-migration checks fail, stop; do not claim rollback is available. Continue only with a reviewed forward-fix and the owner's recorded risk acceptance.
 
-## Reviewed migration set and order
+## Local migration sources and pending production set
 
-The guard script accepts only these 11 versioned files in `supabase/migrations`:
+The shared `supabase/migrations/` directory contains exactly **14** versioned SQL files, separated into two groups:
+
+**Three fixed production baseline source files** are already recorded as applied in the production migration ledger. They are present locally only so Supabase CLI can resolve the remote versions; they are not part of the pending OPS-01 set and must never be treated as migrations to apply:
+
+| Applied version | Local source file | SHA-256 of executable SQL |
+|---|---|---|
+| `20261010174818` | `20261010174818_create_nexus_user_data.sql` | `57e92c38ca0ea9509cca6688f7303d3f6e7c0f7489ce35cf35e5409fd9cdb519` |
+| `20261012033747` | `20261012033747_revoke_unneeded_client_privileges.sql` | `0c469831b1c08d96d61c02baf9e5c97a71367c8da3317fc4c996add6a1aa737b` |
+| `20261012034918` | `20261012034918_revoke_unused_client_delete_nexus_backup.sql` | `26f97b2d68ee78e77526dbe48da46fc155d320b413aaa62fb8dc72d27a0d29a1` |
+
+The hashes are pinned to the SQL statements read directly from `supabase_migrations.schema_migrations.statements` in production on 19 November 2026. The guard verifies the executable SQL body of each local baseline file against its pinned SHA-256. The migration ledger check also requires all three baseline versions to exist remotely; it fails closed if one is missing.
+
+**The exact 11 pending OPS-01 migrations** remain the approved production change set and are unchanged:
 
 1. `20261014_one_active_syllabus_request_per_user.sql`
 2. `20261018_retire_community_wishlist.sql`
@@ -64,7 +76,7 @@ The guard script accepts only these 11 versioned files in `supabase/migrations`:
 10. `20261114103353_protect_active_nexus_chunk_manifests.sql`
 11. `20261115171500_validate_general_snapshot_candidates.sql`
 
-The guard fails closed if any other migration file is added to that folder, if the remote ledger contains an unreviewed version, or if the CLI dry-run does not exactly match the pending allowlist. It deliberately excludes `supabase/staging-migrations/*` and `supabase/local-phase34/*`. It does not use `--include-all`, `migration repair`, roles, seed files or config pushes.
+The guard fails closed unless the directory contains exactly those three pinned applied-baseline sources plus the 11 reviewed pending files (14 files total). It separately verifies the three baseline SQL hashes, requires the three baseline versions to be present in the remote ledger, rejects every other remote version, and compares the CLI dry-run only with the exact 11-file pending allowlist. It deliberately excludes `supabase/staging-migrations/*` and `supabase/local-phase34/*`. It does not use `--include-all`, `migration repair`, roles, seed files or config pushes.
 
 The production ledger was last inspected read-only before this runner was written. At that inspection it contained baseline versions `20261010174818`, `20261012033747` and `20261012034918`, with all 11 OPS-01 versions pending. Re-read the live ledger immediately before any apply; the runner does not assume that inspection remains current.
 
