@@ -50,6 +50,15 @@ function harness(options={}){
         groups:pending,throughSequence:pending.length?pending[pending.length-1].lastSequence:afterSequence,
         hasMore:false,snapshotRequired:false};
     },
+    async applyWorkspaceEntityDeltaGroup(owner,group,expectedRevision,remoteHead){
+      if(owner!==activeOwner||!cursor||cursor.publishRevision!==expectedRevision||
+         group.revision!==expectedRevision+1){
+        return {ok:false,snapshotRequired:true,reason:'fixture_remote_apply_cursor_mismatch'};
+      }
+      cursor={...cursor,publishRevision:group.revision,remoteHeadRevision:remoteHead,
+        requiresPull:remoteHead>group.revision};
+      return {ok:true,cursor:{...cursor}};
+    },
     async acknowledgeWorkspaceEntityOutboxGroup(owner,batch,group,expectedRevision,receipt){
       acknowledgements.push({owner,operationId:group.operationId,expectedRevision,receipt:{...receipt}});
       if(options.failAcknowledgement)return {ok:false,snapshotRequired:true,reason:'fixture_ack_failed'};
