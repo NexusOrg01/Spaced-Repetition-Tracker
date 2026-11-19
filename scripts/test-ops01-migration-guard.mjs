@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   OPS01_MIGRATIONS,
   OPS01_RISK_ACCEPTANCE_REF,
   PRODUCTION_BASELINE,
+  PRODUCTION_BASELINE_MIGRATIONS,
   parseRemoteMigrationVersions,
   validateLocalMigrationSet,
+  validateBaselineMigrationContent,
   validateRemoteMigrationSet,
   parseDryRunVersions,
   validateDryRun,
@@ -12,7 +15,30 @@ import {
   validateRiskAcceptanceRef
 } from './ops01-migration-guard.mjs';
 
-assert.equal(validateLocalMigrationSet(OPS01_MIGRATIONS).expected,11);
+const localSourceInventory=validateLocalMigrationSet([
+  ...PRODUCTION_BASELINE_MIGRATIONS.map(migration=>migration.file),
+  ...OPS01_MIGRATIONS
+]);
+assert.equal(localSourceInventory.expected,11);
+assert.equal(localSourceInventory.baseline,3);
+assert.equal(localSourceInventory.local,14);
+assert.deepEqual(PRODUCTION_BASELINE_MIGRATIONS.map(migration=>migration.version),PRODUCTION_BASELINE);
+for(const baseline of PRODUCTION_BASELINE_MIGRATIONS){
+  const source=readFileSync(new URL('../supabase/migrations/'+baseline.file,import.meta.url),'utf8');
+  assert.equal(validateBaselineMigrationContent(baseline.file,source).version,baseline.version);
+  assert.throws(
+    ()=>validateBaselineMigrationContent(baseline.file,source+'\\nSELECT 1;'),
+    /does not match the SHA-256 recorded from production migration history/
+  );
+}
+assert.throws(
+  ()=>validateLocalMigrationSet([
+    ...PRODUCTION_BASELINE_MIGRATIONS.map(migration=>migration.file),
+    ...OPS01_MIGRATIONS,
+    '20269999999999_unreviewed.sql'
+  ]),
+  /exactly the 3 pinned applied production baseline files/
+);
 const remoteText='LOCAL │     REMOTE     │ TIME (UTC)\n       │ 20261010174818 │ 2026-10-10 17:48:18\n       │ 20261012033747 │ 2026-10-12 03:37:47\n       │ 20261012034918 │ 2026-10-12 03:49:18\n';
 const remote=parseRemoteMigrationVersions(remoteText);
 assert.deepEqual(remote,[...PRODUCTION_BASELINE].sort());
@@ -43,4 +69,4 @@ const keys=['chunk_table_present','chunk_rls_enabled','active_chunk_delete_guard
 const checks=Object.fromEntries(keys.map(k=>[k,true]));
 assert.equal(validateVerificationOutput(JSON.stringify({report:checks})).verified,12);
 assert.throws(()=>validateVerificationOutput(JSON.stringify({report:{...checks,delta_rpc_browser_grants_revoked:false}})),/delta_rpc_browser_grants_revoked/);
-console.log('OPS-01 guard tests passed: exact 11-file allowlist, baseline, pending/dry-run comparison, unknown-version rejection, exact owner DR-01 risk-acceptance reference, and post-apply checks.');
+console.log('OPS-01 guard tests passed: 3 hash-pinned applied production baseline sources, exact 11-file pending allowlist, pending/dry-run comparison, unknown-version rejection, exact owner DR-01 risk-acceptance reference, and post-apply checks.');
