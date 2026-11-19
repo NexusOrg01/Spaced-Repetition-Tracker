@@ -1859,7 +1859,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
 
   // Reproduce the failure mode seen on A1: the durable journal remains staged,
   // but the manifest no longer points at its pending generation.
-  const migrationStore=idb.stores.get('migrationMeta');
+  const migrationStore=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
   const manifestKey='workspace-entities:'+encodeURIComponent(owner);
   const lostManifest=clone(migrationStore.get(manifestKey));
   migrationStore.set(manifestKey,{
