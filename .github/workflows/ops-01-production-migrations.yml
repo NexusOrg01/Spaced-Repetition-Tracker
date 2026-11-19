@@ -91,17 +91,24 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
           supabase --version
+      - name: Build masked IPv4 session-pooler connection URL
+        shell: bash
+        run: |
+          set -euo pipefail
+          DB_URL="$(node -e 'const u = new URL("postgresql://postgres.txugbdavblpettcnhcxl@aws-0-ap-south-1.pooler.supabase.com:5432/postgres"); u.password = process.env.SUPABASE_DB_PASSWORD; process.stdout.write(u.toString())')"
+          echo "::add-mask::$DB_URL"
+          echo "SUPABASE_DB_URL=$DB_URL" >> "$GITHUB_ENV"
       - name: Read production migration history
         shell: bash
         run: |
           set -euo pipefail
-          supabase migration list --remote="$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD" | tee "$RUNNER_TEMP/ops01-migrations-before.txt"
+          supabase migration list --remote="$SUPABASE_DB_URL" | tee "$RUNNER_TEMP/ops01-migrations-before.txt"
           node scripts/ops01-migration-guard.mjs --remote-file "$RUNNER_TEMP/ops01-migrations-before.txt"
       - name: Preview exact pending migration set (no database writes)
         shell: bash
         run: |
           set -euo pipefail
-          supabase db push --dry-run --remote="$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD" | tee "$RUNNER_TEMP/ops01-dry-run.txt"
+          supabase db push --dry-run --remote="$SUPABASE_DB_URL" | tee "$RUNNER_TEMP/ops01-dry-run.txt"
           node scripts/ops01-migration-guard.mjs --remote-file "$RUNNER_TEMP/ops01-migrations-before.txt" --dry-run-file "$RUNNER_TEMP/ops01-dry-run.txt"
       - name: Apply reviewed OPS-01 migrations
         if: inputs.operation == 'apply'
@@ -110,20 +117,20 @@ jobs:
           set -euo pipefail
           # The only hosted write in this workflow. The protected GitHub
           # environment must have required reviewers configured before it is usable.
-          supabase db push --yes --remote="$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
+          supabase db push --yes --remote="$SUPABASE_DB_URL"
       - name: Verify migration history after apply
         if: inputs.operation == 'apply'
         shell: bash
         run: |
           set -euo pipefail
-          supabase migration list --remote="$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD" | tee "$RUNNER_TEMP/ops01-migrations-after.txt"
+          supabase migration list --remote="$SUPABASE_DB_URL" | tee "$RUNNER_TEMP/ops01-migrations-after.txt"
           node scripts/ops01-migration-guard.mjs --remote-file "$RUNNER_TEMP/ops01-migrations-after.txt" --assert-complete
       - name: Verify production schema and default-off Delta state (read only)
         if: inputs.operation == 'apply'
         shell: bash
         run: |
           set -euo pipefail
-          supabase db query --file supabase/ops-01-post-migration-verification.sql --remote="$SUPABASE_PROJECT_REF" --read-only --output json > "$RUNNER_TEMP/ops01-verification.json"
+          supabase db query --file supabase/ops-01-post-migration-verification.sql --remote="$SUPABASE_DB_URL" --read-only --output json > "$RUNNER_TEMP/ops01-verification.json"
           cat "$RUNNER_TEMP/ops01-verification.json"
           node scripts/ops01-migration-guard.mjs --verify-file "$RUNNER_TEMP/ops01-verification.json"
       - name: Upload operator evidence
