@@ -443,6 +443,9 @@ assert.equal(getElement('cloudStatus').textContent, 'Offline · local workspace'
 
 networkAvailable = true;
 listeners['window:online']();
+for(let i=0;i<100&&remoteReadCount===0;i++){
+  await new Promise(resolve=>setTimeout(resolve,10));
+}
 assert.ok(remoteReadCount>0,
   'reconnecting after offline initialization must rerun authenticated cloud verification before reporting a synced state');
 for (let i = 0; i < 100 && (!rows.has(accountA.id) || queue.hasPending(storage, accountA.id)); i++) {
