@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -18,6 +19,33 @@ export const OPS01_MIGRATIONS=Object.freeze([
  '20261115171500_validate_general_snapshot_candidates.sql'
 ]);
 export const PRODUCTION_BASELINE=Object.freeze(['20261010174818','20261012033747','20261012034918']);
+// SHA-256 baselines captured from the authorized main source commit below.
+// Any SQL edit requires an explicit scope review and an intentional hash-baseline update.
+export const OPS01_MIGRATION_SOURCE_COMMIT='f1d77021369d2bae363cc2c7d9396ecc38e614a7';
+export const OPS01_MIGRATION_SHA256=Object.freeze({
+ '20261014_one_active_syllabus_request_per_user.sql':'0ffb1366021f12bbd1ee5d934f95313f789a8752980620a89b560ee7c15b9ae9',
+ '20261018_retire_community_wishlist.sql':'6b7e270256ca7c6e4e08a78ad8aebb3ec0a306560d904e11daf2a5ed7bc1fcbf',
+ '20261109052019_chunked_nexus_workspace_snapshots.sql':'6d0b584c047f9fa3d871faeeba1f377b4e33b4ba47bc4f679606bcfc30865e71',
+ '20261109053246_tighten_nexus_workspace_chunk_limit.sql':'dc063861a8a6a0ce4c81ae8e798d034a9b28b2d59f2e5ccc81d928e7018d6c58',
+ '20261113095723_nexus_entity_delta_sync.sql':'19df4ded7adeca88d8653cc696e9821e00e3e6ddb0e4dbec9f42f51d2b419a11',
+ '20261113101625_harden_nexus_entity_delta_reads_and_compaction.sql':'d46e131f05565e82f0b5562ad27f534757f2cdfe88f8bb5c93c8538c11f7fd58',
+ '20261113215301_defer_entity_delta_enablement_until_client_ready.sql':'3d98064e1768a31a67b60a62acfd8cc0ef6f0171b01d119195a9c7e85e6f62d4',
+ '20261113222129_revoke_unwired_entity_delta_rpc_execution.sql':'9713d48835b7cf7c26e30dcacdc188f858548664f9d51e38fed316019fe3f0bc',
+ '20261114093000_harden_nexus_entity_delta_record_identity.sql':'b2e8be28f41a0dda5336d721302f7db8ca33611b74319a57a634d6e0551e8793',
+ '20261114103353_protect_active_nexus_chunk_manifests.sql':'ea72216f15fd30b509106c08ee925cecd57895e644446ffc01f08d4e0d60f5d0',
+ '20261115171500_validate_general_snapshot_candidates.sql':'f1aa161dca77465e488782ffd3d8209070c39d69aa6b0087374de180d14587ad'
+});
+export function validateMigrationHashes(directory=resolve(root,'supabase/migrations')){
+ const verified=OPS01_MIGRATIONS.map(name=>{
+  const actual=createHash('sha256').update(readFileSync(resolve(directory,name))).digest('hex');
+  const expected=OPS01_MIGRATION_SHA256[name];
+  assert.ok(expected,'No SHA-256 baseline exists for '+name);
+  assert.equal(actual,expected,'Migration SHA-256 mismatch for '+name+'; compare against the authorized source commit before proceeding');
+  return {name,sha256:actual};
+ });
+ return verified;
+}
+
 const versions=OPS01_MIGRATIONS.map(name=>name.match(/^\d{8,14}(?=_)/)[0]);
 export function validateLocalMigrationSet(names){
  const actual=names.filter(name=>/^\d{8,14}_.+\.sql$/.test(name)).sort();
@@ -31,7 +59,7 @@ export function parseRemoteMigrationVersions(text){
  for(const line of String(text).split(/\r?\n/)){
   const columns=line.split(/[│|]/);
   if(columns.length<3)continue;
-  const version=columns[1].trim();
+  const version=columns[1].trim().replace(/^`([^`]*)`$/,'$1').trim();
   if(/^\d{8,14}$/.test(version))found.push(version);
  }
  return [...new Set(found)].sort();
@@ -81,6 +109,15 @@ function readOption(name){const i=process.argv.indexOf(name);return i>=0?process
 async function main(){
  const dir=resolve(root,'supabase/migrations');
  validateLocalMigrationSet(readdirSync(dir));
+ const hashResults=validateMigrationHashes(dir);
+ const hashEvidence=[
+  'authorized_source_commit='+OPS01_MIGRATION_SOURCE_COMMIT,
+  ...hashResults.map(({name,sha256})=>name+' sha256='+sha256)
+ ].join('\n')+'\n';
+ console.log('Verified SHA-256 for all '+hashResults.length+' OPS-01 migration files against authorized source commit '+OPS01_MIGRATION_SOURCE_COMMIT+'.');
+ console.log(hashEvidence.trimEnd());
+ const hashOutput=readOption('--hash-output-file');
+ if(hashOutput)writeFileSync(resolve(hashOutput),hashEvidence,'utf8');
  const requireRiskAcceptance=process.argv.includes('--require-risk-acceptance');
  const riskAcceptanceRef=validateRiskAcceptanceRef(readOption('--risk-acceptance-ref'),{required:requireRiskAcceptance});
  if(riskAcceptanceRef)console.log('Owner risk-acceptance record supplied:',riskAcceptanceRef,'— this records accepted no-backup risk; it is not backup/restore evidence.');

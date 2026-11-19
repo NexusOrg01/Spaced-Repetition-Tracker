@@ -57,8 +57,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Validate exact OPS-01 migration allowlist
-        run: node scripts/ops01-migration-guard.mjs
+      - name: Validate exact OPS-01 migration allowlist and pinned SHA-256 source hashes
+        run: node scripts/ops01-migration-guard.mjs --hash-output-file "$RUNNER_TEMP/ops01-migration-hashes.txt"
       - name: Install pinned Supabase CLI v3.0.0
         run: npm install --global supabase@3.0.0
       - name: Verify operator secrets, immutable target and DR-01 risk acceptance
@@ -139,6 +139,7 @@ jobs:
         with:
           name: ops01-${{ inputs.operation }}-evidence
           path: |
+            ${{ runner.temp }}/ops01-migration-hashes.txt
             ${{ runner.temp }}/ops01-migrations-before.txt
             ${{ runner.temp }}/ops01-dry-run.txt
             ${{ runner.temp }}/ops01-migrations-after.txt
