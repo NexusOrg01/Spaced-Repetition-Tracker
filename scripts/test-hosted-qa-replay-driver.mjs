@@ -25,7 +25,7 @@ for (const required of [
   "head_changed_during_read_only_replay_checks",
   "operation_history_changed_during_read_only_checks",
   "installHostedQaReplayPanel",
-  "Run safe hosted checks"
+  "Run Owner-A replay checks"
 ]) assert.ok(driver.includes(required), 'hosted QA replay driver must enforce: ' + required);
 
 assert.match(driver, /const altered=JSON\.parse\(JSON\.stringify\(changes\)\)/,
