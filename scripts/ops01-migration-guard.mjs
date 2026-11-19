@@ -31,7 +31,7 @@ export function parseRemoteMigrationVersions(text){
  for(const line of String(text).split(/\r?\n/)){
   const columns=line.split(/[│|]/);
   if(columns.length<3)continue;
-  const version=columns[1].trim();
+  const version=columns[1].trim().replace(/^`|`$/g,'').trim();
   if(/^\d{8,14}$/.test(version))found.push(version);
  }
  return [...new Set(found)].sort();
