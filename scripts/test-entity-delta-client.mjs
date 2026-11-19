@@ -376,6 +376,39 @@ function harness(options={}){
   assert.ok(events.includes('render-deleted-workspace-0'),'the deleted workspace must be applied to the live app view');
 }
 {
+  const pending={status:'pending',ownerUserId:'account-A',baseServerVersion:'snapshot-stamp',payload};
+  const cursor={ownerId:'account-A',generation:'generation-A',workspaceRevision:1,
+    publishRevision:0,acknowledgedSequence:10,remoteHeadRevision:0,
+    snapshotUpdatedAt:'snapshot-stamp',requiresPull:false};
+  const h=harness({pendingSnapshot:pending,initialCursor:cursor,
+    groups:[makeGroup('local-save-after-cursor',11,[putChange('topics','topic-local')])]});
+  const pull=await h.client.applyRemotePage('account-A');
+  assert.equal(pull.ok,true,
+    'a newer local projection revision with a valid pending outbox must not force snapshot recovery');
+  assert.equal(pull.idle,true,
+    'when the remote head is unchanged, remote apply should yield to the outbound publisher');
+  assert.equal(h.shadowAcknowledgements.length,0,
+    'a compatibility snapshot must remain pending until its newer local outbox is published');
+  const push=await h.client.publishPending('account-A');
+  assert.equal(push.ok,true);
+  assert.equal(push.publishedCount,1,
+    'the pending local change must reach the Delta operation publisher');
+  assert.equal(h.calls.filter(call=>call.name==='nexus_publish_entity_operation').length,1);
+  assert.equal(h.cursor().workspaceRevision,2);
+}
+{
+  const pending={status:'pending',ownerUserId:'account-A',baseServerVersion:'snapshot-stamp',payload};
+  const cursor={ownerId:'account-A',generation:'generation-A',workspaceRevision:1,
+    publishRevision:0,acknowledgedSequence:10,remoteHeadRevision:0,
+    snapshotUpdatedAt:'snapshot-stamp',requiresPull:false};
+  const h=harness({pendingSnapshot:pending,initialCursor:cursor,groups:[]});
+  const result=await h.client.applyRemotePage('account-A');
+  assert.equal(result.snapshotRequired,true,
+    'an empty outbox cannot explain a newer local workspace revision');
+  assert.equal(h.shadowAcknowledgements.length,0,
+    'an unexplained empty outbox must preserve the compatibility snapshot');
+}
+{
   let activeOwner='account-A',readCalled=false;
   const client={auth:{async getUser(){return {data:{user:{id:activeOwner}},error:null};}},
     async rpc(name){if(name==='nexus_get_entity_sync_state')return {data:{mode:'snapshot'},error:null};readCalled=true;return {data:null,error:null};}};
