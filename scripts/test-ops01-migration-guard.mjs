@@ -16,6 +16,8 @@ assert.equal(validateLocalMigrationSet(OPS01_MIGRATIONS).expected,11);
 const remoteText='LOCAL │     REMOTE     │ TIME (UTC)\n       │ 20261010174818 │ 2026-10-10 17:48:18\n       │ 20261012033747 │ 2026-10-12 03:37:47\n       │ 20261012034918 │ 2026-10-12 03:49:18\n';
 const remote=parseRemoteMigrationVersions(remoteText);
 assert.deepEqual(remote,[...PRODUCTION_BASELINE].sort());
+const cliRemoteText='Local            | Remote           | Time (UTC)\\n                 | 20261010174818   | 2026-10-10 17:48:18\\n                 | 20261012033747   | 2026-10-12 03:37:47\\n                 | 20261012034918   | 2026-10-12 03:49:18\\n';
+assert.deepEqual(parseRemoteMigrationVersions(cliRemoteText),[...PRODUCTION_BASELINE].sort(),'Supabase CLI ASCII table output must parse');
 const versions=OPS01_MIGRATIONS.map(name=>name.match(/^\d{8,14}(?=_)/)[0]);
 assert.deepEqual(versions.slice(0,2),['20261014','20261018'],'two legacy migrations have 8-digit versions');
 const dry=versions.map(v=>'Would apply '+v+'_migration.sql').join('\n');
