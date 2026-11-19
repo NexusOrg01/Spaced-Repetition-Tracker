@@ -49,7 +49,7 @@ const cliBacktickRemoteText=[
  '   `20261114093000` | ` `              | `2026-11-14 09:30:00` ',
  '   `20261114103353` | ` `              | `2026-11-14 10:33:53` ',
  '   `20261115171500` | ` `              | `2026-11-15 17:15:00` '
-].join('\\n');
+].join('\n');
 assert.deepEqual(parseRemoteMigrationVersions(cliBacktickRemoteText),[...PRODUCTION_BASELINE].sort(),'actual Supabase CLI backtick-wrapped table output must parse only remote versions');
 const versions=OPS01_MIGRATIONS.map(name=>name.match(/^\d{8,14}(?=_)/)[0]);
 assert.deepEqual(versions.slice(0,2),['20261014','20261018'],'two legacy migrations have 8-digit versions');
