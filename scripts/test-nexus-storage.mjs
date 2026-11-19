@@ -1951,4 +1951,47 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'successful owner cleanup must release the in-memory recovery lock');
 }
 
+// Waiting for entity synchronization must drain tasks appended while the
+// caller is suspended on an earlier task. Otherwise Delta startup can observe a
+// transient projection state and incorrectly rebuild it before the incremental
+// outbox write has completed.
+{
+  const owner='entity-sync-wait-race-owner';
+  const state={
+    schema:3,streams:[{id:'wait-stream',name:'Commerce'}],
+    subjects:[{id:'wait-subject',streamId:'wait-stream',name:'Accounting'}],
+    topics:[{id:'wait-topic',subjectId:'wait-subject',name:'Baseline topic'}],
+    history:[],exams:[],settings:{}
+  };
+  const features={version:1,journal:[],papers:[],goals:[],studyLogs:[]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true,'entity-sync wait fixture must initialize durable storage');
+  await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+
+  let releaseFirst,releaseSecond,waitResolved=false;
+  const firstGate=new Promise(resolve=>{releaseFirst=resolve;});
+  const secondGate=new Promise(resolve=>{releaseSecond=resolve;});
+  const first=loaded.api.syncWorkspaceEntities(owner,[],{durablePromise:firstGate});
+  const waiting=loaded.api.waitForWorkspaceEntitySync(owner).then(result=>{
+    waitResolved=true;return result;
+  });
+  const second=loaded.api.syncWorkspaceEntities(owner,[],{durablePromise:secondGate});
+
+  releaseFirst();
+  await first;
+  await Promise.resolve();
+  assert.equal(waitResolved,false,
+    'the projection wait must notice and drain a second entity task queued while it awaited the first');
+  releaseSecond();
+  await second;
+  const settled=await waiting;
+  assert.equal(settled.ok,true,'the stable queue drain must return the verified active projection');
+}
+
 console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, delta cursor receipt atomicity, recovery journal restart at prepared/staged/published phases, recovery write locks, failed-write recovery, and account-handoff isolation.');
