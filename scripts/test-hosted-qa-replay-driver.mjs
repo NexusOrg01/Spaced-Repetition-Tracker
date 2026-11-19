@@ -39,4 +39,37 @@ assert.ok(build.includes("env.NEXUS_ENTITY_DELTA_QA_ENABLED !== 'true'") &&
   build.includes("env.VERCEL_GIT_COMMIT_REF !== HOSTED_QA_BRANCH"),
   'the build-time exact branch/preview opt-in gate must remain required');
 
-console.log('Hosted DLA-04 replay driver safety checks passed.');
+
+const ownerStart = cloud.indexOf('async function runHostedQaOwnerIsolationChecks(){');
+const ownerEnd = cloud.indexOf('function installHostedQaReplayPanel(){', ownerStart);
+assert.ok(ownerStart >= 0 && ownerEnd > ownerStart,
+  'hosted Owner-B isolation checks must be defined before the QA panel');
+const ownerDriver = cloud.slice(ownerStart, ownerEnd);
+for (const required of [
+  "client.auth.getUser()",
+  "state.mode!=='snapshot'",
+  "client.from(table).select(columns).limit(10000)",
+  "client.rpc('nexus_read_entity_operations'",
+  "client.rpc('nexus_publish_entity_operation'",
+  "String(replay.error.code)!=='55000'",
+  "client.rpc('nexus_compact_entity_operations'",
+  "compact.data.code!=='delta_not_enabled'",
+  "client.rpc('nexus_disable_entity_delta'",
+  "downgrade.data.code!=='revision_conflict'",
+  "ownerAOperationIdSuffix",
+  "ownerBStateUnchanged:true",
+  "ownerBWorkspaceUnchanged:true"
+]) assert.ok(ownerDriver.includes(required),
+  'hosted Owner-B isolation driver must enforce: ' + required);
+assert.doesNotMatch(ownerDriver, /\\.from\\([^)]*\\)\\.(insert|update|upsert|delete)\\(/,
+  'Owner-B isolation checks must not write directly to workspace tables');
+assert.doesNotMatch(ownerDriver, /localStorage\\.(setItem|removeItem)|service_role|sb_secret_/,
+  'Owner-B isolation checks must not mutate local account state or use privileged credentials');
+assert.ok(cloud.includes("Run Owner-B isolation checks") &&
+  cloud.includes("runHostedQaOwnerIsolationChecks"),
+  'the hosted account panel must expose the Owner-B isolation action');
+assert.ok(ownerDriver.includes("operationId:'nexus-entity-3eacc7b2-08ed-4d08-8d8b-fbcbe9c683eb-1'") &&
+  ownerDriver.includes("headRevision:13,snapshotRevision:11,compactedThroughRevision:11"),
+  'the Owner-B probes must target the currently verified Owner-A staging operation/checkpoint');
+
+console.log('Hosted DLA-04 replay and Owner-B isolation safety checks passed.');
