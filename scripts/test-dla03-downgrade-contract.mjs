@@ -91,6 +91,11 @@ assert.match(client, /alreadyDowngraded:true/);
 assert.match(docs, /historical Delta marker remains inside the immutable chunk bytes/);
 
 assert.match(docs, /existing exact local\/hosted-QA gate remains required/);
-assert.match(docs, /does not apply it to `nexus-sync-staging` or production/);
+assert.match(docs, /PR #135 added the downgrade implementation and local tests; it did not apply the migration to production/);
+assert.match(docs, /The live staging ledger contains 16 applied version\/name entries/);
+assert.match(docs, /all five matched exactly/);
+assert.match(docs, /single enabled allowlist owner matches the single Delta-mode workspace/);
+assert.match(docs, /DLA-04 hosted acceptance result/);
+assert.match(docs, /No production migration or production data\/configuration change is authorized/);
 
 console.log('DLA-03 static contract passed: owner-only transaction, exact checkpoint/CAS, compaction gate, retry receipt, runtime gate, local migration wiring, stale-device and QA safety coverage.');
