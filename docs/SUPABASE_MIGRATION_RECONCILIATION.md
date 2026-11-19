@@ -151,3 +151,18 @@ The PR #126 Web client now handles this transition safely:
 Regression coverage is in `scripts/test-cloud-sync-runtime.mjs`: a 1.7 MB workspace is verified through the legacy conditional writer when the chunk table is absent; a payload exceeding the 2 MiB compatibility ceiling is rejected without changing the remote revision or clearing its local pending queue. The main validation workflow #1547 passed on the exact source SHA.
 
 This is a compatibility bridge, not a substitute for OPS-01. Production's eight existing workspaces currently fit inside this bound, but workspaces above 2 MiB will remain locally preserved and cloud-sync-paused until the post-merge production chunk-storage migration is applied. No production migration, data, schema, RLS, permission, Auth setting or deployment was changed.
+
+
+## Production baseline SQL source recovery — 2026-11-19
+
+A read-only query against the production project's `supabase_migrations.schema_migrations` table confirmed that the table retains the executed SQL in its `statements` array. The three baseline records were read by exact version and migration name; each contains one SQL statement. Their recorded SQL was compared with the executable body of the corresponding restored repository file after excluding only the files' explanatory `--` comment lines. All three comparisons matched exactly:
+
+| Version | Migration name | Executable SQL SHA-256 | Comparison |
+|---|---|---|---|
+| `20261010174818` | `create_nexus_user_data` | `57e92c38ca0ea9509cca6688f7303d3f6e7c0f7489ce35cf35e5409fd9cdb519` | Exact |
+| `20261012033747` | `revoke_unneeded_client_privileges` | `0c469831b1c08d96d61c02baf9e5c97a71367c8da3317fc4c996add6a1aa737b` | Exact |
+| `20261012034918` | `revoke_unused_client_delete_nexus_backup` | `26f97b2d68ee78e77526dbe48da46fc155d320b413aaa62fb8dc72d27a0d29a1` | Exact |
+
+The executable SQL hashes are pinned in `scripts/ops01-migration-guard.mjs`. The three baseline source files are kept separate from the exact 11-file pending OPS-01 allowlist: the protected preflight requires all three versions to be already present remotely and refuses unknown remote versions. Their purpose is to make local migration source complete so Supabase CLI can resolve the existing production ledger; they do not expand the pending production apply set.
+
+This verification did not execute, repair, or alter migration history and did not write to production schema or data. The PR/branch recovery files are therefore validated as faithful copies of the recorded production SQL, not as evidence that the original October repository artifacts were recoverable from Git history.
