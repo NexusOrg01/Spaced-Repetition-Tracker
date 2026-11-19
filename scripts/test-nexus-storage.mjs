@@ -1847,7 +1847,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'backup/restore-style managed writes must remain blocked while recovery is prepared');
   const stagedResult=await preparedRestarted.api.migrateWorkspaceEntities(owner,candidateState,candidateFeatures,{
     expectedRevision:preparedRestarted.api.getStatus().revision,
-    deferActivation:true,recoveryIntentId:intentId
+    deferActivation:true,recoveryIntentId:intentId,recoveryCandidateDigest:digest
   });
   assert.equal(stagedResult.staged,true,'the replacement generation should be staged without activation');
   const activeBefore=await loaded.api.readWorkspaceEntities(owner);
@@ -1856,12 +1856,66 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const staged=await loaded.api.readWorkspaceEntities(owner,{pending:true,recoveryIntentId:intentId});
   assert.equal(staged.pending,true);
   assert.equal(staged.state.topics[0].name,'Merged recovery');
+
+  // Reproduce the failure mode seen on A1: the durable journal remains staged,
+  // but the manifest no longer points at its pending generation.
+  const migrationStore=idb.stores.get('migrationMeta');
+  const manifestKey='workspace-entities:'+encodeURIComponent(owner);
+  const lostManifest=clone(migrationStore.get(manifestKey));
+  migrationStore.set(manifestKey,{
+    ...lostManifest,pendingGeneration:null,pendingRecoveryIntentId:null,
+    pendingRowCount:null,pendingCounts:null,pendingPositionBounds:null,
+    pendingSourceRevision:null,pendingSourceWorkspaceRevision:null
+  });
+  const repairedStage=await preparedRestarted.api.migrateWorkspaceEntities(owner,candidateState,candidateFeatures,{
+    expectedRevision:preparedRestarted.api.getStatus().revision,
+    deferActivation:true,recoveryIntentId:intentId,recoveryRestage:true,
+    recoveryCandidateDigest:digest
+  });
+  assert.equal(repairedStage.staged,true,
+    'a staged journal whose manifest pointer was lost must accept a digest-matched replacement generation');
+  const restoredStage=await preparedRestarted.api.readWorkspaceEntities(owner,{pending:true,recoveryIntentId:intentId});
+  assert.ok(restoredStage&&restoredStage.pending,
+    'the replacement generation must be readable under the original recovery intent');
+  assert.equal(restoredStage.state.topics[0].name,'Merged recovery',
+    'restaging must preserve the exact previously authorized recovery candidate');
+
   const journal=await loaded.api.readWorkspaceEntityRecovery(owner);
   assert.equal(journal.intent.phase,'staged');
   assert.equal(loaded.api.getStatus().entityRecoveryLocked,true,
     'the account write lock must remain active while recovery is staged');
   await assert.rejects(loaded.api.syncWorkspaceEntities(owner,[]),/recovery is pending/,
     'normal entity projection changes must be blocked while the candidate is staged');
+
+  // A fresh page can first hydrate under B, then switch back to A. Reading A's
+  // journal after that handoff must restore A's in-memory lock before any edit.
+  const accountB='storage-test-account-b';
+  const accountBState={schema:3,streams:[],subjects:[],topics:[],history:[],exams:[],settings:{}};
+  const accountBFeatures={version:1,journal:[],papers:[],goals:[],studyLogs:[]};
+  await loaded.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(accountBState)},
+    {key:'recall.study.features.v1',value:JSON.stringify(accountBFeatures)},
+    {key:'nexus.cloud.last-user-id',value:accountB}
+  ]);
+  const accountBPage=loadApi(makeWindow(native,idb));
+  assert.equal(await accountBPage.api.bootstrap(),true);
+  assert.equal(accountBPage.api.getStatus().entityRecoveryLocked,false,
+    'an account-B page must not inherit account A’s recovery lock');
+  await accountBPage.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(candidateState)},
+    {key:'recall.study.features.v1',value:JSON.stringify(candidateFeatures)},
+    {key:'nexus.cloud.last-user-id',value:owner}
+  ]);
+  assert.equal(accountBPage.api.getStatus().entityRecoveryLocked,false,
+    'the inactive A lock is not restored merely by changing the owner marker');
+  const ownerARecovery=await accountBPage.api.readWorkspaceEntityRecovery(owner);
+  assert.equal(ownerARecovery.intent.phase,'staged',
+    'the original staged journal must still be available after B-to-A account handoff');
+  assert.equal(accountBPage.api.getStatus().entityRecoveryLocked,true,
+    'reading the returned owner A journal must rehydrate its durable in-memory lock');
+  await assert.rejects(accountBPage.api.syncWorkspaceEntities(owner,[]),/recovery is pending/,
+    'the restored owner A lock must block normal projection writes after account handoff');
+
   const restarted=loadApi(makeWindow(native,idb));
   assert.equal(await restarted.api.bootstrap(),true,'a new page context should restore the staged recovery lock');
   assert.equal(restarted.api.getStatus().entityRecoveryLocked,true,

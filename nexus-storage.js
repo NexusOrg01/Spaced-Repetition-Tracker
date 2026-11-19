@@ -768,6 +768,11 @@
     };
     const deferActivation=options.deferActivation===true;
     const recoveryIntentId=String(options.recoveryIntentId||'');
+    const recoveryRestage=options.recoveryRestage===true;
+    const recoveryCandidateDigest=String(options.recoveryCandidateDigest||'');
+    if(deferActivation&&!/^[a-f0-9]{64}$/i.test(recoveryCandidateDigest)){
+      throw new Error('A matching recovery candidate digest is required before staging an entity recovery generation.');
+    }
     const manifestKey=entityManifestKey(owner),generation=entityGeneration();
     const previous=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
       const request=tx.objectStore('migrationMeta').get(manifestKey);
@@ -876,8 +881,13 @@
             const intentRequest=store.get(entityDeltaRecoveryKey(owner));
             intentRequest.onsuccess=()=>{
               const intent=intentRequest.result;
+              const validRecoveryPhase=!!intent&&(
+                intent.phase==='prepared'||
+                (recoveryRestage&&['staged','published'].includes(intent.phase))
+              );
               if(!intent||intent.ownerId!==owner||intent.intentId!==recoveryIntentId||
-                 intent.phase!=='prepared'||intent.activeGeneration!==current.activeGeneration||
+                 !validRecoveryPhase||intent.candidateDigest!==recoveryCandidateDigest||
+                 intent.activeGeneration!==current.activeGeneration||
                  current.pendingRecoveryIntentId!==recoveryIntentId){
                 try{tx.abort();}catch(_){}
                 return;
@@ -888,7 +898,7 @@
                 pendingCounts:counts,pendingPositionBounds:positionBounds,
                 pendingSourceRevision:revision,pendingSourceWorkspaceRevision:sourceWorkspaceRevision,
                 migrationStatus:'recovery-staged',updatedAt:timestamp()});
-              store.put({...intent,phase:'staged',pendingGeneration:generation,
+              store.put({...intent,phase:intent.phase==='prepared'?'staged':intent.phase,pendingGeneration:generation,
                 sourceRevision:revision,sourceWorkspaceRevision,updatedAt:timestamp()});
               set({staged:true,generation,rowCount,counts,sourceRevision:revision,sourceWorkspaceRevision});
             };
@@ -2399,13 +2409,22 @@
   async function readWorkspaceEntityRecovery(ownerId){
     const owner=entityOwnerKey(ownerId);
     if(!enabled||!database||committedOwnerId!==owner||entityRemovalOwners.has(owner))return null;
-    return transaction(['migrationMeta'],'readonly',(tx,set)=>{
+    const recovery=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
       const store=tx.objectStore('migrationMeta'),values={intent:null,manifest:null};let remaining=2;
       const finish=()=>{remaining--;if(remaining===0)set(values.intent?{intent:{...values.intent},manifest:values.manifest}:null);};
       const i=store.get(entityDeltaRecoveryKey(owner)),m=store.get(entityManifestKey(owner));
       i.onsuccess=()=>{values.intent=i.result||null;finish();};
       m.onsuccess=()=>{values.manifest=m.result||null;finish();};
     });
+    // Recovery locks are in-memory, while the journal is durable. Account handoff
+    // can make a previously inactive owner current in a page that never bootstrapped
+    // under that owner, so every owner-scoped journal read must rehydrate its lock.
+    if(recovery&&recovery.intent&&['prepared','staged','published'].includes(recovery.intent.phase)){
+      entityRecoveryLockedOwners.add(owner);
+    }else{
+      entityRecoveryLockedOwners.delete(owner);
+    }
+    return recovery;
   }
 
   async function markWorkspaceEntityRecoveryPublished(ownerId,intentId,publication){

@@ -989,11 +989,15 @@ function coordinatorHarness(options={}){
       assert.equal(owner,'account-A');
       assert.equal(options.deferActivation,true);
       assert.equal(options.recoveryIntentId,intent.intentId);
+      assert.equal(options.recoveryCandidateDigest,intent.candidateDigest,
+        'a replacement generation must be bound to the original candidate digest');
+      if(migrations>0)assert.equal(options.recoveryRestage,true,
+        'an interrupted staged recovery must use the explicit restage path');
       migrations++;
       if(!staged){
         staged={ownerId:owner,generation:'generation-new',state:JSON.parse(JSON.stringify(nextState)),
           featureState:JSON.parse(JSON.stringify(nextFeatures)),pending:true};
-        intent={...intent,phase:'staged',pendingGeneration:'generation-new'};
+        intent={...intent,phase:intent.phase==='published'?'published':'staged',pendingGeneration:'generation-new'};
       }
       return {staged:true,generation:'generation-new'};
     },
@@ -1055,6 +1059,9 @@ function coordinatorHarness(options={}){
   assert.equal(intent.phase,'staged','the crash-recovery intent must survive a lost server response');
   assert.equal(migrations,1,'the candidate generation should be staged exactly once');
   assert.equal(localCommits,0,'an unverified/ambiguous write must not advance the local merge base');
+  // Simulate a tab/process interruption after the journal reached "staged" but
+  // before its pending entity generation remained readable.
+  staged=null;
   const second=await api.publishConflictRecovery('account-A');
   assert.equal(second.ok,true,'a retry should verify the exact already-published snapshot and finish locally: '+JSON.stringify(second));
   assert.equal(second.recovered,true);
@@ -1062,7 +1069,7 @@ function coordinatorHarness(options={}){
   assert.deepEqual(second.compaction,{
     ok:false,complete:false,pending:true,reason:'entity_operation_compaction_unavailable'
   },'the committed recovery result must surface non-fatal server compaction backlog for a safe retry');
-  assert.equal(migrations,1,'a staged generation must be reused rather than rebuilt on retry');
+  assert.equal(migrations,2,'a missing staged generation must be reconstructed exactly once from the same digest-bound candidate');
   assert.equal(publishCalls,2,'the exact same candidate must be re-verified after the lost response');
   assert.equal(localCommits,1,'the verified publication should cause one atomic local recovery commit');
   assert.equal(applied,1,'the in-memory workspace must only switch after the local commit verifies');

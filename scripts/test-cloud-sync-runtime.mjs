@@ -261,6 +261,7 @@ const localState = stateFor('offline-A');
 let activeSession = { user: accountA };
 let authStateCallback = null;
 let networkAvailable = false;
+let remoteReadCount = 0;
 let deferNextRemoteRead = false;
 let releaseDeferredRemoteRead = null;
 let simulateAmbiguousCommittedWrite = false;
@@ -347,6 +348,7 @@ function makeQuery(table) {
     update(v) { operation = 'update'; values = v; return builder; },
     insert(v) { operation = 'insert'; values = v; return builder; },
     async maybeSingle() {
+      if(table==='nexus_user_data')remoteReadCount++;
       if (!networkAvailable) throw new Error('simulated offline network');
       if (deferNextRemoteRead) {
         deferNextRemoteRead = false;
@@ -433,12 +435,16 @@ queue.commitWorkspace(storage, [
 ], payloadFor('offline-A'));
 
 await window.NexusCloudSync.reconnect();
+assert.equal(remoteReadCount,0,
+  'cold offline account initialization must use the owner-bound local workspace without waiting on a network snapshot read');
 assert.equal(rows.has(accountA.id), false, 'offline startup must not write to cloud');
 assert.ok(queue.hasPending(storage, accountA.id), 'offline startup must retain the account-A pending snapshot');
 assert.equal(getElement('cloudStatus').textContent, 'Offline · local workspace', 'an authenticated account with its own local workspace should remain usable offline without claiming sync success');
 
 networkAvailable = true;
 listeners['window:online']();
+assert.ok(remoteReadCount>0,
+  'reconnecting after offline initialization must rerun authenticated cloud verification before reporting a synced state');
 for (let i = 0; i < 100 && (!rows.has(accountA.id) || queue.hasPending(storage, accountA.id)); i++) {
   await new Promise(resolve => setTimeout(resolve, 10));
 }

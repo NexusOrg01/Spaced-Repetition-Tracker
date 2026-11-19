@@ -138,10 +138,10 @@ async function collectSyncOperationalDiagnostics(){
   try{const rows=queue.getConflictHistory(localStorage,owner);conflictCount=Array.isArray(rows)?rows.reduce((n,r)=>n+(Array.isArray(r&&r.conflicts)?r.conflicts.length:0),0):0;}catch(_){}
  }
  if(owner&&storage){
+  try{recovery=typeof storage.readWorkspaceEntityRecovery==='function'?await storage.readWorkspaceEntityRecovery(owner):null;}catch(_){}
   try{statusValue=typeof storage.getStatus==='function'?storage.getStatus():null;}catch(_){}
   try{const r=typeof storage.readWorkspaceEntityDeltaCursor==='function'?await storage.readWorkspaceEntityDeltaCursor(owner):null;
    if(r&&r.ok&&r.exists===true&&r.cursor){cursor=r.cursor;if(typeof storage.readWorkspaceEntityOutboxGroups==='function')outbox=await storage.readWorkspaceEntityOutboxGroups(owner,Number(cursor.acknowledgedSequence)||0,1000,1048576);}}catch(_){}
-  try{recovery=typeof storage.readWorkspaceEntityRecovery==='function'?await storage.readWorkspaceEntityRecovery(owner):null;}catch(_){}
  }
  const chunkEvent=[...events].reverse().find(r=>r&&(r.stage==='cloud-read'||r.stage==='cloud-write-complete')&&Number.isSafeInteger(r.chunkCount)&&r.chunkCount>=0);
  const deltaEvent=[...events].reverse().find(r=>r&&r.stage==='delta-sync-result');
@@ -260,7 +260,27 @@ function scheduleDeltaRemotePoll(){
   try{await upload();}finally{scheduleDeltaRemotePoll();}
  },REMOTE_DELTA_POLL_INTERVAL_MS);
 }
-function resumeAfterConnectivity(){if(isUnsafeCloudOrigin()||(typeof navigator!=='undefined'&&!navigator.onLine))return;const text=el('cloudStatus')?el('cloudStatus').textContent:'';const policy=window.NexusCloudSyncRecovery;if(policy&&!policy.shouldRetry(text))return;if(syncing){pendingSync=true;return;}if(initializing)return;if(session&&ready){let pending=false;try{pending=!!(window.NexusOfflineSyncQueue&&window.NexusOfflineSyncQueue.hasPending(localStorage,session.user.id));}catch(e){status('Sync error');say('The local sync queue could not be read. Local data is preserved. Nexus will retry safely.');scheduleRetry();return;}if(pending||hostedDeltaPollingEnabled)schedule();else status('Synced');scheduleDeltaRemotePoll();}else connect();}
+function resumeAfterConnectivity(){
+ if(isUnsafeCloudOrigin()||(typeof navigator!=='undefined'&&!navigator.onLine))return;
+ if(initializing)return;
+ if(offlineReconnectRequired){
+  offlineReconnectRequired=false;
+  if(session&&session.user)initializeSession(session);
+  else connect();
+  return;
+ }
+ const text=el('cloudStatus')?el('cloudStatus').textContent:'';
+ const policy=window.NexusCloudSyncRecovery;
+ if(policy&&!policy.shouldRetry(text))return;
+ if(syncing){pendingSync=true;return;}
+ if(session&&ready){
+  let pending=false;
+  try{pending=!!(window.NexusOfflineSyncQueue&&window.NexusOfflineSyncQueue.hasPending(localStorage,session.user.id));}
+  catch(e){status('Sync error');say('The local sync queue could not be read. Local data is preserved. Nexus will retry safely.');scheduleRetry();return;}
+  if(pending||hostedDeltaPollingEnabled)schedule();else status('Synced');
+  scheduleDeltaRemotePoll();
+ }else connect();
+}
 function loadSupabaseLibrary(){if(window.supabase&&window.supabase.createClient)return Promise.resolve();if(supabaseLoadPromise)return supabaseLoadPromise;supabaseLoadPromise=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3';script.async=true;script.onload=()=>window.supabase&&window.supabase.createClient?resolve():reject(new Error('Supabase client did not initialize.'));script.onerror=()=>reject(new Error('Could not load Supabase client. Check internet access.'));document.head.appendChild(script);});return supabaseLoadPromise;}
 function setControls(){const previewBlocked=isUnsafeCloudOrigin(),logged=!!session,connected=logged&&ready&&!initializing,busy=logged&&!connected;if(logged&&ready&&deletionServiceCheckedUser!==session.user.id)checkAccountDeletionService();const google=el('cloudGoogleSignInBtn'),email=el('cloudEmailSignInBtn'),out=el('cloudSignOutBtn');if(out){out.disabled=!logged;out.setAttribute('aria-disabled',String(!logged));}if(google){google.hidden=false;google.disabled=logged||previewBlocked;google.classList.toggle('auth-signin-busy',logged);google.setAttribute('aria-disabled',String(logged||previewBlocked));google.setAttribute('aria-label','Sign in with Google');const label=google.querySelector('span');if(label)label.textContent='Sign in with Google';}if(email){email.hidden=false;email.disabled=logged||previewBlocked;email.classList.toggle('auth-signin-busy',logged);email.setAttribute('aria-disabled',String(logged||previewBlocked));email.setAttribute('aria-label','Sign in with email');const label=email.querySelector('span');if(label)label.textContent='Sign in with email';}if(el('cloudAccount'))el('cloudAccount').textContent=previewBlocked?'Preview/local copy — cloud sync disabled':logged?(session.user.email||'Signed-in account'):'Not signed in — offline mode is available';if(el('cloudAccount'))el('cloudAccount').title=previewBlocked?'Use a separate Supabase test project to test cloud sync here.':logged?'Account ID: '+session.user.id:'Your data stays on this device while signed out.';if(previewBlocked)previewCloudBlockedMessage();updateConflictRecoveryButton();installSyncDiagnosticsButton();if(window.NexusRefreshDeletionOptions)window.NexusRefreshDeletionOptions();}
 function snapshot(){return {app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:clone(state),featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}};}
@@ -808,7 +828,35 @@ async function initializeSession(s){syncDiag('initialize-start',diagnosticWorksp
  session=requestedSession;
  if(requestedUserId!==initializingUserId||hasQueuedSession){queuedSession=requestedSession;hasQueuedSession=true;}
  return;
-}initializing=true;initializingUserId=requestedUserId;if(requestedUserId!==lastUserId){hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();}try{const newSession=requestedSession,newUserId=requestedUserId;session=newSession;ready=false;lastRemoteStamp=null;clearTimeout(timer);setControls();if(!session){status(client?'Not signed in · offline ready':'Offline ready');say('You can continue studying offline. Your local data remains on this device when you sign out.');return;}status('Loading account…');await assertActiveUser(newUserId);let owner=localStorage.getItem(OWNER_KEY)||'';const remote=await fetchRemote(newUserId);syncDiag('initialize-after-cloud-read',remote&&remote.payload,{remoteHasPayload:!!(remote&&remote.payload)});await assertActiveUser(newUserId);
+}initializing=true;initializingUserId=requestedUserId;if(requestedUserId!==lastUserId){hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();}try{const newSession=requestedSession,newUserId=requestedUserId;session=newSession;ready=false;offlineReconnectRequired=false;lastRemoteStamp=null;clearTimeout(timer);setControls();if(!session){status(client?'Not signed in · offline ready':'Offline ready');say('You can continue studying offline. Your local data remains on this device when you sign out.');return;}status('Loading account…');await assertActiveUser(newUserId);let owner=localStorage.getItem(OWNER_KEY)||'';
+if(typeof navigator!=='undefined'&&navigator.onLine===false){
+  // Do not wait for a remote snapshot read during a cold offline start. Resolve
+  // only this authenticated owner's existing local workspace and keep account
+  // switching owner-scoped.
+  if(owner&&owner!==newUserId){
+    const previousPayload=snapshot();
+    const previousChanges=await hasUnassignedWorkspaceChanges(owner,newUserId,previousPayload);
+    if(previousChanges)await checkpointPreviousAccountWorkspace(owner,newUserId,previousPayload);
+  }
+  let offlineSource=null;
+  try{offlineSource=await recoverCachedWorkspaceForOfflineAccount(newUserId);}
+  catch(recoveryError){syncDiag('offline-account-recovery-error',null,{});}
+  offlineReconnectRequired=true;
+  lastUserId=newUserId;
+  if(offlineSource){
+    ready=true;localStorage.setItem(OWNER_KEY,newUserId);
+    await flushDurableLocalWrites();
+    status('Offline · local workspace');
+    say('Cloud is unavailable. This account’s saved workspace is ready on this device. Changes will remain local and queued until the cloud state is verified after reconnect.');
+  }else{
+    ready=false;
+    status('Offline workspace unavailable');
+    say('No saved workspace for this account could be verified on this device. Its cloud data remains hidden until an internet connection is available.');
+  }
+  setControls();
+  return;
+}
+const remote=await fetchRemote(newUserId);syncDiag('initialize-after-cloud-read',remote&&remote.payload,{remoteHasPayload:!!(remote&&remote.payload)});await assertActiveUser(newUserId);
 // Capture the local workspace once, after the asynchronous cloud read. This includes
 // any offline edits made while the request was in flight without retaining a stale
 // deep clone and then cloning/comparing the complete large workspace a second time.
@@ -1547,7 +1595,23 @@ async function ensureClient(){if(isUnsafeCloudOrigin())throw new Error('Cloud sy
  },0);
  else{session=newSession;setControls();}
 }});}return client;}
-let connectPromise=null;function connect(){if(isUnsafeCloudOrigin()){previewCloudBlockedMessage();setControls();return Promise.resolve();}if(connectPromise)return connectPromise;connectPromise=(async()=>{try{await ensureClient();const {data:{session:s},error}=await client.auth.getSession();if(error)throw error;await initializeSession(s);}catch(e){status('Connection error');say('Connection error: '+((e&&e.message)||'unknown error')+'. You can still use Nexus offline; reconnect to sign in and sync.');console.error('Nexus connection failed',e);scheduleRetry();}finally{connectPromise=null;}})();return connectPromise;}
+let connectPromise=null,offlineReconnectRequired=false;function connect(){if(isUnsafeCloudOrigin()){previewCloudBlockedMessage();setControls();return Promise.resolve();}if(connectPromise)return connectPromise;connectPromise=(async()=>{try{await ensureClient();const {data:{session:s},error}=await client.auth.getSession();if(error)throw error;await initializeSession(s);}catch(e){
+ if(typeof navigator!=='undefined'&&navigator.onLine===false){
+  // The Supabase SDK may itself be unavailable offline (it is loaded from a CDN).
+  // Keep the durable local workspace usable, but do not infer or invent an account
+  // session. The isolation guard will unlock only the previously associated device
+  // workspace; a mismatched owner remains hidden.
+  session=null;ready=false;hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();
+  offlineReconnectRequired=true;
+  status(localStorage.getItem(OWNER_KEY)?'Offline · local workspace':'Offline ready');
+  say('Internet is unavailable. Nexus is using this device’s saved workspace only. Cloud account verification and synchronization will resume after reconnecting.');
+  setControls();
+ }else{
+  status('Connection error');
+  say('Connection error: '+((e&&e.message)||'unknown error')+'. You can still use Nexus offline; reconnect to sign in and sync.');
+  console.error('Nexus connection failed',e);scheduleRetry();
+ }
+}finally{connectPromise=null;}})();return connectPromise;}
 async function googleSignIn(){try{if(isUnsafeCloudOrigin()){previewCloudBlockedMessage();setControls();return;}if(session){say('You are already signed in. Sign out before connecting a different account.');return;}status('Opening Google sign-in…');await ensureClient();const {data,error}=await client.auth.signInWithOAuth({provider:'google',options:{redirectTo:authRedirectUrl(),queryParams:{prompt:'select_account'}}});if(error)throw error;if(data&&data.url)location.assign(data.url);}catch(e){status('Google sign-in failed');say((e&&e.message)||'Could not start Google sign-in. Check your connection and try again.');console.error('Nexus Google sign-in failed',e);}}
 async function emailSignIn(){try{if(isUnsafeCloudOrigin()){previewCloudBlockedMessage();setControls();return;}if(session){say('You are already signed in. Sign out before connecting a different account.');return;}status('Preparing email sign-in…');await ensureClient();const email=prompt('Enter your email address to receive a sign-in link:');if(!email){status(session&&ready?'Synced':'Not signed in · offline ready');return;}const {error}=await client.auth.signInWithOtp({email,options:{emailRedirectTo:authRedirectUrl()}});if(error)throw error;say('Check your email for the sign-in link.');status('Email sign-in link sent');}catch(e){status('Email sign-in failed');say((e&&e.message)||'Could not send the sign-in link. Check your connection and try again.');console.error('Nexus email sign-in failed',e);}}
 async function checkAccountDeletionService(){

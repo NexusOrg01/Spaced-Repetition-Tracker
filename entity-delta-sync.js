@@ -866,6 +866,19 @@
         await assertOwner(owner);
         let recovery=await storage.readWorkspaceEntityRecovery(owner);
         let intent=recovery&&recovery.intent||null,prepared=null,candidate=null,staged=null;
+        const stageRecoveryCandidate=async(nextCandidate,digest,restage)=>{
+          const status=typeof storage.getStatus==='function'?storage.getStatus():null;
+          if(!status||!Number.isSafeInteger(Number(status.revision)))
+            return unavailable('local_recovery_revision_unavailable');
+          await storage.migrateWorkspaceEntities(owner,nextCandidate.state,nextCandidate.featureState,{
+            expectedRevision:Number(status.revision),deferActivation:true,
+            recoveryIntentId:intent.intentId,recoveryCandidateDigest:digest,
+            recoveryRestage:restage===true
+          });
+          recovery=await storage.readWorkspaceEntityRecovery(owner);
+          intent=recovery&&recovery.intent||null;
+          return {ok:true};
+        };
         if(!intent||intent.phase==='prepared'){
           prepared=await prepareConflictRecovery(owner,recoveryOptions);
           if(!prepared||prepared.ok!==true)return prepared||unavailable('recovery_preparation_unavailable');
@@ -895,18 +908,40 @@
               return {ok:false,retryable:true,reason:begun&&begun.reason||'recovery_intent_create_failed'};
             intent=begun.intent;
           }
-          const status=typeof storage.getStatus==='function'?storage.getStatus():null;
-          if(!status||!Number.isSafeInteger(Number(status.revision)))
-            return unavailable('local_recovery_revision_unavailable');
-          await storage.migrateWorkspaceEntities(owner,candidate.state,candidate.featureState,{
-            expectedRevision:Number(status.revision),deferActivation:true,recoveryIntentId:intent.intentId
-          });
-          recovery=await storage.readWorkspaceEntityRecovery(owner);
-          intent=recovery&&recovery.intent||null;
+          await stageRecoveryCandidate(candidate,digest,false);
         }
         if(!intent||!['staged','published'].includes(intent.phase))
           return {ok:false,retryable:true,reason:'local_recovery_generation_not_staged'};
         staged=await storage.readWorkspaceEntities(owner,{pending:true,recoveryIntentId:intent.intentId});
+        if(!staged||staged.ownerId!==owner||staged.pending!==true){
+          // A prior attempt can leave a durable staged journal after its pending
+          // generation was interrupted or made unreadable. Rebuild from the same
+          // owner-bound base/local/remote inputs, then require the original digest
+          // and revision tuple to match before replacing the pending generation.
+          prepared=await prepareConflictRecovery(owner,recoveryOptions);
+          if(!prepared||prepared.ok!==true)return prepared||{
+            ok:false,retryable:true,snapshotRequired:true,reason:'staged_recovery_reconstruction_unavailable'
+          };
+          const metadata=intent.payloadMetadata&&typeof intent.payloadMetadata==='object'?intent.payloadMetadata:{};
+          candidate={
+            ...prepared.payload,...metadata,
+            __nexusDeltaSync:'entity-delta-v1',
+            state:prepared.payload.state,featureState:prepared.payload.featureState
+          };
+          const digest=await workspaceDigest(candidate);
+          if(intent.candidateDigest!==digest||
+             intent.expectedHeadRevision!==prepared.expectedHeadRevision||
+             intent.snapshotRevision!==prepared.snapshotRevision||
+             intent.baseUpdatedAt!==prepared.snapshotUpdatedAt){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'staged_recovery_candidate_changed',intentId:intent.intentId};
+          }
+          await stageRecoveryCandidate(candidate,digest,true);
+          if(!intent||!['staged','published'].includes(intent.phase))
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'recovery_generation_restage_not_verified',intentId:intent&&intent.intentId||null};
+          staged=await storage.readWorkspaceEntities(owner,{pending:true,recoveryIntentId:intent.intentId});
+        }
         if(!staged||staged.ownerId!==owner||staged.pending!==true)
           return {ok:false,retryable:true,snapshotRequired:true,reason:'staged_recovery_generation_unavailable'};
         const metadata=intent.payloadMetadata&&typeof intent.payloadMetadata==='object'?intent.payloadMetadata:{};
