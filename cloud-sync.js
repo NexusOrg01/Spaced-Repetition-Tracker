@@ -1722,8 +1722,143 @@ async function downgradeEntityDelta(){
   if(pendingSync){pendingSync=false;schedule();}
  }
 }
+
+function hostedQaReplayGateOpen(){
+ if(window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA!==true||
+    window.NEXUS_ENTITY_DELTA_SYNC_QA_REF!=='fix/dla04-entity-projection-guard'||
+    !location||location.protocol!=='https:'||config().url!=='https://xuwfzibxhxzxxupprxsq.supabase.co')return false;
+ const origins=[window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN,window.NEXUS_ENTITY_DELTA_SYNC_QA_BRANCH_ORIGIN];
+ return origins.some(value=>{
+  try{const u=new URL(value);return u.origin===value&&u.protocol==='https:'&&
+   u.hostname.endsWith('.vercel.app')&&!u.port&&!u.username&&!u.password&&
+   !u.search&&!u.hash&&(u.pathname===''||u.pathname==='/')&&u.origin===location.origin;}
+  catch(_){return false;}
+ });
+}
+async function runHostedQaReplayChecks(){
+ if(!hostedQaReplayGateOpen())return {ok:false,reason:'hosted_qa_gate_closed'};
+ if(deletingAccount||syncing||!client||!session||!ready)
+  return {ok:false,reason:'account_sync_not_ready'};
+ const ownerId=session.user&&typeof session.user.id==='string'?session.user.id:'';
+ if(!ownerId||localStorage.getItem(OWNER_KEY)!==ownerId)
+  return {ok:false,reason:'active_account_does_not_own_local_workspace'};
+ const auth=await client.auth.getUser();
+ if(auth.error||!auth.data||!auth.data.user||auth.data.user.id!==ownerId||
+    localStorage.getItem(OWNER_KEY)!==ownerId)
+  return {ok:false,reason:'authenticated_owner_verification_failed'};
+ const stateResult=await client.rpc('nexus_get_entity_sync_state');
+ if(stateResult.error)return {ok:false,reason:'sync_state_read_failed'};
+ const state=stateResult.data;
+ if(!state||state.mode!=='delta')return {ok:false,reason:'owner_not_in_delta_mode'};
+ const head=Number(state.head_revision),snapshot=Number(state.snapshot_revision),
+  floor=Number(state.compacted_through_revision);
+ if(!Number.isSafeInteger(head)||!Number.isSafeInteger(snapshot)||
+    !Number.isSafeInteger(floor)||floor>snapshot||snapshot>head)
+  return {ok:false,reason:'invalid_remote_revision_bounds'};
+ const read=await client.rpc('nexus_read_entity_operations',{
+  p_after_revision:snapshot,p_limit_groups:100,p_max_bytes:1048576
+ });
+ if(read.error)return {ok:false,reason:'operation_history_read_failed'};
+ const page=read.data;
+ if(!page||page.mode!=='delta'||page.snapshot_required!==false||
+    !Array.isArray(page.groups)||Number(page.head_revision)!==head)
+  return {ok:false,reason:'operation_history_unavailable_or_stale'};
+ if(!page.groups.length)return {ok:false,reason:'no_uncompacted_operation_to_replay'};
+ const group=page.groups[page.groups.length-1];
+ if(!group||typeof group.operation_id!=='string'||!group.operation_id||
+    !Number.isSafeInteger(Number(group.revision))||Number(group.revision)<1||
+    !Array.isArray(group.changes)||!group.changes.length)
+  return {ok:false,reason:'latest_operation_shape_invalid'};
+ const changes=group.changes.map(change=>{
+  const normalized={collection:change.collection,id:change.id,operation:change.operation};
+  if(change.operation==='put'){normalized.position=Number(change.position);normalized.value=change.value;}
+  return normalized;
+ });
+ if(changes.some(change=>!change.collection||!change.id||
+    !['put','delete'].includes(change.operation)||
+    (change.operation==='put'&&(!Number.isSafeInteger(change.position)||!change.value||
+      typeof change.value!=='object'||Array.isArray(change.value)))))
+  return {ok:false,reason:'latest_operation_changes_invalid'};
+ const operationId=group.operation_id,expectedRevision=Number(group.revision)-1;
+ const exact=await client.rpc('nexus_publish_entity_operation',{
+  p_operation_id:operationId,p_expected_revision:expectedRevision,p_changes:changes
+ });
+ if(exact.error||!exact.data||exact.data.ok!==true||exact.data.replayed!==true||
+    Number(exact.data.revision)!==Number(group.revision))
+  return {ok:false,reason:'identical_replay_not_confirmed'};
+ const altered=JSON.parse(JSON.stringify(changes));
+ if(altered[0].operation==='put'){
+  altered[0].value={...altered[0].value,__nexusQaReplayProbe:'altered-request'};
+ }else{
+  altered[0].value=null;
+ }
+ const changed=await client.rpc('nexus_publish_entity_operation',{
+  p_operation_id:operationId,p_expected_revision:expectedRevision,p_changes:altered
+ });
+ if(changed.error||!changed.data||changed.data.ok!==false||
+    changed.data.code!=='idempotency_conflict')
+  return {ok:false,reason:'altered_replay_not_rejected'};
+ let staleRevisionResult={checked:false,passed:null};
+ if(head>floor){
+  const staleId='nexus-qa-stale-'+crypto.randomUUID();
+  const stale=await client.rpc('nexus_publish_entity_operation',{
+   p_operation_id:staleId,p_expected_revision:head-1,p_changes:changes
+  });
+  staleRevisionResult={checked:true,passed:!stale.error&&!!stale.data&&
+   stale.data.ok===false&&stale.data.code==='revision_conflict'};
+  if(!staleRevisionResult.passed)return {ok:false,reason:'stale_revision_not_rejected'};
+ }
+ const afterState=await client.rpc('nexus_get_entity_sync_state');
+ if(afterState.error||!afterState.data||Number(afterState.data.head_revision)!==head)
+  return {ok:false,reason:'head_changed_during_read_only_replay_checks'};
+ const afterRead=await client.rpc('nexus_read_entity_operations',{
+  p_after_revision:snapshot,p_limit_groups:100,p_max_bytes:1048576
+ });
+ if(afterRead.error||!afterRead.data||Number(afterRead.data.head_revision)!==head||
+    !Array.isArray(afterRead.data.groups)||
+    afterRead.data.groups.length!==page.groups.length)
+  return {ok:false,reason:'operation_history_changed_during_read_only_checks'};
+ if(localStorage.getItem(OWNER_KEY)!==ownerId||!session||!session.user||session.user.id!==ownerId)
+  return {ok:false,reason:'account_changed_during_qa_check'};
+ return {ok:true,checks:{
+  authenticatedOwner:true,deltaMode:true,identicalReplay:true,
+  alteredPayloadRejected:true,staleRevisionRejected:staleRevisionResult.passed,
+  headUnchanged:true,operationCountUnchanged:true
+ },headRevision:head,snapshotRevision:snapshot,operationCount:page.groups.length,
+ requestIdSuffix:operationId.slice(-8)};
+}
+function installHostedQaReplayPanel(){
+ if(!hostedQaReplayGateOpen()||!document||!document.getElementById||
+    document.getElementById('nexusHostedQaReplayPanel'))return;
+ const accountView=document.getElementById('view-account');
+ if(!accountView)return;
+ const panel=document.createElement('section');panel.id='nexusHostedQaReplayPanel';panel.className='panel';
+ panel.style.marginTop='15px';
+ const header=document.createElement('div');header.className='panel-head';
+ const heading=document.createElement('div'),title=document.createElement('h3'),subtitle=document.createElement('p');
+ title.textContent='DLA-04 hosted protocol checks';subtitle.textContent='Read-only replay checks for the currently signed-in staging account.';
+ heading.append(title,subtitle);header.append(heading);
+ const body=document.createElement('div');body.className='panel-body';
+ const note=document.createElement('p');note.className='muted small';
+ note.textContent='Checks the latest existing operation: identical replay, altered-payload rejection, stale-revision rejection (when applicable), and unchanged server head. It does not create or delete workspace records.';
+ const button=document.createElement('button');button.type='button';button.className='btn btn-primary';
+ button.textContent='Run safe hosted checks';
+ const output=document.createElement('pre');output.setAttribute('aria-live','polite');
+ output.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;margin:12px 0 0;font-size:12px;color:var(--muted);';
+ output.textContent='Sign in to the designated staging account, then run the checks.';
+ button.addEventListener('click',async()=>{
+  button.disabled=true;button.textContent='Running checks…';output.textContent='Verifying signed-in account and staging protocol…';
+  try{
+   const result=await runHostedQaReplayChecks();
+   output.textContent=JSON.stringify(result,null,2);
+  }catch(_){output.textContent=JSON.stringify({ok:false,reason:'hosted_qa_check_failed_safely'},null,2);}
+  finally{button.disabled=false;button.textContent='Run safe hosted checks';}
+ });
+ body.append(note,button,output);panel.append(header,body);accountView.append(panel);
+}
+
 async function signOut(){if(client)await client.auth.signOut();session=null;ready=false;clearTimeout(timer);clearRetry();status('Not signed in · offline ready');say('You are signed out. Continue using this device offline; data remains local.');setControls();}
-window.NexusCloudSync={schedule,upload,reconnect:connect,getAccountState,deleteAccount:deleteCurrentAccount,downgradeEntityDelta,
+window.NexusCloudSync={schedule,upload,reconnect:connect,getAccountState,deleteAccount:deleteCurrentAccount,downgradeEntityDelta,runHostedQaReplayChecks,
  noteCommittedLocalSave:(payload)=>{
   if(deletingAccount)return;
   // app-core has already committed this exact snapshot to the account-bound queue.
@@ -1747,5 +1882,5 @@ window.NexusCloudSync={schedule,upload,reconnect:connect,getAccountState,deleteA
    errorCategory:error?syncDiagErrorCategory(error):null
   });
  },
- recordLocalSave:(payload)=>{const p=payload&&payload.state?payload:snapshot();syncDiag('workspace-saved-locally',p);recordWorkspaceSave(p,'local-save');},recordInstall:(payload)=>{const p=payload&&payload.state?payload:{state:payload||state,featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}};syncDiag('curriculum-install-save-requested',p);recordWorkspaceSave(p,'curriculum-install');}};window.addEventListener('online',resumeAfterConnectivity);window.addEventListener('focus',resumeAfterConnectivity);window.addEventListener('offline',()=>{clearDeltaRemotePoll();if(session){status('Offline · changes saved locally');say('You can continue studying. Local changes are queued for this account and will sync when the connection returns.');}});document.addEventListener('visibilitychange',()=>{if(!document.hidden)resumeAfterConnectivity();});window.addEventListener('pageshow',resumeAfterConnectivity);function startCloudSyncUi(){installSyncDiagnosticsButton();if(SYNC_DIAG_ENABLED&&document.body&&typeof MutationObserver!=='undefined'){const diagObserver=new MutationObserver(()=>{if(!el('nexusSyncDiagnosticsDownload'))installSyncDiagnosticsButton();});diagObserver.observe(document.body,{childList:true,subtree:true});}el('cloudGoogleSignInBtn')?.addEventListener('click',googleSignIn);el('cloudEmailSignInBtn')?.addEventListener('click',emailSignIn);el('cloudSignOutBtn')?.addEventListener('click',signOut);connect();}if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',startCloudSyncUi,{once:true});else startCloudSyncUi();
+ recordLocalSave:(payload)=>{const p=payload&&payload.state?payload:snapshot();syncDiag('workspace-saved-locally',p);recordWorkspaceSave(p,'local-save');},recordInstall:(payload)=>{const p=payload&&payload.state?payload:{state:payload||state,featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}};syncDiag('curriculum-install-save-requested',p);recordWorkspaceSave(p,'curriculum-install');}};window.addEventListener('online',resumeAfterConnectivity);window.addEventListener('focus',resumeAfterConnectivity);window.addEventListener('offline',()=>{clearDeltaRemotePoll();if(session){status('Offline · changes saved locally');say('You can continue studying. Local changes are queued for this account and will sync when the connection returns.');}});document.addEventListener('visibilitychange',()=>{if(!document.hidden)resumeAfterConnectivity();});window.addEventListener('pageshow',resumeAfterConnectivity);function startCloudSyncUi(){installSyncDiagnosticsButton();installHostedQaReplayPanel();if(SYNC_DIAG_ENABLED&&document.body&&typeof MutationObserver!=='undefined'){const diagObserver=new MutationObserver(()=>{if(!el('nexusSyncDiagnosticsDownload'))installSyncDiagnosticsButton();});diagObserver.observe(document.body,{childList:true,subtree:true});}el('cloudGoogleSignInBtn')?.addEventListener('click',googleSignIn);el('cloudEmailSignInBtn')?.addEventListener('click',emailSignIn);el('cloudSignOutBtn')?.addEventListener('click',signOut);connect();}if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',startCloudSyncUi,{once:true});else startCloudSyncUi();
 })();
