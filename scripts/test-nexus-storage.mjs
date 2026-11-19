@@ -1947,13 +1947,13 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(publishedRestarted.api.getStatus().entityRecoveryLocked,false,
     'the local recovery lock must only release after the atomic commit');
   const activeAfter=await publishedRestarted.api.readWorkspaceEntities(owner);
-  assert.equal(activeAfter.generation,staged.generation,'the staged entity generation should become active atomically');
+  assert.equal(activeAfter.generation,repairedStage.generation,'the replacement staged entity generation should become active atomically');
   assert.equal(activeAfter.state.topics[0].name,'Merged recovery');
   assert.equal(JSON.parse(publishedRestarted.context.window.localStorage.getItem('recall.study.features.v1')).journal[0].id,
     'recovery-journal','the compatibility Study Hub snapshot must be part of the same commit');
   const cursor=await publishedRestarted.api.readWorkspaceEntityDeltaCursor(owner);
   assert.equal(cursor.ok,true);
-  assert.equal(cursor.cursor.generation,staged.generation);
+  assert.equal(cursor.cursor.generation,repairedStage.generation);
   assert.equal(cursor.cursor.publishRevision,2);
   assert.equal(cursor.cursor.remoteHeadRevision,3);
   assert.equal(cursor.cursor.snapshotUpdatedAt,'recovered-snapshot-stamp');
