@@ -1510,7 +1510,7 @@ for (const scenario of [
     'the offline handoff must not change account A cloud data');
   assert.equal(rows.get(accountB.id) ? JSON.stringify(rows.get(accountB.id)) : null, remoteBBefore,
     'the cached workspace must not trigger a cloud write while offline');
-  assert.equal(getElement('cloudStatus').textContent, 'Offline · local workspace loaded',
+  assert.equal(getElement('cloudStatus').textContent, 'Offline · local workspace',
     'offline restoration must be shown as local-only, not synced');
 
   const accountC = { id: 'account-C-no-cache', email: 'c@example.test' };
