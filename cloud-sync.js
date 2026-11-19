@@ -1827,6 +1827,141 @@ async function runHostedQaReplayChecks(){
  },headRevision:head,snapshotRevision:snapshot,operationCount:page.groups.length,
  requestIdSuffix:operationId.slice(-8)};
 }
+
+async function runHostedQaOwnerIsolationChecks(){
+ if(!hostedQaReplayGateOpen())return {ok:false,reason:'hosted_qa_gate_closed'};
+ if(deletingAccount||syncing||!client||!session||!ready)
+  return {ok:false,reason:'account_sync_not_ready'};
+ const ownerId=session.user&&typeof session.user.id==='string'?session.user.id:'';
+ if(!ownerId||localStorage.getItem(OWNER_KEY)!==ownerId)
+  return {ok:false,reason:'active_account_does_not_own_local_workspace'};
+ const auth=await client.auth.getUser();
+ if(auth.error||!auth.data||!auth.data.user||auth.data.user.id!==ownerId||
+    localStorage.getItem(OWNER_KEY)!==ownerId)
+  return {ok:false,reason:'authenticated_owner_b_verification_failed'};
+
+ // The only Delta-mode staging owner is Owner-A. These are A's current
+ // checkpoint and one existing operation ID, read from staging before this
+ // QA build. The negative RPC probes below must never match B's own checkpoint.
+ const ownerA={
+  operationId:'nexus-entity-3eacc7b2-08ed-4d08-8d8b-fbcbe9c683eb-1',
+  headRevision:13,snapshotRevision:11,compactedThroughRevision:11,
+  snapshotUpdatedAt:'2026-11-19T11:34:17.944156Z'
+ };
+ const stateResult=await client.rpc('nexus_get_entity_sync_state');
+ if(stateResult.error||!stateResult.data)return {ok:false,reason:'owner_b_sync_state_read_failed'};
+ const state=stateResult.data;
+ const head=Number(state.head_revision),snapshot=Number(state.snapshot_revision),
+  floor=Number(state.compacted_through_revision);
+ if(state.mode!=='snapshot')return {ok:false,reason:'owner_b_must_be_snapshot_mode'};
+ if(!Number.isSafeInteger(head)||!Number.isSafeInteger(snapshot)||
+    !Number.isSafeInteger(floor)||floor>snapshot||snapshot>head||
+    typeof state.snapshot_updated_at!=='string'||!state.snapshot_updated_at)
+  return {ok:false,reason:'owner_b_checkpoint_invalid'};
+ if(head===ownerA.headRevision&&snapshot===ownerA.snapshotRevision&&
+    floor===ownerA.compactedThroughRevision&&
+    state.snapshot_updated_at===ownerA.snapshotUpdatedAt)
+  return {ok:false,reason:'owner_b_checkpoint_matches_owner_a_probe'};
+
+ async function readOwnerScopedRows(table,columns){
+  const result=await client.from(table).select(columns).limit(10000);
+  if(result.error||!Array.isArray(result.data))return {ok:false,rows:[]};
+  const rows=result.data;
+  if(rows.some(row=>row.user_id!==ownerId))return {ok:false,rows:[]};
+  return {ok:true,rows};
+ }
+ async function readOwnerEvidence(){
+  const workspace=await readOwnerScopedRows('nexus_user_data','user_id,updated_at');
+  const chunks=await readOwnerScopedRows('nexus_user_data_chunks','user_id');
+  const syncRows=await readOwnerScopedRows('nexus_workspace_sync_state',
+   'user_id,mode,head_revision,snapshot_revision,compacted_through_revision');
+  const operations=await readOwnerScopedRows('nexus_workspace_operations','user_id,operation_id');
+  const receipts=await readOwnerScopedRows('nexus_workspace_operation_receipts','user_id,operation_id');
+  if(!workspace.ok||workspace.rows.length!==1||typeof workspace.rows[0].updated_at!=='string'||
+     !chunks.ok||!syncRows.ok||syncRows.rows.length!==1||
+     syncRows.rows[0].mode!=='snapshot'||
+     Number(syncRows.rows[0].head_revision)!==head||
+     Number(syncRows.rows[0].snapshot_revision)!==snapshot||
+     Number(syncRows.rows[0].compacted_through_revision)!==floor||
+     !operations.ok||!receipts.ok)
+   return {ok:false,reason:'owner_scoped_table_read_failed'};
+  if(operations.rows.some(row=>row.operation_id===ownerA.operationId)||
+     receipts.rows.some(row=>row.operation_id===ownerA.operationId))
+   return {ok:false,reason:'owner_a_operation_or_receipt_visible_to_owner_b'};
+  return {ok:true,workspace:workspace.rows,chunks:chunks.rows,
+   syncRows:syncRows.rows,operations:operations.rows,receipts:receipts.rows};
+ }
+ const before=await readOwnerEvidence();
+ if(!before.ok)return before;
+ if(before.operations.length||before.receipts.length)
+  return {ok:false,reason:'owner_b_snapshot_has_uncompacted_delta_rows'};
+
+ const remoteRead=await client.rpc('nexus_read_entity_operations',{
+  p_after_revision:ownerA.snapshotRevision,p_limit_groups:100,p_max_bytes:1048576
+ });
+ if(remoteRead.error||!remoteRead.data||remoteRead.data.mode!=='snapshot'||
+    !Array.isArray(remoteRead.data.groups)||remoteRead.data.groups.length!==0||
+    Number(remoteRead.data.head_revision)!==head)
+  return {ok:false,reason:'owner_b_read_returned_non_owner_or_delta_data'};
+
+ const probeChanges=[{collection:'topics',id:'nexus-dla04-owner-b-isolation-probe',
+  operation:'put',position:0,value:{id:'nexus-dla04-owner-b-isolation-probe',title:'DLA-04 isolation probe'}}];
+ const replay=await client.rpc('nexus_publish_entity_operation',{
+  p_operation_id:ownerA.operationId,p_expected_revision:ownerA.headRevision-1,
+  p_changes:probeChanges
+ });
+ if(!replay.error||String(replay.error.code)!=='55000'||replay.data)
+  return {ok:false,reason:'owner_b_replayed_or_published_owner_a_operation'};
+
+ const compact=await client.rpc('nexus_compact_entity_operations',{p_limit:1});
+ if(compact.error||!compact.data||compact.data.ok!==false||
+    compact.data.code!=='delta_not_enabled')
+  return {ok:false,reason:'owner_b_compaction_not_rejected'};
+
+ const downgrade=await client.rpc('nexus_disable_entity_delta',{
+  p_request_id:crypto.randomUUID(),
+  p_expected_head_revision:ownerA.headRevision,
+  p_expected_snapshot_updated_at:ownerA.snapshotUpdatedAt,
+  p_expected_snapshot_revision:ownerA.snapshotRevision,
+  p_expected_compacted_through_revision:ownerA.compactedThroughRevision
+ });
+ if(downgrade.error||!downgrade.data||downgrade.data.ok!==false||
+    downgrade.data.code!=='revision_conflict'||downgrade.data.mode!=='snapshot')
+  return {ok:false,reason:'owner_b_downgrade_probe_not_rejected'};
+
+ const afterState=await client.rpc('nexus_get_entity_sync_state');
+ if(afterState.error||!afterState.data||afterState.data.mode!=='snapshot'||
+    Number(afterState.data.head_revision)!==head||
+    Number(afterState.data.snapshot_revision)!==snapshot||
+    Number(afterState.data.compacted_through_revision)!==floor||
+    afterState.data.snapshot_updated_at!==state.snapshot_updated_at)
+  return {ok:false,reason:'owner_b_sync_state_changed_during_isolation_checks'};
+ const after=await readOwnerEvidence();
+ if(!after.ok||after.workspace[0].updated_at!==before.workspace[0].updated_at||
+    after.chunks.length!==before.chunks.length||
+    JSON.stringify(after.operations)!==JSON.stringify(before.operations)||
+    JSON.stringify(after.receipts)!==JSON.stringify(before.receipts))
+  return {ok:false,reason:'owner_b_workspace_or_delta_rows_changed_during_isolation_checks'};
+ const finalAuth=await client.auth.getUser();
+ if(finalAuth.error||!finalAuth.data||!finalAuth.data.user||
+    finalAuth.data.user.id!==ownerId||localStorage.getItem(OWNER_KEY)!==ownerId)
+  return {ok:false,reason:'account_changed_during_owner_b_isolation_checks'};
+
+ return {ok:true,checks:{
+  authenticatedOwnerB:true,snapshotModePreflight:true,
+  workspaceRowsOwnerScoped:true,chunkRowsOwnerScoped:true,
+  syncStateOwnerScoped:true,operationRowsOwnerScoped:true,
+  receiptRowsOwnerScoped:true,ownerAOperationReadBlocked:true,
+  ownerAOperationReplayRejected:true,ownerACompactionRejected:true,
+  ownerACheckpointDowngradeRejected:true,ownerBStateUnchanged:true,
+  ownerBWorkspaceUnchanged:true,ownerBOperationRowsUnchanged:true,
+  ownerBReceiptRowsUnchanged:true
+ },ownerBVisibleWorkspaceRows:before.workspace.length,
+  ownerBVisibleChunkRows:before.chunks.length,
+  ownerBVisibleOperationRows:before.operations.length,
+  ownerBVisibleReceiptRows:before.receipts.length,
+  ownerAOperationIdSuffix:ownerA.operationId.slice(-8)};
+}
 function installHostedQaReplayPanel(){
  if(!hostedQaReplayGateOpen()||!document||!document.getElementById||
     document.getElementById('nexusHostedQaReplayPanel'))return;
@@ -1836,29 +1971,44 @@ function installHostedQaReplayPanel(){
  panel.style.marginTop='15px';
  const header=document.createElement('div');header.className='panel-head';
  const heading=document.createElement('div'),title=document.createElement('h3'),subtitle=document.createElement('p');
- title.textContent='DLA-04 hosted protocol checks';subtitle.textContent='Read-only replay checks for the currently signed-in staging account.';
+ title.textContent='DLA-04 hosted protocol checks';
+ subtitle.textContent='Staging-only checks for the signed-in QA account.';
  heading.append(title,subtitle);header.append(heading);
  const body=document.createElement('div');body.className='panel-body';
- const note=document.createElement('p');note.className='muted small';
- note.textContent='Checks the latest existing operation: identical replay, altered-payload rejection, stale-revision rejection (when applicable), and unchanged server head. It does not create or delete workspace records.';
- const button=document.createElement('button');button.type='button';button.className='btn btn-primary';
- button.textContent='Run safe hosted checks';
- const output=document.createElement('pre');output.setAttribute('aria-live','polite');
- output.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;margin:12px 0 0;font-size:12px;color:var(--muted);';
- output.textContent='Sign in to the designated staging account, then run the checks.';
- button.addEventListener('click',async()=>{
-  button.disabled=true;button.textContent='Running checks…';output.textContent='Verifying signed-in account and staging protocol…';
-  try{
-   const result=await runHostedQaReplayChecks();
-   output.textContent=JSON.stringify(result,null,2);
-  }catch(_){output.textContent=JSON.stringify({ok:false,reason:'hosted_qa_check_failed_safely'},null,2);}
-  finally{button.disabled=false;button.textContent='Run safe hosted checks';}
+ const replayNote=document.createElement('p');replayNote.className='muted small';
+ replayNote.textContent='Owner-A: checks an existing operation replay, altered-payload rejection, stale-revision rejection, and unchanged server state.';
+ const replayButton=document.createElement('button');replayButton.type='button';replayButton.className='btn btn-primary';
+ replayButton.textContent='Run Owner-A replay checks';
+ const replayOutput=document.createElement('pre');replayOutput.setAttribute('aria-live','polite');
+ replayOutput.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;margin:12px 0 0;font-size:12px;color:var(--muted);';
+ replayOutput.textContent='Sign in to the designated Owner-A staging account, then run the replay checks.';
+ replayButton.addEventListener('click',async()=>{
+  replayButton.disabled=true;replayButton.textContent='Running checks…';
+  replayOutput.textContent='Verifying Owner-A account and staging protocol…';
+  try{replayOutput.textContent=JSON.stringify(await runHostedQaReplayChecks(),null,2);}
+  catch(_){replayOutput.textContent=JSON.stringify({ok:false,reason:'hosted_qa_check_failed_safely'},null,2);}
+  finally{replayButton.disabled=false;replayButton.textContent='Run Owner-A replay checks';}
  });
- body.append(note,button,output);panel.append(header,body);accountView.append(panel);
+ const ownerBNote=document.createElement('p');ownerBNote.className='muted small';ownerBNote.style.marginTop='16px';
+ ownerBNote.textContent='Owner-B: use the separate designated snapshot-mode QA account. Negative RPC probes reuse Owner-A identifiers/checkpoint values and must be rejected. Only owner IDs, operation IDs, and timestamps are read; workspace payloads are not downloaded. No workspace records or settings should change.';
+ const ownerBButton=document.createElement('button');ownerBButton.type='button';ownerBButton.className='btn btn-secondary';
+ ownerBButton.textContent='Run Owner-B isolation checks';
+ const ownerBOutput=document.createElement('pre');ownerBOutput.setAttribute('aria-live','polite');
+ ownerBOutput.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;margin:12px 0 0;font-size:12px;color:var(--muted);';
+ ownerBOutput.textContent='Sign in to the designated Owner-B staging account, then run the isolation checks.';
+ ownerBButton.addEventListener('click',async()=>{
+  ownerBButton.disabled=true;ownerBButton.textContent='Running checks…';
+  ownerBOutput.textContent='Verifying Owner-B identity, row-level isolation, and rejected cross-owner RPC requests…';
+  try{ownerBOutput.textContent=JSON.stringify(await runHostedQaOwnerIsolationChecks(),null,2);}
+  catch(_){ownerBOutput.textContent=JSON.stringify({ok:false,reason:'owner_b_isolation_check_failed_safely'},null,2);}
+  finally{ownerBButton.disabled=false;ownerBButton.textContent='Run Owner-B isolation checks';}
+ });
+ body.append(replayNote,replayButton,replayOutput,ownerBNote,ownerBButton,ownerBOutput);
+ panel.append(header,body);accountView.append(panel);
 }
 
 async function signOut(){if(client)await client.auth.signOut();session=null;ready=false;clearTimeout(timer);clearRetry();status('Not signed in · offline ready');say('You are signed out. Continue using this device offline; data remains local.');setControls();}
-window.NexusCloudSync={schedule,upload,reconnect:connect,getAccountState,deleteAccount:deleteCurrentAccount,downgradeEntityDelta,runHostedQaReplayChecks,
+window.NexusCloudSync={schedule,upload,reconnect:connect,getAccountState,deleteAccount:deleteCurrentAccount,downgradeEntityDelta,runHostedQaReplayChecks,runHostedQaOwnerIsolationChecks,
  noteCommittedLocalSave:(payload)=>{
   if(deletingAccount)return;
   // app-core has already committed this exact snapshot to the account-bound queue.
