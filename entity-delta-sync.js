@@ -618,12 +618,21 @@
           // snapshots trigger unnecessary recovery and can resurrect deleted rows.
           const outbox=await storage.readWorkspaceEntityOutboxGroups(
             owner,Number(cursor.acknowledgedSequence),1000,MAX_BYTES-65536);
+          const outboxWorkspaceRevision=Number(outbox&&outbox.workspaceRevision);
+          const cursorWorkspaceRevision=Number(cursor.workspaceRevision);
           if(!outbox||outbox.unavailable||outbox.snapshotRequired||
              outbox.ownerId!==owner||outbox.generation!==cursor.generation||
-             Number(outbox.workspaceRevision)!==Number(cursor.workspaceRevision)||
-             !Array.isArray(outbox.groups)){
+             !Number.isSafeInteger(outboxWorkspaceRevision)||
+             !Number.isSafeInteger(cursorWorkspaceRevision)||
+             outboxWorkspaceRevision<cursorWorkspaceRevision||
+             !Array.isArray(outbox.groups)||
+             (outbox.groups.length===0&&outboxWorkspaceRevision!==cursorWorkspaceRevision)){
             return {ok:false,snapshotRequired:true,reason:outbox&&outbox.reason||'local_outbox_unavailable'};
           }
+          // A local save advances the entity projection before its operation is
+          // acknowledged, so the outbox workspace revision may legitimately be
+          // newer than the remote cursor. Keep that work for publishPending();
+          // only an empty outbox must match the cursor revision exactly.
           if(outbox.groups.length===0&&outbox.hasMore!==true){
             const cleared=await acknowledgeShadowCompatibilitySnapshot(
               owner,pendingCheck.pending,state.snapshot_updated_at);
