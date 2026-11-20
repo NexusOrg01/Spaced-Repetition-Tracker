@@ -422,7 +422,12 @@
           storage.syncWorkspaceEntities(owner,frozenEntityChanges,{
             trackerRoot,featureRoot,trackerSnapshotJson:trackerSnapshot,
             featureSnapshotJson:featureSnapshot,replace:entityReplace,durablePromise:durableFlush
+          }).then(result=>{
+            // Keep the save-to-projection boundary observable without exporting
+            // workspace content, account identity, or raw IndexedDB exceptions.
+            window.NexusCloudSync?.noteEntitySyncResult?.(result,null);
           }).catch(error=>{
+            window.NexusCloudSync?.noteEntitySyncResult?.(null,error);
             // The current snapshot and offline queue remain authoritative. A failed
             // entity projection is marked stale and rebuilt from that safe snapshot.
             console.warn('Nexus entity projection update failed; snapshot storage remains active.',error);

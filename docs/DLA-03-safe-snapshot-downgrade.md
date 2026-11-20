@@ -58,6 +58,13 @@ A stale/offline device's next Delta read returns `mode = snapshot` with no Delta
 
 ## Separation from rollout gates
 
-The migration is in `supabase/pilot-migrations/`, not `supabase/migrations/` and not OPS-01's exact production schema-install allowlist. The local CI harness applies it only to a disposable local Supabase project. This PR does not apply it to `nexus-sync-staging` or production.
+The migration source remains in `supabase/pilot-migrations/`, outside `supabase/migrations/` and OPS-01's exact production schema-install allowlist. PR #135 added the downgrade implementation and local tests; it did not apply the migration to production.
 
-DLA-03 completion does not complete DLA-04. The hosted QA identity mismatch recorded in the task tracker must be reconciled before the hosted pilot. Production canary, production migration, and live Delta activation remain separate, explicitly approved gates.
+**Staging reconciliation update — 19 November 2026:** DLA-04 preparation has since applied the pilot migrations to the isolated `nexus-sync-staging` project (`xuwfzibxhxzxxupprxsq`). The live staging ledger contains 16 applied version/name entries, and the corresponding checked-in migration files are present. The five DLA-02/DLA-03 pilot SQL files at versions `20261117083717`, `20261117143610`, `20261117182817`, `20261118093245`, and `20261118094046` were compared with their stored applied SQL bodies; all five matched exactly. The version IDs and applied SQL statements were not rewritten.
+
+The earlier hosted QA owner/allowlist mismatch is resolved in the current staging state: the single enabled allowlist owner matches the single Delta-mode workspace. Four other workspaces remain in snapshot mode. The disabled allowlist entry remains disabled. The seven owner-scoped SECURITY DEFINER RPCs have an empty `search_path`; authenticated execution is retained for the client protocol, while `PUBLIC`, `anon`, and `service_role` execution is denied. Authenticated clients have no `nexus_private` schema usage or direct write privileges on the operation and receipt tables.
+
+This staging reconciliation is not the DLA-04 hosted acceptance result. It does not prove two independent A1/A2 app sessions, application-level Owner-B isolation, offline/stale-device recovery, application-level downgrade, or final scoped QA-fixture cleanup. Those remain DLA-04 exit requirements.
+
+DLA-03 completion does not complete DLA-04. Production migration, production RPC grants, a production canary, and live Delta activation remain separate gates requiring their own explicit approval. No production migration or production data/configuration change is authorized by this runbook.
+

@@ -23,6 +23,21 @@ const commercePack = commerceCatalogue.packs.find(pack => pack.id === 'sl-al-com
 const workspaceMerge = require('../workspace-sync-merge.js');
 const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
 
+// Hosted Delta must actively pull remote edits; local-save and reconnect-only triggers
+// leave an already-open second device stale indefinitely. Poll only after the gated
+// Delta path has returned a mechanically verified success, and pause while hidden/offline.
+assert.ok(source.includes('REMOTE_DELTA_POLL_INTERVAL_MS=15000'),
+  'hosted Delta sessions must use a bounded low-frequency remote polling interval');
+assert.match(source,/function scheduleDeltaRemotePoll\(\)[\s\S]*?hostedDeltaPollingEnabled[\s\S]*?isUnsafeCloudOrigin\(\)[\s\S]*?navigator\.onLine[\s\S]*?document\.hidden[\s\S]*?await upload\(\)[\s\S]*?finally\{scheduleDeltaRemotePoll\(\);\}/,
+  'remote polling must be gated to eligible hosted Delta sessions, online/visible tabs and one upload coordinator');
+assert.match(source,/if\(deltaResult&&deltaResult\.ok===true\)\{hostedDeltaPollingEnabled=true;\}/,
+  'remote polling may only activate after verified Delta synchronization succeeds');
+assert.ok(source.includes('if(pending||hostedDeltaPollingEnabled)schedule();')&&
+  source.includes("window.addEventListener('focus',resumeAfterConnectivity)"),
+  'returning to an active tab must immediately pull remote changes even when its local queue is empty');
+assert.match(source,/async function acknowledgeDeltaShadowSnapshot\([\s\S]*?current\.operationId!==pending\.operationId[\s\S]*?sameWorkspace\(current\.payload,snapshot\(\)\)[\s\S]*?queue\.acknowledge\(/,
+  'a compatibility snapshot may be retired only after matching owner, operation, server stamp and current workspace');
+
 const syncMarkerLimitMatch=source.match(/const MAX_SYNC_CURRICULUM_MARKERS=(\d+);/);
 const mergeStateStart=source.indexOf('function mergeState(local,remote){');
 const mergeStateEnd=source.indexOf('function hasLocalWork(',mergeStateStart);
@@ -62,6 +77,145 @@ assert.ok(initializationRemoteRead>=0&&initializationLocalSnapshot>initializatio
 assert.ok(!initializationSource.includes("localPayload=snapshot();const remote=await fetchRemote(newUserId);")&&
   !initializationSource.includes('sameWorkspace(localPayload,latestLocalPayload)'),
   'account initialization must not deep-clone and compare the entire local workspace twice before any account decision');
+
+const uploadStart=source.indexOf('async function upload(){');
+const uploadEnd=source.indexOf('let localQueueHealthy=',uploadStart);
+assert.ok(uploadStart>=0&&uploadEnd>uploadStart,'the cloud upload coordinator must be available for restore-path checks');
+const uploadSource=source.slice(uploadStart,uploadEnd);
+assert.ok(uploadSource.includes('if(!pending&&deltaResult&&deltaResult.skipped)')&&
+  uploadSource.includes('verifiedBase.serverVersion===lastRemoteStamp')&&
+  uploadSource.includes('await sameWorkspace(verifiedBase,snapshot())'),
+  'a no-change cloud restore must be verified against its committed base without rewriting the compatibility snapshot');
+const deltaSyncStart=source.indexOf('async function runStagingEntityDeltaSync');
+const deltaSyncEnd=source.indexOf('async function upload(){',deltaSyncStart);
+const deltaSyncSource=source.slice(deltaSyncStart,deltaSyncEnd);
+assert.ok(deltaSyncSource.includes('cursor.requiresPull===false')&&
+  deltaSyncSource.includes('Number(cursor.publishRevision)===Number(cursor.remoteHeadRevision)')&&
+  deltaSyncSource.includes('outbox.groups.length||outbox.hasMore===true'),
+  'a Delta sync must not be reported successful until the local cursor is current and its outbox is empty');
+
+assert.ok(initializationSource.includes('if(ready&&remote&&remote.payload&&!deltaSyncAttemptedDuringInitialization)')&&
+  initializationSource.includes('const restoredSync=await upload()'),
+  'a device that restores an existing cloud snapshot must run its initial sync coordinator even when it has no pending snapshot');
+
+
+const restoreBaseStart=source.indexOf('function restoreMissingQueueBaseFromVerifiedRemote(');
+const restoreBaseEnd=source.indexOf('async function initializeSession(s){',restoreBaseStart);
+assert.ok(restoreBaseStart>=0&&restoreBaseEnd>restoreBaseStart,
+  'missing-queue-baseline recovery helper must be present before account initialization');
+let restoredBase=null,rememberBaseCalls=0;
+const restoreBaseSandbox={localStorage:{},result:null};
+vm.createContext(restoreBaseSandbox);
+const restoreBaseFunction=source.slice(restoreBaseStart,restoreBaseEnd);
+vm.runInContext(restoreBaseFunction+`
+globalThis.runRestoreBase=(queue,owner,pending,remote)=>
+ restoreMissingQueueBaseFromVerifiedRemote(queue,owner,pending,remote);
+`,restoreBaseSandbox,{filename:'verified-queue-baseline-recovery.js'});
+const restoreQueue={
+ getBase(){return restoredBase;},
+ rememberBase(_storage,owner,payload,serverVersion){
+  rememberBaseCalls++;
+  restoredBase={owner,state:payload.state,featureState:payload.featureState,serverVersion};
+ }
+};
+const restoreRemote={
+ updated_at:'2026-11-18T08:34:08.831801Z',
+ payload:{state:{streams:[{id:'verified-remote-stream'}]},featureState:{goals:[{id:'verified-remote-goal'}]}}
+};
+const restorePending={
+ ownerUserId:'owner-A',baseServerVersion:restoreRemote.updated_at,
+ payload:{state:{streams:[{id:'local-pending-stream'}]},featureState:{goals:[]}}
+};
+assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-A',restorePending,restoreRemote),true,
+  'a missing merge base must be restored when the queued snapshot names the exact currently verified remote revision');
+assert.equal(restoredBase.owner,'owner-A');
+assert.equal(restoredBase.serverVersion,restoreRemote.updated_at);
+assert.deepEqual(restoredBase.state,restoreRemote.payload.state,
+  'the restored merge base must come from the verified remote snapshot, not from pending local data');
+assert.deepEqual(restoredBase.featureState,restoreRemote.payload.featureState);
+assert.equal(rememberBaseCalls,1);
+assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-A',restorePending,restoreRemote),false,
+  'repeated initialization must not replace a baseline already aligned to the verified remote revision');
+assert.equal(rememberBaseCalls,1,
+  'an already aligned baseline must not be rewritten');
+restoredBase={owner:'owner-A',state:{streams:[{id:'stale-local-base'}]},
+ featureState:{goals:[{id:'baseline-only-goal'}]},serverVersion:'older-cloud-stamp'};
+assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-A',restorePending,restoreRemote),false,
+  'an existing older verified base must not be overwritten by a newer but potentially incomplete cloud snapshot');
+assert.deepEqual(restoredBase.state,{streams:[{id:'stale-local-base'}]},
+  'the original baseline records must remain available for three-way repair');
+assert.deepEqual(restoredBase.featureState,{goals:[{id:'baseline-only-goal'}]},
+  'baseline-only Study Hub data must remain preserved');
+assert.equal(restoredBase.serverVersion,'older-cloud-stamp');
+assert.equal(rememberBaseCalls,1);
+restoredBase=null;
+assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-A',
+ {...restorePending,baseServerVersion:'older-cloud-stamp'},restoreRemote),false,
+ 'a queue based on a different remote revision must not be assigned the current cloud snapshot as its baseline');
+assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-B',restorePending,restoreRemote),false,
+ 'a pending snapshot must never seed another account\'s baseline');
+assert.equal(restoreBaseSandbox.runRestoreBase(restoreQueue,'owner-A',restorePending,
+ {...restoreRemote,updated_at:null}),false,
+ 'an unversioned remote snapshot cannot be used as a verified merge baseline');
+const restoreBasePendingRead=initializationSource.indexOf('let pendingForUser=window.NexusOfflineSyncQueue?');
+const restoreBaseCall=initializationSource.indexOf('restoreMissingQueueBaseFromVerifiedRemote',restoreBasePendingRead);
+const autoResume=initializationSource.indexOf('canAutoResumePending(pendingForUser',restoreBasePendingRead);
+assert.ok(restoreBasePendingRead>=0&&restoreBaseCall>restoreBasePendingRead&&autoResume>restoreBaseCall,
+ 'baseline restoration must happen after the account-scoped pending snapshot is read and before its Delta auto-resume path');
+
+const baselineIntentStart=source.indexOf('function hasMissingBaselineCurriculumIntent(userId,localPayload,remotePayload){');
+const baselineIntentEnd=source.indexOf('async function reconcileOwnedWorkspace(',baselineIntentStart);
+assert.ok(baselineIntentStart>=0&&baselineIntentEnd>baselineIntentStart,
+  'baseline curriculum-intent guard must be available for regression coverage');
+const baselineIntentSandbox={
+  baselineMarkers:[],
+  window:{
+    NexusOfflineSyncQueue:{getBase:()=>({state:{settings:{installedCurricula:baselineIntentSandbox.baselineMarkers}}})},
+    NexusCurriculumPacks:commerceCatalogue.packs
+  },
+  localStorage:{}
+};
+vm.createContext(baselineIntentSandbox);
+vm.runInContext(source.slice(baselineIntentStart,baselineIntentEnd)+
+  '\nglobalThis.checkMissingBaselineIntent=hasMissingBaselineCurriculumIntent;',
+  baselineIntentSandbox,{filename:'curriculum-baseline-intent.js'});
+const checkBaselineIntent=(marker,localInstalled=[],remoteInstalled=[],localDeleted=[],remoteDeleted=[])=>{
+  baselineIntentSandbox.baselineMarkers=[marker];
+  return baselineIntentSandbox.checkMissingBaselineIntent('account-A',
+    {state:{settings:{installedCurricula:localInstalled,curriculumTombstones:localDeleted}}},
+    {state:{settings:{installedCurricula:remoteInstalled,curriculumTombstones:remoteDeleted}}});
+};
+assert.equal(checkBaselineIntent('installed:pack:retired-catalogue-pack'),false,
+  'an obsolete pack absent from the shipped catalogue must not force compatibility snapshot recovery on every refresh');
+assert.equal(checkBaselineIntent('installed:subject:sl-al-commerce-si:retired-subject'),false,
+  'an obsolete subject absent from a shipped pack must not force an impossible recovery');
+assert.equal(checkBaselineIntent('installed:topic:sl-al-commerce-si:retired-subject:"Removed topic"'),false,
+  'an obsolete topic absent from the shipped subject must not force an impossible recovery');
+assert.equal(checkBaselineIntent('installed:pack:sl-al-commerce-si'),true,
+  'a missing full-pack install marker for a currently shipped pack must still trigger real reconciliation');
+assert.equal(checkBaselineIntent('installed:subject:sl-al-commerce-si:'+commercePack.subjects[0].id),true,
+  'a missing subject install marker for a currently shipped subject must still trigger reconciliation');
+assert.equal(checkBaselineIntent('installed:topic:sl-al-commerce-si:'+commercePack.subjects[0].id+':'+JSON.stringify(commercePack.subjects[0].topics[0])),true,
+  'a missing topic install marker for a currently shipped topic must still trigger reconciliation');
+assert.equal(checkBaselineIntent('installed:subject:sl-al-commerce-si:'+commercePack.subjects[0].id,[],[],['deleted:subject:sl-al-commerce-si:'+commercePack.subjects[0].id]),false,
+  'an explicit subject deletion tombstone must suppress baseline restoration');
+
+assert.equal(checkBaselineIntent('installed:pack:sl-al-commerce-si',['installed:pack:sl-al-commerce-si']),true,
+  'a local baseline install marker must not mask that the newer remote snapshot lost the full-pack marker');
+assert.equal(checkBaselineIntent('installed:subject:sl-al-commerce-si:'+commercePack.subjects[0].id,
+  ['installed:subject:sl-al-commerce-si:'+commercePack.subjects[0].id]),true,
+  'a local subject marker must not mask a missing remote subject marker');
+assert.equal(checkBaselineIntent('installed:topic:sl-al-commerce-si:'+commercePack.subjects[0].id+':'+JSON.stringify(commercePack.subjects[0].topics[0]),
+  ['installed:topic:sl-al-commerce-si:'+commercePack.subjects[0].id+':'+JSON.stringify(commercePack.subjects[0].topics[0])]),true,
+  'a local topic marker must not mask a missing remote topic marker');
+assert.equal(checkBaselineIntent('installed:subject:sl-al-commerce-si:'+commercePack.subjects[0].id,[],
+  ['installed:pack:sl-al-commerce-si']),false,
+  'a remote full-pack marker covers a narrower baseline subject marker');
+assert.equal(checkBaselineIntent('installed:topic:sl-al-commerce-si:'+commercePack.subjects[0].id+':'+JSON.stringify(commercePack.subjects[0].topics[0]),[],
+  ['installed:subject:sl-al-commerce-si:'+commercePack.subjects[0].id]),false,
+  'a remote subject marker covers a narrower baseline topic marker');
+
+
 assert.ok(source.includes("const normalizedBase=savedBase?normalizeWorkspacePayload({...savedBase,schema:4}):null;"),
   'a last-verified workspace base is already normalized and must not receive a second legacy normalization pass that creates false concurrent-edit conflicts');
 
@@ -107,6 +261,7 @@ const localState = stateFor('offline-A');
 let activeSession = { user: accountA };
 let authStateCallback = null;
 let networkAvailable = false;
+let remoteReadCount = 0;
 let deferNextRemoteRead = false;
 let releaseDeferredRemoteRead = null;
 let simulateAmbiguousCommittedWrite = false;
@@ -155,6 +310,9 @@ const window = {
   NexusOfflineSyncQueue: queue,
   NexusCloudSyncRecovery: recovery,
   NexusCurriculumIntegrity: curriculumIntegrity,
+  // In a browser, the named global is also exposed as a window property.
+  // Mirror that relationship so recovery tests exercise the real catalogue guard.
+  NexusCurriculumPacks: commerceCatalogue.packs,
   NexusRepairCurriculumState: data => {
     const normalized = context.normalizeState(data);
     return curriculumIntegrity.repair(normalized, commerceCatalogue.packs, {
@@ -190,6 +348,7 @@ function makeQuery(table) {
     update(v) { operation = 'update'; values = v; return builder; },
     insert(v) { operation = 'insert'; values = v; return builder; },
     async maybeSingle() {
+      if(table==='nexus_user_data')remoteReadCount++;
       if (!networkAvailable) throw new Error('simulated offline network');
       if (deferNextRemoteRead) {
         deferNextRemoteRead = false;
@@ -276,12 +435,19 @@ queue.commitWorkspace(storage, [
 ], payloadFor('offline-A'));
 
 await window.NexusCloudSync.reconnect();
+assert.equal(remoteReadCount,0,
+  'cold offline account initialization must use the owner-bound local workspace without waiting on a network snapshot read');
 assert.equal(rows.has(accountA.id), false, 'offline startup must not write to cloud');
 assert.ok(queue.hasPending(storage, accountA.id), 'offline startup must retain the account-A pending snapshot');
 assert.equal(getElement('cloudStatus').textContent, 'Offline · local workspace', 'an authenticated account with its own local workspace should remain usable offline without claiming sync success');
 
 networkAvailable = true;
 listeners['window:online']();
+for(let i=0;i<100&&remoteReadCount===0;i++){
+  await new Promise(resolve=>setTimeout(resolve,10));
+}
+assert.ok(remoteReadCount>0,
+  'reconnecting after offline initialization must rerun authenticated cloud verification before reporting a synced state');
 for (let i = 0; i < 100 && (!rows.has(accountA.id) || queue.hasPending(storage, accountA.id)); i++) {
   await new Promise(resolve => setTimeout(resolve, 10));
 }
@@ -1344,7 +1510,7 @@ for (const scenario of [
     'the offline handoff must not change account A cloud data');
   assert.equal(rows.get(accountB.id) ? JSON.stringify(rows.get(accountB.id)) : null, remoteBBefore,
     'the cached workspace must not trigger a cloud write while offline');
-  assert.equal(getElement('cloudStatus').textContent, 'Offline · local workspace loaded',
+  assert.equal(getElement('cloudStatus').textContent, 'Offline · local workspace',
     'offline restoration must be shown as local-only, not synced');
 
   const accountC = { id: 'account-C-no-cache', email: 'c@example.test' };
@@ -1354,7 +1520,7 @@ for (const scenario of [
     'without a C-specific cached workspace, Nexus must not re-label B data as C data');
   assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id, 'cached-B-offline',
     'the prior workspace must not be overwritten when a new account has no cached data');
-  assert.equal(getElement('cloudStatus').textContent, 'Sync unavailable',
+  assert.equal(getElement('cloudStatus').textContent, 'Offline workspace unavailable',
     'missing target-account data while offline must keep sync blocked');
   assert.ok(getElement('cloudHelpText').textContent.includes('previous account remains protected and hidden'),
     'the offline no-cache path must explain why the previous workspace remains hidden');
@@ -1640,5 +1806,33 @@ assert.ok(queue.hasPending(storage,accountF.id),
 assert.match(getElement('cloudHelpText').textContent,/database upgrade|chunk-storage upgrade/i,
   'the user must be told that a database upgrade is required rather than seeing an unexplained sync failure');
 missingChunkTable=false;
+
+// A second device that has no local pending snapshot must still enter the
+// sync coordinator after restoring an existing cloud workspace. In snapshot
+// mode (or when the preview gate is closed), an unchanged restore must not
+// cause a redundant full-snapshot write or advance the cloud timestamp.
+const accountG={id:'account-G',email:'g@example.test'};
+const payloadG=payloadFor('cloud-restored-G');
+const stampG='2026-11-18T15:00:00.000Z';
+rows.set(accountG.id,{user_id:accountG.id,payload:payloadG,updated_at:stampG});
+storage.removeItem(OWNER);
+storage.setItem(STATE_KEY,JSON.stringify(payloadG.state));
+storage.setItem(FEATURE_KEY,JSON.stringify(payloadG.featureState));
+context.state=payloadG.state;
+activeSession={user:accountG};
+networkAvailable=true;
+const diagBeforeRestore=JSON.parse(storage.getItem('nexus.syncdiag.session.v1')||'[]');
+const lastDiagnosticAtBefore=diagBeforeRestore.length?diagBeforeRestore[diagBeforeRestore.length-1].at:'';
+await window.NexusCloudSync.reconnect();
+const diagAfterRestore=JSON.parse(storage.getItem('nexus.syncdiag.session.v1')||'[]');
+assert.ok(diagAfterRestore.some(event=>event&&event.stage==='upload-start'&&
+  typeof event.at==='string'&&event.at>lastDiagnosticAtBefore),
+  'a clean second-device cloud restore must run the initial sync coordinator');
+assert.equal(rows.get(accountG.id).updated_at,stampG,
+  'a no-change restore in snapshot mode must not rewrite the cloud snapshot');
+assert.equal(queue.hasPending(storage,accountG.id),false,
+  'a no-change restore must not create a compatibility snapshot queue entry');
+assert.equal(getElement('cloudStatus').textContent,'Synced',
+  'the clean second-device restore must settle in the synced state');
 
 console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, target-account pending-snapshot isolation, first-login conflict gating, auth-session queue recovery, 77,144-record second-device deletion reconciliation, and pre-migration chunk-table compatibility.');

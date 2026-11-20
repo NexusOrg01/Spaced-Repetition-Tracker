@@ -121,48 +121,11 @@ BEGIN
   -- A second operator invocation after a successful transition is harmless.
   -- It must not rewrite the snapshot timestamp or reset any revision.
   IF v_state.mode = 'snapshot' THEN
-    -- An owner already in snapshot mode may use this path only when the caller
-    -- has observed this exact checkpoint. Do not mint an idempotency receipt
-    -- for stale or fabricated preconditions.
-    IF v_state.head_revision <> p_expected_head_revision
-       OR v_state.snapshot_revision <> p_expected_snapshot_revision
-       OR v_state.compacted_through_revision <> p_expected_compacted_through_revision
-       OR v_updated_at IS DISTINCT FROM p_expected_snapshot_updated_at THEN
-      RETURN jsonb_build_object(
-        'ok', false,
-        'code', 'revision_conflict',
-        'mode', v_state.mode,
-        'head_revision', v_state.head_revision,
-        'snapshot_revision', v_state.snapshot_revision,
-        'compacted_through_revision', v_state.compacted_through_revision,
-        'snapshot_updated_at', v_updated_at
-      );
-    END IF;
-
     IF (v_payload ->> '__nexusDeltaSync') IS NOT NULL
        OR v_state.head_revision <> v_state.snapshot_revision
        OR v_state.snapshot_revision <> v_state.compacted_through_revision THEN
       RAISE EXCEPTION 'The snapshot-mode workspace is not in a verified terminal state.'
         USING ERRCODE = '55000';
-    END IF;
-
-    IF EXISTS (
-         SELECT 1 FROM public.nexus_workspace_operations AS operations
-          WHERE operations.user_id = v_uid
-       )
-       OR EXISTS (
-         SELECT 1 FROM public.nexus_workspace_operation_receipts AS receipts
-          WHERE receipts.user_id = v_uid
-       ) THEN
-      RETURN jsonb_build_object(
-        'ok', false,
-        'code', 'operation_compaction_pending',
-        'mode', v_state.mode,
-        'head_revision', v_state.head_revision,
-        'snapshot_revision', v_state.snapshot_revision,
-        'compacted_through_revision', v_state.compacted_through_revision,
-        'snapshot_updated_at', v_updated_at
-      );
     END IF;
 
     INSERT INTO nexus_private.entity_delta_downgrade_receipts (

@@ -624,8 +624,14 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     callback();
   },delay);
   await assert.rejects(loaded.api.migrateWorkspaceEntities('entity-owner-a',expandedState,afterChanges.featureState,
-    {expectedRevision:loaded.api.getStatus().revision}),/Synthetic IndexedDB quota\/transaction failure/,
-    'a failed later batch must leave the previous entity generation active');
+    {expectedRevision:loaded.api.getStatus().revision}),error=>{
+      assert.match(error.message,/Synthetic IndexedDB quota\/transaction failure/);
+      assert.equal(error.nexusEntityProjectionFailureStage,'write-row-batch',
+        'a later IndexedDB batch failure must identify the bounded row-write stage');
+      assert.equal(error.nexusEntityProjectionFailureReason,'indexeddb-write-failed',
+        'row-write failures must expose a safe category, not raw IndexedDB details');
+      return true;
+    },'a failed later batch must leave the previous entity generation active');
   loaded.context.window.setTimeout=originalScheduler;
   assert.ok(migrationYieldCount>=1,'the interrupted migration must yield after its first committed batch');
   assert.equal(readableGenerationDuringBuild.generation,afterChanges.generation,
@@ -668,8 +674,12 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     topics:resumedWorkspace.state.topics.concat([{...resumedWorkspace.state.topics[0]}])
   };
   await assert.rejects(loaded.api.migrateWorkspaceEntities('entity-owner-a',duplicateIdState,resumedWorkspace.featureState,
-    {expectedRevision:loaded.api.getStatus().revision}),/duplicate stable record ID/,
-    'entity migration must reject duplicate IDs rather than create records that later updates cannot address');
+    {expectedRevision:loaded.api.getStatus().revision}),error=>{
+      assert.match(error.message,/duplicate stable record ID/);
+      assert.equal(error.nexusEntityProjectionFailureReason,'duplicate-stable-record-id');
+      assert.equal(error.nexusEntityProjectionFailureStage,'generate-rows');
+      return true;
+    },'entity migration must reject duplicate IDs rather than create records that later updates cannot address');
   const afterDuplicateIdFailure=await loaded.api.readWorkspaceEntities('entity-owner-a');
   assert.equal(afterDuplicateIdFailure.generation,resumedMigration.generation,
     'a duplicate-ID migration must leave the previous complete generation active');
@@ -680,8 +690,12 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     topics:resumedWorkspace.state.topics.map((topic,index)=>index===0?{...topic,id:''}:topic)
   };
   await assert.rejects(loaded.api.migrateWorkspaceEntities('entity-owner-a',missingIdState,resumedWorkspace.featureState,
-    {expectedRevision:loaded.api.getStatus().revision}),/stable record ID/,
-    'entity migration must reject records without stable IDs');
+    {expectedRevision:loaded.api.getStatus().revision}),error=>{
+      assert.match(error.message,/stable record ID/);
+      assert.equal(error.nexusEntityProjectionFailureReason,'missing-stable-record-id');
+      assert.equal(error.nexusEntityProjectionFailureStage,'generate-rows');
+      return true;
+    },'entity migration must reject records without stable IDs');
   const afterMissingIdFailure=await loaded.api.readWorkspaceEntities('entity-owner-a');
   assert.equal(afterMissingIdFailure.generation,resumedMigration.generation,
     'a missing-ID migration must leave the previous complete generation active');
@@ -1029,6 +1043,140 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
 
   assert.equal(loaded.api.getStatus().enabled,true,
     'entity operations must not replace or disable the existing snapshot-backed storage path');
+}
+
+// Snapshot replacement is used by hosted Delta recovery with a null change list.
+// It must backfill successfully, and unrelated queue writes during a large rebuild
+// must not invalidate the workspace-specific source revision.
+{
+  const owner='entity-projection-rebuild-owner';
+  const trackerState={
+    schema:3,
+    streams:[{id:'projection-stream',name:'Commerce'}],
+    subjects:[{id:'projection-subject',streamId:'projection-stream',name:'Accounting'}],
+    topics:Array.from({length:401},(_,index)=>({
+      id:'projection-topic-'+index,subjectId:'projection-subject',name:'Projection topic '+index
+    })),
+    history:[],exams:[],settings:{theme:'dark'}
+  };
+  const featureState={
+    version:1,journal:[{id:'projection-journal',text:'Projection backfill regression'}],
+    papers:[],goals:[],studyLogs:[],selectedTopicIds:[]
+  };
+  const trackerJson=JSON.stringify(trackerState),featureJson=JSON.stringify(featureState);
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',trackerJson],
+    ['recall.study.features.v1',featureJson],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB();
+  const loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true,
+    'the hosted projection-rebuild fixture must initialize durable IndexedDB');
+
+  // This is the exact call shape used by cloud-sync.js for an absent or stale
+  // projection. The null argument requests a complete replacement, not a delta.
+  const firstBackfill=await loaded.api.syncWorkspaceEntities(owner,null,{replace:true});
+  assert.equal(firstBackfill.mode,'snapshot-backfill',
+    'a null change list with replace:true must perform a complete entity backfill');
+  const firstWorkspace=await loaded.api.readWorkspaceEntities(owner);
+  assert.ok(firstWorkspace,'the null-triggered backfill must publish a readable generation');
+  assert.equal(firstWorkspace.state.topics.length,401);
+  assert.equal(firstWorkspace.featureState.journal.length,1);
+  assert.equal((await loaded.api.readWorkspaceEntityOutbox(owner,0,20)).length,0,
+    'a snapshot projection rebuild must not manufacture incremental outbox operations');
+
+  // The database-wide revision also advances for unrelated managed preferences.
+  // Such a write must not abort a projection whose workspace snapshot is unchanged.
+  let unrelatedWriteCommitted=false;
+  const originalScheduler=loaded.context.window.setTimeout;
+  loaded.context.window.setTimeout=(callback,delay)=>{
+    return originalScheduler(async()=>{
+      if(!unrelatedWriteCommitted){
+        unrelatedWriteCommitted=true;
+        await loaded.api.commitLocalStorageEntries([{
+          key:'nexus.test.unrelated-during-projection-rebuild',value:'committed'
+        }]);
+        await loaded.api.flush();
+      }
+      callback();
+    },delay);
+  };
+  let replacement;
+  try{
+    replacement=await loaded.api.syncWorkspaceEntities(owner,null,{replace:true});
+  }finally{
+    loaded.context.window.setTimeout=originalScheduler;
+  }
+  assert.equal(unrelatedWriteCommitted,true,
+    'the test must commit an unrelated IndexedDB write while replacement rows are being staged');
+  assert.equal(replacement.mode,'snapshot-backfill',
+    'unrelated queue/preferences writes must not invalidate a complete workspace projection rebuild');
+  const rebuiltWorkspace=await loaded.api.readWorkspaceEntities(owner);
+  assert.ok(rebuiltWorkspace,'the replacement generation must remain readable after the unrelated write');
+  assert.notEqual(rebuiltWorkspace.generation,firstWorkspace.generation,
+    'replace:true must publish a new complete generation rather than silently keeping the old one');
+  assert.equal(rebuiltWorkspace.state.topics.length,401);
+  assert.equal(rebuiltWorkspace.featureState.journal[0].id,'projection-journal');
+  assert.equal((await loaded.api.readWorkspaceEntityOutbox(owner,0,20)).length,0);
+
+  // A real workspace edit during a rebuild must abort publication of that stale
+  // candidate, retain the prior active generation in the manifest, and allow a
+  // later retry to build from the newer committed compatibility snapshot.
+  const manifestKey='workspace-entities:'+encodeURIComponent(owner);
+  const metaStore=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  const activeBeforeRace=metaStore.get(manifestKey);
+  const changedTopic={id:'projection-topic-added-during-rebuild',
+    subjectId:'projection-subject',name:'Committed during projection rebuild'};
+  const changedTracker={...trackerState,topics:[...trackerState.topics,changedTopic]};
+  const markerKey=loaded.api.getWorkspaceEntityRevisionKey(owner);
+  let workspaceChangeCommitted=false;
+  const schedulerBeforeWorkspaceRace=loaded.context.window.setTimeout;
+  loaded.context.window.setTimeout=(callback,delay)=>{
+    return schedulerBeforeWorkspaceRace(async()=>{
+      if(!workspaceChangeCommitted){
+        workspaceChangeCommitted=true;
+        await loaded.api.commitLocalStorageEntries([
+          {key:'recall.study.tracker.v1',value:JSON.stringify(changedTracker)},
+          {key:'recall.study.features.v1',value:featureJson},
+          {key:markerKey,value:'workspace-change-during-projection-rebuild'}
+        ]);
+        await loaded.api.flush();
+      }
+      callback();
+    },delay);
+  };
+  let interruptedRebuildError=null;
+  try{
+    await loaded.api.syncWorkspaceEntities(owner,null,{replace:true});
+  }catch(error){
+    interruptedRebuildError=error;
+  }finally{
+    loaded.context.window.setTimeout=schedulerBeforeWorkspaceRace;
+  }
+  assert.equal(workspaceChangeCommitted,true,
+    'the test must commit a real workspace update while replacement rows are being written');
+  assert.ok(interruptedRebuildError,
+    'a replacement built from a superseded compatibility snapshot must not be published');
+  assert.equal(interruptedRebuildError.nexusEntityProjectionFailureReason,'source-snapshot-changed',
+    'a superseded rebuild must retain its safe source-change failure classification');
+  const manifestAfterRace=metaStore.get(manifestKey);
+  assert.equal(manifestAfterRace.status,'ready',
+    'the prior manifest must remain ready after a superseded replacement is aborted');
+  assert.equal(manifestAfterRace.activeGeneration,activeBeforeRace.activeGeneration,
+    'a superseded replacement must not replace the previously active generation');
+  assert.equal(manifestAfterRace.pendingGeneration,null,
+    'an interrupted replacement must clear only its own pending generation');
+  assert.equal(await loaded.api.readWorkspaceEntities(owner),null,
+    'a stale projection must remain unavailable until a fresh generation matches the new workspace revision');
+
+  const retryAfterWorkspaceChange=await loaded.api.syncWorkspaceEntities(owner,null,{replace:true});
+  assert.equal(retryAfterWorkspaceChange.mode,'snapshot-backfill',
+    'a retry must rebuild from the latest committed compatibility snapshot');
+  const finalWorkspace=await loaded.api.readWorkspaceEntities(owner);
+  assert.ok(finalWorkspace,'the retry must publish a verified entity generation');
+  assert.equal(finalWorkspace.state.topics.length,402);
+  assert.equal(finalWorkspace.state.topics.at(-1).id,changedTopic.id);
 }
 
 // Permanent account deletion must remove only the selected owner's entity rows,
@@ -1699,7 +1847,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'backup/restore-style managed writes must remain blocked while recovery is prepared');
   const stagedResult=await preparedRestarted.api.migrateWorkspaceEntities(owner,candidateState,candidateFeatures,{
     expectedRevision:preparedRestarted.api.getStatus().revision,
-    deferActivation:true,recoveryIntentId:intentId
+    deferActivation:true,recoveryIntentId:intentId,recoveryCandidateDigest:digest
   });
   assert.equal(stagedResult.staged,true,'the replacement generation should be staged without activation');
   const activeBefore=await loaded.api.readWorkspaceEntities(owner);
@@ -1708,12 +1856,66 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const staged=await loaded.api.readWorkspaceEntities(owner,{pending:true,recoveryIntentId:intentId});
   assert.equal(staged.pending,true);
   assert.equal(staged.state.topics[0].name,'Merged recovery');
+
+  // Reproduce the failure mode seen on A1: the durable journal remains staged,
+  // but the manifest no longer points at its pending generation.
+  const migrationStore=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  const manifestKey='workspace-entities:'+encodeURIComponent(owner);
+  const lostManifest=clone(migrationStore.get(manifestKey));
+  migrationStore.set(manifestKey,{
+    ...lostManifest,pendingGeneration:null,pendingRecoveryIntentId:null,
+    pendingRowCount:null,pendingCounts:null,pendingPositionBounds:null,
+    pendingSourceRevision:null,pendingSourceWorkspaceRevision:null
+  });
+  const repairedStage=await preparedRestarted.api.migrateWorkspaceEntities(owner,candidateState,candidateFeatures,{
+    expectedRevision:preparedRestarted.api.getStatus().revision,
+    deferActivation:true,recoveryIntentId:intentId,recoveryRestage:true,
+    recoveryCandidateDigest:digest
+  });
+  assert.equal(repairedStage.staged,true,
+    'a staged journal whose manifest pointer was lost must accept a digest-matched replacement generation');
+  const restoredStage=await preparedRestarted.api.readWorkspaceEntities(owner,{pending:true,recoveryIntentId:intentId});
+  assert.ok(restoredStage&&restoredStage.pending,
+    'the replacement generation must be readable under the original recovery intent');
+  assert.equal(restoredStage.state.topics[0].name,'Merged recovery',
+    'restaging must preserve the exact previously authorized recovery candidate');
+
   const journal=await loaded.api.readWorkspaceEntityRecovery(owner);
   assert.equal(journal.intent.phase,'staged');
   assert.equal(loaded.api.getStatus().entityRecoveryLocked,true,
     'the account write lock must remain active while recovery is staged');
   await assert.rejects(loaded.api.syncWorkspaceEntities(owner,[]),/recovery is pending/,
     'normal entity projection changes must be blocked while the candidate is staged');
+
+  // A fresh page can first hydrate under B, then switch back to A. Reading A's
+  // journal after that handoff must restore A's in-memory lock before any edit.
+  const accountB='storage-test-account-b';
+  const accountBState={schema:3,streams:[],subjects:[],topics:[],history:[],exams:[],settings:{}};
+  const accountBFeatures={version:1,journal:[],papers:[],goals:[],studyLogs:[]};
+  await loaded.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(accountBState)},
+    {key:'recall.study.features.v1',value:JSON.stringify(accountBFeatures)},
+    {key:'nexus.cloud.last-user-id',value:accountB}
+  ]);
+  const accountBPage=loadApi(makeWindow(native,idb));
+  assert.equal(await accountBPage.api.bootstrap(),true);
+  assert.equal(accountBPage.api.getStatus().entityRecoveryLocked,false,
+    'an account-B page must not inherit account A’s recovery lock');
+  await accountBPage.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(candidateState)},
+    {key:'recall.study.features.v1',value:JSON.stringify(candidateFeatures)},
+    {key:'nexus.cloud.last-user-id',value:owner}
+  ]);
+  assert.equal(accountBPage.api.getStatus().entityRecoveryLocked,false,
+    'the inactive A lock is not restored merely by changing the owner marker');
+  const ownerARecovery=await accountBPage.api.readWorkspaceEntityRecovery(owner);
+  assert.equal(ownerARecovery.intent.phase,'staged',
+    'the original staged journal must still be available after B-to-A account handoff');
+  assert.equal(accountBPage.api.getStatus().entityRecoveryLocked,true,
+    'reading the returned owner A journal must rehydrate its durable in-memory lock');
+  await assert.rejects(accountBPage.api.syncWorkspaceEntities(owner,[]),/recovery is pending/,
+    'the restored owner A lock must block normal projection writes after account handoff');
+
   const restarted=loadApi(makeWindow(native,idb));
   assert.equal(await restarted.api.bootstrap(),true,'a new page context should restore the staged recovery lock');
   assert.equal(restarted.api.getStatus().entityRecoveryLocked,true,
@@ -1745,13 +1947,13 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(publishedRestarted.api.getStatus().entityRecoveryLocked,false,
     'the local recovery lock must only release after the atomic commit');
   const activeAfter=await publishedRestarted.api.readWorkspaceEntities(owner);
-  assert.equal(activeAfter.generation,staged.generation,'the staged entity generation should become active atomically');
+  assert.equal(activeAfter.generation,repairedStage.generation,'the replacement staged entity generation should become active atomically');
   assert.equal(activeAfter.state.topics[0].name,'Merged recovery');
   assert.equal(JSON.parse(publishedRestarted.context.window.localStorage.getItem('recall.study.features.v1')).journal[0].id,
     'recovery-journal','the compatibility Study Hub snapshot must be part of the same commit');
   const cursor=await publishedRestarted.api.readWorkspaceEntityDeltaCursor(owner);
   assert.equal(cursor.ok,true);
-  assert.equal(cursor.cursor.generation,staged.generation);
+  assert.equal(cursor.cursor.generation,repairedStage.generation);
   assert.equal(cursor.cursor.publishRevision,2);
   assert.equal(cursor.cursor.remoteHeadRevision,3);
   assert.equal(cursor.cursor.snapshotUpdatedAt,'recovered-snapshot-stamp');
@@ -1801,6 +2003,49 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'account cleanup must remove the selected account operation outbox');
   assert.equal(publishedRestarted.api.getStatus().entityRecoveryLocked,false,
     'successful owner cleanup must release the in-memory recovery lock');
+}
+
+// Waiting for entity synchronization must drain tasks appended while the
+// caller is suspended on an earlier task. Otherwise Delta startup can observe a
+// transient projection state and incorrectly rebuild it before the incremental
+// outbox write has completed.
+{
+  const owner='entity-sync-wait-race-owner';
+  const state={
+    schema:3,streams:[{id:'wait-stream',name:'Commerce'}],
+    subjects:[{id:'wait-subject',streamId:'wait-stream',name:'Accounting'}],
+    topics:[{id:'wait-topic',subjectId:'wait-subject',name:'Baseline topic'}],
+    history:[],exams:[],settings:{}
+  };
+  const features={version:1,journal:[],papers:[],goals:[],studyLogs:[]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true,'entity-sync wait fixture must initialize durable storage');
+  await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+
+  let releaseFirst,releaseSecond,waitResolved=false;
+  const firstGate=new Promise(resolve=>{releaseFirst=resolve;});
+  const secondGate=new Promise(resolve=>{releaseSecond=resolve;});
+  const first=loaded.api.syncWorkspaceEntities(owner,[],{durablePromise:firstGate});
+  const waiting=loaded.api.waitForWorkspaceEntitySync(owner).then(result=>{
+    waitResolved=true;return result;
+  });
+  const second=loaded.api.syncWorkspaceEntities(owner,[],{durablePromise:secondGate});
+
+  releaseFirst();
+  await first;
+  await Promise.resolve();
+  assert.equal(waitResolved,false,
+    'the projection wait must notice and drain a second entity task queued while it awaited the first');
+  releaseSecond();
+  await second;
+  const settled=await waiting;
+  assert.equal(settled.ok,true,'the stable queue drain must return the verified active projection');
 }
 
 console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, delta cursor receipt atomicity, recovery journal restart at prepared/staged/published phases, recovery write locks, failed-write recovery, and account-handoff isolation.');

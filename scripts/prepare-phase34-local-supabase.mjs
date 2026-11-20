@@ -32,7 +32,11 @@ await cp(join(root,'supabase','local-phase34','20261108000000_phase34_local_work
 for(const m of migrations)await cp(join(root,'supabase','migrations',m),join(dir,m));
 const pilotMigrations=[
   '20261117083717_add_entity_delta_pilot_eligibility.sql',
-  '20261117131900_add_entity_delta_snapshot_downgrade.sql'
+  '20261117143610_add_entity_delta_snapshot_downgrade.sql',
+  '20261117163241_harden_entity_delta_enable_search_path.sql',
+  '20261117182817_harden_entity_delta_snapshot_noop_preconditions_20261117.sql',
+  '20261118093245_harden_entity_delta_rpc_search_paths.sql',
+  '20261118094046_revoke_delta_pilot_eligibility_on_downgrade.sql'
 ];
 for(const migration of pilotMigrations)
   await cp(join(root,'supabase','pilot-migrations',migration),join(dir,migration));

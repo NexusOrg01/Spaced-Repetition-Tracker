@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = resolve(root, 'dist');
 const LIVE_HOST = 'txugbdavblpettcnhcxl.supabase.co';
-const HOSTED_QA_BRANCH = 'feat/dla-03-safe-snapshot-downgrade';
+const HOSTED_QA_BRANCH = 'fix/dla04-entity-projection-guard';
 const HOSTED_QA_PROJECT_URL = 'https://xuwfzibxhxzxxupprxsq.supabase.co';
 const HOSTED_QA_VERCEL_PROJECT_ID = 'prj_UgPzqFpvqBaKkKXi2Vm2COxqUsDi';
 const PREVIEW_BRANCHES = new Set(['feat/account-bound-offline-sync', 'ai-dev/rebuild-commerce-sync-integrity', 'ai-dev/fix-signin-preserve-offline-workspace', 'ai-dev/fix-commerce-pending-overwrite', 'ai-dev/rebuild-explore-curriculum-lifecycle', 'ai-dev/fresh-curriculum-sync-rebuild', 'android/capacitor-multistore-foundation']);
@@ -108,6 +108,18 @@ export function resolveStagingEntityDeltaEnabled(env, config) {
     !isHostedDeploymentEnvironment(env)&&!!config&&isLocalPhase34Url(config.url);
 }
 
+function strictVercelPreviewOrigin(rawHost) {
+  const host=String(rawHost||'').trim().toLowerCase();
+  if(!host||host.includes('/')||host.includes('@')||host.includes('?')||host.includes('#'))return '';
+  try{
+    const parsed=new URL('https://'+host);
+    if(parsed.protocol!=='https:'||parsed.hostname!==host||!parsed.hostname.endsWith('.vercel.app')||
+       parsed.port||parsed.username||parsed.password||parsed.search||parsed.hash||
+       (parsed.pathname!=='/'&&parsed.pathname!==''))return '';
+    return parsed.origin;
+  }catch(_){return '';}
+}
+
 export function resolveHostedQaEntityDeltaEnabled(env, config) {
   if (env.VERCEL !== '1' ||
       env.VERCEL_PROJECT_ID !== HOSTED_QA_VERCEL_PROJECT_ID ||
@@ -115,28 +127,21 @@ export function resolveHostedQaEntityDeltaEnabled(env, config) {
       env.VERCEL_ENV !== 'preview' ||
       env.VERCEL_GIT_COMMIT_REF !== HOSTED_QA_BRANCH ||
       !config || config.url !== HOSTED_QA_PROJECT_URL) {
-    return { enabled: false, origin: '', ref: '' };
+    return { enabled: false, origin: '', branchOrigin: '', ref: '' };
   }
-  const deploymentHost = String(env.VERCEL_URL || '').trim().toLowerCase();
-  if (!deploymentHost || deploymentHost.includes('/') || deploymentHost.includes('@') ||
-      deploymentHost.includes('?') || deploymentHost.includes('#')) {
-    return { enabled: false, origin: '', ref: '' };
-  }
-  let deploymentUrl;
-  try { deploymentUrl = new URL('https://' + deploymentHost); }
-  catch { return { enabled: false, origin: '', ref: '' }; }
-  if (deploymentUrl.protocol !== 'https:' || deploymentUrl.hostname !== deploymentHost ||
-      !deploymentUrl.hostname.endsWith('.vercel.app') || deploymentUrl.port ||
-      deploymentUrl.username || deploymentUrl.password || deploymentUrl.search ||
-      deploymentUrl.hash || (deploymentUrl.pathname !== '/' && deploymentUrl.pathname !== '')) {
-    return { enabled: false, origin: '', ref: '' };
-  }
-  return { enabled: true, origin: deploymentUrl.origin, ref: HOSTED_QA_BRANCH };
+  const deploymentOrigin=strictVercelPreviewOrigin(env.VERCEL_URL);
+  if(!deploymentOrigin)return { enabled:false,origin:'',branchOrigin:'',ref:'' };
+  // VERCEL_URL identifies this immutable deployment while VERCEL_BRANCH_URL
+  // identifies the same dedicated branch's moving preview alias. Both are
+  // emitted as exact origins so browser-origin checks work on either URL.
+  const branchOrigin=strictVercelPreviewOrigin(env.VERCEL_BRANCH_URL);
+  return {enabled:true,origin:deploymentOrigin,
+    branchOrigin:branchOrigin&&branchOrigin!==deploymentOrigin?branchOrigin:'',ref:HOSTED_QA_BRANCH};
 }
 
 export function renderConfigScript(config, enableStagingEntityDelta = false, hostedQa = null) {
   const enabled = enableStagingEntityDelta === true && !!config && isLocalPhase34Url(config.url);
-  let hostedQaEnabled = false, hostedQaOrigin = '', hostedQaRef = '';
+  let hostedQaEnabled = false, hostedQaOrigin = '', hostedQaBranchOrigin = '', hostedQaRef = '';
   if (hostedQa && hostedQa.enabled === true && config && config.url === HOSTED_QA_PROJECT_URL &&
       hostedQa.ref === HOSTED_QA_BRANCH) {
     try {
@@ -145,13 +150,23 @@ export function renderConfigScript(config, enableStagingEntityDelta = false, hos
         origin.hostname.endsWith('.vercel.app') && !origin.port &&
         !origin.username && !origin.password && !origin.search && !origin.hash &&
         (origin.pathname === '/' || origin.pathname === '');
+      if (hostedQaEnabled && hostedQa.branchOrigin) {
+        const branchOrigin=new URL(String(hostedQa.branchOrigin));
+        if(branchOrigin.protocol==='https:'&&branchOrigin.origin===String(hostedQa.branchOrigin)&&
+           branchOrigin.hostname.endsWith('.vercel.app')&&!branchOrigin.port&&
+           !branchOrigin.username&&!branchOrigin.password&&!branchOrigin.search&&!branchOrigin.hash&&
+           (branchOrigin.pathname==='/'||branchOrigin.pathname==='')){
+          hostedQaBranchOrigin=branchOrigin.origin;
+        }
+      }
       if (hostedQaEnabled) { hostedQaOrigin = origin.origin; hostedQaRef = HOSTED_QA_BRANCH; }
-    } catch (_) { hostedQaEnabled = false; }
+    } catch (_) { hostedQaEnabled = false; hostedQaOrigin=''; hostedQaBranchOrigin=''; }
   }
   return "/* Generated at build time; do not edit or commit project credentials. */\n" +
     "(function(){'use strict';window.NEXUS_ENTITY_DELTA_SYNC_STAGING=" + String(enabled) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=" + String(hostedQaEnabled) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN=" + JSON.stringify(hostedQaOrigin) +
+    ";window.NEXUS_ENTITY_DELTA_SYNC_QA_BRANCH_ORIGIN=" + JSON.stringify(hostedQaBranchOrigin) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_QA_REF=" + JSON.stringify(hostedQaRef) +
     ";const config=" + JSON.stringify(config) +
     ";if(!config)return;try{localStorage.setItem('nexus.cloud.config.v1',JSON.stringify(config));}catch(_){}})();\n";

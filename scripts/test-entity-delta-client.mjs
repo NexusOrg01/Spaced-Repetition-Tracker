@@ -50,6 +50,20 @@ function harness(options={}){
         groups:pending,throughSequence:pending.length?pending[pending.length-1].lastSequence:afterSequence,
         hasMore:false,snapshotRequired:false};
     },
+    async applyWorkspaceEntityDeltaGroup(owner,group,afterRevision,headRevision){
+      cursor={...cursor,publishRevision:group.revision,remoteHeadRevision:headRevision,
+        requiresPull:headRevision>group.revision};
+      return {ok:true,applied:group.changes.length,cursor:{...cursor},workspace:payload};
+    },
+    async applyWorkspaceEntityDeltaGroup(owner,group,expectedRevision,remoteHead){
+      if(owner!==activeOwner||!cursor||cursor.publishRevision!==expectedRevision||
+         group.revision!==expectedRevision+1){
+        return {ok:false,snapshotRequired:true,reason:'fixture_remote_apply_cursor_mismatch'};
+      }
+      cursor={...cursor,publishRevision:group.revision,remoteHeadRevision:remoteHead,
+        requiresPull:remoteHead>group.revision};
+      return {ok:true,cursor:{...cursor}};
+    },
     async acknowledgeWorkspaceEntityOutboxGroup(owner,batch,group,expectedRevision,receipt){
       acknowledgements.push({owner,operationId:group.operationId,expectedRevision,receipt:{...receipt}});
       if(options.failAcknowledgement)return {ok:false,snapshotRequired:true,reason:'fixture_ack_failed'};
@@ -96,17 +110,24 @@ function harness(options={}){
       return {data:receipt,error:null};
     }
   };
+  const pendingSnapshot=options.pendingSnapshot&&typeof options.pendingSnapshot==='object'
+    ?options.pendingSnapshot:(options.pendingSnapshot?{status:'pending'}:null);
+  const shadowAcknowledgements=[];
   const clientFactory=overrides=>factory({
     enabled:options.enabled!==false,client,storage,
     getActiveOwner:()=>activeOwner,getLocalOwner:()=>localOwner,
     getLocalBase:async()=>base,getLocalWorkspace:async()=>payload,
-    getPendingSnapshot:async()=>options.pendingSnapshot?{status:'pending'}:null,
+    getPendingSnapshot:async()=>pendingSnapshot,
+    acknowledgePendingSnapshot:async(owner,pending,serverVersion)=>{
+      shadowAcknowledgements.push({owner,pending,serverVersion});
+      return options.acknowledgePendingSnapshot===false?false:true;
+    },
     sameWorkspace:async(a,b)=>JSON.stringify(a.state)===JSON.stringify(b.state)&&
       JSON.stringify(a.featureState)===JSON.stringify(b.featureState),
     ...overrides
   });
   return {state,groups,cursor:()=>cursor,client:clientFactory(),calls,acknowledgements,
-    setActiveOwner:value=>{activeOwner=value;},setLocalOwner:value=>{localOwner=value;},
+    shadowAcknowledgements,setActiveOwner:value=>{activeOwner=value;},setLocalOwner:value=>{localOwner=value;},
     receipts};
 }
 
@@ -126,7 +147,33 @@ function harness(options={}){
   const h=harness({pendingSnapshot:true});
   const result=await h.client.publishPending('account-A');
   assert.equal(result.snapshotRequired,true);
-  assert.equal(h.cursor(),null,'a pending compatibility snapshot must block delta publication');
+  assert.equal(h.cursor(),null,'an invalid or unverifiable compatibility snapshot must still fail closed');
+}
+{
+  const pending={status:'pending',ownerUserId:'account-A',baseServerVersion:'snapshot-stamp',payload};
+  const h=harness({pendingSnapshot:pending});
+  const result=await h.client.publishPending('account-A');
+  assert.equal(result.ok,true,
+    'a compatibility queue snapshot that exactly matches the verified owner and current local projection must not block Delta operation publication');
+  assert.equal(result.publishedCount,1);
+  assert.equal(h.acknowledgements.length,1);
+}
+{
+  const pending={status:'pending',ownerUserId:'account-A',baseServerVersion:'stale-stamp',payload};
+  const h=harness({pendingSnapshot:pending});
+  const result=await h.client.publishPending('account-A');
+  assert.equal(result.snapshotRequired,true,
+    'a compatibility queue item based on a different snapshot revision must not be treated as a harmless shadow');
+  assert.equal(h.acknowledgements.length,0);
+}
+{
+  const pending={status:'pending',ownerUserId:'account-A',baseServerVersion:'snapshot-stamp',
+    payload:{...payload,state:{...payload.state,topics:[{id:'unprojected-local-edit'}]}}};
+  const h=harness({pendingSnapshot:pending});
+  const result=await h.client.publishPending('account-A');
+  assert.equal(result.snapshotRequired,true,
+    'a compatibility queue item that differs from the current projection must be preserved for recovery');
+  assert.equal(h.acknowledgements.length,0);
 }
 {
   const h=harness({groups:[
@@ -280,6 +327,100 @@ function harness(options={}){
   assert.ok(calls.some(call=>call.name==='nexus_read_entity_operations'&&call.args.p_limit_groups===1),
     'the first client apply path must use one bounded operation group until larger-page apply is benchmarked');
   assert.ok(applied.some(item=>item.uiApplied===1),'the optional in-memory workspace callback must run after durable application');
+}
+{
+  const events=[];
+  let activeOwner='account-A';
+  const localPayload={state:{streams:[],subjects:[],topics:[{id:'topic-to-delete',name:'Old topic'}],history:[],exams:[]},
+    featureState:{journal:[],papers:[],goals:[],studyLogs:[]}};
+  let cursor={ownerId:'account-A',generation:'generation-A',workspaceRevision:1,publishRevision:0,
+    acknowledgedSequence:0,remoteHeadRevision:0,snapshotUpdatedAt:'snapshot-stamp',requiresPull:false};
+  const storage={
+    async readWorkspaceEntityDeltaCursor(){
+      return {ok:true,exists:true,cursor:{...cursor},generation:cursor.generation,workspaceRevision:cursor.workspaceRevision};
+    },
+    async initializeWorkspaceEntityDeltaCursor(){throw new Error('the deletion fixture has an existing verified cursor');},
+    async readWorkspaceEntityOutboxGroups(owner,afterSequence){
+      events.push('read-local-outbox');
+      return {ownerId:owner,generation:cursor.generation,workspaceRevision:cursor.workspaceRevision,
+        groups:[],throughSequence:afterSequence,hasMore:false,snapshotRequired:false};
+    },
+    async applyWorkspaceEntityDeltaGroup(owner,group,expected,head){
+      events.push('apply-remote-delete');
+      assert.equal(owner,'account-A');
+      assert.equal(group.changes[0].operation,'delete');
+      cursor={...cursor,publishRevision:group.revision,remoteHeadRevision:head,requiresPull:false};
+      return {ok:true,cursor:{...cursor},workspace:{ownerId:owner,
+        state:{...localPayload.state,topics:[]},featureState:localPayload.featureState}};
+    }
+  };
+  const client={
+    auth:{async getUser(){return {data:{user:{id:activeOwner}},error:null};}},
+    async rpc(name,args){
+      events.push(name);
+      if(name==='nexus_get_entity_sync_state')return {data:{mode:'delta',protocol_version:1,
+        head_revision:1,snapshot_revision:0,compacted_through_revision:0,snapshot_updated_at:'snapshot-stamp'},error:null};
+      if(name==='nexus_read_entity_operations')return {data:{mode:'delta',snapshot_required:false,
+        head_revision:1,snapshot_revision:0,compacted_through_revision:0,next_revision:1,bytes:100,
+        groups:[{revision:1,operation_id:'delete-topic-operation',changes:[
+          {ordinal:0,collection:'topics',id:'topic-to-delete',operation:'delete',position:null,value:null}
+        ]}]},error:null};
+      return {data:null,error:{code:'unexpected_rpc'}};
+    }
+  };
+  const pending={status:'pending',ownerUserId:'account-A',baseServerVersion:'snapshot-stamp',payload:localPayload};
+  const api=factory({enabled:true,client,storage,
+    getActiveOwner:()=>activeOwner,getLocalOwner:()=>activeOwner,
+    getLocalBase:async()=>({serverVersion:'snapshot-stamp',...payload}),
+    getLocalWorkspace:async()=>localPayload,getPendingSnapshot:async()=>pending,
+    acknowledgePendingSnapshot:async(owner,item,version)=>{
+      events.push('acknowledge-shadow');
+      assert.equal(owner,'account-A');assert.equal(item.operationId,undefined);
+      assert.equal(version,'snapshot-stamp');return true;
+    },
+    sameWorkspace:async(a,b)=>JSON.stringify(a.state)===JSON.stringify(b.state)&&
+      JSON.stringify(a.featureState)===JSON.stringify(b.featureState),
+    applyWorkspace:async workspace=>events.push('render-deleted-workspace-'+workspace.state.topics.length)
+  });
+  const result=await api.applyRemotePage('account-A');
+  assert.equal(result.ok,true,'a verified shadow snapshot with no pending Delta outbox must not force a false conflict recovery');
+  assert.equal(result.appliedCount,1,'the remote tombstone must be applied as a normal Delta group');
+  assert.deepEqual(events.slice(0,3),['nexus_get_entity_sync_state','read-local-outbox','acknowledge-shadow'],
+    'the exact compatibility shadow must be acknowledged before applying the remote delete');
+  assert.ok(events.includes('render-deleted-workspace-0'),'the deleted workspace must be applied to the live app view');
+}
+{
+  const pending={status:'pending',ownerUserId:'account-A',baseServerVersion:'snapshot-stamp',payload};
+  const cursor={ownerId:'account-A',generation:'generation-A',workspaceRevision:1,
+    publishRevision:0,acknowledgedSequence:10,remoteHeadRevision:0,
+    snapshotUpdatedAt:'snapshot-stamp',requiresPull:false};
+  const h=harness({pendingSnapshot:pending,initialCursor:cursor,
+    groups:[makeGroup('local-save-after-cursor',11,[putChange('topics','topic-local')])]});
+  const pull=await h.client.applyRemotePage('account-A');
+  assert.equal(pull.ok,true,
+    'a newer local projection revision with a valid pending outbox must not force snapshot recovery: '+JSON.stringify(pull));
+  assert.equal(pull.idle,true,
+    'when the remote head is unchanged, remote apply should yield to the outbound publisher');
+  assert.equal(h.shadowAcknowledgements.length,0,
+    'a compatibility snapshot must remain pending until its newer local outbox is published');
+  const push=await h.client.publishPending('account-A');
+  assert.equal(push.ok,true);
+  assert.equal(push.publishedCount,1,
+    'the pending local change must reach the Delta operation publisher');
+  assert.equal(h.calls.filter(call=>call.name==='nexus_publish_entity_operation').length,1);
+  assert.equal(h.cursor().workspaceRevision,2);
+}
+{
+  const pending={status:'pending',ownerUserId:'account-A',baseServerVersion:'snapshot-stamp',payload};
+  const cursor={ownerId:'account-A',generation:'generation-A',workspaceRevision:1,
+    publishRevision:0,acknowledgedSequence:10,remoteHeadRevision:0,
+    snapshotUpdatedAt:'snapshot-stamp',requiresPull:false};
+  const h=harness({pendingSnapshot:pending,initialCursor:cursor,groups:[]});
+  const result=await h.client.applyRemotePage('account-A');
+  assert.equal(result.snapshotRequired,true,
+    'an empty outbox cannot explain a newer local workspace revision');
+  assert.equal(h.shadowAcknowledgements.length,0,
+    'an unexplained empty outbox must preserve the compatibility snapshot');
 }
 {
   let activeOwner='account-A',readCalled=false;
@@ -848,11 +989,15 @@ function coordinatorHarness(options={}){
       assert.equal(owner,'account-A');
       assert.equal(options.deferActivation,true);
       assert.equal(options.recoveryIntentId,intent.intentId);
+      assert.equal(options.recoveryCandidateDigest,intent.candidateDigest,
+        'a replacement generation must be bound to the original candidate digest');
+      if(migrations>0)assert.equal(options.recoveryRestage,true,
+        'an interrupted staged recovery must use the explicit restage path');
       migrations++;
       if(!staged){
         staged={ownerId:owner,generation:'generation-new',state:JSON.parse(JSON.stringify(nextState)),
           featureState:JSON.parse(JSON.stringify(nextFeatures)),pending:true};
-        intent={...intent,phase:'staged',pendingGeneration:'generation-new'};
+        intent={...intent,phase:intent.phase==='published'?'published':'staged',pendingGeneration:'generation-new'};
       }
       return {staged:true,generation:'generation-new'};
     },
@@ -914,6 +1059,9 @@ function coordinatorHarness(options={}){
   assert.equal(intent.phase,'staged','the crash-recovery intent must survive a lost server response');
   assert.equal(migrations,1,'the candidate generation should be staged exactly once');
   assert.equal(localCommits,0,'an unverified/ambiguous write must not advance the local merge base');
+  // Simulate a tab/process interruption after the journal reached "staged" but
+  // before its pending entity generation remained readable.
+  staged=null;
   const second=await api.publishConflictRecovery('account-A');
   assert.equal(second.ok,true,'a retry should verify the exact already-published snapshot and finish locally: '+JSON.stringify(second));
   assert.equal(second.recovered,true);
@@ -921,7 +1069,7 @@ function coordinatorHarness(options={}){
   assert.deepEqual(second.compaction,{
     ok:false,complete:false,pending:true,reason:'entity_operation_compaction_unavailable'
   },'the committed recovery result must surface non-fatal server compaction backlog for a safe retry');
-  assert.equal(migrations,1,'a staged generation must be reused rather than rebuilt on retry');
+  assert.equal(migrations,2,'a missing staged generation must be reconstructed exactly once from the same digest-bound candidate');
   assert.equal(publishCalls,2,'the exact same candidate must be re-verified after the lost response');
   assert.equal(localCommits,1,'the verified publication should cause one atomic local recovery commit');
   assert.equal(applied,1,'the in-memory workspace must only switch after the local commit verifies');
@@ -1047,13 +1195,19 @@ const stagingFunctionSource=cloudSyncSource.slice(stagingFunctionStart,stagingFu
 function makeStagingRuntimeHarness({
   gate=false,localOrigin=true,stagingUrl=stagingSupabaseUrl,recoveryIntent=null,
   syncResult={ok:true,publishedCount:1},recoveryResult={ok:true,recovered:true},
-  missingChunkStorage=false,hostedQaGate=false,hostedQaOrigin='',
-  browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='feat/dla-03-safe-snapshot-downgrade',
-  remoteState={mode:'delta',protocol_version:1},remoteStateError=null
+  missingChunkStorage=false,hostedQaGate=false,hostedQaOrigin='',hostedQaBranchOrigin='',
+  browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/dla04-entity-projection-guard',
+  remoteState={mode:'delta',protocol_version:1},remoteStateError=null,
+  cursorReadResult=null,outboxReadResult=null,
+  projectionResults=[{ok:true,workspaceRevision:4,projectionWorkspaceRevision:4}],
+  projectionRebuildResult={ownerId:'account-A',mode:'snapshot-backfill'},
+  projectionRebuildError=null
 }={}){
-  const calls={createClient:0,synchronize:null,recovery:null,cursorOwner:null,
+  const calls={createClient:0,synchronize:null,synchronizeCount:0,recovery:null,cursorOwner:null,
+    outboxOwner:null,outboxAfterSequence:null,
     localBaseOwner:null,pendingOwner:null,chunkWrite:null,localCommit:null,
-    stateRead:null,renderCount:0,hubRenderCount:0,featureUpdate:null,fsrsSettings:null};
+    stateRead:null,projectionOwners:[],projectionRebuild:0,projectionDiagnostics:[],
+    renderCount:0,hubRenderCount:0,featureUpdate:null,fsrsSettings:null};
   const stateQuery={
     select(columns){calls.stateRead={...calls.stateRead,columns};return this;},
     eq(column,value){calls.stateRead={...calls.stateRead,filterColumn:column,filterValue:value};return this;},
@@ -1068,12 +1222,22 @@ function makeStagingRuntimeHarness({
   const localStorage={getItem:key=>key==='owner-key'?localOwner:null};
   const payload={state:{streams:[],subjects:[],topics:[],history:[],exams:[]},
     featureState:{journal:[],papers:[],goals:[],studyLogs:[]}};
-  const cursor={snapshotUpdatedAt:'verified-snapshot-stamp',snapshotRevision:3};
+  const cursor={ownerId:'account-A',generation:'projection-generation-a',workspaceRevision:0,
+    snapshotUpdatedAt:'verified-snapshot-stamp',publishRevision:3,
+    remoteHeadRevision:3,acknowledgedSequence:0,requiresPull:false};
+  let pendingSnapshot={ownerUserId:'account-A',status:'pending',operationId:'shadow-snapshot-operation',
+    baseServerVersion:'verified-snapshot-stamp',payload};
   const queue={
     getBase(_local,owner){calls.localBaseOwner=owner;return {baseServerVersion:'base-stamp'};},
-    getPending(_local,owner){calls.pendingOwner=owner;return {pending:true};},
+    getPending(_local,owner){calls.pendingOwner=owner;return pendingSnapshot;},
+    acknowledge(_local,owner,operationId,baseVersion,serverVersion){
+      calls.shadowSnapshotAcknowledgement={owner,operationId,baseVersion,serverVersion};
+      if(pendingSnapshot&&pendingSnapshot.operationId===operationId)pendingSnapshot=null;
+      return {acknowledged:true};
+    },
     commitVerifiedEntityDeltaSnapshot(...args){calls.localCommit=args;return {ok:true};}
   };
+  let projectionIndex=0;
   const storage={
     async readWorkspaceEntityRecovery(owner){
       assert.equal(owner,'account-A');
@@ -1081,13 +1245,32 @@ function makeStagingRuntimeHarness({
     },
     async readWorkspaceEntityDeltaCursor(owner){
       calls.cursorOwner=owner;
-      return {ok:true,cursor};
+      return cursorReadResult||{ok:true,exists:true,generation:cursor.generation,cursor};
+    },
+    async readWorkspaceEntityOutboxGroups(owner,afterSequence){
+      calls.outboxOwner=owner;calls.outboxAfterSequence=afterSequence;
+      return outboxReadResult||{ownerId:owner,generation:cursor.generation,workspaceRevision:cursor.workspaceRevision,
+        groups:[],hasMore:false,snapshotRequired:false};
+    },
+    async waitForWorkspaceEntitySync(owner){
+      calls.projectionOwners.push(owner);
+      const index=Math.min(projectionIndex++,projectionResults.length-1);
+      return projectionResults[index]||{ok:false,reason:'entity_projection_unavailable'};
+    },
+    async syncWorkspaceEntities(owner,changes,options){
+      calls.projectionRebuild++;
+      assert.equal(owner,'account-A');
+      assert.equal(changes,null);
+      assert.equal(options&&options.replace,true);
+      if(projectionRebuildError)throw projectionRebuildError;
+      return projectionRebuildResult;
     }
   };
   const window={
     NEXUS_ENTITY_DELTA_SYNC_STAGING:gate,
     NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA:hostedQaGate,
     NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN:hostedQaOrigin,
+    NEXUS_ENTITY_DELTA_SYNC_QA_BRANCH_ORIGIN:hostedQaBranchOrigin,
     NEXUS_ENTITY_DELTA_SYNC_QA_REF:hostedQaRef,
     NexusOfflineSyncQueue:queue,
     NexusStorage:storage,
@@ -1095,10 +1278,14 @@ function makeStagingRuntimeHarness({
       createClient(options){
         calls.createClient++;
         calls.clientOptions=options;
+        let synchronizeIndex=0;
         return {
           async synchronize(owner,syncOptions){
+            calls.synchronizeCount++;
             calls.synchronize={owner,options:syncOptions};
-            return syncResult;
+            const result=Array.isArray(syncResult)
+              ?syncResult[Math.min(synchronizeIndex++,syncResult.length-1)]:syncResult;
+            return result;
           },
           async publishConflictRecovery(owner,recoveryOptions){
             calls.recovery={owner,options:recoveryOptions};
@@ -1140,6 +1327,8 @@ function makeStagingRuntimeHarness({
       origin:browserOrigin||(localOrigin?'http://127.0.0.1:54321':'https://deploy-preview-126--nexussrt.netlify.app')
     },
     URL,
+    syncDiagErrorCategory:()=> 'other',
+    syncDiag:(stage,_owner,details)=>calls.projectionDiagnostics.push({stage,details}),
     snapshot:()=>payload,
     sameWorkspace:()=>true,
     normalizeState:value=>({...value}),
@@ -1195,6 +1384,57 @@ assert.equal(activeHostedQa.calls.stateRead.filterValue,'account-A');
 assert.equal(activeHostedQa.calls.stateRead.signal,stagingSignal,
   'the remote state preflight must retain the caller abort signal');
 assert.equal(activeHostedQa.calls.createClient,1);
+assert.equal(activeHostedQa.calls.outboxOwner,'account-A',
+  'a successful hosted Delta sync must verify the owner-scoped outbox after synchronization');
+assert.equal(activeHostedQa.calls.outboxAfterSequence,0);
+assert.deepEqual(activeHostedQa.calls.shadowSnapshotAcknowledgement,{
+  owner:'account-A',operationId:'shadow-snapshot-operation',
+  baseVersion:'verified-snapshot-stamp',serverVersion:'verified-snapshot-stamp'
+},'a clean Delta cursor and empty outbox must acknowledge the matching compatibility shadow');
+
+const hostedCursorMismatch=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
+  hostedQaGate:true,hostedQaOrigin,browserOrigin:hostedQaOrigin,
+  remoteState:{mode:'delta',protocol_version:1},
+  cursorReadResult:{ok:false,snapshotRequired:true,reason:'local_delta_cursor_mismatch'}
+});
+const hostedCursorMismatchResult=await hostedCursorMismatch.run('account-A',stagingSignal);
+assert.equal(hostedCursorMismatchResult.ok,false,
+  'a successful coordinator response must not mask a missing or invalid durable cursor');
+assert.equal(hostedCursorMismatchResult.reason,'local_delta_cursor_mismatch');
+
+const hostedOutboxPending=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
+  hostedQaGate:true,hostedQaOrigin,browserOrigin:hostedQaOrigin,
+  remoteState:{mode:'delta',protocol_version:1},
+  outboxReadResult:{ownerId:'account-A',generation:'projection-generation-a',workspaceRevision:0,
+    groups:[{operationId:'unacknowledged-local-operation'}],hasMore:false,snapshotRequired:false}
+});
+const hostedOutboxPendingResult=await hostedOutboxPending.run('account-A',stagingSignal);
+assert.equal(hostedOutboxPendingResult.ok,false,
+  'a successful coordinator response must not mask unacknowledged local outbox work');
+assert.equal(hostedOutboxPendingResult.reason,'local_outbox_pending');
+
+const hostedQaBranchOrigin='https://nexus-dla-04-branch.vercel.app';
+const activeHostedQaBranchAlias=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
+  hostedQaGate:true,hostedQaOrigin,hostedQaBranchOrigin,
+  browserOrigin:hostedQaBranchOrigin,
+  remoteState:{mode:'delta',protocol_version:1}
+});
+const branchAliasResult=await activeHostedQaBranchAlias.run('account-A',stagingSignal);
+assert.equal(branchAliasResult.ok,true,
+  'the exact build-validated Vercel branch alias must enter the same hosted QA gate');
+assert.equal(activeHostedQaBranchAlias.calls.createClient,1);
+
+const unrelatedHostedQaAlias=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
+  hostedQaGate:true,hostedQaOrigin,hostedQaBranchOrigin,
+  browserOrigin:'https://unrelated-preview.vercel.app'
+});
+assert.equal((await unrelatedHostedQaAlias.run('account-A',stagingSignal)).skipped,true,
+  'a different preview origin must remain blocked even when both approved exact origins are embedded');
+assert.equal(unrelatedHostedQaAlias.calls.createClient,0);
 
 const hostedSnapshotMode=makeStagingRuntimeHarness({
   gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
@@ -1303,6 +1543,60 @@ await assert.rejects(
   'an opted-in but incomplete runtime must fail closed rather than falling through to snapshot upload'
 );
 
+const projectionBackfill=makeStagingRuntimeHarness({
+  gate:true,
+  projectionResults:[
+    {ok:false,snapshotRequired:true,reason:'entity_projection_unavailable',
+      workspaceRevision:5,projectionWorkspaceRevision:null},
+    {ok:true,workspaceRevision:5,projectionWorkspaceRevision:5}
+  ],
+  projectionRebuildResult:{ownerId:'account-A',mode:'snapshot-backfill'}
+});
+const projectionBackfillResult=await projectionBackfill.run('account-A',stagingSignal);
+assert.equal(projectionBackfillResult.ok,true,
+  'a missing local entity projection must be rebuilt once before the Delta coordinator starts');
+assert.equal(projectionBackfill.calls.projectionRebuild,1);
+assert.deepEqual(projectionBackfill.calls.projectionOwners,['account-A','account-A']);
+assert.equal(projectionBackfill.calls.createClient,1,
+  'the Delta client must not be created until the owner-scoped projection is verified ready');
+
+const projectionBackfillFailure=makeStagingRuntimeHarness({
+  gate:true,
+  projectionResults:[{ok:false,snapshotRequired:true,reason:'stale_entity_projection',
+    workspaceRevision:8,projectionWorkspaceRevision:7}],
+  projectionRebuildResult:{ok:false,error:'synthetic local rebuild failure'}
+});
+const projectionBackfillFailureResult=await projectionBackfillFailure.run('account-A',stagingSignal);
+assert.equal(projectionBackfillFailureResult.ok,false);
+assert.equal(projectionBackfillFailureResult.skipped,undefined);
+assert.equal(projectionBackfillFailureResult.reason,'entity_projection_rebuild_failed');
+assert.equal(projectionBackfillFailure.calls.projectionRebuild,1);
+assert.equal(projectionBackfillFailure.calls.createClient,0,
+  'a failed local projection rebuild must fail closed before any Delta RPC client is created');
+assert.equal(projectionBackfillFailure.calls.chunkWrite,null,
+  'projection failure must not trigger a remote snapshot publication');
+const projectionBackfillFailureEvent=projectionBackfillFailure.calls.projectionDiagnostics.find(
+  event=>event.stage==='entity-projection-rebuild');
+assert.equal(projectionBackfillFailureEvent.details.projectionRebuildFailureStage,'sync-workspace-entities');
+assert.equal(projectionBackfillFailureEvent.details.projectionRebuildFailureReason,'rebuild-not-completed');
+
+const projectionStorageFailure=new Error('PRIVATE INDEXEDDB DETAIL');
+projectionStorageFailure.nexusEntityProjectionFailureStage='write-row-batch';
+projectionStorageFailure.nexusEntityProjectionFailureReason='indexeddb-write-failed';
+const projectionBackfillStorageFailure=makeStagingRuntimeHarness({
+  gate:true,
+  projectionResults:[{ok:false,reason:'stale_entity_projection',workspaceRevision:8,projectionWorkspaceRevision:6}],
+  projectionRebuildError:projectionStorageFailure
+});
+const projectionBackfillStorageFailureResult=await projectionBackfillStorageFailure.run('account-A',stagingSignal);
+assert.equal(projectionBackfillStorageFailureResult.ok,false);
+const projectionBackfillStorageFailureEvent=projectionBackfillStorageFailure.calls.projectionDiagnostics.find(
+  event=>event.stage==='entity-projection-rebuild');
+assert.equal(projectionBackfillStorageFailureEvent.details.projectionRebuildFailureStage,'write-row-batch');
+assert.equal(projectionBackfillStorageFailureEvent.details.projectionRebuildFailureReason,'indexeddb-write-failed');
+assert.equal(JSON.stringify(projectionBackfillStorageFailureEvent).includes('PRIVATE'),false,
+  'diagnostics must never forward the raw local IndexedDB exception');
+
 const activeStaging=makeStagingRuntimeHarness({gate:true});
 const activeResult=await activeStaging.run('account-A',stagingSignal);
 assert.equal(activeResult.ok,true,'the preview gate should route an explicitly enabled staging account through the coordinator');
@@ -1319,7 +1613,10 @@ assert.equal(wired.client,activeStaging.client);
 assert.equal(wired.getActiveOwner(),'account-A');
 assert.equal(wired.getLocalOwner(),'account-A');
 assert.equal(wired.getLocalBase('account-A').baseServerVersion,'base-stamp');
-assert.equal(wired.getPendingSnapshot('account-A').pending,true);
+assert.equal(wired.getPendingSnapshot('account-A'),null,
+  'a fully verified Delta cursor with an empty outbox must retire its matching compatibility shadow');
+assert.equal(typeof wired.acknowledgePendingSnapshot,'function',
+  'the Delta client must receive the owner-scoped compatibility shadow acknowledgement callback');
 assert.equal(wired.getLocalWorkspace(),activeStaging.payload,
   'the coordinator must read the active local compatibility workspace through the supplied accessor');
 
@@ -1374,21 +1671,73 @@ const pendingRecovery=makeStagingRuntimeHarness({
 const resumedRecovery=await pendingRecovery.run('account-A',stagingSignal);
 assert.equal(resumedRecovery.recovered,true,
   'an existing journal must resume publication before any ordinary delta sync attempt');
-assert.equal(pendingRecovery.calls.synchronize,null);
+assert.equal(pendingRecovery.calls.synchronizeCount,1,
+  'a resumed snapshot recovery must pass one ordinary Delta sync verification before being marked complete');
+assert.equal(pendingRecovery.calls.synchronize.owner,'account-A');
 assert.equal(pendingRecovery.calls.recovery.owner,'account-A');
 assert.equal(pendingRecovery.calls.recovery.options.maxGroups,100);
 assert.equal(pendingRecovery.calls.recovery.options.maxBytes,8*1048576);
 
+const recoveryWithPendingOutbox=makeStagingRuntimeHarness({
+  gate:true,recoveryIntent:{intentId:'recovery-intent-pending-outbox',phase:'staged'},
+  outboxReadResult:{ownerId:'account-A',generation:'projection-generation-a',workspaceRevision:0,
+    groups:[{operationId:'unacknowledged-recovery-operation'}],hasMore:false,snapshotRequired:false}
+});
+const recoveryWithPendingOutboxResult=await recoveryWithPendingOutbox.run('account-A',stagingSignal);
+assert.equal(recoveryWithPendingOutboxResult.ok,false,
+  'a recovered cursor must not be accepted while local Delta operations remain unacknowledged');
+assert.equal(recoveryWithPendingOutboxResult.reason,'post_recovery_delta_sync_failed');
+assert.equal(recoveryWithPendingOutboxResult.verificationReason,'outbox_not_clear');
+
 const overlapRecovery=makeStagingRuntimeHarness({
   gate:true,
-  syncResult:{ok:false,conflict:true,requiresSnapshotReconciliation:true,
-    reason:'local_and_remote_changes_overlap'}
+  syncResult:[
+    {ok:false,conflict:true,requiresSnapshotReconciliation:true,
+      reason:'local_and_remote_changes_overlap',appliedCount:0,publishedCount:0,
+      acknowledgedCount:0,rounds:1},
+    {ok:true,appliedCount:0,publishedCount:0,acknowledgedCount:0,rounds:1}
+  ]
 });
 const overlapResult=await overlapRecovery.run('account-A',stagingSignal);
 assert.equal(overlapResult.recovered,true,
   'an overlap requiring three-way reconciliation must use the verified recovery publication path');
+assert.equal(overlapResult.recoveryTriggerReason,'local_and_remote_changes_overlap');
+assert.equal(overlapResult.appliedCount,0);
+assert.equal(overlapResult.publishedCount,0);
+assert.equal(overlapResult.acknowledgedCount,0);
+assert.equal(overlapResult.rounds,1,
+  'the successful result must contain the post-recovery ordinary sync counters, not null recovery fields');
+assert.equal(overlapRecovery.calls.synchronizeCount,2,
+  'the coordinator must verify the recovered workspace with one ordinary sync pass');
 assert.equal(overlapRecovery.calls.synchronize.owner,'account-A');
 assert.equal(overlapRecovery.calls.recovery.owner,'account-A');
+const overlapRecoveryStart=overlapRecovery.calls.projectionDiagnostics.find(
+  event=>event.stage==='snapshot-recovery-start');
+assert.equal(overlapRecoveryStart.details.triggerReason,'local_and_remote_changes_overlap');
+assert.equal(overlapRecoveryStart.details.triggerConflict,true);
+const overlapVerification=overlapRecovery.calls.projectionDiagnostics.find(
+  event=>event.stage==='delta-recovery-verification');
+assert.equal(overlapVerification.details.ok,true);
+assert.equal(overlapVerification.details.cursorPublishRevision,3);
+assert.equal(overlapVerification.details.cursorRemoteHeadRevision,3);
+
+const failedRecoveryVerification=makeStagingRuntimeHarness({
+  gate:true,
+  syncResult:[
+    {ok:false,snapshotRequired:true,reason:'local_snapshot_baseline_mismatch'},
+    {ok:false,snapshotRequired:true,reason:'local_snapshot_baseline_mismatch'}
+  ]
+});
+const failedRecoveryVerificationResult=await failedRecoveryVerification.run('account-A',stagingSignal);
+assert.equal(failedRecoveryVerificationResult.ok,false,
+  'a published recovery must not be reported as synced when the normal Delta path still rejects its baseline');
+assert.equal(failedRecoveryVerificationResult.reason,'post_recovery_delta_sync_failed');
+assert.equal(failedRecoveryVerificationResult.verificationReason,'local_snapshot_baseline_mismatch');
+assert.equal(failedRecoveryVerification.calls.synchronizeCount,2);
+const failedVerificationEvent=failedRecoveryVerification.calls.projectionDiagnostics.find(
+  event=>event.stage==='delta-recovery-verification');
+assert.equal(failedVerificationEvent.details.ok,false);
+assert.equal(failedVerificationEvent.details.verificationReason,'local_snapshot_baseline_mismatch');
 
 const snapshotOnlyServer=makeStagingRuntimeHarness({
   gate:true,syncResult:{ok:true,skipped:true,mode:'snapshot'}

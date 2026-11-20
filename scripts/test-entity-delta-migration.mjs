@@ -17,6 +17,7 @@ const generalSnapshotIntegrity = read('supabase/migrations/20261115171500_valida
 const chunkManifestDeletionTest = read('supabase/tests/nexus_user_data_chunks_active_manifest.sql');
 const activeManifestRaceRunner = read('scripts/test-active-manifest-race.mjs');
 const pilotEligibility = read('supabase/pilot-migrations/20261117083717_add_entity_delta_pilot_eligibility.sql');
+const pilotEligibilitySearchPathHardening = read('supabase/pilot-migrations/20261117163241_harden_entity_delta_enable_search_path.sql');
 const authenticatedRpcTest = read('supabase/tests/nexus_entity_delta_authenticated_rpc.sql');
 const twoClientSetup = read('supabase/tests/nexus_entity_delta_two_client_setup.sql');
 
@@ -153,8 +154,11 @@ assert.match(integration, /UPDATE public\.nexus_user_data[\s\S]*payload = payloa
   'the rollback-only integration fixture must exercise a legacy snapshot downgrade attempt');
 
 
-assert.ok(pilotEligibility.includes("SECURITY DEFINER\nSET search_path = ''\nAS $function$"),
-  'DLA-02 enablement SECURITY DEFINER must use an empty search_path');
+assert.ok(pilotEligibility.includes("SECURITY DEFINER\nSET search_path = pg_catalog, public, auth\nAS $function$"),
+  'DLA-02 base migration must preserve its exact historically applied SECURITY DEFINER definition');
+assert.ok(pilotEligibilitySearchPathHardening.includes(
+  "ALTER FUNCTION public.nexus_enable_entity_delta(timestamptz)\n  SET search_path = '';"
+), 'the subsequent DLA-02 hardening migration must pin the deployed SECURITY DEFINER search_path to empty');
 assert.ok(authenticatedRpcTest.includes(`ARRAY['search_path=""']::text[]`),
   'the rollback-only authenticated SQL test must verify the deployed SECURITY DEFINER search_path');
 assert.ok(pilotEligibility.includes('CREATE TABLE IF NOT EXISTS nexus_private.entity_delta_pilot_allowlist'));

@@ -323,6 +323,8 @@
     const getActiveOwner=options.getActiveOwner,getLocalOwner=options.getLocalOwner;
     const getLocalBase=options.getLocalBase,getLocalWorkspace=options.getLocalWorkspace;
     const getPendingSnapshot=options.getPendingSnapshot,sameWorkspace=options.sameWorkspace;
+    const acknowledgePendingSnapshot=typeof options.acknowledgePendingSnapshot==='function'
+      ?options.acknowledgePendingSnapshot:null;
     const applyWorkspace=options.applyWorkspace;
     const mergeWorkspace=options.mergeWorkspace||null;
     const readRemoteSnapshot=typeof options.readRemoteSnapshot==='function'?options.readRemoteSnapshot:null;
@@ -352,6 +354,27 @@
     }
     function unavailable(reason,extra={}){
       return {ok:false,reason,...extra};
+    }
+    async function validatePendingCompatibilitySnapshot(owner,serverVersion,localWorkspace){
+      if(typeof getPendingSnapshot!=='function')return {ok:true,pending:null};
+      const pending=await getPendingSnapshot(owner);
+      if(!pending)return {ok:true,pending:null};
+      if(pending.status!=='pending'||pending.ownerUserId!==owner||
+         pending.baseServerVersion!==serverVersion||
+         !isRecord(pending.payload)||!isRecord(pending.payload.state)||
+         !isRecord(pending.payload.featureState)||!isRecord(localWorkspace)||
+         !(await sameWorkspace(pending.payload,localWorkspace))){
+        return {ok:false,reason:'compatibility_snapshot_not_represented_by_delta_projection'};
+      }
+      return {ok:true,pending};
+    }
+    async function acknowledgeShadowCompatibilitySnapshot(owner,pending,serverVersion){
+      if(!pending)return true;
+      if(!acknowledgePendingSnapshot)return false;
+      await assertOwner(owner);
+      const acknowledged=await acknowledgePendingSnapshot(owner,pending,serverVersion);
+      await assertOwner(owner);
+      return acknowledged===true||!!(acknowledged&&acknowledged.ok===true);
     }
     async function readRemotePage(ownerId,afterRevision,readOptions={}){
       if(!enabled)return {ok:true,skipped:true,reason:'feature_disabled'};
@@ -408,8 +431,9 @@
         if(!base||base.serverVersion!==state.snapshot_updated_at){
           return {ok:false,snapshotRequired:true,reason:'local_snapshot_baseline_mismatch'};
         }
-        const pendingSnapshot=await getPendingSnapshot(owner);
-        if(pendingSnapshot)return {ok:false,snapshotRequired:true,reason:'compatibility_snapshot_still_pending'};
+        const localWorkspace=await getLocalWorkspace(owner);
+        const pendingCheck=await validatePendingCompatibilitySnapshot(owner,state.snapshot_updated_at,localWorkspace);
+        if(!pendingCheck.ok)return {ok:false,snapshotRequired:true,reason:pendingCheck.reason};
         const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
         if(!cursorResult||cursorResult.ok!==true){
           return {ok:false,snapshotRequired:!!(cursorResult&&cursorResult.snapshotRequired),
@@ -550,9 +574,9 @@
         if(!base||base.serverVersion!==state.snapshot_updated_at){
           return {ok:false,snapshotRequired:true,reason:'local_snapshot_baseline_mismatch'};
         }
-        if(await getPendingSnapshot(owner)){
-          return {ok:false,snapshotRequired:true,reason:'compatibility_snapshot_still_pending'};
-        }
+        const localWorkspace=await getLocalWorkspace(owner);
+        const pendingCheck=await validatePendingCompatibilitySnapshot(owner,state.snapshot_updated_at,localWorkspace);
+        if(!pendingCheck.ok)return {ok:false,snapshotRequired:true,reason:pendingCheck.reason};
         const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
         if(!cursorResult||cursorResult.ok!==true){
           return {ok:false,snapshotRequired:!!(cursorResult&&cursorResult.snapshotRequired),
@@ -582,6 +606,39 @@
         }
         if(Number(cursor.publishRevision)<floor||Number(cursor.publishRevision)>head){
           return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_outside_retention'};
+        }
+        if(pendingCheck.pending){
+          if(typeof storage.readWorkspaceEntityOutboxGroups!=='function'){
+            return {ok:false,snapshotRequired:true,reason:'local_outbox_reader_unavailable'};
+          }
+          // Ordinary app saves also leave a legacy compatibility snapshot in the
+          // browser queue. When the exact payload is represented by the current
+          // owner-bound projection and its Delta outbox is empty, it is only a
+          // shadow copy. Clear it before applying remote deletes; otherwise stale
+          // snapshots trigger unnecessary recovery and can resurrect deleted rows.
+          const outbox=await storage.readWorkspaceEntityOutboxGroups(
+            owner,Number(cursor.acknowledgedSequence),1000,MAX_BYTES-65536);
+          const outboxWorkspaceRevision=Number(outbox&&outbox.workspaceRevision);
+          const cursorWorkspaceRevision=Number(cursor.workspaceRevision);
+          if(!outbox||outbox.unavailable||outbox.snapshotRequired||
+             outbox.ownerId!==owner||outbox.generation!==cursor.generation||
+             !Number.isSafeInteger(outboxWorkspaceRevision)||
+             !Number.isSafeInteger(cursorWorkspaceRevision)||
+             outboxWorkspaceRevision<cursorWorkspaceRevision||
+             !Array.isArray(outbox.groups)||
+             (outbox.groups.length===0&&outboxWorkspaceRevision!==cursorWorkspaceRevision)){
+            return {ok:false,snapshotRequired:true,reason:outbox&&outbox.reason||'local_outbox_unavailable'};
+          }
+          // A local save advances the entity projection before its operation is
+          // acknowledged, so the outbox workspace revision may legitimately be
+          // newer than the remote cursor. Keep that work for publishPending();
+          // only an empty outbox must match the cursor revision exactly.
+          if(outbox.groups.length===0&&outbox.hasMore!==true){
+            const cleared=await acknowledgeShadowCompatibilitySnapshot(
+              owner,pendingCheck.pending,state.snapshot_updated_at);
+            if(!cleared)return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'compatibility_snapshot_shadow_acknowledgement_failed'};
+          }
         }
         if(cursor.requiresPull!==true&&Number(cursor.publishRevision)===head){
           return {ok:true,idle:true,appliedCount:0,cursor};
@@ -809,6 +866,19 @@
         await assertOwner(owner);
         let recovery=await storage.readWorkspaceEntityRecovery(owner);
         let intent=recovery&&recovery.intent||null,prepared=null,candidate=null,staged=null;
+        const stageRecoveryCandidate=async(nextCandidate,digest,restage)=>{
+          const status=typeof storage.getStatus==='function'?storage.getStatus():null;
+          if(!status||!Number.isSafeInteger(Number(status.revision)))
+            return unavailable('local_recovery_revision_unavailable');
+          await storage.migrateWorkspaceEntities(owner,nextCandidate.state,nextCandidate.featureState,{
+            expectedRevision:Number(status.revision),deferActivation:true,
+            recoveryIntentId:intent.intentId,recoveryCandidateDigest:digest,
+            recoveryRestage:restage===true
+          });
+          recovery=await storage.readWorkspaceEntityRecovery(owner);
+          intent=recovery&&recovery.intent||null;
+          return {ok:true};
+        };
         if(!intent||intent.phase==='prepared'){
           prepared=await prepareConflictRecovery(owner,recoveryOptions);
           if(!prepared||prepared.ok!==true)return prepared||unavailable('recovery_preparation_unavailable');
@@ -838,18 +908,40 @@
               return {ok:false,retryable:true,reason:begun&&begun.reason||'recovery_intent_create_failed'};
             intent=begun.intent;
           }
-          const status=typeof storage.getStatus==='function'?storage.getStatus():null;
-          if(!status||!Number.isSafeInteger(Number(status.revision)))
-            return unavailable('local_recovery_revision_unavailable');
-          await storage.migrateWorkspaceEntities(owner,candidate.state,candidate.featureState,{
-            expectedRevision:Number(status.revision),deferActivation:true,recoveryIntentId:intent.intentId
-          });
-          recovery=await storage.readWorkspaceEntityRecovery(owner);
-          intent=recovery&&recovery.intent||null;
+          await stageRecoveryCandidate(candidate,digest,false);
         }
         if(!intent||!['staged','published'].includes(intent.phase))
           return {ok:false,retryable:true,reason:'local_recovery_generation_not_staged'};
         staged=await storage.readWorkspaceEntities(owner,{pending:true,recoveryIntentId:intent.intentId});
+        if(!staged||staged.ownerId!==owner||staged.pending!==true){
+          // A prior attempt can leave a durable staged journal after its pending
+          // generation was interrupted or made unreadable. Rebuild from the same
+          // owner-bound base/local/remote inputs, then require the original digest
+          // and revision tuple to match before replacing the pending generation.
+          prepared=await prepareConflictRecovery(owner,recoveryOptions);
+          if(!prepared||prepared.ok!==true)return prepared||{
+            ok:false,retryable:true,snapshotRequired:true,reason:'staged_recovery_reconstruction_unavailable'
+          };
+          const metadata=intent.payloadMetadata&&typeof intent.payloadMetadata==='object'?intent.payloadMetadata:{};
+          candidate={
+            ...prepared.payload,...metadata,
+            __nexusDeltaSync:'entity-delta-v1',
+            state:prepared.payload.state,featureState:prepared.payload.featureState
+          };
+          const digest=await workspaceDigest(candidate);
+          if(intent.candidateDigest!==digest||
+             intent.expectedHeadRevision!==prepared.expectedHeadRevision||
+             intent.snapshotRevision!==prepared.snapshotRevision||
+             intent.baseUpdatedAt!==prepared.snapshotUpdatedAt){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'staged_recovery_candidate_changed',intentId:intent.intentId};
+          }
+          await stageRecoveryCandidate(candidate,digest,true);
+          if(!intent||!['staged','published'].includes(intent.phase))
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'recovery_generation_restage_not_verified',intentId:intent&&intent.intentId||null};
+          staged=await storage.readWorkspaceEntities(owner,{pending:true,recoveryIntentId:intent.intentId});
+        }
         if(!staged||staged.ownerId!==owner||staged.pending!==true)
           return {ok:false,retryable:true,snapshotRequired:true,reason:'staged_recovery_generation_unavailable'};
         const metadata=intent.payloadMetadata&&typeof intent.payloadMetadata==='object'?intent.payloadMetadata:{};
