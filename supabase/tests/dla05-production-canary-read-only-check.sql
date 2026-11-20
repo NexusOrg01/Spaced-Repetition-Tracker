@@ -13,32 +13,42 @@ allowlist AS (
   FROM nexus_private.entity_delta_pilot_allowlist
 ),
 function_checks AS (
+  WITH expected(signature) AS (
+    SELECT unnest(ARRAY[
+      'public.nexus_get_entity_sync_state()',
+      'public.nexus_enable_entity_delta(timestamptz)',
+      'public.nexus_publish_entity_operation(text,bigint,jsonb)',
+      'public.nexus_read_entity_operations(bigint,integer,integer)',
+      'public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb)',
+      'public.nexus_compact_entity_operations(integer)',
+      'public.nexus_disable_entity_delta(uuid,bigint,timestamptz,bigint,bigint)'
+    ]::text[])
+  ),
+  resolved AS (
+    SELECT signature, to_regprocedure(signature)::oid AS function_oid
+    FROM expected
+  )
   SELECT
-    count(*) AS function_count,
+    count(*) FILTER (WHERE function_oid IS NOT NULL) AS function_count,
     bool_and(
-      has_function_privilege('authenticated', p.oid, 'EXECUTE')
-      AND NOT has_function_privilege('anon', p.oid, 'EXECUTE')
-      AND NOT has_function_privilege('service_role', p.oid, 'EXECUTE')
+      function_oid IS NOT NULL
+      AND has_function_privilege('authenticated', function_oid, 'EXECUTE')
+      AND NOT has_function_privilege('anon', function_oid, 'EXECUTE')
+      AND NOT has_function_privilege('service_role', function_oid, 'EXECUTE')
       AND NOT COALESCE((
         SELECT bool_or(a.grantee = 0 AND a.privilege_type = 'EXECUTE')
-        FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) AS a
+        FROM pg_proc AS p
+        CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) AS a
+        WHERE p.oid = resolved.function_oid
       ), false)
-      AND COALESCE(p.prosecdef, false)
-      AND COALESCE(p.proconfig @> ARRAY['search_path=""'], false)
+      AND EXISTS (
+        SELECT 1 FROM pg_proc AS p
+        WHERE p.oid = resolved.function_oid
+          AND p.prosecdef
+          AND COALESCE(p.proconfig @> ARRAY['search_path=""'], false)
+      )
     ) AS all_rpc_acl_and_search_path_ok
-  FROM pg_proc AS p
-  JOIN pg_namespace AS n ON n.oid = p.pronamespace
-  WHERE n.nspname = 'public'
-    AND (
-      (p.proname = 'nexus_get_entity_sync_state' AND pg_get_function_identity_arguments(p.oid) = '')
-      OR (p.proname = 'nexus_enable_entity_delta' AND pg_get_function_identity_arguments(p.oid) = 'p_expected_updated_at timestamp with time zone')
-      OR (p.proname = 'nexus_publish_entity_operation' AND pg_get_function_identity_arguments(p.oid) = 'p_operation_id text, p_expected_revision bigint, p_changes jsonb')
-      OR (p.proname = 'nexus_read_entity_operations' AND pg_get_function_identity_arguments(p.oid) = 'p_after_revision bigint, p_limit_groups integer, p_max_bytes integer')
-      OR (p.proname = 'nexus_publish_entity_snapshot' AND pg_get_function_identity_arguments(p.oid) = 'p_expected_head_revision bigint, p_expected_updated_at timestamp with time zone, p_payload jsonb')
-      OR (p.proname = 'nexus_compact_entity_operations' AND pg_get_function_identity_arguments(p.oid) = 'p_limit integer')
-      OR (p.proname = 'nexus_disable_entity_delta' AND pg_get_function_identity_arguments(p.oid) =
-          'p_request_id uuid, p_expected_head_revision bigint, p_expected_snapshot_updated_at timestamp with time zone, p_expected_snapshot_revision bigint, p_expected_compacted_through_revision bigint')
-    )
+  FROM resolved
 ),
 rls_checks AS (
   SELECT
