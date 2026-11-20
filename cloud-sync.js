@@ -1020,9 +1020,21 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    qaProject.origin==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&
    exactQaOriginMatches;
  }catch(_){hostedQaGate=false;}
+ // DLA-05 production activation is a separate, explicit Vercel Production opt-in.
+ // The server-side owner allowlist remains the authority; this client gate only
+ // allows the already-authenticated owner to attempt the protocol on the one
+ // canonical production origin and exact production Supabase project.
+ let productionGate=false;
+ try{
+  const productionProject=new URL(config().url);
+  productionGate=window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION===true&&
+   config().url===LIVE_SUPABASE_URL&&productionProject.origin===LIVE_SUPABASE_URL&&
+   location.protocol==='https:'&&location.hostname===LIVE_APP_HOST&&
+   location.origin==='https://'+LIVE_APP_HOST;
+ }catch(_){productionGate=false;}
  const authenticatedOwner=session&&session.user&&typeof session.user.id==='string'?session.user.id:'';
  const ownerMatches=!!ownerId&&authenticatedOwner===ownerId&&localStorage.getItem(OWNER_KEY)===ownerId;
- const gateOpen=ownerMatches&&(localGateOpen||hostedQaGate);
+ const gateOpen=ownerMatches&&(localGateOpen||hostedQaGate||productionGate);
  if(recoveryPending&&!gateOpen)return {blockedRecovery:true,reason:'staging_recovery_journal_pending'};
  if(!gateOpen)return {skipped:true,reason:'staging_delta_gate_closed'};
  // DLA-01 deliberately leaves hosted workspaces in snapshot mode. Before
