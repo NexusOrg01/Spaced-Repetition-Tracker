@@ -372,19 +372,19 @@ assert.deepEqual(resolveProductionEntityDeltaEnabled({
 assert.deepEqual(resolveProductionEntityDeltaEnabled({
   ...productionEnv, NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_ID: undefined
 }), {enabled:false,ownerId:''}, 'a missing canary owner must keep Delta disabled');
-assert.equal(resolveProductionEntityDeltaEnabled({
+assert.deepEqual(resolveProductionEntityDeltaEnabled({
   ...productionEnv, VERCEL: undefined
 }), {enabled:false,ownerId:''}, 'a non-Vercel build cannot generate the production Delta gate');
-assert.equal(resolveProductionEntityDeltaEnabled({
+assert.deepEqual(resolveProductionEntityDeltaEnabled({
   ...productionEnv, VERCEL_PROJECT_ID: 'prj_unapproved_project'
 }), {enabled:false,ownerId:''}, 'a different Vercel project cannot generate the production Delta gate');
-assert.equal(resolveProductionEntityDeltaEnabled({
+assert.deepEqual(resolveProductionEntityDeltaEnabled({
   ...productionEnv, VERCEL_ENV: 'preview'
 }), {enabled:false,ownerId:''}, 'preview deployments cannot generate the production Delta gate');
-assert.equal(resolveProductionEntityDeltaEnabled({
+assert.deepEqual(resolveProductionEntityDeltaEnabled({
   ...productionEnv, VERCEL_GIT_COMMIT_REF: 'feat/dla05-production-canary'
 }), {enabled:false,ownerId:''}, 'feature branches cannot generate the production Delta gate');
-assert.equal(resolveProductionEntityDeltaEnabled({
+assert.deepEqual(resolveProductionEntityDeltaEnabled({
   ...productionEnv, CONTEXT: 'deploy-preview', VERCEL: undefined
 }), {enabled:false,ownerId:''}, 'generic deploy previews cannot generate the production Delta gate');
 const productionGateScript = renderConfigScript(null, false, null, approvedProductionGate);
