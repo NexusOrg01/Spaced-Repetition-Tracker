@@ -199,8 +199,13 @@ assert.ok(authenticatedRpcTest.includes('pilot_not_enabled'));
 assert.ok(authenticatedRpcTest.includes('An unlisted owner published a Delta operation.'));
 assert.ok(authenticatedRpcTest.includes("has_schema_privilege('authenticated', 'nexus_private', 'USAGE')"));
 assert.ok(twoClientSetup.includes('row_number() OVER (ORDER BY email)'));
-assert.ok(twoClientSetup.includes('fixture_order IN (1, 3)'),
-  'only disposable local protocol and large-workspace owners should be allowlisted; B is the default-deny fixture');
+assert.ok(twoClientSetup.includes('UPDATE nexus_private.entity_delta_rollout_control')&&
+  twoClientSetup.includes('SET enabled = true'),
+  'the disposable browser fixture must explicitly enable the private global rollout switch');
+assert.ok(twoClientSetup.includes('WHERE ranked.fixture_order = 2')&&
+  twoClientSetup.includes("SELECT ranked.id, false, 'Disposable local DLA-07 explicit opt-out fixture'")&&
+  !twoClientSetup.includes('fixture_order IN (1, 3)'),
+  'A and C must start without owner allowlist rows while B has an explicit disabled override');
 
 
 const productionActivation = read('supabase/production-activation/20261120103000_dla05_production_entity_delta_canary_activation.sql');
