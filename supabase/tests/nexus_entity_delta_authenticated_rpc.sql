@@ -54,14 +54,9 @@ VALUES
     clock_timestamp()
   );
 
--- Only the first synthetic owner is explicitly eligible. The second owner
--- remains absent from the operator-managed table and must stay in snapshot mode.
-INSERT INTO nexus_private.entity_delta_pilot_allowlist (user_id, enabled, reason)
-VALUES (
-  current_setting('nexus.test.owner_a')::uuid,
-  true,
-  'Rollback-only authenticated RPC allowlist fixture'
-);
+-- DLA-07 starts with no per-owner rows. Owner A must be enrolled by the
+-- authenticated RPC after the private global switch is enabled; owner B receives
+-- an explicit disabled override to prove opt-out precedence.
 
 
 -- Inspect the private allowlist's schema contract as the database owner.
@@ -70,6 +65,7 @@ VALUES (
 DO $allowlist_contract$
 DECLARE
   v_allowlist_default text;
+  v_rollout_default boolean;
 BEGIN
   SELECT pg_catalog.pg_get_expr(d.adbin, d.adrelid) INTO v_allowlist_default
   FROM pg_catalog.pg_attrdef AS d
@@ -78,11 +74,65 @@ BEGIN
   WHERE d.adrelid = 'nexus_private.entity_delta_pilot_allowlist'::regclass
     AND a.attname = 'enabled';
   IF v_allowlist_default IS DISTINCT FROM 'false' THEN
-    RAISE EXCEPTION 'The pilot allowlist enabled column must default to false: %',
+    RAISE EXCEPTION 'The per-owner opt-out column must default to false: %',
       v_allowlist_default;
+  END IF;
+
+  SELECT enabled INTO v_rollout_default
+  FROM nexus_private.entity_delta_rollout_control
+  WHERE rollout_key = 'global';
+  IF v_rollout_default IS DISTINCT FROM false THEN
+    RAISE EXCEPTION 'The DLA-07 global rollout switch must default off: %',
+      v_rollout_default;
   END IF;
 END
 $allowlist_contract$;
+
+-- The global switch starts off. Authenticated owners cannot self-enroll and
+-- the denied call must not create a per-owner row.
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub', current_setting('nexus.test.owner_a'), true);
+SELECT set_config(
+  'request.jwt.claims',
+  jsonb_build_object('sub', current_setting('nexus.test.owner_a'), 'role', 'authenticated')::text,
+  true
+);
+
+DO $dla07_default_off$
+DECLARE
+  v_stamp timestamptz;
+  v_enable jsonb;
+BEGIN
+  SELECT updated_at INTO v_stamp
+  FROM public.nexus_user_data
+  WHERE user_id = current_setting('nexus.test.owner_a')::uuid;
+  v_enable := public.nexus_enable_entity_delta(v_stamp);
+  IF v_enable->>'ok' <> 'false'
+     OR v_enable->>'code' <> 'rollout_not_enabled'
+     OR v_enable->>'mode' <> 'snapshot' THEN
+    RAISE EXCEPTION 'The private global switch did not keep a new owner in snapshot mode: %', v_enable;
+  END IF;
+END
+$dla07_default_off$;
+
+RESET ROLE;
+
+DO $dla07_enable_global_for_test$
+DECLARE
+  v_owner_a uuid := current_setting('nexus.test.owner_a')::uuid;
+  v_owner_b uuid := current_setting('nexus.test.owner_b')::uuid;
+BEGIN
+  IF EXISTS (SELECT 1 FROM nexus_private.entity_delta_pilot_allowlist WHERE user_id=v_owner_a) THEN
+    RAISE EXCEPTION 'A failed global-off enrollment created an owner override.';
+  END IF;
+  UPDATE nexus_private.entity_delta_rollout_control
+     SET enabled=true, reason='Rollback-only DLA-07 authenticated integration test',
+         updated_at=clock_timestamp()
+   WHERE rollout_key='global';
+  INSERT INTO nexus_private.entity_delta_pilot_allowlist (user_id, enabled, reason)
+  VALUES (v_owner_b, false, 'Rollback-only explicit DLA-07 opt-out fixture');
+END
+$dla07_enable_global_for_test$;
 
 SET LOCAL ROLE authenticated;
 SELECT set_config('request.jwt.claim.sub', current_setting('nexus.test.owner_a'), true);
@@ -450,5 +500,59 @@ BEGIN
 END
 $test$;
 
+-- Prove DLA-07's snapshot-mode idempotent downgrade path recreates an explicit
+-- disabled override when the row is absent. This is a rollback-only DB-owner
+-- fixture; the RPC itself is still called as the authenticated owner.
 RESET ROLE;
+DELETE FROM nexus_private.entity_delta_pilot_allowlist
+WHERE user_id = current_setting('nexus.test.owner_a')::uuid;
+
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub', current_setting('nexus.test.owner_a'), true);
+SELECT set_config(
+  'request.jwt.claims',
+  jsonb_build_object('sub', current_setting('nexus.test.owner_a'), 'role', 'authenticated')::text,
+  true
+);
+
+DO $dla07_missing_override_downgrade$
+DECLARE
+  v_stamp timestamptz;
+  v_state jsonb;
+  v_result jsonb;
+BEGIN
+  SELECT updated_at INTO v_stamp
+  FROM public.nexus_user_data
+  WHERE user_id = current_setting('nexus.test.owner_a')::uuid;
+  v_state := public.nexus_get_entity_sync_state();
+  v_result := public.nexus_disable_entity_delta(
+    gen_random_uuid(),
+    (v_state->>'head_revision')::bigint,
+    v_stamp,
+    (v_state->>'snapshot_revision')::bigint,
+    (v_state->>'compacted_through_revision')::bigint
+  );
+  IF v_result->>'ok' <> 'true'
+     OR v_result->>'mode' <> 'snapshot'
+     OR v_result->>'already_disabled' <> 'true' THEN
+    RAISE EXCEPTION 'The owner could not persist a missing disabled override through a verified snapshot no-op downgrade: %', v_result;
+  END IF;
+END
+$dla07_missing_override_downgrade$;
+
+RESET ROLE;
+
+DO $dla07_missing_override_assertion$
+DECLARE
+  v_enabled boolean;
+BEGIN
+  SELECT enabled INTO v_enabled
+  FROM nexus_private.entity_delta_pilot_allowlist
+  WHERE user_id = current_setting('nexus.test.owner_a')::uuid;
+  IF v_enabled IS DISTINCT FROM false THEN
+    RAISE EXCEPTION 'A verified DLA-07 downgrade did not create a persistent disabled owner override: %', v_enabled;
+  END IF;
+END
+$dla07_missing_override_assertion$;
+
 ROLLBACK;
