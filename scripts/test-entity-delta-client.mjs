@@ -1196,7 +1196,7 @@ function makeStagingRuntimeHarness({
   gate=false,localOrigin=true,stagingUrl=stagingSupabaseUrl,recoveryIntent=null,
   syncResult={ok:true,publishedCount:1},recoveryResult={ok:true,recovered:true},
   missingChunkStorage=false,hostedQaGate=false,hostedQaOrigin='',hostedQaBranchOrigin='',
-  browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/dla04-entity-projection-guard',
+  productionGate=false,browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/dla04-entity-projection-guard',
   remoteState={mode:'delta',protocol_version:1},remoteStateError=null,
   cursorReadResult=null,outboxReadResult=null,
   projectionResults=[{ok:true,workspaceRevision:4,projectionWorkspaceRevision:4}],
@@ -1272,6 +1272,8 @@ function makeStagingRuntimeHarness({
     NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN:hostedQaOrigin,
     NEXUS_ENTITY_DELTA_SYNC_QA_BRANCH_ORIGIN:hostedQaBranchOrigin,
     NEXUS_ENTITY_DELTA_SYNC_QA_REF:hostedQaRef,
+    NEXUS_ENTITY_DELTA_SYNC_PRODUCTION:productionGate,
+    NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN:productionGate?'https://spaced-repetition-tracker-delta.vercel.app':'',
     NexusOfflineSyncQueue:queue,
     NexusStorage:storage,
     NexusEntityDeltaSync:{
@@ -1324,7 +1326,8 @@ function makeStagingRuntimeHarness({
     config:()=>({url:stagingUrl}),
     location:{
       hostname:localOrigin?'127.0.0.1':new URL(browserOrigin||'https://deploy-preview-126--nexussrt.netlify.app').hostname,
-      origin:browserOrigin||(localOrigin?'http://127.0.0.1:54321':'https://deploy-preview-126--nexussrt.netlify.app')
+      origin:browserOrigin||(localOrigin?'http://127.0.0.1:54321':'https://deploy-preview-126--nexussrt.netlify.app'),
+      protocol:browserOrigin?new URL(browserOrigin).protocol:(localOrigin?'http:':'https:')
     },
     URL,
     syncDiagErrorCategory:()=> 'other',
@@ -1391,6 +1394,56 @@ assert.deepEqual(activeHostedQa.calls.shadowSnapshotAcknowledgement,{
   owner:'account-A',operationId:'shadow-snapshot-operation',
   baseVersion:'verified-snapshot-stamp',serverVersion:'verified-snapshot-stamp'
 },'a clean Delta cursor and empty outbox must acknowledge the matching compatibility shadow');
+
+const productionOrigin='https://spaced-repetition-tracker-delta.vercel.app';
+const productionSupabaseUrl='https://txugbdavblpettcnhcxl.supabase.co';
+const activeProduction=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:productionSupabaseUrl,
+  productionGate:true,browserOrigin:productionOrigin,
+  remoteState:{mode:'delta',protocol_version:1}
+});
+const activeProductionResult=await activeProduction.run('account-A',stagingSignal);
+assert.equal(activeProductionResult.ok,true,
+  'the explicitly enabled production runtime may enter Delta only on the canonical production origin and exact production Supabase project');
+assert.equal(activeProduction.calls.createClient,1);
+assert.equal(activeProduction.calls.stateRead.filterValue,'account-A');
+
+const productionGateOff=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:productionSupabaseUrl,
+  productionGate:false,browserOrigin:productionOrigin,
+  remoteState:{mode:'delta',protocol_version:1}
+});
+assert.equal((await productionGateOff.run('account-A',stagingSignal)).skipped,true,
+  'the canonical production origin must remain snapshot-only unless the build-time production gate is enabled');
+assert.equal(productionGateOff.calls.createClient,0);
+
+const productionWrongOrigin=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:productionSupabaseUrl,
+  productionGate:true,browserOrigin:'https://nexus-preview.vercel.app',
+  remoteState:{mode:'delta',protocol_version:1}
+});
+assert.equal((await productionWrongOrigin.run('account-A',stagingSignal)).skipped,true,
+  'a preview or alternate origin must not inherit the production Delta gate');
+assert.equal(productionWrongOrigin.calls.createClient,0);
+
+const productionWrongProject=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
+  productionGate:true,browserOrigin:productionOrigin,
+  remoteState:{mode:'delta',protocol_version:1}
+});
+assert.equal((await productionWrongProject.run('account-A',stagingSignal)).skipped,true,
+  'the production Delta gate must reject any project other than the exact production Supabase project');
+assert.equal(productionWrongProject.calls.createClient,0);
+
+const productionWrongOwner=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:productionSupabaseUrl,
+  productionGate:true,browserOrigin:productionOrigin,
+  sessionUser:'account-B',localOwner:'account-B',
+  remoteState:{mode:'delta',protocol_version:1}
+});
+assert.equal((await productionWrongOwner.run('account-A',stagingSignal)).skipped,true,
+  'the production gate must still require the authenticated owner and local workspace owner to match the requested owner');
+assert.equal(productionWrongOwner.calls.createClient,0);
 
 const hostedCursorMismatch=makeStagingRuntimeHarness({
   gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
