@@ -1242,10 +1242,10 @@ function makeStagingRuntimeHarness({
   const localStorage={getItem:key=>key==='owner-key'?currentLocalOwner:null};
   const payload={state:{streams:[],subjects:[],topics:[],history:[],exams:[]},
     featureState:{journal:[],papers:[],goals:[],studyLogs:[]}};
-  const cursor={ownerId:'account-A',generation:'projection-generation-a',workspaceRevision:0,
+  const cursor={ownerId:sessionUser,generation:'projection-generation-a',workspaceRevision:0,
     snapshotUpdatedAt:'verified-snapshot-stamp',publishRevision:3,
     remoteHeadRevision:3,acknowledgedSequence:0,requiresPull:false};
-  let pendingSnapshot={ownerUserId:'account-A',status:'pending',operationId:'shadow-snapshot-operation',
+  let pendingSnapshot={ownerUserId:sessionUser,status:'pending',operationId:'shadow-snapshot-operation',
     baseServerVersion:'verified-snapshot-stamp',payload};
   const queue={
     getBase(_local,owner){calls.localBaseOwner=owner;return {baseServerVersion:'base-stamp'};},
