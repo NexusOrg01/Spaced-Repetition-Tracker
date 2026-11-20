@@ -202,4 +202,33 @@ assert.ok(twoClientSetup.includes('row_number() OVER (ORDER BY email)'));
 assert.ok(twoClientSetup.includes('fixture_order IN (1, 3)'),
   'only disposable local protocol and large-workspace owners should be allowlisted; B is the default-deny fixture');
 
-console.log('Nexus entity-delta migration and staging-test contract checks passed.');
+
+const productionActivation = read('supabase/production-activation/20261120103000_dla05_production_entity_delta_canary_activation.sql');
+const ops01Runner = read('scripts/ops01-migration-guard.mjs');
+assert.match(productionActivation, /^-- DLA-05[\\s\\S]*?\\nBEGIN;[\\s\\S]*\\nCOMMIT;\\s*$/,
+  'DLA-05 production activation must be a single explicit transaction');
+assert.match(productionActivation, /Target project ref: txugbdavblpettcnhcxl/);
+assert.match(productionActivation, /NOT part of supabase\\/migrations or OPS-G3's exact 11-file allowlist/);
+assert.match(productionActivation, /CREATE TABLE IF NOT EXISTS nexus_private\\.entity_delta_pilot_allowlist/);
+assert.match(productionActivation, /enabled boolean NOT NULL DEFAULT false/);
+assert.match(productionActivation, /pilot\\.user_id = v_uid[\\s\\S]*pilot\\.enabled IS TRUE[\\s\\S]*FOR SHARE/);
+assert.match(productionActivation, /REVOKE ALL ON SCHEMA nexus_private FROM PUBLIC, anon, authenticated, service_role/);
+assert.match(productionActivation, /REVOKE ALL ON TABLE nexus_private\\.entity_delta_pilot_allowlist[\\s\\S]*FROM PUBLIC, anon, authenticated, service_role/);
+assert.match(productionActivation, /CREATE OR REPLACE FUNCTION public\\.nexus_disable_entity_delta/);
+assert.match(productionActivation, /FOR UPDATE;[\\s\\S]*UPDATE nexus_private\\.entity_delta_pilot_allowlist[\\s\\S]*SET enabled = false/);
+assert.match(productionActivation, /ALTER FUNCTION public\\.nexus_enable_entity_delta\\(timestamptz\\)\\s+SET search_path = ''/);
+assert.match(productionActivation, /ALTER FUNCTION public\\.nexus_get_entity_sync_state\\(\\) SET search_path = ''/);
+assert.match(productionActivation, /ALTER FUNCTION public\\.nexus_publish_entity_operation\\(text,bigint,jsonb\\) SET search_path = ''/);
+assert.match(productionActivation, /ALTER FUNCTION public\\.nexus_read_entity_operations\\(bigint,integer,integer\\) SET search_path = ''/);
+assert.match(productionActivation, /ALTER FUNCTION public\\.nexus_publish_entity_snapshot\\(bigint,timestamptz,jsonb\\) SET search_path = ''/);
+assert.match(productionActivation, /ALTER FUNCTION public\\.nexus_compact_entity_operations\\(integer\\) SET search_path = ''/);
+assert.match(productionActivation, /GRANT EXECUTE ON FUNCTION public\\.nexus_enable_entity_delta\\(timestamptz\\)\\s+TO authenticated/);
+assert.match(productionActivation, /GRANT EXECUTE ON FUNCTION public\\.nexus_disable_entity_delta/);
+assert.doesNotMatch(productionActivation, /Apply only to an isolated approved QA DB/,
+  'the production-specific port must not retain the original QA-only application boundary');
+assert.doesNotMatch(productionActivation, /INSERT INTO nexus_private\\.entity_delta_pilot_allowlist/i,
+  'the production activation package must never pre-authorize an owner');
+assert.doesNotMatch(ops01Runner, /production-activation\\//,
+  'the separate DLA-05 activation package must remain outside OPS-G3 migration execution');
+
+console.log('Nexus entity-delta migration, production activation and staging-test contract checks passed.');
