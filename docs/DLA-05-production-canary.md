@@ -57,9 +57,9 @@ This is a read-only baseline, not a canary result. A new production account/work
 ## Approved execution order
 
 1. Reconfirm the exact production project ref and migration head.
-2. Recheck the six migration files/signatures and run their full local authenticated Supabase/Chromium tests on the exact PR commit.
-3. Identify the selected production Auth UUID and verify it owns exactly one intended Nexus workspace with a current, readable snapshot. Keep a separate Owner-B identity for negative isolation assertions.
-4. After explicit approval, apply only the six-file pilot activation package to `txugbdavblpettcnhcxl`. Verify the allowlist is empty/default-deny, all six RPCs have the intended authenticated-only grants, anon/PUBLIC/service_role remain revoked, private schema privileges remain revoked, and the downgrade receipt table/function exist.
+2. Recheck the production-specific activation SQL and its six source migrations/signatures; run the full local authenticated Supabase/Chromium tests, including application of the production package to the disposable local database, on the exact PR commit.
+3. After a selected canary account and a separate Owner-B control account have been created through the normal signup flow, identify both production Auth UUIDs. Verify the selected canary owner has exactly one intended Nexus workspace with a current, readable snapshot; keep Owner-B unlisted for negative isolation assertions. The clean-start production inventory currently contains no Auth users or workspaces.
+4. After explicit approval, apply only `supabase/production-activation/20261120103000_dla05_production_entity_delta_canary_activation.sql` to `txugbdavblpettcnhcxl`. Verify the allowlist is empty/default-deny, all six RPCs have the intended authenticated-only grants, anon/PUBLIC/service_role remain revoked, private schema privileges remain revoked, and the downgrade receipt table/function exist.
 5. After explicit approval, add exactly one enabled allowlist row for the selected Auth UUID with a bounded operator reason. No other owner is eligible.
 6. After explicit approval, configure the Vercel **Production** environment with the production opt-in and that exact owner UUID, then perform the owner-authorized production deployment. Do not put these values in Preview or branch environments.
 7. Use the selected owner's authenticated production browser session to run the automated DLA-05 protocol acceptance suite: publish/read/acknowledge/idempotent replay; stale-revision rejection and bounded retry; offline queue simulation/reconnect; snapshot/manifest/cursor consistency; compaction/stale-cursor snapshot fallback; Owner-B isolation; owner-scoped downgrade; and proof that normal sync does not re-enable the downgraded owner.
@@ -81,4 +81,4 @@ DR-01 remains **WAIVED**, not completed. No production backup, isolated restore,
 
 ## Current disposition
 
-**Implementation: in progress on the DLA-05 PR. Production activation: not performed.** A production owner UUID, authenticated canary session, and separate explicit approval for the production activation actions are still required.
+**Implementation preparation: complete on the DLA-05 PR, subject to the current exact-head CI run. Live canary: not started. Production activation: not performed.** A production owner UUID, authenticated canary session, and separate explicit approval for the production activation actions are still required.
