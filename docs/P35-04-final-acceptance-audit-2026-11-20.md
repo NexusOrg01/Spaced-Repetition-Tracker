@@ -118,13 +118,13 @@ Repeated physical-device testing after DLA-04, fixed 48–72-hour observation wi
 | OPS-G3 | COMPLETED per uploaded OPS-G3 completion record; live migration history confirms the 11 authorized migrations are present |
 | OPS-G4 | **COMPLETED** — 15/15 database assertions and Postgres error-log check passed; a temporary authenticated Production snapshot workspace successfully published/read data, retained an offline edit through reconnect and refresh, then had its synthetic data and Auth account removed; read-only post-delete checks passed |
 | DLA-05 | COMPLETED — PR #142 merged; the earlier stale `Current disposition` paragraph in `docs/DLA-05-production-canary.md` is explicitly superseded by its 20 November status-reconciliation addendum |
-| DLA-06 | **COMPLETED** — Account B's protected authenticated downgrade, compaction, eligibility revocation, authorized eligibility restoration, normal authenticated client re-enable and independent two-owner Production post-check all passed; legacy singular Vercel variable cleanup is deferred pending separate approval |
+| DLA-06 | **COMPLETED** — Account B's protected authenticated downgrade, compaction, eligibility revocation, authorized eligibility restoration, normal authenticated client re-enable and independent two-owner Production post-check all passed; the legacy singular Vercel variable is intentionally retained by owner decision |
 | P35-02 | COMPLETED — user-confirmed in the indexed task tracker |
 | P35-03 | COMPLETED — user-confirmed in the indexed task tracker |
 | DR-01 | WAIVED — not performed; not a technical pass |
 | P35-04 | **COMPLETED** — final acceptance and retirement disposition recorded in Section 12; DR-01 remains explicitly waived |
 
-Older roadmap status tables and repository notes that say OPS-G3 is not started, DLA-05 is not started, production has no Delta activation, or PR #136 is still open/draft are superseded by the later Nov 20 source attachments and the live merged PR/deployment/database state. The current DLA-06 runbook remains the authoritative outstanding acceptance record for the Account-B handoff.
+Older roadmap status tables and repository notes that say OPS-G3 is not started, DLA-05 is not started, production has no Delta activation, or PR #136 is still open/draft are superseded by the later Nov 20 source attachments and the live merged PR/deployment/database state. Any earlier DLA-06 statement that the Account-B client handoff was outstanding is superseded by the authenticated downgrade/re-enable execution evidence in Section 11. No DLA-06 handoff remains outstanding.
 
 ## 8. Final disposition
 
