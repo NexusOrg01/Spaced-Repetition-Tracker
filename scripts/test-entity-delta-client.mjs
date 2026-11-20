@@ -1294,7 +1294,7 @@ function makeStagingRuntimeHarness({
     NEXUS_ENTITY_DELTA_SYNC_QA_REF:hostedQaRef,
     NEXUS_ENTITY_DELTA_SYNC_PRODUCTION:productionGate,
     NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN:productionGate?'https://spaced-repetition-tracker-delta.vercel.app':'',
-    NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_ID:productionGate?productionOwnerId:'',
+    NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_IDS:productionGate?[productionOwnerId]:[],
     NexusOfflineSyncQueue:queue,
     NexusStorage:storage,
     NexusEntityDeltaSync:{
