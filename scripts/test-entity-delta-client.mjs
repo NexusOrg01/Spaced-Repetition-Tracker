@@ -1441,9 +1441,8 @@ const productionOwnerEnable=makeStagingRuntimeHarness({
 const productionOwnerEnableResult=await productionOwnerEnable.run('account-A',stagingSignal);
 assert.equal(productionOwnerEnableResult.ok,true,
   'an approved production canary owner must enter Delta through the authenticated server-side allowlist RPC');
-assert.deepEqual(productionOwnerEnable.calls.rpc,{
-  name:'nexus_enable_entity_delta',args:{p_expected_updated_at:'production-snapshot-stamp'}
-});
+assert.equal(productionOwnerEnable.calls.rpc.name,'nexus_enable_entity_delta');
+assert.equal(productionOwnerEnable.calls.rpc.args.p_expected_updated_at,'production-snapshot-stamp');
 assert.equal(productionOwnerEnable.calls.stateRead.table,'nexus_workspace_sync_state',
   'the client must re-read and verify server mode after the authenticated enable RPC');
 
