@@ -3,13 +3,22 @@ const MAX_SYNC_CURRICULUM_MARKERS=100000;
 const CFG_KEY='nexus.cloud.config.v1',OWNER_KEY='nexus.cloud.last-user-id',DEFAULT_CONFIG={url:'https://txugbdavblpettcnhcxl.supabase.co',key:'sb_publishable_sQkKOf-CfHlG7mvA2sFjIg_qcezI2Fa'},STAGING_CONFIG={url:'https://xuwfzibxhxzxxupprxsq.supabase.co',key:'sb_publishable_UE11M6ghcrdBaRKZUjzsVQ_tOGVc1zw'};
 const LIVE_SUPABASE_URL='https://txugbdavblpettcnhcxl.supabase.co',LIVE_APP_HOST='spaced-repetition-tracker-delta.vercel.app';
 function isPreviewDeploymentOrigin(){const host=location.hostname.toLowerCase();return host!==LIVE_APP_HOST&&(host.endsWith('.vercel.app')||host.endsWith('.netlify.app'));}
+function productionDeltaClientGateOpen(){
+ try{
+  const productionProject=new URL(config().url);
+  return window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION===true&&
+   window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN==='https://'+LIVE_APP_HOST&&
+   config().url===LIVE_SUPABASE_URL&&productionProject.origin===LIVE_SUPABASE_URL&&
+   location.protocol==='https:'&&location.hostname===LIVE_APP_HOST&&
+   location.origin==='https://'+LIVE_APP_HOST;
+ }catch(_){return false;}
+}
 const SYNC_DIAG_ENABLED=(()=>{try{const requested=new URLSearchParams(location.search).get('nexusSyncDiag')==='1';if(requested){localStorage.setItem('nexus.syncdiag.enabled','1');sessionStorage.setItem('nexus.syncdiag.enabled','1');}return requested||localStorage.getItem('nexus.syncdiag.enabled')==='1'||sessionStorage.getItem('nexus.syncdiag.enabled')==='1';}catch(_){return false;}})();
 const SYNC_DIAG_KEY='nexus.syncdiag.session.v1';
 const SYNC_REQUEST_TIMEOUT_MS=180000,REMOTE_DELTA_POLL_INTERVAL_MS=15000;
 let hostedDeltaPollingEnabled=false,remoteDeltaPollTimer=null;
-// A per-page negative cache avoids probing the server allowlist on every
-// snapshot save for owners who are not part of the production canary. A reload
-// rechecks eligibility after an operator-approved allowlist change.
+// A per-page negative cache avoids repeating server-denied rollout/opt-out RPCs
+// on every snapshot save. A reload rechecks the private server-side controls.
 const productionDeltaIneligibleOwners=new Set();
 function createSyncAbortScope(){
  const controller=typeof AbortController==='function'?new AbortController():null;
@@ -41,7 +50,7 @@ function syncDiagSummary(payload){
 }
 const SYNC_DIAG_STAGES=new Set([
  'auth-event','baseline-restored-from-remote','cloud-chunk-read-error','cloud-read','cloud-read-error','cloud-write-complete','cloud-write-error',
- 'curriculum-install-save-requested','delta-snapshot-downgrade-result','delta-sync-result','delta-recovery-verification','diagnostics-enabled','entity-projection-rebuild','entity-sync-result','initialize-after-cloud-read',
+ 'curriculum-install-save-requested','delta-auto-downgrade-result','delta-snapshot-downgrade-result','delta-sync-result','delta-recovery-verification','diagnostics-enabled','entity-projection-rebuild','entity-sync-result','initialize-after-cloud-read',
  'initialize-error','initialize-finished','initialize-settled','initialize-start','local-save-queue-error',
  'local-save-queued','local-storage-flush','offline-account-base-unavailable','offline-account-pending-unavailable',
  'offline-account-queue-rebuilt','offline-account-recovery-error','offline-account-workspace-restored',
@@ -1024,21 +1033,10 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    qaProject.origin==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&
    exactQaOriginMatches;
  }catch(_){hostedQaGate=false;}
- // DLA-05 production activation is a separate, explicit Vercel Production opt-in.
- // The server-side owner allowlist remains the authority; this client gate only
- // allows the already-authenticated owner to attempt the protocol on the one
- // canonical production origin and exact production Supabase project.
- let productionGate=false;
- try{
-  const productionProject=new URL(config().url);
-  productionGate=window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION===true&&
-   window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN==='https://'+LIVE_APP_HOST&&
-   Array.isArray(window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_IDS)&&
-   window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_IDS.includes(ownerId)&&
-   config().url===LIVE_SUPABASE_URL&&productionProject.origin===LIVE_SUPABASE_URL&&
-   location.protocol==='https:'&&location.hostname===LIVE_APP_HOST&&
-   location.origin==='https://'+LIVE_APP_HOST;
- }catch(_){productionGate=false;}
+ // DLA-07 removes the per-build owner UUID list. The global Production
+ // build opt-in only permits the authenticated owner to ask the private server
+ // rollout-control RPC; the server switch and explicit owner opt-out decide.
+ const productionGate=productionDeltaClientGateOpen();
  const authenticatedOwner=session&&session.user&&typeof session.user.id==='string'?session.user.id:'';
  const ownerMatches=!!ownerId&&authenticatedOwner===ownerId&&localStorage.getItem(OWNER_KEY)===ownerId;
  const gateOpen=ownerMatches&&(localGateOpen||hostedQaGate||productionGate);
@@ -1101,7 +1099,8 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
      }
      await assertActiveUser(ownerId);
      remoteMode='delta';
-    }else if(enableData&&enableData.code==='pilot_not_enabled'){
+    }else if(enableData&&(enableData.code==='pilot_not_enabled'||
+        enableData.code==='rollout_not_enabled')){
      productionDeltaIneligibleOwners.add(ownerId);
      remoteMode=enableData.mode==='snapshot'?'snapshot':remoteMode;
     }else if(enableData&&enableData.code==='snapshot_conflict'){
@@ -1111,7 +1110,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
     }
    }
   }
-  if(!stateRead.data||remoteMode==='snapshot'||remoteMode===''){
+  if((!stateRead.data&&remoteMode!=='delta')||remoteMode==='snapshot'||remoteMode===''){
    if(!(action&&action.downgrade===true))return {skipped:true,mode:'snapshot',
     reason:productionDeltaIneligibleOwners.has(ownerId)?'pilot_not_enabled':
      (stateRead.data?'server_snapshot_mode':'server_sync_state_missing')};
@@ -1422,6 +1421,91 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
  return result||{ok:false,retryable:true,reason:'staging_delta_sync_unavailable'};
 }
 
+async function readProductionEntityDeltaMode(ownerId,signal){
+ await assertActiveUser(ownerId);
+ if(localStorage.getItem(OWNER_KEY)!==ownerId)
+  return {ok:false,reason:'active_account_does_not_own_local_workspace'};
+ let query=client.from('nexus_workspace_sync_state').select('mode').eq('user_id',ownerId);
+ query=attachAbortSignal(query,signal);
+ const read=await query.maybeSingle();
+ if(read.error)throw new Error('Could not verify the owner sync mode before snapshot fallback: '+
+  String(read.error.message||read.error.code||'sync-state read failed'));
+ await assertActiveUser(ownerId);
+ if(localStorage.getItem(OWNER_KEY)!==ownerId)
+  return {ok:false,reason:'active_account_does_not_own_local_workspace'};
+ const mode=read.data&&read.data.mode||'snapshot';
+ if(mode!=='snapshot'&&mode!=='delta')
+  throw new Error('The owner sync mode is unknown. Snapshot fallback was paused.');
+ return {ok:true,exists:!!read.data,mode};
+}
+
+async function tryAutomaticProductionDeltaDowngrade(ownerId,signal,triggerReason){
+ if(!productionDeltaClientGateOpen())return {ok:false,reason:'production_delta_gate_closed'};
+ const before=await readProductionEntityDeltaMode(ownerId,signal);
+ if(!before.ok)return before;
+ if(before.mode!=='delta')return {ok:false,reason:'owner_not_in_delta_mode'};
+ if(session&&session.user&&session.user.id!==ownerId||
+    localStorage.getItem(OWNER_KEY)!==ownerId)
+  return {ok:false,reason:'active_account_does_not_own_local_workspace'};
+ const downgrade=await runStagingEntityDeltaSync(ownerId,signal,{downgrade:true});
+ if(!downgrade||downgrade.ok!==true||downgrade.mode!=='snapshot'){
+  syncDiag('delta-auto-downgrade-result',null,{
+   ok:false,reason:downgrade&&downgrade.reason||'verified_downgrade_unavailable',
+   triggerReason:typeof triggerReason==='string'?triggerReason:'other',
+   remoteModeBefore:before.mode
+  });
+  return downgrade||{ok:false,retryable:true,reason:'verified_downgrade_unavailable'};
+ }
+ const after=await readProductionEntityDeltaMode(ownerId,signal);
+ if(!after.ok||after.mode!=='snapshot'){
+  syncDiag('delta-auto-downgrade-result',null,{
+   ok:false,reason:'snapshot_mode_readback_failed',
+   triggerReason:typeof triggerReason==='string'?triggerReason:'other',
+   remoteModeAfter:after&&after.mode||'unknown'
+  });
+  return {ok:false,retryable:true,reason:'snapshot_mode_readback_failed'};
+ }
+ productionDeltaIneligibleOwners.add(ownerId);
+ lastRemoteStamp=downgrade.updated_at||lastRemoteStamp;
+ syncDiag('delta-auto-downgrade-result',null,{
+  ok:true,mode:'snapshot',triggerReason:typeof triggerReason==='string'?triggerReason:'other',
+  headRevision:Number.isSafeInteger(downgrade.headRevision)?downgrade.headRevision:null
+ });
+ return {ok:true,mode:'snapshot',updated_at:lastRemoteStamp};
+}
+
+async function tryProductionDeltaAfterVerifiedSnapshot(ownerId,signal,triggerReason){
+ if(!productionDeltaClientGateOpen())return {ok:true,skipped:true,reason:'production_delta_gate_closed'};
+ await assertActiveUser(ownerId);
+ if(localStorage.getItem(OWNER_KEY)!==ownerId)
+  return {ok:false,reason:'active_account_does_not_own_local_workspace'};
+ if(productionDeltaIneligibleOwners.has(ownerId))
+  return {ok:true,skipped:true,reason:'production_delta_owner_cached_ineligible'};
+ const result=await runStagingEntityDeltaSync(ownerId,signal);
+ if(result&&result.ok===true&&result.skipped!==true){
+  hostedDeltaPollingEnabled=true;
+  return {ok:true,delta:true,result};
+ }
+ if(result&&result.blockedRecovery)
+  return {ok:false,blockedRecovery:true,reason:result.reason||'staging_recovery_journal_pending'};
+ const current=await readProductionEntityDeltaMode(ownerId,signal);
+ if(!current.ok)return current;
+ if(current.mode==='delta'){
+  const downgrade=await tryAutomaticProductionDeltaDowngrade(ownerId,signal,
+   result&&result.reason||triggerReason||'post_snapshot_delta_sync_failed');
+  if(downgrade&&downgrade.ok===true&&downgrade.mode==='snapshot')
+   return {ok:true,skipped:true,reason:'verified_automatic_downgrade'};
+  return {ok:false,retryable:true,reason:downgrade&&downgrade.reason||
+   'post_snapshot_delta_sync_failed'};
+ }
+ // The server explicitly kept this workspace in snapshot mode (global rollout
+ // off, explicit opt-out, or no sync-state row). The baseline remains valid.
+ if(result&&result.skipped===true)return {ok:true,skipped:true,reason:result.reason||'snapshot_mode'};
+ if(current.mode==='snapshot'&&result&&result.retryable===true)
+  return {ok:true,skipped:true,reason:'delta_enrollment_retry_deferred'};
+ return {ok:false,retryable:true,reason:result&&result.reason||'post_snapshot_delta_sync_failed'};
+}
+
 async function upload(){
  if(deletingAccount||!localQueueHealthy||!client||!session||!ready)return false;
  if(syncing){pendingSync=true;return false;}
@@ -1435,9 +1519,27 @@ async function upload(){
    const {data:authData,error:authError}=await client.auth.getUser();
   if(authError)throw new Error('Supabase could not verify the active login before cloud write: '+authError.message);
   if(!authData.user||authData.user.id!==uploadUserId||!session||session.user.id!==uploadUserId)throw new Error('The active Google/account session changed or could not be verified. Cloud write paused to protect the other account. Sign in again and retry.');
-  const deltaResult=await runStagingEntityDeltaSync(uploadUserId,uploadScope.signal);
-   if(deltaResult&&deltaResult.skipped===true){hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();}
-   else if(deltaResult&&deltaResult.ok===true){hostedDeltaPollingEnabled=true;}
+  let deltaResult;
+  try{
+   deltaResult=await runStagingEntityDeltaSync(uploadUserId,uploadScope.signal);
+  }catch(deltaError){
+   const fallback=await tryAutomaticProductionDeltaDowngrade(
+    uploadUserId,uploadScope.signal,deltaError&&deltaError.code||'delta_sync_exception');
+   if(!fallback||fallback.ok!==true||fallback.mode!=='snapshot')throw deltaError;
+   deltaResult={skipped:true,mode:'snapshot',reason:'verified_automatic_downgrade'};
+  }
+  if(deltaResult&&deltaResult.skipped===true){hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();}
+  else if(deltaResult&&deltaResult.ok===true){hostedDeltaPollingEnabled=true;}
+  else if(deltaResult&&deltaResult.ok!==true&&deltaResult.blockedRecovery!==true&&
+          (deltaResult.retryable===true||deltaResult.conflict===true||
+           deltaResult.snapshotRequired===true||deltaResult.requiresSnapshotReconciliation===true)){
+   const fallback=await tryAutomaticProductionDeltaDowngrade(
+    uploadUserId,uploadScope.signal,deltaResult.reason||'recoverable_delta_sync_failure');
+   if(fallback&&fallback.ok===true&&fallback.mode==='snapshot'){
+    deltaResult={skipped:true,mode:'snapshot',reason:'verified_automatic_downgrade'};
+    hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();
+   }
+  }
    if(deltaResult){
     const compaction=deltaResult.snapshotCompaction||deltaResult.compaction||(deltaResult.recovery&&deltaResult.recovery.compaction)||null;
     const compactionPending=compaction&&typeof compaction.pending==='boolean'?compaction.pending:
@@ -1492,6 +1594,14 @@ async function upload(){
    if(verifiedBase&&verifiedBase.serverVersion===lastRemoteStamp&&
       await sameWorkspace(verifiedBase,snapshot())){
     if(queue)queue.rememberStamp(localStorage,uploadUserId,lastRemoteStamp);
+    const deltaBootstrap=await tryProductionDeltaAfterVerifiedSnapshot(
+     uploadUserId,uploadScope.signal,'verified_existing_snapshot_baseline');
+    if(!deltaBootstrap.ok)throw Object.assign(new Error(
+     'The existing snapshot baseline is verified, but the Production Delta re-enrollment check could not be completed safely.'
+    ),{code:'NEXUS_DELTA_STAGING_SYNC_BLOCKED'});
+    if(deltaBootstrap.delta){
+     await flushDurableLocalWrites();status('Synced');uploaded=true;return true;
+    }
     await flushDurableLocalWrites();status('Synced');uploaded=true;return true;
    }
   }
@@ -1517,6 +1627,11 @@ async function upload(){
     lastRemoteStamp=before.updated_at||null;
     queue.rememberBase(localStorage,uploadUserId,before.payload,lastRemoteStamp);
     queue.acknowledge(localStorage,uploadUserId,pending.operationId,pending.baseServerVersion,lastRemoteStamp);
+    const deltaBootstrap=await tryProductionDeltaAfterVerifiedSnapshot(
+     uploadUserId,uploadScope.signal,'verified_existing_snapshot_pending_ack');
+    if(!deltaBootstrap.ok)throw Object.assign(new Error(
+     'The cloud snapshot is verified, but the Production Delta re-enrollment check could not be completed safely.'
+    ),{code:'NEXUS_DELTA_STAGING_SYNC_BLOCKED'});
     await flushDurableLocalWrites();status('Synced');uploaded=true;return true;
    }
    const actualStamp=before&&before.updated_at?before.updated_at:null;
@@ -1545,6 +1660,11 @@ async function upload(){
     if(later&&later.baseServerVersion===(priorStamp||null))queue.rebase(localStorage,uploadUserId,snapshot(),lastRemoteStamp,'local-change-during-upload');
    }
   }
+  const deltaBootstrap=await tryProductionDeltaAfterVerifiedSnapshot(
+   uploadUserId,uploadScope.signal,'verified_new_or_updated_snapshot_baseline');
+  if(!deltaBootstrap.ok)throw Object.assign(new Error(
+   'The snapshot was verified, but Production Delta activation could not be verified. Snapshot writes remain paused.'
+  ),{code:'NEXUS_DELTA_STAGING_SYNC_BLOCKED'});
   await flushDurableLocalWrites();status('Synced');uploaded=true;
  }catch(e){
   if(uploadScope.timedOut())e=syncTimeoutError();
@@ -1774,6 +1894,7 @@ async function downgradeEntityDelta(){
  try{
   const result=await runStagingEntityDeltaSync(ownerId,scope.signal,{downgrade:true});
   if(result&&result.ok===true&&result.mode==='snapshot'){
+   if(productionDeltaClientGateOpen())productionDeltaIneligibleOwners.add(ownerId);
    lastRemoteStamp=result.updated_at||lastRemoteStamp;
    await flushDurableLocalWrites();
    status('Snapshot mode · synced');
