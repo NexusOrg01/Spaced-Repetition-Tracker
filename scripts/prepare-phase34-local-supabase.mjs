@@ -47,6 +47,10 @@ await cp(
   join(root,'supabase','production-activation','20261120103000_dla05_production_entity_delta_canary_activation.sql'),
   join(dir,'20261120103000_dla05_production_entity_delta_canary_activation.sql')
 );
+await cp(
+  join(root,'supabase','production-activation','20261120200000_dla07_universal_delta_enrollment.sql'),
+  join(dir,'20261120200000_dla07_universal_delta_enrollment.sql')
+);
 const fixtures=join(target,'test-fixtures');await mkdir(fixtures,{recursive:true});
 for(const f of ['nexus_entity_delta_two_client_setup.sql','nexus_entity_delta_two_client_cleanup.sql'])await cp(join(root,'supabase','tests',f),join(fixtures,f));
 await writeFile(join(target,'README.txt'),['Disposable local Nexus Phase 3.4 Supabase project.','Generated directory; safe to delete after cleanup.','Not linked to a hosted project.','Start: npx supabase start --exclude realtime,storage-api,imgproxy,edge-runtime,logflare,vector,supavisor','Status: npx supabase status','Cleanup: revoke RPC grants, delete fixture users, then npx supabase stop --no-backup'].join('\n')+'\n','utf8');
