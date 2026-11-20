@@ -202,4 +202,50 @@ assert.ok(twoClientSetup.includes('row_number() OVER (ORDER BY email)'));
 assert.ok(twoClientSetup.includes('fixture_order IN (1, 3)'),
   'only disposable local protocol and large-workspace owners should be allowlisted; B is the default-deny fixture');
 
-console.log('Nexus entity-delta migration and staging-test contract checks passed.');
+
+const productionActivation = read('supabase/production-activation/20261120103000_dla05_production_entity_delta_canary_activation.sql');
+const ops01Runner = read('scripts/ops01-migration-guard.mjs');
+assert.ok(productionActivation.startsWith('-- DLA-05'),
+  'production activation SQL must be a distinct DLA-05 package');
+assert.ok(productionActivation.includes('\nBEGIN;\n') && productionActivation.trimEnd().endsWith('COMMIT;'),
+  'DLA-05 production activation must be a single explicit transaction');
+assert.ok(productionActivation.includes('Target project ref: txugbdavblpettcnhcxl'));
+assert.ok(productionActivation.includes("NOT part of supabase/migrations or OPS-G3's exact 11-file allowlist"));
+assert.ok(productionActivation.includes('CREATE TABLE IF NOT EXISTS nexus_private.entity_delta_pilot_allowlist'));
+assert.ok(productionActivation.includes('enabled boolean NOT NULL DEFAULT false'));
+const ownerCheck = productionActivation.indexOf('pilot.user_id = v_uid');
+const enabledCheck = productionActivation.indexOf('pilot.enabled IS TRUE', ownerCheck);
+const ownerLock = productionActivation.indexOf('FOR SHARE', enabledCheck);
+assert.ok(ownerCheck >= 0 && enabledCheck > ownerCheck && ownerLock > enabledCheck,
+  'the enable RPC must lock and require the authenticated owner allowlist row');
+assert.ok(productionActivation.includes('REVOKE ALL ON SCHEMA nexus_private FROM PUBLIC, anon, authenticated, service_role'));
+assert.ok(productionActivation.includes('REVOKE ALL ON TABLE nexus_private.entity_delta_pilot_allowlist'));
+assert.ok(productionActivation.includes('FROM PUBLIC, anon, authenticated, service_role;'));
+assert.ok(productionActivation.includes('CREATE OR REPLACE FUNCTION public.nexus_disable_entity_delta'));
+assert.ok(productionActivation.includes('UPDATE nexus_private.entity_delta_pilot_allowlist'));
+assert.ok(productionActivation.includes('SET enabled = false'),
+  'successful owner downgrade must revoke pilot eligibility');
+for (const signature of [
+  'ALTER FUNCTION public.nexus_enable_entity_delta(timestamptz)',
+  'ALTER FUNCTION public.nexus_get_entity_sync_state()',
+  'ALTER FUNCTION public.nexus_publish_entity_operation(text,bigint,jsonb)',
+  'ALTER FUNCTION public.nexus_read_entity_operations(bigint,integer,integer)',
+  'ALTER FUNCTION public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb)',
+  'ALTER FUNCTION public.nexus_compact_entity_operations(integer)'
+]) {
+  const offset = productionActivation.indexOf(signature);
+  assert.ok(offset >= 0 && productionActivation.slice(offset, offset + 240).includes("SET search_path = '';"),
+    'production activation must pin SECURITY DEFINER function search_path: ' + signature);
+}
+assert.ok(productionActivation.includes("SET search_path TO ''"),
+  'the owner-scoped downgrade SECURITY DEFINER function must have an empty search_path');
+assert.ok(productionActivation.includes('GRANT EXECUTE ON FUNCTION public.nexus_enable_entity_delta(timestamptz)'));
+assert.ok(productionActivation.includes('GRANT EXECUTE ON FUNCTION public.nexus_disable_entity_delta'));
+assert.ok(!productionActivation.includes('Apply only to an isolated approved QA DB'),
+  'the production-specific port must not retain the original QA-only application boundary');
+assert.ok(!/INSERT INTO nexus_private\.entity_delta_pilot_allowlist/i.test(productionActivation),
+  'the production activation package must never pre-authorize an owner');
+assert.ok(!ops01Runner.includes('production-activation/'),
+  'the separate DLA-05 activation package must remain outside OPS-G3 migration execution');
+
+console.log('Nexus entity-delta migration, production activation and staging-test contract checks passed.');

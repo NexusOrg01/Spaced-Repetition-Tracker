@@ -2,7 +2,7 @@ name: Phase 3.4 local authenticated two-client integration
 
 on:
   pull_request:
-    branches: [main, feat/dla-01-hosted-qa-gate]
+    branches: [main, feat/dla-01-hosted-qa-gate, fix/dla04-entity-projection-guard]
     paths:
       - .github/workflows/phase34-local-supabase-integration.yml
       - cloud-sync.js
@@ -28,6 +28,7 @@ on:
       - supabase/local-phase34/**
       - supabase/migrations/**
       - supabase/pilot-migrations/**
+      - supabase/production-activation/**
       - supabase/tests/nexus_entity_delta_two_client_*.sql
       - supabase/tests/nexus_entity_delta_authenticated_rpc.sql
       - supabase/tests/nexus_entity_delta_sync.sql
