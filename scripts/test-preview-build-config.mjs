@@ -353,73 +353,55 @@ const productionEnv = {
   VERCEL_PROJECT_ID: 'prj_UgPzqFpvqBaKkKXi2Vm2COxqUsDi',
   VERCEL_ENV: 'production',
   VERCEL_GIT_COMMIT_REF: 'main',
-  NEXUS_ENTITY_DELTA_PRODUCTION_ENABLED: 'true',
-  NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_IDS: '12345678-1234-4234-8234-123456789abc'
+  NEXUS_ENTITY_DELTA_PRODUCTION_ENABLED: 'true'
 };
 const approvedProductionGate = resolveProductionEntityDeltaEnabled(productionEnv);
-assert.deepEqual(approvedProductionGate, {
-  enabled: true, ownerIds: ['12345678-1234-4234-8234-123456789abc']
-}, 'only the exact Nexus Vercel production project on main, explicit opt-in, and one UUID owner may generate the production Delta gate');
-assert.deepEqual(resolveProductionEntityDeltaEnabled({
-  ...productionEnv, NEXUS_ENTITY_DELTA_PRODUCTION_ENABLED: 'false'
-}), {enabled:false,ownerIds:[]}, 'production Delta remains default-off');
-assert.deepEqual(resolveProductionEntityDeltaEnabled({
-  ...productionEnv, NEXUS_ENTITY_DELTA_PRODUCTION_ENABLED: undefined
-}), {enabled:false,ownerIds:[]}, 'missing production opt-in must keep Delta disabled');
-assert.deepEqual(resolveProductionEntityDeltaEnabled({
-  ...productionEnv, NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_IDS: 'not-a-uuid'
-}), {enabled:false,ownerIds:[]}, 'a malformed canary owner must keep Delta disabled');
-assert.deepEqual(resolveProductionEntityDeltaEnabled({
-  ...productionEnv, NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_IDS: '12345678-1234-4234-8234-123456789abc, 22345678-1234-4234-8234-123456789abc'
-}), {enabled:true,ownerIds:['12345678-1234-4234-8234-123456789abc','22345678-1234-4234-8234-123456789abc']},
-  'the production gate should support an explicitly enumerated small owner set');
-assert.deepEqual(resolveProductionEntityDeltaEnabled({
-  ...productionEnv, NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_IDS: '12345678-1234-4234-8234-123456789abc,not-a-uuid'
-}), {enabled:false,ownerIds:[]}, 'one malformed owner must fail the entire production gate closed');
-assert.deepEqual(resolveProductionEntityDeltaEnabled({
-  ...productionEnv, NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_IDS: '12345678-1234-4234-8234-123456789abc,12345678-1234-4234-8234-123456789abc'
-}), {enabled:false,ownerIds:[]}, 'duplicate owner entries must fail closed');
-assert.deepEqual(resolveProductionEntityDeltaEnabled({
-  ...productionEnv, NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_IDS: Array.from({length:26},(_,i)=>'12345678-1234-4234-8234-'+String(i+1).padStart(12,'0')).join(',')
-}), {enabled:false,ownerIds:[]}, 'the production owner set must remain bounded');
-
-assert.deepEqual(resolveProductionEntityDeltaEnabled({
-  ...productionEnv, NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_IDS: undefined
-}), {enabled:false,ownerIds:[]}, 'a missing canary owner must keep Delta disabled');
-assert.deepEqual(resolveProductionEntityDeltaEnabled({
-  ...productionEnv, VERCEL: undefined
-}), {enabled:false,ownerIds:[]}, 'a non-Vercel build cannot generate the production Delta gate');
-assert.deepEqual(resolveProductionEntityDeltaEnabled({
-  ...productionEnv, VERCEL_PROJECT_ID: 'prj_unapproved_project'
-}), {enabled:false,ownerIds:[]}, 'a different Vercel project cannot generate the production Delta gate');
-assert.deepEqual(resolveProductionEntityDeltaEnabled({
-  ...productionEnv, VERCEL_ENV: 'preview'
-}), {enabled:false,ownerIds:[]}, 'preview deployments cannot generate the production Delta gate');
-assert.deepEqual(resolveProductionEntityDeltaEnabled({
-  ...productionEnv, VERCEL_GIT_COMMIT_REF: 'feat/dla05-production-canary'
-}), {enabled:false,ownerIds:[]}, 'feature branches cannot generate the production Delta gate');
-assert.deepEqual(resolveProductionEntityDeltaEnabled({
-  ...productionEnv, CONTEXT: 'deploy-preview', VERCEL: undefined
-}), {enabled:false,ownerIds:[]}, 'generic deploy previews cannot generate the production Delta gate');
+assert.deepEqual(approvedProductionGate, { enabled: true },
+  'the exact Nexus Vercel Production build on main and explicit global opt-in may generate the Production client gate');
+for (const disabledEnv of [
+  { ...productionEnv, NEXUS_ENTITY_DELTA_PRODUCTION_ENABLED: 'false' },
+  { ...productionEnv, NEXUS_ENTITY_DELTA_PRODUCTION_ENABLED: undefined },
+  { ...productionEnv, VERCEL: undefined },
+  { ...productionEnv, VERCEL_PROJECT_ID: 'prj_unapproved_project' },
+  { ...productionEnv, VERCEL_ENV: 'preview' },
+  { ...productionEnv, VERCEL_GIT_COMMIT_REF: 'feat/dla07' },
+  { ...productionEnv, CONTEXT: 'deploy-preview', VERCEL: undefined }
+]) {
+  assert.deepEqual(resolveProductionEntityDeltaEnabled(disabledEnv), { enabled: false },
+    'missing rollout opt-in, preview, non-main, non-Vercel, or a different Vercel project must fail closed');
+}
+for (const legacyOwnerList of [
+  undefined,
+  'not-a-uuid',
+  '12345678-1234-4234-8234-123456789abc,12345678-1234-4234-8234-123456789abc',
+  Array.from({length:26},(_,i)=>'12345678-1234-4234-8234-'+String(i+1).padStart(12,'0')).join(',')
+]) {
+  assert.deepEqual(resolveProductionEntityDeltaEnabled({
+    ...productionEnv, NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_IDS: legacyOwnerList
+  }), { enabled: true },
+  'the retired build-time owner list must not limit universal rollout eligibility');
+}
 const productionGateScript = renderConfigScript(null, false, null, approvedProductionGate);
 assert.ok(productionGateScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION=true'));
 assert.ok(productionGateScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN="https://spaced-repetition-tracker-delta.vercel.app"'),
-  'the generated production gate must be bound to the canonical Nexus production origin');
-assert.ok(productionGateScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_IDS=["12345678-1234-4234-8234-123456789abc"]'),
-  'the production build must embed the explicitly approved owner UUID set');
-assert.ok(renderConfigScript(null, false, null, {enabled:true,ownerIds:['not-a-uuid']})
+  'the generated global gate must remain bound to the canonical Nexus Production origin');
+assert.equal(productionGateScript.includes('NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_IDS'),false,
+  'the build must not embed any Production owner UUID list');
+assert.ok(renderConfigScript(null, false, null, {enabled:false})
   .includes('window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION=false'),
-  'config rendering must reject malformed owner UUIDs even if a caller passes an enabled object');
-
-assert.ok(renderConfigScript(null, false, null, {enabled:false,ownerIds:[]}).includes('window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION=false'),
-  'the production Delta gate must remain false in builds without an explicit grant');
-assert.ok(renderConfigScript(null, false, null, {enabled:false,ownerIds:[]}).includes('window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN=""'),
-  'a closed production gate must not carry an allowed origin');
+  'a closed Production build gate must remain false');
+assert.ok(renderConfigScript(null, false, null, {enabled:false})
+  .includes('window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN=""'),
+  'a closed Production build gate must not carry an allowed origin');
 assert.ok(cloudSyncSource.includes('window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION===true'));
 assert.ok(cloudSyncSource.includes("window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN==='https://'+LIVE_APP_HOST"));
-assert.ok(cloudSyncSource.includes("window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_IDS.includes(ownerId)"),
-  'the runtime production gate must be limited to the owner UUID set embedded by the approved production build');
+assert.equal(cloudSyncSource.includes('NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_IDS'),false,
+  'the runtime gate must not rely on a baked-in owner UUID list');
 assert.ok(cloudSyncSource.includes("location.origin==='https://'+LIVE_APP_HOST"));
 assert.ok(cloudSyncSource.includes('productionProject.origin===LIVE_SUPABASE_URL'));
+assert.ok(cloudSyncSource.includes("productionDeltaClientGateOpen()"),
+  'the reusable Production gate must check the canonical deployment and project only');
+assert.ok(cloudSyncSource.includes("enableData.code==='rollout_not_enabled'"),
+  'the runtime must recognize the private global switch default-off response');
 
 console.log('Preview and production Supabase configuration guard tests passed.');
