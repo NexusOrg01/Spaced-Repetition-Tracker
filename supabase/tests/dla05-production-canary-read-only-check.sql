@@ -32,10 +32,10 @@ function_checks AS (
     AND (
       (p.proname = 'nexus_get_entity_sync_state' AND pg_get_function_identity_arguments(p.oid) = '')
       OR (p.proname = 'nexus_enable_entity_delta' AND pg_get_function_identity_arguments(p.oid) = 'p_expected_updated_at timestamp with time zone')
-      OR (p.proname = 'nexus_publish_entity_operation' AND pg_get_function_identity_arguments(p.oid) = 'p_operation_id text, p_expected_head_revision bigint, p_changes jsonb')
+      OR (p.proname = 'nexus_publish_entity_operation' AND pg_get_function_identity_arguments(p.oid) = 'p_operation_id text, p_expected_revision bigint, p_changes jsonb')
       OR (p.proname = 'nexus_read_entity_operations' AND pg_get_function_identity_arguments(p.oid) = 'p_after_revision bigint, p_limit_groups integer, p_max_bytes integer')
-      OR (p.proname = 'nexus_publish_entity_snapshot' AND pg_get_function_identity_arguments(p.oid) = 'p_expected_head_revision bigint, p_expected_snapshot_updated_at timestamp with time zone, p_snapshot jsonb')
-      OR (p.proname = 'nexus_compact_entity_operations' AND pg_get_function_identity_arguments(p.oid) = 'p_max_rows integer')
+      OR (p.proname = 'nexus_publish_entity_snapshot' AND pg_get_function_identity_arguments(p.oid) = 'p_expected_head_revision bigint, p_expected_updated_at timestamp with time zone, p_payload jsonb')
+      OR (p.proname = 'nexus_compact_entity_operations' AND pg_get_function_identity_arguments(p.oid) = 'p_limit integer')
       OR (p.proname = 'nexus_disable_entity_delta' AND pg_get_function_identity_arguments(p.oid) =
           'p_request_id uuid, p_expected_head_revision bigint, p_expected_snapshot_updated_at timestamp with time zone, p_expected_snapshot_revision bigint, p_expected_compacted_through_revision bigint')
     )
