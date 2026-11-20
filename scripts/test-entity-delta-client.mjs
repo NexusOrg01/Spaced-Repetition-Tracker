@@ -1208,7 +1208,7 @@ function makeStagingRuntimeHarness({
   const calls={createClient:0,synchronize:null,synchronizeCount:0,recovery:null,cursorOwner:null,
     outboxOwner:null,outboxAfterSequence:null,
     localBaseOwner:null,pendingOwner:null,chunkWrite:null,localCommit:null,
-    stateRead:null,projectionOwners:[],projectionRebuild:0,projectionDiagnostics:[],
+    stateRead:null,rpc:null,rpcCount:0,projectionOwners:[],projectionRebuild:0,projectionDiagnostics:[],
     renderCount:0,hubRenderCount:0,featureUpdate:null,fsrsSettings:null};
   let currentRemoteState=remoteState;
   const stateQuery={
@@ -1227,6 +1227,7 @@ function makeStagingRuntimeHarness({
     auth:{async getSession(){return {data:{session:{user:{id:sessionUser}}},error:null};}},
     from(table){calls.stateRead={table,columns:null,filterColumn:null,filterValue:null};return stateQuery;},
     async rpc(name,args){
+      calls.rpcCount++;
       calls.rpc={name,args};
       if(productionEnableError)return {data:null,error:productionEnableError};
       if(productionEnableResult&&productionEnableResult.ok===true&&productionEnableResult.mode==='delta'){
@@ -1450,8 +1451,9 @@ assert.equal(productionUnlistedResult.skipped,true,
   'an owner absent from the server-side allowlist must stay in snapshot mode');
 assert.equal(productionUnlistedResult.reason,'pilot_not_enabled');
 assert.equal(productionUnlistedOwner.calls.createClient,0);
+assert.equal(productionUnlistedOwner.calls.rpcCount,1);
 await productionUnlistedOwner.run('account-A',stagingSignal);
-assert.equal(productionUnlistedOwner.calls.rpc.name,'nexus_enable_entity_delta',
+assert.equal(productionUnlistedOwner.calls.rpcCount,1,
   'the ineligible owner must use the production enable RPC only once per page session');
 assert.equal(productionUnlistedOwner.calls.createClient,0);
 
