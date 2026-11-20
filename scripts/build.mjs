@@ -142,29 +142,19 @@ export function resolveHostedQaEntityDeltaEnabled(env, config) {
 }
 
 export function resolveProductionEntityDeltaEnabled(env) {
-  const rawOwnerIds = String(env.NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_IDS || '').trim();
-  const ownerIds = rawOwnerIds ? rawOwnerIds.split(',').map(value => value.trim().toLowerCase()) : [];
-  const validOwnerIds = ownerIds.length >= 1 && ownerIds.length <= 25 &&
-    ownerIds.every(value => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value)) &&
-    new Set(ownerIds).size === ownerIds.length;
+  // The build flag is a global rollout opt-in, not an owner allowlist. The
+  // private Supabase rollout-control row and per-owner opt-out are authoritative.
   const enabled = env.VERCEL === '1' &&
     env.VERCEL_PROJECT_ID === PRODUCTION_VERCEL_PROJECT_ID &&
     env.VERCEL_ENV === 'production' &&
     env.VERCEL_GIT_COMMIT_REF === 'main' &&
-    env.NEXUS_ENTITY_DELTA_PRODUCTION_ENABLED === 'true' &&
-    validOwnerIds;
-  return { enabled, ownerIds: enabled ? ownerIds : [] };
+    env.NEXUS_ENTITY_DELTA_PRODUCTION_ENABLED === 'true';
+  return { enabled };
 }
 
 export function renderConfigScript(config, enableStagingEntityDelta = false, hostedQa = null, productionDelta = null) {
   const enabled = enableStagingEntityDelta === true && !!config && isLocalPhase34Url(config.url);
-  const productionDeltaEnabled = !!(productionDelta && productionDelta.enabled === true &&
-    Array.isArray(productionDelta.ownerIds) && productionDelta.ownerIds.length >= 1 &&
-    productionDelta.ownerIds.length <= 25 &&
-    productionDelta.ownerIds.every(ownerId => typeof ownerId === 'string' &&
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(ownerId)) &&
-    new Set(productionDelta.ownerIds).size === productionDelta.ownerIds.length);
-  const productionOwnerIds = productionDeltaEnabled ? productionDelta.ownerIds : [];
+  const productionDeltaEnabled = !!(productionDelta && productionDelta.enabled === true);
   let hostedQaEnabled = false, hostedQaOrigin = '', hostedQaBranchOrigin = '', hostedQaRef = '';
   if (hostedQa && hostedQa.enabled === true && config && config.url === HOSTED_QA_PROJECT_URL &&
       hostedQa.ref === HOSTED_QA_BRANCH) {
@@ -191,7 +181,6 @@ export function renderConfigScript(config, enableStagingEntityDelta = false, hos
     ";window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=" + String(hostedQaEnabled) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION=" + String(productionDeltaEnabled) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN=" + JSON.stringify(productionDeltaEnabled ? "https://" + LIVE_APP_HOST : "") +
-    ";window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_IDS=" + JSON.stringify(productionOwnerIds) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN=" + JSON.stringify(hostedQaOrigin) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_QA_BRANCH_ORIGIN=" + JSON.stringify(hostedQaBranchOrigin) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_QA_REF=" + JSON.stringify(hostedQaRef) +
