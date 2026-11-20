@@ -7,6 +7,10 @@ const SYNC_DIAG_ENABLED=(()=>{try{const requested=new URLSearchParams(location.s
 const SYNC_DIAG_KEY='nexus.syncdiag.session.v1';
 const SYNC_REQUEST_TIMEOUT_MS=180000,REMOTE_DELTA_POLL_INTERVAL_MS=15000;
 let hostedDeltaPollingEnabled=false,remoteDeltaPollTimer=null;
+// A per-page negative cache avoids probing the server allowlist on every
+// snapshot save for owners who are not part of the production canary. A reload
+// rechecks eligibility after an operator-approved allowlist change.
+const productionDeltaIneligibleOwners=new Set();
 function createSyncAbortScope(){
  const controller=typeof AbortController==='function'?new AbortController():null;
  let expired=false;
@@ -1054,13 +1058,59 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    String(stateRead.error.message||stateRead.error.code||'remote state read failed')
   );
   await assertActiveUser(ownerId);
-  if(!stateRead.data||stateRead.data.mode==='snapshot'){
+  let remoteMode=stateRead.data&&stateRead.data.mode||'';
+  if(productionGate&&!(action&&action.downgrade===true)&&remoteMode!=='delta'&&
+     !productionDeltaIneligibleOwners.has(ownerId)){
+   // Only owners with an existing cloud snapshot are candidates for the
+   // authenticated enable RPC. A first-time workspace still follows the
+   // normal snapshot writer; it is never blocked waiting for a Delta setup.
+   await assertActiveUser(ownerId);
+   let snapshotQuery=client.from('nexus_user_data').select('updated_at')
+    .eq('user_id',ownerId);
+   snapshotQuery=attachAbortSignal(snapshotQuery,signal);
+   const snapshotRead=await snapshotQuery.maybeSingle();
+   if(snapshotRead.error)throw new Error(
+    'Could not verify the production canary snapshot timestamp. Snapshot sync was not started: '+
+    String(snapshotRead.error.message||snapshotRead.error.code||'snapshot timestamp read failed'));
+   await assertActiveUser(ownerId);
+   const snapshotUpdatedAt=snapshotRead.data&&snapshotRead.data.updated_at;
+   if(typeof snapshotUpdatedAt==='string'&&snapshotUpdatedAt.length>0){
+    const enableResponse=await client.rpc('nexus_enable_entity_delta',{
+     p_expected_updated_at:snapshotUpdatedAt
+    });
+    if(enableResponse.error)throw new Error(
+     'The production Delta enablement check failed safely. Snapshot sync was not started: '+
+     String(enableResponse.error.message||enableResponse.error.code||'enable RPC failed'));
+    const enableData=enableResponse.data;
+    if(enableData&&enableData.ok===true&&enableData.mode==='delta'){
+     await assertActiveUser(ownerId);
+     let verifyQuery=client.from('nexus_workspace_sync_state')
+      .select('mode').eq('user_id',ownerId);
+     verifyQuery=attachAbortSignal(verifyQuery,signal);
+     const verifiedState=await verifyQuery.maybeSingle();
+     if(verifiedState.error||!verifiedState.data||verifiedState.data.mode!=='delta'){
+      throw new Error('The production Delta enablement response could not be verified against the owner sync state.');
+     }
+     await assertActiveUser(ownerId);
+     remoteMode='delta';
+    }else if(enableData&&enableData.code==='pilot_not_enabled'){
+     productionDeltaIneligibleOwners.add(ownerId);
+     remoteMode=enableData.mode==='snapshot'?'snapshot':remoteMode;
+    }else if(enableData&&enableData.code==='snapshot_conflict'){
+     return {ok:false,retryable:true,reason:'production_delta_enable_snapshot_conflict'};
+    }else{
+     return {ok:false,retryable:true,reason:'production_delta_enable_rejected'};
+    }
+   }
+  }
+  if(!stateRead.data||remoteMode==='snapshot'||remoteMode===''){
    if(!(action&&action.downgrade===true))return {skipped:true,mode:'snapshot',
-    reason:stateRead.data?'server_snapshot_mode':'server_sync_state_missing'};
+    reason:productionDeltaIneligibleOwners.has(ownerId)?'pilot_not_enabled':
+     (stateRead.data?'server_snapshot_mode':'server_sync_state_missing')};
    if(!stateRead.data)return {skipped:true,mode:'snapshot',reason:'server_sync_state_missing'};
   }
-  if(stateRead.data.mode!=='delta'&&
-     !(action&&action.downgrade===true&&stateRead.data.mode==='snapshot')){
+  if(remoteMode!=='delta'&&
+     !(action&&action.downgrade===true&&remoteMode==='snapshot')){
    throw new Error('The remote workspace has an unsupported sync mode. The snapshot writer was not started.');
   }
  }
