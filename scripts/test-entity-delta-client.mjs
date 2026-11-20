@@ -1333,6 +1333,9 @@ function makeStagingRuntimeHarness({
   }
   const context={
     window,client,session:{user:{id:sessionUser}},
+    LIVE_SUPABASE_URL:'https://txugbdavblpettcnhcxl.supabase.co',
+    LIVE_APP_HOST:'spaced-repetition-tracker-delta.vercel.app',
+    productionDeltaIneligibleOwners:new Set(),
     assertActiveUser:async userId=>{
       const {data,error}=await client.auth.getSession();
       if(error||!data||!data.session||!data.session.user||
