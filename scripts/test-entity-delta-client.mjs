@@ -1921,7 +1921,7 @@ assert.equal(snapshotFallbackResult.reason,'legacy_snapshot_server',
 
 const uploadStart=cloudSyncSource.indexOf('async function upload(){');
 const uploadDeltaCall=cloudSyncSource.indexOf(
-  'const deltaResult=await runStagingEntityDeltaSync(uploadUserId,uploadScope.signal);',uploadStart
+  'deltaResult=await runStagingEntityDeltaSync(uploadUserId,uploadScope.signal);',uploadStart
 );
 const legacyQueueStart=cloudSyncSource.indexOf('let pending=null;',uploadDeltaCall);
 assert.ok(uploadStart>=0&&uploadDeltaCall>uploadStart&&legacyQueueStart>uploadDeltaCall,
