@@ -8,13 +8,9 @@
 
 ## 1. Determination
 
-The production migration and controlled Entity Delta rollout are present in the live environment, and the current read-only database checks pass the key migration, owner-isolation, mode-marker, revision-order, row/receipt, RLS and RPC-grant assertions.
+The production migration and controlled Entity Delta rollout are present in the live environment. The DLA-06 Account B downgrade/re-enable lifecycle has now been completed through the protected authenticated client path, and the subsequent read-only Production checks confirm both approved owners remain in Delta with consistent revisions and no outstanding operation/receipt rows.
 
-P35-04 is **not closed**. The OPS-G4 authenticated Production snapshot smoke test and temporary-account cleanup are now complete; see the execution addendum in Section 10. One DLA-06 acceptance item remains unproven:
-
-1. Account B's normal authenticated `nexus_enable_entity_delta` client handoff has not been evidenced. The live database shows the intended two-owner Delta state, but that state does not prove how Account B's mode was changed. The checked-in runbook requires the normal authenticated handoff and says not to infer it from database state.
-
-The obsolete singular Vercel Production owner-ID variable also remains present. Its removal is a separate Production environment change and remains pending explicit owner approval after the DLA-06 post-check.
+P35-04 is **not closed**. DLA-06 is now **COMPLETED**; the remaining item is separately approved housekeeping: the obsolete singular Vercel Production owner-ID variable remains present. Its removal is a Production environment change and has not been authorized as part of the DLA-06 test. DR-01 remains **WAIVED**, not completed.
 
 ## 2. Release and CI evidence
 
@@ -83,21 +79,19 @@ This establishes current row/receipt consistency, not a full production two-devi
 
 The owner-derived RPC boundary and private allowlist remain in place. The owner-specific downgrade RPC and receipt table are installed; no live downgrade was performed during this audit.
 
-## 4. DLA-06 evidence gap and production configuration
+## 4. DLA-06 acceptance and production configuration
 
-The checked-in `docs/DLA-06-production-rollout.md` still says **In progress**. Its close criteria require:
+The checked-in `docs/DLA-06-production-rollout.md` has been updated to **COMPLETED** by the execution addendum. The previously pending Account B owner-session evidence is now present:
 
-- both approved owners in Delta with exactly one enabled allowlist entry each;
-- the read-only two-owner post-check;
-- Account B's normal authenticated client handoff using its exact snapshot timestamp;
-- snapshot fallback and owner-specific downgrade remaining available;
-- removal of the legacy singular Vercel owner-ID variable only after the new plural-gate deployment and post-check.
+- Account B's browser preflight on the canonical Production origin confirmed the protected helper, Production gate, approved owner membership, authenticated ready session and online state.
+- The protected `NexusCloudSync.downgradeEntityDelta()` helper returned `ok: true`, `downgraded: true`, `mode: snapshot`, head/snapshot revision 1, and complete compaction through revision 1 with no pending work.
+- The Account B allowlist row was re-enabled under the owner's explicit approval for this exact DLA-06 test. No sync-state mode or Delta marker was directly modified.
+- The owner refreshed the authenticated Account B session and reported that the app returned to **Synced**. The deployed client code path reads the exact current snapshot timestamp, calls authenticated `nexus_enable_entity_delta`, and verifies the resulting Delta mode.
+- A subsequent SELECT-only Production query confirmed Account B and Account A both in Delta, with valid head/snapshot/compaction revisions, enabled allowlist entries, and zero operation and receipt rows for both.
 
-The live DB establishes the two-owner state and the read-only invariants above. The plural Production owner-ID variable and Production opt-in are present. The legacy singular Production variable is also still present; this is obsolete configuration, not evidence that the active plural gate failed. It should be removed only through an explicitly approved Production environment change after the DLA-06 post-check is formally accepted.
+The plural Production owner-ID variable and Production opt-in remain the active gate. The obsolete singular Production variable is still present but is not read by the active plural build gate. Its removal is a separate Production environment mutation and is deferred until separately approved; it is not treated as a failed DLA-06 protocol acceptance test.
 
-The 24-hour Supabase log review found no error-like entries in Edge, Function Edge or PostgREST logs, and no error/fatal/panic-like Postgres events. Postgres had six query-timeout entries associated with count-estimate/EXPLAIN activity. Auth logs contained a context-canceled `/authorize` request and stale/invalid-session warnings. These are not established Delta/data-integrity failures, but the log review is not a zero-warning claim.
-
-No runtime `nexus_enable_entity_delta` invocation could be confirmed from the available log records. The entries matching that function name were function DDL/revoke/comment statements; PostgREST logs did not show an RPC call. This is an evidence gap, not proof that the handoff failed.
+The earlier 24-hour log review found no error-like entries in Edge, Function Edge or PostgREST logs, and no error/fatal/panic-like Postgres events. Postgres had six query-timeout entries associated with count-estimate/EXPLAIN activity. Auth logs contained a context-canceled `/authorize` request and stale/invalid-session warnings. These are not established Delta/data-integrity failures, but the log review is not a zero-warning claim. The normal client handoff is now evidenced by the authenticated owner-session sequence and the post-sync state transition; no separate server log line is claimed.
 
 ## 5. Phase 3.5 capacity, diagnostics and retention limits
 
@@ -124,7 +118,7 @@ Repeated physical-device testing after DLA-04, fixed 48–72-hour observation wi
 | OPS-G3 | COMPLETED per uploaded OPS-G3 completion record; live migration history confirms the 11 authorized migrations are present |
 | OPS-G4 | **COMPLETED** — 15/15 database assertions and Postgres error-log check passed; a temporary authenticated Production snapshot workspace successfully published/read data, retained an offline edit through reconnect and refresh, then had its synthetic data and Auth account removed; read-only post-delete checks passed |
 | DLA-05 | COMPLETED — PR #142 merged; the earlier stale `Current disposition` paragraph in `docs/DLA-05-production-canary.md` is explicitly superseded by its 20 November status-reconciliation addendum |
-| DLA-06 | **PARTIAL / IN PROGRESS** — two-owner DB postconditions still pass; Account B's normal authenticated client handoff remains unproven, and the obsolete singular Vercel Production owner-ID variable remains pending separately approved cleanup |
+| DLA-06 | **COMPLETED** — Account B's protected authenticated downgrade, compaction, eligibility revocation, authorized eligibility restoration, normal authenticated client re-enable and independent two-owner Production post-check all passed; legacy singular Vercel variable cleanup is deferred pending separate approval |
 | P35-02 | COMPLETED — user-confirmed in the indexed task tracker |
 | P35-03 | COMPLETED — user-confirmed in the indexed task tracker |
 | DR-01 | WAIVED — not performed; not a technical pass |
@@ -134,12 +128,12 @@ Older roadmap status tables and repository notes that say OPS-G3 is not started,
 
 ## 8. Remaining work to close P35-04
 
-1. Record and verify Account B's normal authenticated client handoff through `nexus_enable_entity_delta`; do not infer it from mode rows or use direct SQL to set the mode.
-2. After the DLA-06 post-check is formally accepted, obtain explicit owner approval before removing the obsolete singular Vercel Production owner-ID variable. Do not change Production settings without that approval.
-3. Reconcile the remaining DLA-06 status text after the Account-B owner-session evidence and approved environment cleanup are complete.
+1. Obtain separate explicit owner approval before removing the obsolete singular Vercel Production owner-ID variable. Do not change Production settings without that approval.
+2. After that separately approved cleanup, verify the Production environment variable inventory without exposing values and run only the relevant build/configuration guard.
+3. Complete the P35-04 final disposition and retirement note while preserving the DR-01 waiver.
 4. Re-run only the exact affected automated checks if code/config changes; no repeated physical-device matrix or fixed observation period.
 
-OPS-G4 is closed by the authenticated Production snapshot-path smoke test and cleanup recorded in Section 10. When the remaining DLA-06 item and its separately approved environment cleanup are closed, publish the final P35-04 disposition and retire the scaling workstream. Until then, retain **PARTIAL** and keep the DR-01 waiver and known limitations visible.
+OPS-G4 is closed by the authenticated Production snapshot-path smoke test and cleanup recorded in Section 10. DLA-06 is closed by the Account B authenticated downgrade/re-enable evidence in Section 11. P35-04 remains **PARTIAL** until the obsolete singular Vercel variable is either removed with separate explicit approval or explicitly accepted as retained legacy configuration in the final retirement disposition. Preserve the DR-01 waiver and all capacity/DR limitations.
 
 ## 9. Audit actions and safety
 
@@ -191,3 +185,48 @@ The temporary account and its workspace records were removed. The original two-o
 - **OPS-G4: COMPLETED.**
 - **DLA-06: PARTIAL / IN PROGRESS.** Account B's normal authenticated `nexus_enable_entity_delta` handoff is still unproven. The obsolete singular Vercel Production owner-ID variable remains; its removal requires separate explicit approval.
 - **P35-04: PARTIAL.** Do not issue final sign-off until the DLA-06 handoff evidence and approved environment cleanup are resolved. DR-01 remains waived, not completed.
+
+
+## 11. Execution addendum — DLA-06 Account B authenticated downgrade and re-enable (20 November 2026)
+
+**Result: DLA-06 — COMPLETED.** This addendum supersedes the earlier Section 1, Section 4, Section 7 and Section 8 statements that described Account B's authenticated handoff as unproven.
+
+### Protected downgrade evidence
+
+The owner confirmed the Android Production browser session was Account B. The browser preflight returned the canonical Production origin, `helperAvailable: true`, `productionGate: true`, matching `productionOrigin`, `accountBApproved: true`, `signedIn: true`, `ready: true`, and `online: true`.
+
+The owner invoked the protected `NexusCloudSync.downgradeEntityDelta()` helper. Its returned result confirmed `ok: true`, `downgraded: true`, `alreadyDowngraded: false`, `mode: snapshot`, `headRevision: 1`, and `snapshotRevision: 1`. Compaction returned `ok: true`, `complete: true`, `pending: false`, `compactedThroughRevision: 1`, `rounds: 1`, `deletedOperations: 0`, and `deletedReceipts: 0`.
+
+The protected helper performed the snapshot publish/verification, compaction and owner-scoped downgrade. No direct SQL update to `nexus_workspace_sync_state.mode`, no manual Delta marker edit, and no manual operation/receipt deletion occurred.
+
+### Authorized eligibility restoration and client re-enable
+
+The Account B allowlist row was read as `enabled=false` after downgrade. Under the owner's explicit approval for this exact DLA-06 Production downgrade/re-enable test, the existing Account B allowlist row alone was changed to `enabled=true` with reason `DLA-06 authenticated re-enable verification, Account B, 2026-11-20`. No other owner's allowlist row was changed.
+
+The owner refreshed the authenticated Account B Production session and reported that Nexus returned to **Synced**. The Production client implementation was inspected and confirms the normal production-gated snapshot-to-Delta handoff reads the current `nexus_user_data.updated_at`, calls authenticated `nexus_enable_entity_delta` with that exact timestamp, and then performs a fresh sync-state read to verify `mode='delta'`. No direct sync-state mode/marker SQL was used.
+
+### Independent read-only Production verification
+
+After the owner-reported sync, a SELECT-only query against project `txugbdavblpettcnhcxl` returned:
+
+| Assertion | Account B | Account A |
+|---|---:|---:|
+| Sync mode | `delta` | `delta` |
+| Head revision | 1 | 2 |
+| Snapshot revision | 1 | 2 |
+| Compacted through revision | 1 | 2 |
+| Delta allowlist enabled | true | true |
+| Operation rows | 0 | 0 |
+| Receipt rows | 0 | 0 |
+
+Account B's snapshot `updated_at` advanced to `2026-11-20 13:53:03.225425+00` after the allowlist restoration and authenticated refresh. Account A remained in Delta with its revision state and allowlist unchanged. Both owners had zero outstanding operation and receipt rows at the post-check.
+
+### Updated disposition
+
+- **DLA-06: COMPLETED.** The protected downgrade, compaction, eligibility revocation, authorized eligibility restoration, normal authenticated client re-enable, and independent two-owner Production post-check passed.
+- **Account isolation: PASS.** Account A remained unchanged; no third owner was added or affected.
+- **Legacy singular Vercel Production owner-ID variable:** remains present as deferred configuration cleanup. The active build gate uses the plural variable. Its removal is not included in this test and requires separate explicit owner approval.
+- **P35-04: PARTIAL.** Final retirement disposition remains separate; do not mark P35-04 complete solely because DLA-06 is complete.
+- **DR-01: WAIVED**, not completed.
+
+No merge, deployment, promotion or Vercel environment change was performed by this documentation update.
