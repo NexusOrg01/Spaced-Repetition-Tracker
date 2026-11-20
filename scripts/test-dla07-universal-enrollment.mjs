@@ -67,7 +67,7 @@ assert.equal(build.includes('NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_IDS'), false,
   'the Production build gate must not consume an owner UUID list');
 assert.equal(build.includes('NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_IDS'), false,
   'the generated Production config must not contain an owner UUID list');
-assert.match(buildTests, /legacy owner list must not limit universal rollout eligibility/);
+assert.match(buildTests, /retired build-time owner list must not limit universal rollout eligibility/);
 assert.match(buildTests, /the build must not embed any Production owner UUID list/);
 
 assert.equal(cloud.includes('NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_IDS'), false);
