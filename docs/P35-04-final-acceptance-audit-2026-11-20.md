@@ -1,7 +1,7 @@
 # P35-04 — Final acceptance audit and project retirement
 
 **Audit date:** 20 November 2026  
-**Status:** **PARTIAL — final sign-off withheld**  
+**Status:** **COMPLETED — approved two-owner Web/PWA clean-start scope**  
 **Repository:** `NexusOrg01/Spaced-Repetition-Tracker`  
 **Production Supabase project:** `txugbdavblpettcnhcxl`  
 **Canonical production origin:** https://spaced-repetition-tracker-delta.vercel.app/
@@ -10,7 +10,7 @@
 
 The production migration and controlled Entity Delta rollout are present in the live environment. The DLA-06 Account B downgrade/re-enable lifecycle has now been completed through the protected authenticated client path, and the subsequent read-only Production checks confirm both approved owners remain in Delta with consistent revisions and no outstanding operation/receipt rows.
 
-P35-04 is **not closed**. DLA-06 is now **COMPLETED**; the remaining item is separately approved housekeeping: the obsolete singular Vercel Production owner-ID variable remains present. Its removal is a Production environment change and has not been authorized as part of the DLA-06 test. DR-01 remains **WAIVED**, not completed.
+P35-04 is **COMPLETED** for the approved two-owner Web/PWA clean-start rollout. DLA-06 is **COMPLETED**, including Account B's protected downgrade/re-enable lifecycle and the independent two-owner post-check. The owner has explicitly accepted retaining the obsolete singular Vercel Production owner-ID variable as inert legacy configuration; its removal is not required for rollout completion and no Production environment change is authorized or performed here. DR-01 remains **WAIVED**, not completed.
 
 ## 2. Release and CI evidence
 
@@ -122,18 +122,21 @@ Repeated physical-device testing after DLA-04, fixed 48–72-hour observation wi
 | P35-02 | COMPLETED — user-confirmed in the indexed task tracker |
 | P35-03 | COMPLETED — user-confirmed in the indexed task tracker |
 | DR-01 | WAIVED — not performed; not a technical pass |
-| P35-04 | **PARTIAL — do not close yet** |
+| P35-04 | **COMPLETED** — final acceptance and retirement disposition recorded in Section 12; DR-01 remains explicitly waived |
 
 Older roadmap status tables and repository notes that say OPS-G3 is not started, DLA-05 is not started, production has no Delta activation, or PR #136 is still open/draft are superseded by the later Nov 20 source attachments and the live merged PR/deployment/database state. The current DLA-06 runbook remains the authoritative outstanding acceptance record for the Account-B handoff.
 
-## 8. Remaining work to close P35-04
+## 8. Final disposition
 
-1. Obtain separate explicit owner approval before removing the obsolete singular Vercel Production owner-ID variable. Do not change Production settings without that approval.
-2. After that separately approved cleanup, verify the Production environment variable inventory without exposing values and run only the relevant build/configuration guard.
-3. Complete the P35-04 final disposition and retirement note while preserving the DR-01 waiver.
-4. Re-run only the exact affected automated checks if code/config changes; no repeated physical-device matrix or fixed observation period.
+There are no outstanding implementation or rollout tasks within the approved two-owner Web/PWA clean-start scope:
 
-OPS-G4 is closed by the authenticated Production snapshot-path smoke test and cleanup recorded in Section 10. DLA-06 is closed by the Account B authenticated downgrade/re-enable evidence in Section 11. P35-04 remains **PARTIAL** until the obsolete singular Vercel variable is either removed with separate explicit approval or explicitly accepted as retained legacy configuration in the final retirement disposition. Preserve the DR-01 waiver and all capacity/DR limitations.
+- DLA-04, OPS-G1, OPS-G2, OPS-G3, OPS-G4, DLA-05 and DLA-06 are **COMPLETED** on the evidence recorded in this audit and the merged implementation PRs.
+- The owner has accepted retaining the obsolete singular Vercel Production owner-ID variable. The active production build/runtime gate consumes the plural `NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_IDS` variable and the server-side allowlist; the singular variable is not read by the current gate. Retaining it requires no environment mutation and is not a blocker.
+- The approved rollout population is the two current production owners/workspaces. Future signups remain default-deny and must be explicitly allowlisted before using Delta; this audit does not claim automatic enrollment of future accounts.
+- DR-01 remains **WAIVED**. Disaster recovery is not tested or proven. This accepted limitation must remain visible in all final status summaries.
+- P35-04 is **COMPLETED** within this defined scope. Freeze scaling feature development; reopen only for a confirmed security issue, data-integrity defect, or critical reliability regression.
+
+No removal of the legacy variable, Vercel environment edit, Production deployment, migration, or additional account operation is part of this closure.
 
 ## 9. Audit actions and safety
 
@@ -230,3 +233,28 @@ Account B's snapshot `updated_at` advanced to `2026-11-20 13:53:03.225425+00` af
 - **DR-01: WAIVED**, not completed.
 
 No merge, deployment, promotion or Vercel environment change was performed by this documentation update.
+
+
+## 12. Final P35-04 closure addendum — 20 November 2026
+
+**P35-04: COMPLETED — approved current two-owner Web/PWA clean-start rollout.**
+
+### Accepted legacy configuration decision
+
+The owner has decided that the obsolete singular `NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_ID` Vercel Production variable may remain configured. No removal is required. This is an accepted configuration-retirement disposition, not an unfinished rollout task.
+
+The current production source at DLA-06 merge commit `6254813d94d2788a1af9f29352381ef3b794d895` uses `NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_IDS` for the bounded explicit owner set. The runtime checks exact membership in that plural owner list, while the server-side allowlist remains authoritative. The current build configuration reads the plural variable; the retained singular variable is not consumed by this active gate. No Vercel environment change was made for this closure.
+
+### Scope and limits of the completed rollout
+
+- The completed production rollout covers the two currently approved end-user owners/workspaces. Both were verified in Delta; Account B's authenticated downgrade, compaction, eligibility restoration, normal client re-enable and subsequent read-only post-check are recorded in Section 11.
+- Future signups remain default-deny. They are not automatically enrolled in Delta and require a separate explicit allowlist decision.
+- Automated end-to-end large-workspace evidence reaches 26.9 MB / 103 chunks. The configured 225 MiB transport ceiling is not a demonstrated end-to-end supported workspace size. Current small Production payloads do not themselves demonstrate chunked transfer at scale.
+- Production database and authenticated UI checks establish the recorded invariants and workflows; they are not a 26.9 MB Production stress test or a universal performance benchmark.
+- Snapshot fallback and the owner-scoped DLA-03 downgrade remain the operational fallback. DR-01 is **WAIVED**, not completed: no Production backup, isolated restore or disaster-recovery proof exists.
+
+### Retirement and change boundary
+
+No further scaling feature work is planned. Freeze Nexus scaling development except for a confirmed security issue, data-integrity defect, or critical reliability regression. Any future removal of the retained singular Vercel variable, expansion to additional production owners, or Production configuration/runtime change requires its own explicit approval.
+
+This addendum is documentation-only. It performs no merge, deployment, promotion, Production database write, Vercel environment mutation, or account operation.
