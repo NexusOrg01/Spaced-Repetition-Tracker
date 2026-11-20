@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = resolve(root, 'dist');
 const LIVE_HOST = 'txugbdavblpettcnhcxl.supabase.co';
+const LIVE_APP_HOST = 'spaced-repetition-tracker-delta.vercel.app';
+const PRODUCTION_VERCEL_PROJECT_ID = 'prj_UgPzqFpvqBaKkKXi2Vm2COxqUsDi';
 const HOSTED_QA_BRANCH = 'fix/dla04-entity-projection-guard';
 const HOSTED_QA_PROJECT_URL = 'https://xuwfzibxhxzxxupprxsq.supabase.co';
 const HOSTED_QA_VERCEL_PROJECT_ID = 'prj_UgPzqFpvqBaKkKXi2Vm2COxqUsDi';
@@ -139,7 +141,15 @@ export function resolveHostedQaEntityDeltaEnabled(env, config) {
     branchOrigin:branchOrigin&&branchOrigin!==deploymentOrigin?branchOrigin:'',ref:HOSTED_QA_BRANCH};
 }
 
-export function renderConfigScript(config, enableStagingEntityDelta = false, hostedQa = null) {
+export function resolveProductionEntityDeltaEnabled(env) {
+  return env.VERCEL === '1' &&
+    env.VERCEL_PROJECT_ID === PRODUCTION_VERCEL_PROJECT_ID &&
+    env.VERCEL_ENV === 'production' &&
+    env.VERCEL_GIT_COMMIT_REF === 'main' &&
+    env.NEXUS_ENTITY_DELTA_PRODUCTION_ENABLED === 'true';
+}
+
+export function renderConfigScript(config, enableStagingEntityDelta = false, hostedQa = null, productionDeltaEnabled = false) {
   const enabled = enableStagingEntityDelta === true && !!config && isLocalPhase34Url(config.url);
   let hostedQaEnabled = false, hostedQaOrigin = '', hostedQaBranchOrigin = '', hostedQaRef = '';
   if (hostedQa && hostedQa.enabled === true && config && config.url === HOSTED_QA_PROJECT_URL &&
@@ -165,6 +175,7 @@ export function renderConfigScript(config, enableStagingEntityDelta = false, hos
   return "/* Generated at build time; do not edit or commit project credentials. */\n" +
     "(function(){'use strict';window.NEXUS_ENTITY_DELTA_SYNC_STAGING=" + String(enabled) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=" + String(hostedQaEnabled) +
+    ";window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION=" + String(productionDeltaEnabled === true) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN=" + JSON.stringify(hostedQaOrigin) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_QA_BRANCH_ORIGIN=" + JSON.stringify(hostedQaBranchOrigin) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_QA_REF=" + JSON.stringify(hostedQaRef) +
@@ -247,8 +258,9 @@ async function copySiteFiles() {
   const config = resolvePreviewConfig(process.env);
   const stagingEntityDeltaEnabled = resolveStagingEntityDeltaEnabled(process.env, config);
   const hostedQaEntityDelta = resolveHostedQaEntityDeltaEnabled(process.env, config);
+  const productionEntityDelta = resolveProductionEntityDeltaEnabled(process.env);
   await writeFile(join(output, 'nexus-build-config.js'),
-    renderConfigScript(config, stagingEntityDeltaEnabled, hostedQaEntityDelta), 'utf8');
+    renderConfigScript(config, stagingEntityDeltaEnabled, hostedQaEntityDelta, productionEntityDelta), 'utf8');
   assert.ok(await readdir(output).then(items => items.includes('index.html')), 'static build must include index.html');
   if (config) {
     if(isLocalPhase34Url(config.url)){
