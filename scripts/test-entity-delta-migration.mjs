@@ -233,9 +233,12 @@ for (const signature of [
   'ALTER FUNCTION public.nexus_publish_entity_snapshot(bigint,timestamptz,jsonb)',
   'ALTER FUNCTION public.nexus_compact_entity_operations(integer)'
 ]) {
-  assert.ok(productionActivation.includes(signature + " SET search_path = '';"),
+  const offset = productionActivation.indexOf(signature);
+  assert.ok(offset >= 0 && productionActivation.slice(offset, offset + 240).includes("SET search_path = '';"),
     'production activation must pin SECURITY DEFINER function search_path: ' + signature);
 }
+assert.ok(productionActivation.includes("SET search_path TO ''"),
+  'the owner-scoped downgrade SECURITY DEFINER function must have an empty search_path');
 assert.ok(productionActivation.includes('GRANT EXECUTE ON FUNCTION public.nexus_enable_entity_delta(timestamptz)'));
 assert.ok(productionActivation.includes('GRANT EXECUTE ON FUNCTION public.nexus_disable_entity_delta'));
 assert.ok(!productionActivation.includes('Apply only to an isolated approved QA DB'),
