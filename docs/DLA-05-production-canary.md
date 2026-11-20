@@ -24,18 +24,21 @@ After the gate is open for that one owner, the client reads that owner's sync mo
 
 ## Production activation package — separate from OPS-G3
 
-The following pilot migrations already exist under `supabase/pilot-migrations/`. They are deliberately outside the default `supabase/migrations/` directory and OPS-G3's exact 11-file schema-install allowlist:
+A production-specific, separately reviewed activation migration is now prepared at:
 
-1. `20261117083717_add_entity_delta_pilot_eligibility.sql`
-2. `20261117143610_add_entity_delta_snapshot_downgrade.sql`
-3. `20261117163241_harden_entity_delta_enable_search_path.sql`
-4. `20261117182817_harden_entity_delta_snapshot_noop_preconditions_20261117.sql`
-5. `20261118093245_harden_entity_delta_rpc_search_paths.sql`
-6. `20261118094046_revoke_delta_pilot_eligibility_on_downgrade.sql`
+`supabase/production-activation/20261120103000_dla05_production_entity_delta_canary_activation.sql`
 
-These are a separate production activation package, not OPS-G3 migrations. They create the default-deny owner allowlist and private downgrade receipts, install the exact owner-scoped enable/downgrade logic, harden SECURITY DEFINER search paths and idempotent preconditions, revoke broad/API-role access, grant only the reviewed authenticated RPC execution, and revoke pilot eligibility when a downgrade succeeds. The package must be rechecked against the final branch and the target production function signatures immediately before an approved production apply.
+It is a single explicit transaction ported from the ordered six DLA-02/DLA-03/DLA-04 pilot SQL source files. The file records the exact source blob SHAs and does not rely on the original DLA-03 file's QA-only deployment instruction. The package:
 
-Do not apply the package through the OPS-G3 workflow or append it to the 11-file allowlist. Do not manually run fragments of it. Apply it only as the separately reviewed DLA-05 activation package after explicit owner approval.
+- Creates the private owner allowlist with `enabled=false` by default and no pre-authorized rows.
+- Installs the server-side `auth.uid()` allowlist check and the authenticated-only Delta RPC grants.
+- Installs the owner-scoped downgrade and private idempotency receipts.
+- Applies the reviewed exact-snapshot no-op checks, empty SECURITY DEFINER search paths and allowlist revocation on successful downgrade.
+- Keeps API-role access to `nexus_private` and direct bookkeeping table writes revoked.
+
+This package is deliberately outside `supabase/migrations/` and OPS-G3's exact 11-file allowlist. The original source files under `supabase/pilot-migrations/` remain the isolated QA/test source; the production port does not move them into OPS-G3 or alter them.
+
+**Production apply has not been run.** Applying this package changes production schema and authenticated RPC grants, so it requires a separate explicit owner approval for this exact file and target `txugbdavblpettcnhcxl`. It must not be applied as part of OPS-G3, from CI, or from a preview deployment. After it is applied, the allowlist must still be empty until the one selected production owner is separately approved.
 
 ## Read-only baseline captured for this implementation
 
