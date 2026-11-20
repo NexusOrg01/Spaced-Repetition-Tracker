@@ -1196,7 +1196,7 @@ function makeStagingRuntimeHarness({
   gate=false,localOrigin=true,stagingUrl=stagingSupabaseUrl,recoveryIntent=null,
   syncResult={ok:true,publishedCount:1},recoveryResult={ok:true,recovered:true},
   missingChunkStorage=false,hostedQaGate=false,hostedQaOrigin='',hostedQaBranchOrigin='',
-  productionGate=false,productionOwnerId='account-A',browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/dla04-entity-projection-guard',
+  productionGate=false,browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/dla04-entity-projection-guard',
   remoteState={mode:'delta',protocol_version:1},remoteStateError=null,
   productionEnableResult={ok:true,mode:'delta'},productionEnableError=null,
   changeLocalOwnerOnEnable=false,
@@ -1294,7 +1294,6 @@ function makeStagingRuntimeHarness({
     NEXUS_ENTITY_DELTA_SYNC_QA_REF:hostedQaRef,
     NEXUS_ENTITY_DELTA_SYNC_PRODUCTION:productionGate,
     NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN:productionGate?'https://spaced-repetition-tracker-delta.vercel.app':'',
-    NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_IDS:productionGate?[productionOwnerId]:[],
     NexusOfflineSyncQueue:queue,
     NexusStorage:storage,
     NexusEntityDeltaSync:{
@@ -1336,6 +1335,11 @@ function makeStagingRuntimeHarness({
     LIVE_SUPABASE_URL:'https://txugbdavblpettcnhcxl.supabase.co',
     LIVE_APP_HOST:'spaced-repetition-tracker-delta.vercel.app',
     productionDeltaIneligibleOwners:new Set(),
+    productionDeltaClientGateOpen:()=>window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION===true&&
+      window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN==='https://spaced-repetition-tracker-delta.vercel.app'&&
+      config().url==='https://txugbdavblpettcnhcxl.supabase.co'&&
+      location.protocol==='https:'&&location.hostname==='spaced-repetition-tracker-delta.vercel.app'&&
+      location.origin==='https://spaced-repetition-tracker-delta.vercel.app',
     assertActiveUser:async userId=>{
       const {data,error}=await client.auth.getSession();
       if(error||!data||!data.session||!data.session.user||
@@ -1419,6 +1423,9 @@ assert.deepEqual(activeHostedQa.calls.shadowSnapshotAcknowledgement,{
   baseVersion:'verified-snapshot-stamp',serverVersion:'verified-snapshot-stamp'
 },'a clean Delta cursor and empty outbox must acknowledge the matching compatibility shadow');
 
+assert.equal(cloudSyncSource.includes('NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_IDS'),false,
+  'the production runtime must not embed or consult a selected-owner UUID list');
+
 const productionOrigin='https://spaced-repetition-tracker-delta.vercel.app';
 const productionSupabaseUrl='https://txugbdavblpettcnhcxl.supabase.co';
 const activeProduction=makeStagingRuntimeHarness({
@@ -1446,22 +1453,22 @@ assert.equal(productionOwnerEnable.calls.rpc.args.p_expected_updated_at,'product
 assert.equal(productionOwnerEnable.calls.stateRead.table,'nexus_workspace_sync_state',
   'the client must re-read and verify server mode after the authenticated enable RPC');
 
-const productionUnlistedOwner=makeStagingRuntimeHarness({
+const productionRolloutOff=makeStagingRuntimeHarness({
   gate:false,localOrigin:false,stagingUrl:productionSupabaseUrl,
   productionGate:true,browserOrigin:productionOrigin,
   remoteState:{mode:'snapshot',protocol_version:1},
-  productionEnableResult:{ok:false,code:'pilot_not_enabled',mode:'snapshot'}
+  productionEnableResult:{ok:false,code:'rollout_not_enabled',mode:'snapshot'}
 });
-const productionUnlistedResult=await productionUnlistedOwner.run('account-A',stagingSignal);
-assert.equal(productionUnlistedResult.skipped,true,
-  'an owner absent from the server-side allowlist must stay in snapshot mode');
-assert.equal(productionUnlistedResult.reason,'pilot_not_enabled');
-assert.equal(productionUnlistedOwner.calls.createClient,0);
-assert.equal(productionUnlistedOwner.calls.rpcCount,1);
-await productionUnlistedOwner.run('account-A',stagingSignal);
-assert.equal(productionUnlistedOwner.calls.rpcCount,1,
-  'the ineligible owner must use the production enable RPC only once per page session');
-assert.equal(productionUnlistedOwner.calls.createClient,0);
+const productionRolloutOffResult=await productionRolloutOff.run('account-A',stagingSignal);
+assert.equal(productionRolloutOffResult.skipped,true,
+  'a disabled private global rollout switch must keep an owner in snapshot mode');
+assert.equal(productionRolloutOffResult.reason,'pilot_not_enabled');
+assert.equal(productionRolloutOff.calls.createClient,0);
+assert.equal(productionRolloutOff.calls.rpcCount,1);
+await productionRolloutOff.run('account-A',stagingSignal);
+assert.equal(productionRolloutOff.calls.rpcCount,1,
+  'a server-denied owner must not repeat the enable RPC on every sync in the same page session');
+assert.equal(productionRolloutOff.calls.createClient,0);
 
 const productionEnableRejected=makeStagingRuntimeHarness({
   gate:false,localOrigin:false,stagingUrl:productionSupabaseUrl,
@@ -1488,16 +1495,33 @@ assert.equal(productionOwnerSwitchResult.ok,false,
 assert.equal(productionOwnerSwitchResult.reason,'production_delta_owner_changed_during_enable');
 assert.equal(productionOwnerSwitch.calls.createClient,0);
 
-const productionOtherOwner=makeStagingRuntimeHarness({
+const productionNewOwner=makeStagingRuntimeHarness({
   gate:false,localOrigin:false,stagingUrl:productionSupabaseUrl,
-  productionGate:true,productionOwnerId:'canary-owner',browserOrigin:productionOrigin,
-  remoteState:{mode:'snapshot',protocol_version:1}
+  productionGate:true,browserOrigin:productionOrigin,
+  sessionUser:'account-B',localOwner:'account-B',
+  remoteState:{mode:'snapshot',protocol_version:1},
+  productionEnableResult:{ok:true,mode:'delta'}
 });
-assert.equal((await productionOtherOwner.run('account-A',stagingSignal)).skipped,true,
-  'production Delta must remain closed for every owner except the single selected canary owner');
-assert.equal(productionOtherOwner.calls.createClient,0);
-assert.equal(productionOtherOwner.calls.rpcCount,0,
-  'non-canary owners must not make an enablement RPC at all');
+const productionNewOwnerResult=await productionNewOwner.run('account-B',stagingSignal);
+assert.equal(productionNewOwnerResult.ok,true,
+  'any authenticated owner with the matching local workspace may enroll when the private global switch is enabled');
+assert.equal(productionNewOwner.calls.rpc.name,'nexus_enable_entity_delta');
+assert.equal(productionNewOwner.calls.createClient,1,
+  'the client must not require a build-time owner UUID after server-side universal enrollment');
+
+const productionFirstSnapshot=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:productionSupabaseUrl,
+  productionGate:true,browserOrigin:productionOrigin,
+  sessionUser:'new-owner',localOwner:'new-owner',
+  remoteState:null,
+  productionEnableResult:{ok:true,mode:'delta'}
+});
+const productionFirstSnapshotResult=await productionFirstSnapshot.run('new-owner',stagingSignal);
+assert.equal(productionFirstSnapshotResult.ok,true,
+  'a newly created workspace with a verified compatibility snapshot must be enabled even when its sync-state row did not exist before the RPC');
+assert.equal(productionFirstSnapshot.calls.rpc.name,'nexus_enable_entity_delta');
+assert.equal(productionFirstSnapshot.calls.createClient,1,
+  'after the enable RPC creates the sync-state row, the runtime must not incorrectly remain in snapshot mode');
 
 const productionGateOff=makeStagingRuntimeHarness({
   gate:false,localOrigin:false,stagingUrl:productionSupabaseUrl,
