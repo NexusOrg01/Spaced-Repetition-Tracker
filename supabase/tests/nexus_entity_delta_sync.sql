@@ -46,12 +46,26 @@ BEGIN
     ), clock_timestamp());
 
   PERFORM set_config('request.jwt.claim.sub',v_uid::text,true);
-  INSERT INTO nexus_private.entity_delta_pilot_allowlist (user_id, enabled, reason)
-  VALUES (v_uid, true, 'Rollback-only entity-delta integration fixture');
+  UPDATE nexus_private.entity_delta_rollout_control
+     SET enabled=true,
+         reason='Rollback-only DLA-07 universal enrollment integration fixture',
+         updated_at=clock_timestamp()
+   WHERE rollout_key='global';
+  IF EXISTS (
+    SELECT 1 FROM nexus_private.entity_delta_pilot_allowlist WHERE user_id=v_uid
+  ) THEN
+    RAISE EXCEPTION 'The synthetic owner unexpectedly had a per-owner enrollment row before the RPC.';
+  END IF;
   SELECT updated_at INTO v_stamp FROM public.nexus_user_data WHERE user_id=v_uid;
   v_enable := public.nexus_enable_entity_delta(v_stamp);
   IF v_enable->>'ok' <> 'true' OR v_enable->>'mode' <> 'delta' THEN
-    RAISE EXCEPTION 'Delta enable failed: %',v_enable;
+    RAISE EXCEPTION 'Delta auto-enrollment from a missing per-owner row failed: %',v_enable;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM nexus_private.entity_delta_pilot_allowlist
+    WHERE user_id=v_uid AND enabled IS TRUE
+  ) THEN
+    RAISE EXCEPTION 'The successful universal enrollment RPC did not persist its owner row.';
   END IF;
 
   v_op1 := public.nexus_publish_entity_operation('phase34-op-1',0,
