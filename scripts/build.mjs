@@ -142,15 +142,23 @@ export function resolveHostedQaEntityDeltaEnabled(env, config) {
 }
 
 export function resolveProductionEntityDeltaEnabled(env) {
-  return env.VERCEL === '1' &&
+  const ownerId = String(env.NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_ID || '').trim().toLowerCase();
+  const validOwnerId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(ownerId);
+  const enabled = env.VERCEL === '1' &&
     env.VERCEL_PROJECT_ID === PRODUCTION_VERCEL_PROJECT_ID &&
     env.VERCEL_ENV === 'production' &&
     env.VERCEL_GIT_COMMIT_REF === 'main' &&
-    env.NEXUS_ENTITY_DELTA_PRODUCTION_ENABLED === 'true';
+    env.NEXUS_ENTITY_DELTA_PRODUCTION_ENABLED === 'true' &&
+    validOwnerId;
+  return { enabled, ownerId: enabled ? ownerId : '' };
 }
 
-export function renderConfigScript(config, enableStagingEntityDelta = false, hostedQa = null, productionDeltaEnabled = false) {
+export function renderConfigScript(config, enableStagingEntityDelta = false, hostedQa = null, productionDelta = null) {
   const enabled = enableStagingEntityDelta === true && !!config && isLocalPhase34Url(config.url);
+  const productionDeltaEnabled = !!(productionDelta && productionDelta.enabled === true &&
+    typeof productionDelta.ownerId === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(productionDelta.ownerId));
+  const productionOwnerId = productionDeltaEnabled ? productionDelta.ownerId : '';
   let hostedQaEnabled = false, hostedQaOrigin = '', hostedQaBranchOrigin = '', hostedQaRef = '';
   if (hostedQa && hostedQa.enabled === true && config && config.url === HOSTED_QA_PROJECT_URL &&
       hostedQa.ref === HOSTED_QA_BRANCH) {
@@ -175,8 +183,9 @@ export function renderConfigScript(config, enableStagingEntityDelta = false, hos
   return "/* Generated at build time; do not edit or commit project credentials. */\n" +
     "(function(){'use strict';window.NEXUS_ENTITY_DELTA_SYNC_STAGING=" + String(enabled) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=" + String(hostedQaEnabled) +
-    ";window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION=" + String(productionDeltaEnabled === true) +
-    ";window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN=" + JSON.stringify(productionDeltaEnabled === true ? "https://" + LIVE_APP_HOST : "") +
+    ";window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION=" + String(productionDeltaEnabled) +
+    ";window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN=" + JSON.stringify(productionDeltaEnabled ? "https://" + LIVE_APP_HOST : "") +
+    ";window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_ID=" + JSON.stringify(productionOwnerId) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN=" + JSON.stringify(hostedQaOrigin) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_QA_BRANCH_ORIGIN=" + JSON.stringify(hostedQaBranchOrigin) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_QA_REF=" + JSON.stringify(hostedQaRef) +
