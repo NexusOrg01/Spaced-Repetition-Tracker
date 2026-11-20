@@ -1330,16 +1330,20 @@ function makeStagingRuntimeHarness({
       }
     };
   }
+  const runtimeOrigin=browserOrigin||(localOrigin?
+    'http://127.0.0.1:54321':'https://deploy-preview-126--nexussrt.netlify.app');
+  const productionDeltaClientGateOpen=()=>window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION===true&&
+    window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN==='https://spaced-repetition-tracker-delta.vercel.app'&&
+    stagingUrl==='https://txugbdavblpettcnhcxl.supabase.co'&&
+    new URL(runtimeOrigin).protocol==='https:'&&
+    new URL(runtimeOrigin).hostname==='spaced-repetition-tracker-delta.vercel.app'&&
+    new URL(runtimeOrigin).origin==='https://spaced-repetition-tracker-delta.vercel.app';
   const context={
     window,client,session:{user:{id:sessionUser}},
     LIVE_SUPABASE_URL:'https://txugbdavblpettcnhcxl.supabase.co',
     LIVE_APP_HOST:'spaced-repetition-tracker-delta.vercel.app',
     productionDeltaIneligibleOwners:new Set(),
-    productionDeltaClientGateOpen:()=>window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION===true&&
-      window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN==='https://spaced-repetition-tracker-delta.vercel.app'&&
-      config().url==='https://txugbdavblpettcnhcxl.supabase.co'&&
-      location.protocol==='https:'&&location.hostname==='spaced-repetition-tracker-delta.vercel.app'&&
-      location.origin==='https://spaced-repetition-tracker-delta.vercel.app',
+    productionDeltaClientGateOpen,
     assertActiveUser:async userId=>{
       const {data,error}=await client.auth.getSession();
       if(error||!data||!data.session||!data.session.user||
