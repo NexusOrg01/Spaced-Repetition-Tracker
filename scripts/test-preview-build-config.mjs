@@ -403,6 +403,8 @@ assert.ok(renderConfigScript(null, false, null, {enabled:false,ownerId:''}).incl
   'a closed production gate must not carry an allowed origin');
 assert.ok(cloudSyncSource.includes('window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION===true'));
 assert.ok(cloudSyncSource.includes("window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN==='https://'+LIVE_APP_HOST"));
+assert.ok(cloudSyncSource.includes("window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_ID===ownerId"),
+  'the runtime production gate must be limited to the one owner UUID embedded by the approved production build');
 assert.ok(cloudSyncSource.includes("location.origin==='https://'+LIVE_APP_HOST"));
 assert.ok(cloudSyncSource.includes('productionProject.origin===LIVE_SUPABASE_URL'));
 
