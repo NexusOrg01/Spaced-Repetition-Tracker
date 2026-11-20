@@ -81,7 +81,8 @@ assert.match(cloud, /delta-auto-downgrade-result/);
 assert.match(clientTests, /any authenticated owner with the matching local workspace may enroll/);
 assert.match(clientTests, /sync-state row did not exist before the RPC/);
 assert.match(clientTests, /NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_IDS/);
-assert.match(runtimeTests, /automatic.*downgrade|delta-auto-downgrade-result/i);
+assert.match(runtimeTests, /if\(!pending&&deltaResult&&deltaResult\.skipped\)/,
+  'existing runtime tests must continue to cover the verified-snapshot/no-pending baseline path');
 
 assert.match(authenticatedSql, /rollout_not_enabled/);
 assert.match(authenticatedSql, /UPDATE nexus_private\.entity_delta_rollout_control[\s\S]*?SET enabled=true/);
