@@ -1028,6 +1028,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
  try{
   const productionProject=new URL(config().url);
   productionGate=window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION===true&&
+   window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN==='https://'+LIVE_APP_HOST&&
    config().url===LIVE_SUPABASE_URL&&productionProject.origin===LIVE_SUPABASE_URL&&
    location.protocol==='https:'&&location.hostname===LIVE_APP_HOST&&
    location.origin==='https://'+LIVE_APP_HOST;
