@@ -1067,6 +1067,9 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    // authenticated enable RPC. A first-time workspace still follows the
    // normal snapshot writer; it is never blocked waiting for a Delta setup.
    await assertActiveUser(ownerId);
+   if(localStorage.getItem(OWNER_KEY)!==ownerId){
+    return {ok:false,retryable:true,reason:'production_delta_owner_changed_before_enable'};
+   }
    let snapshotQuery=client.from('nexus_user_data').select('updated_at')
     .eq('user_id',ownerId);
    snapshotQuery=attachAbortSignal(snapshotQuery,signal);
@@ -1084,6 +1087,9 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
      'The production Delta enablement check failed safely. Snapshot sync was not started: '+
      String(enableResponse.error.message||enableResponse.error.code||'enable RPC failed'));
     const enableData=enableResponse.data;
+    if(localStorage.getItem(OWNER_KEY)!==ownerId){
+     return {ok:false,retryable:true,reason:'production_delta_owner_changed_during_enable'};
+    }
     if(enableData&&enableData.ok===true&&enableData.mode==='delta'){
      await assertActiveUser(ownerId);
      let verifyQuery=client.from('nexus_workspace_sync_state')
