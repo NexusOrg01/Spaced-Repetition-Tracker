@@ -1199,6 +1199,7 @@ function makeStagingRuntimeHarness({
   productionGate=false,productionOwnerId='account-A',browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/dla04-entity-projection-guard',
   remoteState={mode:'delta',protocol_version:1},remoteStateError=null,
   productionEnableResult={ok:true,mode:'delta'},productionEnableError=null,
+  changeLocalOwnerOnEnable=false,
   snapshotTimestamp='production-snapshot-stamp',snapshotReadError=null,
   cursorReadResult=null,outboxReadResult=null,
   projectionResults=[{ok:true,workspaceRevision:4,projectionWorkspaceRevision:4}],
@@ -1222,6 +1223,7 @@ function makeStagingRuntimeHarness({
       return {data:currentRemoteState,error:remoteStateError};
     }
   };
+  let currentLocalOwner=localOwner;
   const client={
     name:'staging-test-client',
     auth:{async getSession(){return {data:{session:{user:{id:sessionUser}}},error:null};}},
@@ -1229,6 +1231,7 @@ function makeStagingRuntimeHarness({
     async rpc(name,args){
       calls.rpcCount++;
       calls.rpc={name,args};
+      if(changeLocalOwnerOnEnable)currentLocalOwner='account-B';
       if(productionEnableError)return {data:null,error:productionEnableError};
       if(productionEnableResult&&productionEnableResult.ok===true&&productionEnableResult.mode==='delta'){
         currentRemoteState={mode:'delta',protocol_version:1};
@@ -1236,7 +1239,7 @@ function makeStagingRuntimeHarness({
       return {data:productionEnableResult,error:null};
     }
   };
-  const localStorage={getItem:key=>key==='owner-key'?localOwner:null};
+  const localStorage={getItem:key=>key==='owner-key'?currentLocalOwner:null};
   const payload={state:{streams:[],subjects:[],topics:[],history:[],exams:[]},
     featureState:{journal:[],papers:[],goals:[],studyLogs:[]}};
   const cursor={ownerId:'account-A',generation:'projection-generation-a',workspaceRevision:0,
@@ -1469,6 +1472,19 @@ assert.equal(productionEnableRejectedResult.ok,false,
   'a stale snapshot precondition must not enable production Delta or fall through to an unverified write');
 assert.equal(productionEnableRejectedResult.reason,'production_delta_enable_snapshot_conflict');
 assert.equal(productionEnableRejected.calls.createClient,0);
+
+const productionOwnerSwitch=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:productionSupabaseUrl,
+  productionGate:true,browserOrigin:productionOrigin,
+  remoteState:{mode:'snapshot',protocol_version:1},
+  productionEnableResult:{ok:true,mode:'delta'},
+  changeLocalOwnerOnEnable:true
+});
+const productionOwnerSwitchResult=await productionOwnerSwitch.run('account-A',stagingSignal);
+assert.equal(productionOwnerSwitchResult.ok,false,
+  'the production enable path must fail closed if the local owner changes during the enable RPC');
+assert.equal(productionOwnerSwitchResult.reason,'production_delta_owner_changed_during_enable');
+assert.equal(productionOwnerSwitch.calls.createClient,0);
 
 const productionOtherOwner=makeStagingRuntimeHarness({
   gate:false,localOrigin:false,stagingUrl:productionSupabaseUrl,
