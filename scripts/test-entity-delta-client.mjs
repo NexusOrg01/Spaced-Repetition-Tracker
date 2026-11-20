@@ -1198,6 +1198,8 @@ function makeStagingRuntimeHarness({
   missingChunkStorage=false,hostedQaGate=false,hostedQaOrigin='',hostedQaBranchOrigin='',
   productionGate=false,browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/dla04-entity-projection-guard',
   remoteState={mode:'delta',protocol_version:1},remoteStateError=null,
+  productionEnableResult={ok:true,mode:'delta'},productionEnableError=null,
+  snapshotTimestamp='production-snapshot-stamp',snapshotReadError=null,
   cursorReadResult=null,outboxReadResult=null,
   projectionResults=[{ok:true,workspaceRevision:4,projectionWorkspaceRevision:4}],
   projectionRebuildResult={ownerId:'account-A',mode:'snapshot-backfill'},
@@ -1208,16 +1210,30 @@ function makeStagingRuntimeHarness({
     localBaseOwner:null,pendingOwner:null,chunkWrite:null,localCommit:null,
     stateRead:null,projectionOwners:[],projectionRebuild:0,projectionDiagnostics:[],
     renderCount:0,hubRenderCount:0,featureUpdate:null,fsrsSettings:null};
+  let currentRemoteState=remoteState;
   const stateQuery={
     select(columns){calls.stateRead={...calls.stateRead,columns};return this;},
     eq(column,value){calls.stateRead={...calls.stateRead,filterColumn:column,filterValue:value};return this;},
     abortSignal(value){calls.stateRead={...calls.stateRead,signal:value};return this;},
-    async maybeSingle(){return {data:remoteState,error:remoteStateError};}
+    async maybeSingle(){
+      if(calls.stateRead.table==='nexus_user_data'){
+        return {data:snapshotReadError?null:{updated_at:snapshotTimestamp},error:snapshotReadError};
+      }
+      return {data:currentRemoteState,error:remoteStateError};
+    }
   };
   const client={
     name:'staging-test-client',
     auth:{async getSession(){return {data:{session:{user:{id:sessionUser}}},error:null};}},
-    from(table){calls.stateRead={table,columns:null,filterColumn:null,filterValue:null};return stateQuery;}
+    from(table){calls.stateRead={table,columns:null,filterColumn:null,filterValue:null};return stateQuery;},
+    async rpc(name,args){
+      calls.rpc={name,args};
+      if(productionEnableError)return {data:null,error:productionEnableError};
+      if(productionEnableResult&&productionEnableResult.ok===true&&productionEnableResult.mode==='delta'){
+        currentRemoteState={mode:'delta',protocol_version:1};
+      }
+      return {data:productionEnableResult,error:null};
+    }
   };
   const localStorage={getItem:key=>key==='owner-key'?localOwner:null};
   const payload={state:{streams:[],subjects:[],topics:[],history:[],exams:[]},
@@ -1407,6 +1423,49 @@ assert.equal(activeProductionResult.ok,true,
   'the explicitly enabled production runtime may enter Delta only on the canonical production origin and exact production Supabase project');
 assert.equal(activeProduction.calls.createClient,1);
 assert.equal(activeProduction.calls.stateRead.filterValue,'account-A');
+
+const productionOwnerEnable=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:productionSupabaseUrl,
+  productionGate:true,browserOrigin:productionOrigin,
+  remoteState:{mode:'snapshot',protocol_version:1},
+  productionEnableResult:{ok:true,mode:'delta'}
+});
+const productionOwnerEnableResult=await productionOwnerEnable.run('account-A',stagingSignal);
+assert.equal(productionOwnerEnableResult.ok,true,
+  'an approved production canary owner must enter Delta through the authenticated server-side allowlist RPC');
+assert.deepEqual(productionOwnerEnable.calls.rpc,{
+  name:'nexus_enable_entity_delta',args:{p_expected_updated_at:'production-snapshot-stamp'}
+});
+assert.equal(productionOwnerEnable.calls.stateRead.table,'nexus_workspace_sync_state',
+  'the client must re-read and verify server mode after the authenticated enable RPC');
+
+const productionUnlistedOwner=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:productionSupabaseUrl,
+  productionGate:true,browserOrigin:productionOrigin,
+  remoteState:{mode:'snapshot',protocol_version:1},
+  productionEnableResult:{ok:false,code:'pilot_not_enabled',mode:'snapshot'}
+});
+const productionUnlistedResult=await productionUnlistedOwner.run('account-A',stagingSignal);
+assert.equal(productionUnlistedResult.skipped,true,
+  'an owner absent from the server-side allowlist must stay in snapshot mode');
+assert.equal(productionUnlistedResult.reason,'pilot_not_enabled');
+assert.equal(productionUnlistedOwner.calls.createClient,0);
+await productionUnlistedOwner.run('account-A',stagingSignal);
+assert.equal(productionUnlistedOwner.calls.rpc.name,'nexus_enable_entity_delta',
+  'the ineligible owner must use the production enable RPC only once per page session');
+assert.equal(productionUnlistedOwner.calls.createClient,0);
+
+const productionEnableRejected=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:productionSupabaseUrl,
+  productionGate:true,browserOrigin:productionOrigin,
+  remoteState:{mode:'snapshot',protocol_version:1},
+  productionEnableResult:{ok:false,code:'snapshot_conflict',mode:'snapshot'}
+});
+const productionEnableRejectedResult=await productionEnableRejected.run('account-A',stagingSignal);
+assert.equal(productionEnableRejectedResult.ok,false,
+  'a stale snapshot precondition must not enable production Delta or fall through to an unverified write');
+assert.equal(productionEnableRejectedResult.reason,'production_delta_enable_snapshot_conflict');
+assert.equal(productionEnableRejected.calls.createClient,0);
 
 const productionGateOff=makeStagingRuntimeHarness({
   gate:false,localOrigin:false,stagingUrl:productionSupabaseUrl,
