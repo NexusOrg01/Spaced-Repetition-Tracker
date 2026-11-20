@@ -1,6 +1,6 @@
 # DLA-07 — Delta-first universal rollout
 
-**Status:** Implementation committed to PR #146; automated validation in progress  
+**Status:** Engineering implementation and automated validation passed on PR #146; Production activation remains approval-gated  
 **Goal:** Entity Delta is the normal sync protocol for every existing and new Nexus account. Snapshot sync is retained for first-time baseline creation and verified recovery/downgrade only.  
 **Target:** Web/PWA. **Timebox:** 60 minutes of implementation and focused automated validation.
 
@@ -47,6 +47,21 @@ The following implementation is on the existing DLA-07 PR branch. This is not a 
 - **Local validation wiring:** the new server package is copied only into the disposable local Supabase project by `scripts/prepare-phase34-local-supabase.mjs`; it is not added to the repository's standard production migration set. The authenticated RPC SQL test exercises global-off denial, automatic enrollment, explicit opt-out, and missing-row downgrade persistence. The focused DLA-07 source-contract test is wired into the local integration workflow.
 
 **Validation status:** the first workflow attempt reached the existing source-contract suite and exposed one stale assertion that still expected the old `const deltaResult` spelling. That assertion has been updated to match the guarded upload coordinator. The corrected workflow run is pending; no automated test suite is marked complete here until GitHub Actions reports success.
+
+## Automated validation record — 20 November 2026
+
+**Validated implementation commit:** `3b5da598045edc147c7a1da17517bc4371128b70`. The following commit only corrects two labels in the large-workspace test fixture.
+
+GitHub Actions completed successfully:
+
+- **Validate curriculum catalogue:** passed, including isolated preview configuration/static build, backup/restore, account-switch safety, privacy, and catalogue checks
+- **Phase 3.4 local authenticated two-client integration:** passed; DLA-07 contract, local migration application, authenticated RPC tests, default-off enforcement, new-owner auto-enrollment, explicit owner opt-out, and downgrade-override persistence
+- **Authenticated Chromium A1/A2/B test:** all 20 assertions passed; A auto-enrolled from a verified snapshot and B remained snapshot-only under its explicit opt-out
+- **Large-workspace two-device lifecycle:** all 21 assertions passed against the 26.9 MB / 77,144-topic / 72,001-history fixture, including offline edit recovery, stale compaction, and verified snapshot recovery
+- **Disposable environment cleanup:** passed; fixture users, allowlist/downgrade receipts and Delta rows removed, RPC grants revoked, and the local database verified clean
+- **Preview checks:** Vercel and Netlify PR Preview reported success on the validated implementation commit
+
+No physical-device re-test was run. No production database, production environment variable, deployment, account, or live workspace was changed. The DLA-07 production switch remains seeded disabled in the activation package.
 
 **Production status:** the global database switch remains default-off. No Production database, Vercel environment variable, deployment, user enrollment, or live rollout action has been changed. Step 5 remains approval-gated and is not part of this implementation pass.
 
