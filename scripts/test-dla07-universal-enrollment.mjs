@@ -12,6 +12,7 @@ const clientTests = read('scripts/test-entity-delta-client.mjs');
 const runtimeTests = read('scripts/test-cloud-sync-runtime.mjs');
 const packageSql = read('supabase/production-activation/20261120200000_dla07_universal_delta_enrollment.sql');
 const authenticatedSql = read('supabase/tests/nexus_entity_delta_authenticated_rpc.sql');
+const deltaSyncSql = read('supabase/tests/nexus_entity_delta_sync.sql');
 const prepareLocal = read('scripts/prepare-phase34-local-supabase.mjs');
 const workflow = read('.github/workflows/phase34-local-supabase-integration.yml');
 const browserHarness = read('scripts/test-phase34-local-two-client-browser.mjs');
@@ -89,6 +90,9 @@ assert.match(runtimeTests, /if\(!pending&&deltaResult&&deltaResult\.skipped\)/,
   'existing runtime tests must continue to cover the verified-snapshot/no-pending baseline path');
 
 assert.match(authenticatedSql, /rollout_not_enabled/);
+assert.match(deltaSyncSql, /UPDATE nexus_private\\.entity_delta_rollout_control[\\s\\S]*?SET enabled=true/);
+assert.match(deltaSyncSql, /unexpectedly had a per-owner enrollment row before the RPC/);
+assert.match(deltaSyncSql, /successful universal enrollment RPC did not persist its owner row/);
 assert.match(authenticatedSql, /UPDATE nexus_private\.entity_delta_rollout_control[\s\S]*?SET enabled=true/);
 assert.match(authenticatedSql, /Rollback-only explicit DLA-07 opt-out fixture/);
 assert.match(authenticatedSql, /dla07_missing_override_downgrade/);
