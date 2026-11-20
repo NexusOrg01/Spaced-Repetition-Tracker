@@ -1,6 +1,6 @@
 # DLA-06 — Controlled production Entity Delta rollout
 
-**Status:** In progress  
+**Status:** COMPLETED  
 **Target:** The two current production end-user owners/workspaces only  
 **Production Supabase project:** `txugbdavblpettcnhcxl`  
 **Canonical production origin:** `https://spaced-repetition-tracker-delta.vercel.app`  
@@ -71,7 +71,7 @@ DR-01 remains **WAIVED**, not completed. No production backup, restore, or disas
 
 ## Final sign-off
 
-DLA-06 closes only after the expanded two-owner production state and the acceptance post-check are evidenced. P35-04 remains a separate final report/retirement task and must explicitly preserve the DR-01 waiver.
+**DLA-06 technical acceptance: COMPLETED — 20 November 2026.** The expanded two-owner Production state and the Account B authenticated downgrade/re-enable lifecycle have been executed and independently verified. The legacy singular Vercel Production owner-ID variable remains as deferred configuration cleanup; it is not used by the active plural build gate and will not be changed without separate explicit owner approval. P35-04 remains a separate final report/retirement task and must explicitly preserve the DR-01 waiver.
 
 
 ## Status reconciliation addendum — 20 November 2026
@@ -85,3 +85,62 @@ The OPS-G4 temporary snapshot-only account test is separate from DLA-06. That ac
 The obsolete singular `NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_ID` variable is still present in the Vercel Production environment. The plural variable is the active build gate. Remove the singular variable only after the DLA-06 post-check is accepted and the owner has explicitly approved that Production environment change. No environment change is performed by this addendum.
 
 Until these items are evidenced and the permitted environment cleanup is approved and completed, DLA-06 remains **PARTIAL** and P35-04 remains **PARTIAL**. DR-01 remains **WAIVED**, not completed.
+
+
+## Execution addendum — Account B authenticated downgrade and Delta re-enable (20 November 2026)
+
+**Result: DLA-06 — COMPLETED.** This addendum supersedes the earlier baseline and status-reconciliation statements that described Account B's authenticated handoff as pending.
+
+### Account B protected downgrade
+
+The owner confirmed the Android Production session was Account B. The browser preflight on the canonical Production origin reported:
+
+- `helperAvailable: true`
+- `productionGate: true`
+- `productionOrigin` matched the canonical Production origin
+- `accountBApproved: true`
+- authenticated session `signedIn: true`, `ready: true`
+- `online: true`
+
+The owner invoked the existing protected `NexusCloudSync.downgradeEntityDelta()` helper from that authenticated session. Its returned result was:
+
+- `ok: true`, `downgraded: true`, `alreadyDowngraded: false`
+- resulting mode: `snapshot`
+- head revision: 1; snapshot revision: 1
+- compaction: `ok: true`, `complete: true`, `pending: false`
+- compacted through revision: 1; rounds: 1
+- deleted operations: 0; deleted receipts: 0
+
+The helper completed the synchronization/snapshot/compaction/downgrade sequence. No direct sync-state mode or marker edit and no manual operation/receipt deletion was performed.
+
+### Authorized eligibility restoration and authenticated re-enable
+
+After successful downgrade, the Account B row in `nexus_private.entity_delta_pilot_allowlist` was confirmed disabled. Under the owner's explicit approval for the DLA-06 Account B downgrade/re-enable test, only that existing Account B allowlist row was re-enabled with a bounded DLA-06 audit reason. No sync-state mode or Delta marker was directly modified.
+
+The owner refreshed the authenticated Account B Production session, allowed the normal application synchronization flow to run, and reported that Nexus returned to **Synced**. The client implementation was inspected: for a production-gated owner in snapshot mode, it reads the current `nexus_user_data.updated_at`, calls authenticated `nexus_enable_entity_delta` with that exact timestamp, and verifies the returned Delta mode with a fresh sync-state read.
+
+### Independent read-only Production post-check
+
+A SELECT-only query against Production project `txugbdavblpettcnhcxl` after the authenticated sync returned:
+
+| Assertion | Account B | Account A |
+|---|---:|---:|
+| Sync mode | `delta` | `delta` |
+| Head revision | 1 | 2 |
+| Snapshot revision | 1 | 2 |
+| Compacted through revision | 1 | 2 |
+| Delta allowlist enabled | true | true |
+| Operation rows | 0 | 0 |
+| Receipt rows | 0 | 0 |
+
+Account B's snapshot `updated_at` advanced to `2026-11-20 13:53:03.225425+00`, after the eligibility restoration and authenticated refresh. Account A remained in Delta mode with its revisions and eligibility unchanged. Both owners' operation and receipt counts were zero.
+
+### Disposition and boundary
+
+- **DLA-06: COMPLETED.** Protected downgrade, compaction, eligibility revocation, authorized eligibility restoration, normal authenticated client re-enable, and independent two-owner post-check all passed.
+- **Account isolation: PASS.** Account A remained unchanged; no third owner was added or affected.
+- **Legacy singular Vercel variable:** retained as separately approved configuration cleanup. The active build gate uses the plural variable. No Vercel environment mutation is included in this completion.
+- **P35-04:** remains a separate final audit/retirement task; do not infer it is closed by DLA-06.
+- **DR-01:** remains **WAIVED**, not completed.
+
+No merge or new deployment was performed as part of this documentation update.
