@@ -1,7 +1,15 @@
 -- ONE-SHOT TEST FIXTURE: run ONLY against the disposable local Phase 3.4 Supabase project.
 -- Creates three confirmed disposable email/password users with empty snapshots.
 -- The returned passwords are for this isolated local test only. Do not reuse them.
--- Accounts persist until supabase/tests/nexus_entity_delta_two_client_cleanup.sql is run.
+-- The global DLA-07 switch is enabled only in this disposable project. Owners A
+-- and C start without allowlist rows and must auto-enroll; owner B has an explicit
+-- disabled override. Accounts persist until the cleanup SQL is run.
+
+UPDATE nexus_private.entity_delta_rollout_control
+   SET enabled = true,
+       reason = 'Rollback-only DLA-07 browser fixture; disposable local Supabase',
+       updated_at = clock_timestamp()
+ WHERE rollout_key = 'global';
 
 WITH credentials AS MATERIALIZED (
   SELECT
@@ -81,17 +89,17 @@ inserted_workspaces AS (
   RETURNING user_id
 ),
 inserted_pilot_eligibility AS (
-  -- The sorted first and third fixture accounts are used for the A1/A2
-  -- protocol and large-workspace lifecycle respectively. The second account
-  -- is deliberately unlisted so the browser regression proves default-deny.
+  -- The sorted first and third fixture accounts (A and C) deliberately have
+  -- no owner row so DLA-07 must enroll them automatically. The second account
+  -- (B) is an explicit opt-out and must remain in snapshot mode.
   INSERT INTO nexus_private.entity_delta_pilot_allowlist
     (user_id, enabled, reason)
-  SELECT ranked.id, true, 'Disposable local Phase 3.4 integration fixture'
+  SELECT ranked.id, false, 'Disposable local DLA-07 explicit opt-out fixture'
   FROM (
     SELECT id, email, row_number() OVER (ORDER BY email) AS fixture_order
     FROM inserted_users
   ) AS ranked
-  WHERE ranked.fixture_order IN (1, 3)
+  WHERE ranked.fixture_order = 2
   RETURNING user_id
 )
 SELECT

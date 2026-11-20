@@ -348,7 +348,7 @@ const stateA = await rpc(clientA1, 'nexus_get_entity_sync_state');
 const stateB = await rpc(clientB, 'nexus_get_entity_sync_state');
 assert.equal(stateA.mode, 'snapshot', 'Fixture C is intentionally untouched by the preceding A1/A2/B protocol test');
 assert.equal(stateB.mode, 'snapshot', 'Unlisted fixture B must remain in snapshot mode after the preceding protocol test');
-assert.equal(Number(stateB.head_revision), 0, 'An unlisted owner must not acquire a Delta revision');
+assert.equal(Number(stateB.head_revision), 0, 'An explicitly opted-out owner must not acquire a Delta revision');
 const foreignPage = await rpc(clientB, 'nexus_read_entity_operations', {
   p_after_revision: 0, p_limit_groups: 50, p_max_bytes: 1048576
 });
@@ -361,7 +361,7 @@ assert.equal(enabled.ok, true);
 assert.equal(enabled.mode, 'delta');
 const baselineState = await rpc(clientA1, 'nexus_get_entity_sync_state');
 const ownerBaseStamp = baselineState.snapshot_updated_at;
-check('Allowlisted fixture C can enter Delta while unlisted account B remains snapshot-only',
+check('Auto-enrolled fixture C can enter Delta while explicitly opted-out account B remains snapshot-only',
   baselineState.mode === 'delta' && Number(baselineState.head_revision) === 0 &&
   stateB.mode === 'snapshot' && Number(stateB.head_revision) === 0 && foreignPage.mode === 'snapshot' && foreignPage.groups.length === 0);
 

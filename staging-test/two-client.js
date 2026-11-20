@@ -43,22 +43,23 @@ async function run(){
   check('A1 and A2 share owner A',a1.user.id===a2.user.id);
   check('B has a distinct owner identity',a1.user.id!==b.user.id);
   check('A1 and A2 have independent access tokens',a1.token!==a2.token);
-  say('Checking server-side pilot eligibility…');
+  say('Checking the DLA-07 global switch and per-owner enrollment…');
   const [sa,sb]=await Promise.all([rpc(a1,'nexus_get_entity_sync_state'),rpc(b,'nexus_get_entity_sync_state')]);
   check('Both accounts begin in snapshot mode',sa.mode==='snapshot'&&sb.mode==='snapshot');
   const ea=await rpc(a1,'nexus_enable_entity_delta',{p_expected_updated_at:sa.snapshot_updated_at});
   const eb=await rpc(b,'nexus_enable_entity_delta',{p_expected_updated_at:sb.snapshot_updated_at});
-  check('Only allowlisted owner A can enable Delta',ea.ok===true&&ea.mode==='delta'&&eb.ok===false&&eb.code==='pilot_not_enabled');
-  say('Publishing owner A operation and probing unlisted owner B…');
+  check('New owner A auto-enrolls from its verified snapshot while explicit owner B opt-out is preserved',
+    ea.ok===true&&ea.mode==='delta'&&eb.ok===false&&eb.code==='pilot_not_enabled');
+  say('Publishing owner A operation and probing explicitly opted-out owner B…');
   const opA='phase34-two-client-a-'+crypto.randomUUID(),opB='phase34-two-client-b-'+crypto.randomUUID();
   const chA=[{collection:'topics',id:'two-client-a-'+crypto.randomUUID(),operation:'put',position:0,value:{id:'temporary-a',name:'Client A initial'}}];
   const chB=[{collection:'topics',id:'two-client-b-'+crypto.randomUUID(),operation:'put',position:0,value:{id:'temporary-b',name:'Client B must be blocked'}}];
   chA[0].value.id=chA[0].id;chB[0].value.id=chB[0].id;
   const firstA=await rpc(a1,'nexus_publish_entity_operation',{p_operation_id:opA,p_expected_revision:0,p_changes:chA});
-  check('Allowlisted owner A publishes revision 1',firstA.ok===true&&firstA.revision===1);
+  check('Auto-enrolled owner A publishes revision 1',firstA.ok===true&&firstA.revision===1);
   const blockedB=await api(b,'/rest/v1/rpc/nexus_publish_entity_operation',{method:'POST',body:{p_operation_id:opB,p_expected_revision:0,p_changes:chB}});
-  log('Unlisted owner B publish denial: HTTP '+blockedB.status+' '+JSON.stringify(blockedB.body));
-  check('Unlisted owner B cannot publish Delta',!blockedB.ok&&blockedB.status>=400&&blockedB.body&&blockedB.body.code==='55000');
+  log('Explicitly opted-out owner B publish denial: HTTP '+blockedB.status+' '+JSON.stringify(blockedB.body));
+  check('Explicitly opted-out owner B cannot publish Delta',!blockedB.ok&&blockedB.status>=400&&blockedB.body&&blockedB.body.code==='55000');
   say('Racing two authenticated devices on owner A…');
   const ra={p_operation_id:'phase34-race-a1-'+crypto.randomUUID(),p_expected_revision:1,p_changes:[{collection:'history',id:'race-a1-'+crypto.randomUUID(),operation:'put',position:0,value:null}]};
   const rb={p_operation_id:'phase34-race-a2-'+crypto.randomUUID(),p_expected_revision:1,p_changes:[{collection:'history',id:'race-a2-'+crypto.randomUUID(),operation:'put',position:1,value:null}]};
@@ -77,7 +78,7 @@ async function run(){
   const [pa,pb]=await Promise.all([rpc(a1,'nexus_read_entity_operations',{p_after_revision:0,p_limit_groups:50,p_max_bytes:1048576}),rpc(b,'nexus_read_entity_operations',{p_after_revision:0,p_limit_groups:50,p_max_bytes:1048576})]);
   const ga=Array.isArray(pa.groups)?pa.groups:[],gb=Array.isArray(pb.groups)?pb.groups:[];
   check('A reads exactly its three contiguous revisions',pa.mode==='delta'&&pa.snapshot_required===false&&pa.next_revision===3&&ga.length===3);
-  check('Unlisted B stays in snapshot mode and reads no Delta operations',pb.mode==='snapshot'&&gb.length===0);
+  check('Explicitly opted-out B stays in snapshot mode and reads no Delta operations',pb.mode==='snapshot'&&gb.length===0);
   check('No cross-account operation IDs appear',!ga.some(x=>x.operation_id===opB)&&!gb.some(x=>x.operation_id===opA));
   const [rowsA,rowsB,foreignA]=await Promise.all([
    api(a1,'/rest/v1/nexus_workspace_operations?select=user_id,revision,operation_id&order=revision.asc'),

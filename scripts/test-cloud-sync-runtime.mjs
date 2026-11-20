@@ -82,6 +82,17 @@ const uploadStart=source.indexOf('async function upload(){');
 const uploadEnd=source.indexOf('let localQueueHealthy=',uploadStart);
 assert.ok(uploadStart>=0&&uploadEnd>uploadStart,'the cloud upload coordinator must be available for restore-path checks');
 const uploadSource=source.slice(uploadStart,uploadEnd);
+assert.ok(uploadSource.includes('let deltaResult;')&&
+  uploadSource.includes('tryAutomaticProductionDeltaDowngrade')&&
+  uploadSource.includes('deltaResult.blockedRecovery!==true'),
+  'recoverable Production Delta failures must attempt the owner-scoped downgrade while pending recovery journals remain blocked');
+assert.ok(uploadSource.includes('tryProductionDeltaAfterVerifiedSnapshot')&&
+  uploadSource.includes('verified_existing_snapshot_baseline')&&
+  uploadSource.includes('verified_new_or_updated_snapshot_baseline'),
+  'existing snapshot restores and new snapshot bootstraps must immediately re-check Production Delta enrollment');
+assert.ok(source.includes("runStagingEntityDeltaSync(ownerId,signal,{downgrade:true})")&&
+  source.includes("after.mode!=='snapshot'"),
+  'automatic fallback must verify snapshot mode before the compatibility writer resumes');
 assert.ok(uploadSource.includes('if(!pending&&deltaResult&&deltaResult.skipped)')&&
   uploadSource.includes('verifiedBase.serverVersion===lastRemoteStamp')&&
   uploadSource.includes('await sameWorkspace(verifiedBase,snapshot())'),
