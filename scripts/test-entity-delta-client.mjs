@@ -1196,7 +1196,7 @@ function makeStagingRuntimeHarness({
   gate=false,localOrigin=true,stagingUrl=stagingSupabaseUrl,recoveryIntent=null,
   syncResult={ok:true,publishedCount:1},recoveryResult={ok:true,recovered:true},
   missingChunkStorage=false,hostedQaGate=false,hostedQaOrigin='',hostedQaBranchOrigin='',
-  productionGate=false,browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/dla04-entity-projection-guard',
+  productionGate=false,productionOwnerId='account-A',browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/dla04-entity-projection-guard',
   remoteState={mode:'delta',protocol_version:1},remoteStateError=null,
   productionEnableResult={ok:true,mode:'delta'},productionEnableError=null,
   snapshotTimestamp='production-snapshot-stamp',snapshotReadError=null,
@@ -1257,7 +1257,7 @@ function makeStagingRuntimeHarness({
   let projectionIndex=0;
   const storage={
     async readWorkspaceEntityRecovery(owner){
-      assert.equal(owner,'account-A');
+      calls.recoveryOwner=owner;
       return recoveryIntent?{intent:recoveryIntent}:null;
     },
     async readWorkspaceEntityDeltaCursor(owner){
@@ -1291,6 +1291,7 @@ function makeStagingRuntimeHarness({
     NEXUS_ENTITY_DELTA_SYNC_QA_REF:hostedQaRef,
     NEXUS_ENTITY_DELTA_SYNC_PRODUCTION:productionGate,
     NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN:productionGate?'https://spaced-repetition-tracker-delta.vercel.app':'',
+    NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_ID:productionGate?productionOwnerId:'',
     NexusOfflineSyncQueue:queue,
     NexusStorage:storage,
     NexusEntityDeltaSync:{
@@ -1468,6 +1469,17 @@ assert.equal(productionEnableRejectedResult.ok,false,
   'a stale snapshot precondition must not enable production Delta or fall through to an unverified write');
 assert.equal(productionEnableRejectedResult.reason,'production_delta_enable_snapshot_conflict');
 assert.equal(productionEnableRejected.calls.createClient,0);
+
+const productionOtherOwner=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:productionSupabaseUrl,
+  productionGate:true,productionOwnerId:'canary-owner',browserOrigin:productionOrigin,
+  remoteState:{mode:'snapshot',protocol_version:1}
+});
+assert.equal((await productionOtherOwner.run('account-A',stagingSignal)).skipped,true,
+  'production Delta must remain closed for every owner except the single selected canary owner');
+assert.equal(productionOtherOwner.calls.createClient,0);
+assert.equal(productionOtherOwner.calls.rpcCount,0,
+  'non-canary owners must not make an enablement RPC at all');
 
 const productionGateOff=makeStagingRuntimeHarness({
   gate:false,localOrigin:false,stagingUrl:productionSupabaseUrl,
