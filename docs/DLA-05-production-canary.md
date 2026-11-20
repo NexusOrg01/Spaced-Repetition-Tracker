@@ -82,3 +82,10 @@ DR-01 remains **WAIVED**, not completed. No production backup, isolated restore,
 ## Current disposition
 
 **Implementation preparation: complete on the DLA-05 PR, subject to the current exact-head CI run. Live canary: not started. Production activation: not performed.** A production owner UUID, authenticated canary session, and separate explicit approval for the production activation actions are still required.
+
+
+## Status reconciliation addendum — 20 November 2026
+
+**DLA-05 status: COMPLETED.** The earlier `Current disposition` statement that the live canary had not started is superseded by the completed DLA-05 execution recorded in the P35-04 acceptance audit and merged PR [#142](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/pull/142), merge commit `d16a5fabcc521fa5713903e4d346e38e83a3e95e`.
+
+The one-owner Production canary and its automated acceptance/downgrade verification are accepted as complete. This completion is separate from DLA-06's subsequent two-owner expansion. It does not close P35-04, and it does not change the DR-01 disposition: **WAIVED, not completed**.
