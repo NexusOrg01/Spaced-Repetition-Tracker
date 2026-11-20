@@ -72,3 +72,16 @@ DR-01 remains **WAIVED**, not completed. No production backup, restore, or disas
 ## Final sign-off
 
 DLA-06 closes only after the expanded two-owner production state and the acceptance post-check are evidenced. P35-04 remains a separate final report/retirement task and must explicitly preserve the DR-01 waiver.
+
+
+## Status reconciliation addendum — 20 November 2026
+
+**Current disposition: PARTIAL / IN PROGRESS.** The read-only Production post-check still shows exactly two Auth users, two workspace rows and two sync-state rows; both owners are in Delta mode and each has one enabled allowlist entry. Revision-order, mode/marker, row/receipt and owner-isolation assertions remain as recorded in the P35-04 acceptance audit.
+
+The OPS-G4 temporary snapshot-only account test is separate from DLA-06. That account was removed after its snapshot publish/read/offline/reconnect test and is not evidence of Account B's Delta activation handoff.
+
+**Remaining DLA-06 acceptance evidence:** Account B must be shown entering Delta through the normal authenticated `nexus_enable_entity_delta` client handoff using its exact current snapshot timestamp. The database's current Delta mode does not prove that client handoff occurred. Do not change the mode directly with SQL.
+
+The obsolete singular `NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_ID` variable is still present in the Vercel Production environment. The plural variable is the active build gate. Remove the singular variable only after the DLA-06 post-check is accepted and the owner has explicitly approved that Production environment change. No environment change is performed by this addendum.
+
+Until these items are evidenced and the permitted environment cleanup is approved and completed, DLA-06 remains **PARTIAL** and P35-04 remains **PARTIAL**. DR-01 remains **WAIVED**, not completed.
