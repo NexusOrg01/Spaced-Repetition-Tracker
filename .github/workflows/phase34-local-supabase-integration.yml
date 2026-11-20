@@ -97,6 +97,7 @@ jobs:
           node scripts/test-account-deletion.mjs
           node scripts/test-entity-delta-client.mjs
           node scripts/test-dla03-downgrade-contract.mjs
+          node scripts/test-dla07-universal-enrollment.mjs
           npm run test:sync-safety
           node scripts/test-cloud-sync-runtime.mjs
           node scripts/test-hosted-qa-replay-driver.mjs
