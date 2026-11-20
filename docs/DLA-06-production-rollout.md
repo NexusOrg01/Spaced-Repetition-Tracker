@@ -36,7 +36,7 @@ The DLA-05 production build gate accepted exactly one UUID. DLA-06 changes this 
 - The server-side allowlist remains the final authority. The client list cannot grant server eligibility.
 - Preview, branch, local, Netlify/Cloudflare, and other Supabase project builds remain unable to enable production Delta.
 
-The DLA-05 single-owner variable may remain temporarily during the transition. The new build reads only the plural variable. Remove the legacy singular variable after the new production deployment and both-owner post-check pass.
+The obsolete DLA-05 singular variable may remain configured as inert legacy state. The current build/runtime gate reads the plural owner-ID variable only. Removal is not required for DLA-06 acceptance and is outside this rollout unless separately approved.
 
 ## Controlled rollout sequence
 
@@ -144,3 +144,14 @@ Account B's snapshot `updated_at` advanced to `2026-11-20 13:53:03.225425+00`, a
 - **DR-01:** remains **WAIVED**, not completed.
 
 No merge or new deployment was performed as part of this documentation update.
+
+
+## Final owner disposition — 20 November 2026
+
+**DLA-06: COMPLETED.** The owner has accepted retaining the obsolete singular `NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_ID` Vercel Production variable. It is not used by the active plural owner-list gate, and its removal is not required to complete DLA-06 or P35-04. No Vercel environment mutation is part of this disposition.
+
+The completed rollout scope is the two current approved Production owners/workspaces. Future signups remain default-deny until explicitly allowlisted; this runbook does not claim automatic enrollment for future users.
+
+**P35-04: COMPLETED** for the approved two-owner Web/PWA clean-start scope, with the limitations and retirement decision recorded in `docs/P35-04-final-acceptance-audit-2026-11-20.md`. **DR-01 remains WAIVED**, not completed; disaster recovery is not tested or proven.
+
+No Production setting, database, account, deployment or promotion was changed by this documentation addendum.
