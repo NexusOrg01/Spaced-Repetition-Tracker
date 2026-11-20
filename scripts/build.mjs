@@ -176,6 +176,7 @@ export function renderConfigScript(config, enableStagingEntityDelta = false, hos
     "(function(){'use strict';window.NEXUS_ENTITY_DELTA_SYNC_STAGING=" + String(enabled) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=" + String(hostedQaEnabled) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION=" + String(productionDeltaEnabled === true) +
+    ";window.NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_ORIGIN=" + JSON.stringify(productionDeltaEnabled === true ? "https://" + LIVE_APP_HOST : "") +
     ";window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN=" + JSON.stringify(hostedQaOrigin) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_QA_BRANCH_ORIGIN=" + JSON.stringify(hostedQaBranchOrigin) +
     ";window.NEXUS_ENTITY_DELTA_SYNC_QA_REF=" + JSON.stringify(hostedQaRef) +
