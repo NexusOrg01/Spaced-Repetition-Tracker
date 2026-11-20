@@ -14,6 +14,10 @@ const packageSql = read('supabase/production-activation/20261120200000_dla07_uni
 const authenticatedSql = read('supabase/tests/nexus_entity_delta_authenticated_rpc.sql');
 const prepareLocal = read('scripts/prepare-phase34-local-supabase.mjs');
 const workflow = read('.github/workflows/phase34-local-supabase-integration.yml');
+const browserHarness = read('scripts/test-phase34-local-two-client-browser.mjs');
+const browserPage = read('staging-test/two-client.js');
+const browserSetup = read('supabase/tests/nexus_entity_delta_two_client_setup.sql');
+const browserCleanup = read('supabase/tests/nexus_entity_delta_two_client_cleanup.sql');
 
 function extractLastFunction(source, name) {
   const marker = `CREATE OR REPLACE FUNCTION public.${name}(`;
@@ -91,5 +95,12 @@ assert.match(authenticatedSql, /dla07_missing_override_downgrade/);
 assert.match(authenticatedSql, /DLA-07 downgrade did not create a persistent disabled owner override/);
 assert.match(prepareLocal, /20261120200000_dla07_universal_delta_enrollment\.sql/);
 assert.match(workflow, /node scripts\/test-dla07-universal-enrollment\.mjs/);
+
+assert.match(browserPage, /New owner A auto-enrolls from its verified snapshot while explicit owner B opt-out is preserved/);
+assert.match(browserPage, /Explicitly opted-out owner B cannot publish Delta/);
+assert.match(browserHarness, /New owner A auto-enrolls from its verified snapshot while explicit owner B opt-out is preserved/);
+assert.match(browserSetup, /UPDATE nexus_private\.entity_delta_rollout_control[\s\S]*?SET enabled = true/);
+assert.match(browserSetup, /SELECT ranked\.id, false, 'Disposable local DLA-07 explicit opt-out fixture'/);
+assert.match(browserCleanup, /UPDATE nexus_private\.entity_delta_rollout_control[\s\S]*?SET enabled = false/);
 
 console.log('DLA-07 universal enrollment, default-off gate, opt-out persistence and fallback contracts passed.');
