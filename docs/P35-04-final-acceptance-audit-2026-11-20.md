@@ -123,7 +123,7 @@ Repeated physical-device testing after DLA-04, fixed 48–72-hour observation wi
 | OPS-G1 / OPS-G2 | COMPLETED — protected workflow groundwork and exact migration allowlist/dry-run checks are represented in merged OPS PRs and current exact-head CI |
 | OPS-G3 | COMPLETED per uploaded OPS-G3 completion record; live migration history confirms the 11 authorized migrations are present |
 | OPS-G4 | **COMPLETED** — 15/15 database assertions and Postgres error-log check passed; a temporary authenticated Production snapshot workspace successfully published/read data, retained an offline edit through reconnect and refresh, then had its synthetic data and Auth account removed; read-only post-delete checks passed |
-| DLA-05 | COMPLETED per the 20 Nov DLA-05 completion record and the DLA-06 runbook's parent-canary statement; note that the older `docs/DLA-05-production-canary.md` disposition is stale and still describes the canary as not started |
+| DLA-05 | COMPLETED — PR #142 merged; the earlier stale `Current disposition` paragraph in `docs/DLA-05-production-canary.md` is explicitly superseded by its 20 November status-reconciliation addendum |
 | DLA-06 | **PARTIAL / IN PROGRESS** — two-owner DB postconditions still pass; Account B's normal authenticated client handoff remains unproven, and the obsolete singular Vercel Production owner-ID variable remains pending separately approved cleanup |
 | P35-02 | COMPLETED — user-confirmed in the indexed task tracker |
 | P35-03 | COMPLETED — user-confirmed in the indexed task tracker |
