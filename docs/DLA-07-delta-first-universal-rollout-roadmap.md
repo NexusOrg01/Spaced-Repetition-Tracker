@@ -1,6 +1,6 @@
 # DLA-07 — Delta-first universal rollout
 
-**Status:** Proposed  
+**Status:** Implementation committed to PR #146; automated validation in progress  
 **Goal:** Entity Delta is the normal sync protocol for every existing and new Nexus account. Snapshot sync is retained for first-time baseline creation and verified recovery/downgrade only.  
 **Target:** Web/PWA. **Timebox:** 60 minutes of implementation and focused automated validation.
 
@@ -34,6 +34,21 @@
 - Automated tests pass for enrollment, account isolation, and fallback.
 
 **Production boundary:** This roadmap does not authorize Production database changes, environment changes, deployment, or account operations. Those actions require the owner's separate explicit approval.
+
+## Engineering implementation record — 20 November 2026
+
+The following implementation is on the existing DLA-07 PR branch. This is not a production activation record.
+
+- **Global client gate:** `scripts/build.mjs` no longer reads or emits `NEXUS_ENTITY_DELTA_PRODUCTION_OWNER_IDS`. The generated flag still requires the exact Nexus Vercel project, Production environment, `main` branch, and explicit `NEXUS_ENTITY_DELTA_PRODUCTION_ENABLED=true`. The canonical Production app origin and Supabase project checks remain in `cloud-sync.js`.
+- **Server-side enrollment:** `supabase/production-activation/20261120200000_dla07_universal_delta_enrollment.sql` adds a private global rollout-control row defaulting to disabled. The authenticated enable RPC auto-creates an enabled per-owner row only when the global switch is enabled, but respects an existing `enabled=false` opt-out.
+- **Concurrency and downgrade:** enable and downgrade take the global-control lock and the same owner-scoped advisory lock before the allowlist/workspace locks. All three DLA-03 downgrade success/idempotency branches now upsert a disabled owner override, including when the row is absent.
+- **First snapshot bootstrap:** after a compatibility snapshot is successfully verified, the ordinary upload path repeats the authenticated enrollment handshake. The runtime now continues into Delta when the RPC has just created the owner sync-state row, rather than incorrectly treating the pre-RPC missing row as permanent snapshot mode.
+- **Automatic fallback:** recoverable failures may invoke the existing DLA-03 owner-scoped downgrade only after an RLS-protected read confirms that owner is in Delta. The client verifies snapshot mode again after downgrade; snapshot writes remain blocked when the mode is unknown, downgrade fails, or recovery is pending.
+- **Local validation wiring:** the new server package is copied only into the disposable local Supabase project by `scripts/prepare-phase34-local-supabase.mjs`; it is not added to the repository's standard production migration set. The authenticated RPC SQL test exercises global-off denial, automatic enrollment, explicit opt-out, and missing-row downgrade persistence. The focused DLA-07 source-contract test is wired into the local integration workflow.
+
+**Validation status:** the first workflow attempt reached the existing source-contract suite and exposed one stale assertion that still expected the old `const deltaResult` spelling. That assertion has been updated to match the guarded upload coordinator. The corrected workflow run is pending; no automated test suite is marked complete here until GitHub Actions reports success.
+
+**Production status:** the global database switch remains default-off. No Production database, Vercel environment variable, deployment, user enrollment, or live rollout action has been changed. Step 5 remains approval-gated and is not part of this implementation pass.
 
 ## Source files
 
