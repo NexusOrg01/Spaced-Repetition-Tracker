@@ -125,7 +125,7 @@ const SYNC_DIAG_STAGES=new Set([
  'workspace-merge-commit-start','workspace-merge-complete','workspace-merge-error',
  'workspace-merge-normalize-complete','workspace-merge-normalize-error','workspace-merge-normalize-start',
  'workspace-merge-restarted','workspace-merge-start','workspace-saved-locally',
- 'workspace-comparison','workspace-local-commit','projection-reuse','projection-rebuild','projection-check-start','projection-readiness','workspace-snapshot-current','workspace-render','initial-sync-verification'
+ 'workspace-comparison','workspace-local-commit','projection-reuse','projection-rebuild','projection-check-start','projection-readiness','projection-deferred-to-upload','workspace-snapshot-current','workspace-render','initial-sync-verification'
 ]);
 function sanitizeSyncDiagEvent(event){
  if(!event||typeof event!=='object'||Array.isArray(event)||!SYNC_DIAG_STAGES.has(event.stage))return null;
