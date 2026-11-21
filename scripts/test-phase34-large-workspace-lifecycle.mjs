@@ -1010,6 +1010,8 @@ try {
     initialWatchdogDelayMs = Date.parse(initialWatchdog.at) - Date.parse(initialInitializationStarted.at);
     assert.ok(Number.isFinite(initialWatchdogDelayMs) && initialWatchdogDelayMs <= 40000,
       'The initial restore must leave or confirm its loading state by the 30-second watchdog deadline.');
+    assert.notEqual(initialWorkspaceRevealStatus, 'Synced',
+      'the status indicator must not claim cloud verification at the point the local workspace first becomes available.');
     assert.equal(initialWatchdog.watchdogOutcome, 'local-ready-unverified',
       'A durably restored and owner-verified workspace must be reported as locally ready while cloud verification continues.');
     assert.equal(initialWatchdog.ready, true,
