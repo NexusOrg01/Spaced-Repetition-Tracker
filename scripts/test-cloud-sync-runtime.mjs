@@ -537,7 +537,6 @@ assert.match(source,
   /const callbackEpoch=sessionEpoch;[\s\S]*?if\(!authInitializationCallbackIsCurrent\(uid,callbackEpoch\)\)return;/,
   'the actual deferred sign-in initialization callback must be fenced by the epoch that scheduled it');
 
-const indexHtml = readFileSync(resolve(root, 'index.html'), 'utf8');
 assert.match(indexHtml,
   /html\[data-workspace-auth="pending"\] \.app\s*\{\s*visibility:\s*hidden\s*!important;/,
   'the first-paint pending state must hide the full app before account verification');
