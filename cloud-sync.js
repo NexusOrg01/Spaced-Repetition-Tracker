@@ -1114,6 +1114,22 @@ function recoverStaleInitializationStatus(userId,expectedEpoch){
  }
  return true;
 }
+function inspectOutgoingAccountCheckpoint(queue,storage,ownerId){
+ if(!queue||!ownerId||typeof queue.getPending!=='function'||typeof queue.getBase!=='function')
+  throw new Error('Safe outgoing-account checkpoint inspection is unavailable.');
+ const pending=queue.getPending(storage,ownerId);
+ if(pending){
+  if(pending.status!=='pending'||pending.ownerUserId!==ownerId||
+     !pending.payload||!pending.payload.state||!pending.payload.featureState)
+   throw new Error('The outgoing account pending snapshot is invalid.');
+  return {mode:'pending',pending};
+ }
+ const base=queue.getBase(storage,ownerId);
+ if(base&&base.state&&base.featureState&&
+    typeof base.serverVersion==='string'&&base.serverVersion)
+  return {mode:'verified-clean',pending:null};
+ return {mode:'checkpoint',pending:null};
+}
 async function initializeSession(s){
  const requestedSession=s||null,requestedUserId=requestedSession&&requestedSession.user?requestedSession.user.id:null;
  session=requestedSession;const requestedEpoch=rotateSessionContext(requestedSession);
@@ -1148,7 +1164,7 @@ async function initializeSession(s){
   const newSession=requestedSession,newUserId=requestedUserId;
   ready=false;offlineReconnectRequired=false;lastRemoteStamp=null;clearTimeout(timer);setControls();
   if(!newSession){status(client?'Not signed in · offline ready':'Offline ready');say('You can continue studying offline. Your local data remains on this device when you sign out.');return;}
-  status('Loading account…');await assertActiveUser(newUserId,requestedEpoch);let owner=localStorage.getItem(OWNER_KEY)||'';let previousAccountHasChanges=null,previousAccountCheckpointed=false;
+  status('Loading account…');await assertActiveUser(newUserId,requestedEpoch);let owner=localStorage.getItem(OWNER_KEY)||'';let previousAccountHasChanges=null,previousAccountCheckpointed=false,previousAccountCheckpointSkipped=false,cachedWorkspaceRevealed=false;
 if(typeof navigator!=='undefined'&&navigator.onLine===false){
   // Do not wait for a remote snapshot read during a cold offline start. Resolve
   // only this authenticated owner's existing local workspace and keep account
@@ -1186,35 +1202,38 @@ if(owner&&owner!==newUserId){
    if(!outgoingQueue||typeof outgoingQueue.getPending!=='function'||
       typeof outgoingQueue.getBase!=='function')
     throw new Error('Safe outgoing-account queue verification is unavailable.');
-   const existingOutgoingPending=outgoingQueue.getPending(localStorage,previousOwner);
-   if(existingOutgoingPending){
-    if(existingOutgoingPending.ownerUserId!==previousOwner||!existingOutgoingPending.payload||
-       !existingOutgoingPending.payload.state||!existingOutgoingPending.payload.featureState)
-     throw new Error('The outgoing account pending snapshot is invalid.');
-    // Every committed app save updates the owner-bound outbox atomically. A valid
-    // pending record is already the durable checkpoint; do not re-compare 26 MB.
+   const outgoingCheckpoint=inspectOutgoingAccountCheckpoint(
+    outgoingQueue,localStorage,previousOwner);
+   if(outgoingCheckpoint.mode==='pending'){
+    // Every committed app save, including an edit made while signed out, updates
+    // the owner-bound outbox atomically. A valid pending record is the checkpoint.
+    previousAccountHasChanges=true;
+    previousAccountCheckpointed=true;
+   }else if(outgoingCheckpoint.mode==='verified-clean'){
+    // No pending outbox plus a verified server base means app saves have not
+    // changed this workspace since verification. Do not serialize and park a
+    // redundant full-size snapshot; its owner-bound IndexedDB cache can be reused.
+    previousAccountHasChanges=false;
+    previousAccountCheckpointed=true;
+    previousAccountCheckpointSkipped=true;
+   }else if(hasLocalWork(previousPayload)){
+    // Without a verified base, preserve the workspace conservatively.
+    await initScope.race(
+     checkpointPreviousAccountWorkspace(previousOwner,newUserId,previousPayload),
+     'previous account checkpoint');
     previousAccountHasChanges=true;
     previousAccountCheckpointed=true;
    }else{
-    // A verified base does not prove the live shared local snapshot is unchanged:
-    // signed-out edits can occur after that base was recorded without an outbox row.
-    // Preserve any user-data workspace now, without a large structural comparison.
-    if(hasLocalWork(previousPayload)){
-     await initScope.race(
-      checkpointPreviousAccountWorkspace(previousOwner,newUserId,previousPayload),
-      'previous account checkpoint');
-     previousAccountHasChanges=true;
-     previousAccountCheckpointed=true;
-    }else{
-     previousAccountHasChanges=false;
-     previousAccountCheckpointed=true;
-    }
+    previousAccountHasChanges=false;
+    previousAccountCheckpointed=true;
    }
    await assertActiveUser(newUserId,requestedEpoch);
    syncDiag('account-handoff-outgoing-checkpoint',null,{
     durationMs:Date.now()-checkpointStartedAt,
     pendingPreserved:!!(window.NexusOfflineSyncQueue&&window.NexusOfflineSyncQueue.getPending(localStorage,previousOwner)),
-    changedSinceVerifiedBase:!!previousAccountHasChanges
+    changedSinceVerifiedBase:!!previousAccountHasChanges,
+    checkpointSkipped:previousAccountCheckpointSkipped,
+    checkpointSkipReason:previousAccountCheckpointSkipped?'verified-base-with-no-pending-outbox':null
    });
   }catch(checkpointError){
    if(checkpointError&&checkpointError.code==='NEXUS_SYNC_CANCELLED')throw checkpointError;
@@ -1247,6 +1266,7 @@ if(owner&&owner!==newUserId){
   if(cachedSource){
    owner=newUserId;
    ready=true;
+   cachedWorkspaceRevealed=true;
    lastUserId=newUserId;
    status('Sync pending');
    say('Loaded this account’s saved workspace. Cloud comparison and synchronization are continuing; keep this device’s data until verification finishes.');
@@ -1261,7 +1281,7 @@ if(owner&&owner!==newUserId){
    setControls();
   }
 }
-const remote=await initScope.race(fetchRemote(newUserId,null,initScope.signal),'initial workspace verification');syncDiag('initialize-after-cloud-read',remote&&remote.payload,{remoteHasPayload:!!(remote&&remote.payload)});await assertActiveUser(newUserId,requestedEpoch);status('Checking local and cloud data…');
+const remote=await initScope.race(fetchRemote(newUserId,null,initScope.signal),'initial workspace verification');syncDiag('initialize-after-cloud-read',remote&&remote.payload,{remoteHasPayload:!!(remote&&remote.payload)});await assertActiveUser(newUserId,requestedEpoch);status(cachedWorkspaceRevealed?'Sync pending':'Checking local and cloud data…');
 // Capture the local workspace once, after the asynchronous cloud read. This includes
 // any offline edits made while the request was in flight without retaining a stale
 // deep clone and then cloning/comparing the complete large workspace a second time.
