@@ -1053,6 +1053,7 @@ async function initializeSession(s){
  return;
 }initializing=true;initializingUserId=requestedUserId;
  const initScope=createSyncAbortScope(sessionAbortController&&sessionAbortController.signal,SESSION_INITIALIZATION_TIMEOUT_MS);
+ const initializationStartedAt=Date.now();
  activeInitializationScope=initScope;
  const statusWatchdog=setTimeout(()=>{
   if(activeInitializationScope!==initScope||sessionEpoch!==requestedEpoch||
@@ -1336,6 +1337,9 @@ if(ready){await flushDurableLocalWrites();status('Synced');}syncDiag('initialize
  // Never leave a completed initialization displaying a transient loading status.
  // Recovery is owner/epoch guarded and never labels unverified cloud state as Synced.
  recoverStaleInitializationStatus(requestedUserId,requestedEpoch);
+ const terminalStatus=normalizeSyncUiText(el('cloudStatus')?el('cloudStatus').textContent:'');
+ syncDiag('initial-sync-verification',diagnosticWorkspace(),{durationMs:Date.now()-initializationStartedAt,
+  ok:/^synced$/i.test(terminalStatus),ready:!!ready,timedOut:initScope.timedOut()});
  setControls();scheduleDeltaRemotePoll();if(hasQueuedSession){
  const nextSession=queuedSession||session||null;queuedSession=null;hasQueuedSession=false;
  if(nextSession&&nextSession.user&&nextSession.user.id===lastUserId&&ready){session=nextSession;setControls();}
