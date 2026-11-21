@@ -682,15 +682,31 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,parentSignal
   if(ownerId&&storage&&typeof storage.isWorkspaceSnapshotCurrent==='function'){
     unchangedDurableSnapshot=await storage.isWorkspaceSnapshotCurrent(String(ownerId),trackerSnapshotJson,featureSnapshotJson);
   }
-  // An IndexedDB-cached snapshot is already the incoming owner's durable source.
-  // Normalization may change object-key order without changing any JSON values.
-  // Preserve the projection revision in that case; only a semantic data change
-  // should invalidate the existing entity generation and force a full rebuild.
-  if(!unchangedDurableSnapshot&&options.preserveProjectionIfEquivalent===true){
-    unchangedDurableSnapshot=sameJsonStructure(safeState,nextState)&&
-      sameJsonStructure(nextFeatures,rawFeatures);
+  // The byte-exact check is the fast path. A normalized or merged snapshot may
+  // serialize object keys in a different order even when its JSON values are
+  // unchanged. Compare against the current owner-scoped durable workspace before
+  // invalidating its entity generation; a real value change still advances revision.
+  let semanticSnapshotMatch=false;
+  if(!unchangedDurableSnapshot&&ownerId&&storage&&typeof storage.getWorkspace==='function'){
+    const equivalenceScope=createSyncAbortScope(parentSignal,30000);
+    try{
+      const durableSnapshot=await equivalenceScope.race(
+        storage.getWorkspace(String(ownerId)),'local workspace semantic comparison');
+      if(durableSnapshot&&durableSnapshot.ownerId===String(ownerId)){
+        semanticSnapshotMatch=sameJsonStructure(safeState,durableSnapshot.state)&&
+          sameJsonStructure(nextFeatures,durableSnapshot.featureState);
+        unchangedDurableSnapshot=semanticSnapshotMatch;
+      }
+    }catch(error){
+      if(parentSignal&&parentSignal.aborted)throw error;
+      // The optimization is optional: on an unreadable durable snapshot, retain
+      // the conservative behavior and rebuild rather than risk reusing stale rows.
+    }finally{equivalenceScope.clear();}
   }
-  syncDiag('workspace-snapshot-current',null,{same:unchangedDurableSnapshot});
+  syncDiag('workspace-snapshot-current',null,{
+    same:unchangedDurableSnapshot,
+    semanticSame:semanticSnapshotMatch
+  });
   if(applyEpoch!==sessionEpoch||(applyOwnerId&&sessionOwnerId!==applyOwnerId))throw syncCancelledError();
   const revisionEntry=unchangedDurableSnapshot?null:window.NexusWorkspaceEntityRevisionEntry?.(ownerId);
   if(revisionEntry)entries.push(revisionEntry);
