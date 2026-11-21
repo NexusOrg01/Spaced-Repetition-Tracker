@@ -243,6 +243,11 @@ assert.ok(diagnosticsUi.includes('if(!isPreviewDeploymentOrigin())') &&
 const conflictUi = section(cloudSync, 'function updateConflictRecoveryButton(){', 'function downloadConflictRecovery(){', 'conflict recovery UI');
 assert.ok(conflictUi.includes('if(!isPreviewDeploymentOrigin())') && conflictUi.includes('existingButton.remove()'),
   'the conflict recovery control must be hidden in production without removing its backend function');
+const previewOrigin = cloudSync.slice(cloudSync.indexOf('function isPreviewDeploymentOrigin(){'), cloudSync.indexOf('function productionDeltaClientGateOpen(){'));
+assert.ok(previewOrigin.includes("host.endsWith('.pages.dev')") &&
+  previewOrigin.includes("host!=='spaced-repetition-tracker.pages.dev'") &&
+  previewOrigin.includes("host!=='nexussrt.netlify.app'"),
+  'Cloudflare and hosted previews must retain preview-only controls without misclassifying known production aliases');
 assert.ok(cloudSync.includes('function normalizeSyncUiText(value)') && cloudSync.includes('aria-busy'),
   'cloud status text must be normalized and expose its loading state');
 assert.ok(index.includes('id="workspaceIsolationProgress"') &&

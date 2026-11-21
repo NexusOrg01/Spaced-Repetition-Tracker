@@ -2,7 +2,7 @@
 const MAX_SYNC_CURRICULUM_MARKERS=100000;
 const CFG_KEY='nexus.cloud.config.v1',OWNER_KEY='nexus.cloud.last-user-id',DEFAULT_CONFIG={url:'https://txugbdavblpettcnhcxl.supabase.co',key:'sb_publishable_sQkKOf-CfHlG7mvA2sFjIg_qcezI2Fa'},STAGING_CONFIG={url:'https://xuwfzibxhxzxxupprxsq.supabase.co',key:'sb_publishable_UE11M6ghcrdBaRKZUjzsVQ_tOGVc1zw'};
 const LIVE_SUPABASE_URL='https://txugbdavblpettcnhcxl.supabase.co',LIVE_APP_HOST='spaced-repetition-tracker-delta.vercel.app';
-function isPreviewDeploymentOrigin(){const host=location.hostname.toLowerCase();return host!==LIVE_APP_HOST&&(host.endsWith('.vercel.app')||host.endsWith('.netlify.app'));}
+function isPreviewDeploymentOrigin(){const host=location.hostname.toLowerCase();return host!==LIVE_APP_HOST&&host!=='nexussrt.netlify.app'&&host!=='spaced-repetition-tracker.pages.dev'&&(host.endsWith('.vercel.app')||host.endsWith('.netlify.app')||host.endsWith('.pages.dev'));}
 function productionDeltaClientGateOpen(){
  try{
   const productionProject=new URL(config().url);
