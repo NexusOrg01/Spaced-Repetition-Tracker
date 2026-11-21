@@ -683,9 +683,15 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,parentSignal
   state=safeState;
   if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(nextFeatures.fsrsSettings,{syncFeature:false,persist:false});
   window.NexusSetFeatureState(nextFeatures,{persist:false,render:false,applyFsrs:false});
-  // Cloud restore, merge and account handoff replace the compatibility workspace.
-  // Rebuild its owner-bound entity projection before later local deltas can target it.
-  // Projection failure is non-fatal: the committed snapshots remain authoritative.
+  // The atomic compatibility snapshot is already owner-verified and durable.
+  // Render it immediately so a large or stale IndexedDB projection does not keep
+  // the returning account hidden behind reconstruction work.
+  const renderStartedAt=Date.now();
+  renderAll();
+  const activeView=typeof document!=='undefined'&&typeof document.querySelector==='function'?document.querySelector('.view.active'):null;if(activeView&&activeView.id==='view-studyhub'&&window.NexusRenderHub)window.NexusRenderHub();
+  syncDiag('workspace-render',null,{durationMs:Date.now()-renderStartedAt,ok:true});
+  // Delta publication/pull remains gated by waitForWorkspaceEntitySync. Rendering
+  // compatibility data is not evidence that its entity projection is current.
   if(typeof window.NexusRebuildEntityProjection==='function'){
     const projectionScope=createSyncAbortScope(parentSignal),projectionStartedAt=Date.now();
     try{
@@ -707,10 +713,6 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,parentSignal
      throw error;
     }finally{projectionScope.clear();}
   }
-  const renderStartedAt=Date.now();
-  renderAll();
-  const activeView=typeof document!=='undefined'&&typeof document.querySelector==='function'?document.querySelector('.view.active'):null;if(activeView&&activeView.id==='view-studyhub'&&window.NexusRenderHub)window.NexusRenderHub();
-  syncDiag('workspace-render',null,{durationMs:Date.now()-renderStartedAt,ok:true});
   return true;
 }
 async function applyRemote(payload,ownerId,serverVersion){
