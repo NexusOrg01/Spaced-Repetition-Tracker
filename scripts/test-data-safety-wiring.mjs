@@ -313,7 +313,7 @@ assert.ok(cloudSync.includes("status('Cloud conflict')") && cloudSync.includes("
 assert.ok(cloudSync.includes("conflict.code='NEXUS_CLOUD_CONFLICT'"), 'verification mismatches must be treated as cloud conflicts');
 assert.ok(cloudSync.includes("else{ready=false;status('Sync error')"), 'transient cloud failures must expose an error state while automatic retry preserves pending data');
 
-const accountChoice = section(cloudSync, 'async function initializeSession(s){', 'async function sameWorkspace(a,b)', 'account-choice cancellation safeguards');
+const accountChoice = section(cloudSync, 'async function initializeSession(s){', 'async function sameWorkspace(a,b,parentSignal)', 'account-choice cancellation safeguards');
 const destructiveChoiceGuard = accountChoice.indexOf("while(choice==='replace-cloud'||choice==='replace'){");
 const choiceExecution = accountChoice.indexOf("if(choice==='merge'){");
 assert.ok(destructiveChoiceGuard >= 0 && choiceExecution > destructiveChoiceGuard, 'confirm destructive account choices before applying or uploading workspace data');
