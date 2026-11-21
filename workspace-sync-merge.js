@@ -180,9 +180,12 @@
   function yieldToBrowser(){return new Promise(resolve=>setTimeout(resolve,0));}
   function throwIfComparisonAborted(signal){
     if(!signal||!signal.aborted)return;
-    if(signal.reason instanceof Error)throw signal.reason;
-    const error=new Error('Workspace comparison was cancelled.');
-    error.name='AbortError';error.code='NEXUS_SYNC_CANCELLED';throw error;
+    const reason=signal.reason;
+    const error=new Error(reason&&typeof reason.message==='string'
+      ?reason.message:'Workspace comparison was cancelled.');
+    error.name='AbortError';error.code='NEXUS_SYNC_CANCELLED';
+    if(reason)error.cause=reason;
+    throw error;
   }
   async function sameAsync(a,b,signal){
     throwIfComparisonAborted(signal);
