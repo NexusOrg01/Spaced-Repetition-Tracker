@@ -2118,6 +2118,18 @@
       request.onsuccess=()=>set(request.result||null);
     });
   }
+  // Compare exact durable snapshot bytes without parsing or cloning a large workspace.
+  // This lets an account return preserve its current workspace revision and projection.
+  async function isWorkspaceSnapshotCurrent(ownerId,trackerJson,featureJson){
+    const owner=entityOwnerKey(ownerId);
+    if(!enabled||!database||typeof trackerJson!=='string'||typeof featureJson!=='string')return false;
+    const row=await transaction([WORKSPACES],'readonly',(tx,set)=>{
+      const request=tx.objectStore(WORKSPACES).get(workspaceKey(owner));
+      request.onsuccess=()=>set(request.result||null);
+    });
+    return validWorkspaceRow(row,owner)&&row.tracker===trackerJson&&row.featureState===featureJson&&
+      Number.isSafeInteger(Number(row.workspaceRevision))&&Number(row.workspaceRevision)>=0;
+  }
   // Cheap, owner/revision-aware readiness probe for snapshot handoff. It reads only
   // the manifest and two generation roots; it never scans or materializes the large
   // entity collection merely to decide whether a full rebuild can be skipped.
@@ -3240,6 +3252,7 @@
     getWorkspaceEntityRevisionKey,
     migrateWorkspaceEntities,
     readWorkspaceEntities,
+    isWorkspaceSnapshotCurrent,
     getWorkspaceEntityProjectionReadiness,
     beginWorkspaceEntityRecovery,
     readWorkspaceEntityRecovery,
