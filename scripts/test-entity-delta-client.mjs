@@ -1196,7 +1196,7 @@ function makeStagingRuntimeHarness({
   gate=false,localOrigin=true,stagingUrl=stagingSupabaseUrl,recoveryIntent=null,
   syncResult={ok:true,publishedCount:1},recoveryResult={ok:true,recovered:true},
   missingChunkStorage=false,hostedQaGate=false,hostedQaOrigin='',hostedQaBranchOrigin='',
-  productionGate=false,browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/dla04-entity-projection-guard',
+  productionGate=false,browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/sync-account-handoff-reliability',
   remoteState={mode:'delta',protocol_version:1},remoteStateError=null,
   productionEnableResult={ok:true,mode:'delta'},productionEnableError=null,
   changeLocalOwnerOnEnable=false,
