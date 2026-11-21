@@ -253,7 +253,7 @@ async function downloadSyncDiagnostics(){
 }
 function installSyncDiagnosticsButton(){
  if(!isPreviewDeploymentOrigin()){
-  ['nexusSyncDiagnosticsToggle','nexusSyncDiagnosticsDownload'].forEach(id=>{const button=el(id);if(button)button.remove();});
+  ['nexusSyncDiagnosticsToggle','nexusSyncDiagnosticsDownload'].forEach(id=>{const button=el(id);if(button){if(typeof button.remove==='function')button.remove();else button.hidden=true;}});
   return;
  }
  const help=el('cloudHelpText'),anchor=help&&help.parentNode?help:null;
@@ -310,7 +310,7 @@ function conflictRecoveryOwner(){return session&&session.user&&session.user.id||
 function updateConflictRecoveryButton(){
  if(!isPreviewDeploymentOrigin()){
   const existingButton=el('nexusConflictRecoveryDownload');
-  if(existingButton)existingButton.remove();
+  if(existingButton){if(typeof existingButton.remove==='function')existingButton.remove();else existingButton.hidden=true;}
   return;
  }
  const help=el('cloudHelpText'),queue=window.NexusOfflineSyncQueue;
