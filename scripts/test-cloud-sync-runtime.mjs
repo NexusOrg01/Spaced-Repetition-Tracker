@@ -238,7 +238,7 @@ assert.match(source,/if\(deltaResult&&deltaResult\.ok===true\)\{hostedDeltaPolli
 assert.ok(source.includes('if(pending||hostedDeltaPollingEnabled)schedule();')&&
   source.includes("window.addEventListener('focus',resumeAfterConnectivity)"),
   'returning to an active tab must immediately pull remote changes even when its local queue is empty');
-assert.match(source,/async function acknowledgeDeltaShadowSnapshot\([\s\S]*?current\.operationId!==pending\.operationId[\s\S]*?sameWorkspace\(current\.payload,snapshot\(\)\)[\s\S]*?queue\.acknowledge\(/,
+assert.match(source,/async function acknowledgeDeltaShadowSnapshot\([\s\S]*?current\.operationId!==pending\.operationId[\s\S]*?sameWorkspace\(current\.payload,snapshot\(\),signal\)[\s\S]*?queue\.acknowledge\(/,
   'a compatibility snapshot may be retired only after matching owner, operation, server stamp and current workspace');
 
 assert.match(source,/SESSION_INITIALIZATION_TIMEOUT_MS=120000/,
@@ -311,7 +311,7 @@ assert.ok(source.includes("runStagingEntityDeltaSync(ownerId,signal,{downgrade:t
   'automatic fallback must verify snapshot mode before the compatibility writer resumes');
 assert.ok(uploadSource.includes('if(!pending&&deltaResult&&deltaResult.skipped)')&&
   uploadSource.includes('verifiedBase.serverVersion===lastRemoteStamp')&&
-  uploadSource.includes('await sameWorkspace(verifiedBase,snapshot())'),
+  uploadSource.includes('await sameWorkspace(verifiedBase,snapshot(),uploadScope.signal)'),
   'a no-change cloud restore must be verified against its committed base without rewriting the compatibility snapshot');
 const deltaSyncStart=source.indexOf('async function runStagingEntityDeltaSync');
 const deltaSyncEnd=source.indexOf('async function upload(){',deltaSyncStart);
