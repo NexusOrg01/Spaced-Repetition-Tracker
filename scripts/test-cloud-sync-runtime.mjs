@@ -262,7 +262,7 @@ const authGuardSandbox = {
 };
 vm.createContext(authGuardSandbox);
 vm.runInContext(source.slice(authGuardStart, authGuardEnd) +
-  '\\nglobalThis.authStateEventBelongsToCurrentOwner = authStateEventBelongsToCurrentOwner;' +
+  '\nglobalThis.authStateEventBelongsToCurrentOwner = authStateEventBelongsToCurrentOwner;' +
   '\\nglobalThis.authInitializationCallbackIsCurrent = authInitializationCallbackIsCurrent;',
   authGuardSandbox, { filename: 'stale-account-auth-event-guard.js' });
 assert.equal(authGuardSandbox.authStateEventBelongsToCurrentOwner(
@@ -282,10 +282,10 @@ assert.equal(authGuardSandbox.authInitializationCallbackIsCurrent('account-A', 1
 assert.equal(authGuardSandbox.authInitializationCallbackIsCurrent('account-A', 11), false,
   'a queued initialization callback from before the most recent account rotation must be inert');
 assert.match(source,
-  /client\\.auth\\.onAuthStateChange\\(\\(event,newSession\\)=>\\{\\s*if\\(!authStateEventBelongsToCurrentOwner\\(event,newSession\\)\\)\\{/,
+  /client\.auth\\.onAuthStateChange\\(\(event,newSession\)=>\{\s*if\(!authStateEventBelongsToCurrentOwner\(event,newSession\)\)\{/,
   'the actual Supabase listener must reject stale refreshes before assigning session or rotating the workspace lock');
 assert.match(source,
-  /const callbackEpoch=sessionEpoch;[\\s\\S]*?if\\(!authInitializationCallbackIsCurrent\\(uid,callbackEpoch\\)\\)return;/,
+  /const callbackEpoch=sessionEpoch;[\s\S]*?if\(!authInitializationCallbackIsCurrent\(uid,callbackEpoch\)\)return;/,
   'the actual deferred sign-in initialization callback must be fenced by the epoch that scheduled it');
 
 const indexHtml = readFileSync(resolve(root, 'index.html'), 'utf8');
