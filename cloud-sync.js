@@ -113,7 +113,7 @@ function syncDiagSummary(payload){
  return {hasPackInstallIntent:packInstalled.length>0,packInstallMarkerCount:packInstalled.length,packDeletionMarkerCount:packDeleted.length,...counts,hasSettings:!!s.settings};
 }
 const SYNC_DIAG_STAGES=new Set([
- 'auth-event','baseline-restored-from-remote','cloud-chunk-read-error','cloud-read','cloud-read-error','cloud-write-complete','cloud-write-error',
+ 'auth-event','baseline-restored-from-remote','cloud-chunk-read','cloud-chunk-read-error','cloud-read','cloud-read-error','cloud-write-complete','cloud-write-error',
  'curriculum-install-save-requested','delta-auto-downgrade-result','delta-snapshot-downgrade-result','delta-sync-result','delta-recovery-verification','diagnostics-enabled','entity-projection-rebuild','entity-sync-result','initialize-after-cloud-read',
  'initialize-error','initialize-finished','initialize-local-fallback','initialize-settled','initialize-start','initialize-status-watchdog','initialize-stale-status-recovered',
  'account-handoff-checkpoint-failed','account-handoff-outgoing-checkpoint','online-account-workspace-restored','local-save-queue-error',
@@ -124,7 +124,8 @@ const SYNC_DIAG_STAGES=new Set([
  'upload-start','upload-verification-readback','workspace-comparison-failed','workspace-comparison-slow','workspace-merge-commit-complete','workspace-merge-commit-error',
  'workspace-merge-commit-start','workspace-merge-complete','workspace-merge-error',
  'workspace-merge-normalize-complete','workspace-merge-normalize-error','workspace-merge-normalize-start',
- 'workspace-merge-restarted','workspace-merge-start','workspace-saved-locally'
+ 'workspace-merge-restarted','workspace-merge-start','workspace-saved-locally',
+ 'workspace-comparison','workspace-local-commit','projection-reuse','projection-rebuild','workspace-render','initial-sync-verification'
 ]);
 function sanitizeSyncDiagEvent(event){
  if(!event||typeof event!=='object'||Array.isArray(event)||!SYNC_DIAG_STAGES.has(event.stage))return null;
@@ -159,7 +160,7 @@ function sanitizeSyncDiagEvent(event){
   source:['active-local-workspace'],
   event:['INITIAL_SESSION','SIGNED_IN','SIGNED_OUT','TOKEN_REFRESHED','USER_UPDATED'],
   errorCategory:['conflict','timeout','queue-limit','queue-unavailable','other'],
-  projectionRebuildMode:['snapshot-backfill','incremental','unchanged','skipped','other'],
+  projectionRebuildMode:['snapshot-backfill','incremental','unchanged','skipped','reused','other'],
   entitySyncMode:['snapshot-backfill','incremental','unchanged','superseded','skipped','error','other'],
   projectionRebuildErrorCategory:['conflict','timeout','queue-limit','queue-unavailable','other'],
   projectionRebuildFailureStage:['preflight','stage-manifest','generate-rows','write-row-batch','publish-manifest','verify-publication','read-compatibility-workspace','sync-workspace-entities','post-rebuild-readiness','other'],
@@ -594,7 +595,7 @@ function mergeState(local,remote){
  return normalizeState(mergedState);
 }
 function hasLocalWork(s){if(!s)return false;const core=s.state||s||{},f=s.featureState||{};const coreWork=!!(core.topics?.length||core.history?.length||core.exams?.length||core.streams?.length>1||core.subjects?.length>1);const featureWork=['journal','papers','goals','studyLogs','selectedTopicIds'].some(k=>Array.isArray(f[k])&&f[k].length>0)||Object.keys(f.syllabusTargets||{}).length>0||Object.keys(f.taskChecks||{}).length>0||!!(f.lastBackupAt||f.lastReminderAt||f.focusStartedAt||f.focusPausedAt||f.focusTopicId||f.focusSubjectId);const defaults={dailyMinutes:90,sessionMinutes:25,scheduler:'classic',weeklyReviewGoal:100,backlogDays:7,reminders:false,reminderTime:'08:00',maxInterval:120,finalRevision:false,workloadDays:7};const settings=f.settings||{};const settingsWork=Object.keys(defaults).some(k=>settings[k]!==undefined&&settings[k]!==defaults[k]);return coreWork||featureWork||settingsWork;}
-async function hasUnassignedWorkspaceChanges(owner,newUserId,localPayload){
+async function hasUnassignedWorkspaceChanges(owner,newUserId,localPayload,parentSignal){
  const queue=window.NexusOfflineSyncQueue;
  if(!owner||owner===newUserId)return hasLocalWork(localPayload);
  const priorBase=queue?queue.getBase(localStorage,owner):null;
@@ -602,7 +603,7 @@ async function hasUnassignedWorkspaceChanges(owner,newUserId,localPayload){
  // pending snapshot. It is therefore not a trustworthy ownership baseline. Compare the
  // current device workspace with the last verified cloud baseline instead. If no verified
  // baseline exists, conservatively require an explicit choice whenever local work exists.
- return priorBase?!(await sameWorkspace(localPayload,priorBase)):hasLocalWork(localPayload);
+ return priorBase?!(await sameWorkspace(localPayload,priorBase,parentSignal)):hasLocalWork(localPayload);
 }
 function chooseLocalData(signal){return new Promise((resolve,reject)=>{
  const dlg=el('accountChoiceDialog');if(!dlg){resolve('cancel');return;}
@@ -666,10 +667,14 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,parentSignal
   if(window.NexusOfflineSyncQueue&&typeof window.NexusOfflineSyncQueue.compactMetadata==='function')window.NexusOfflineSyncQueue.compactMetadata(localStorage);
   if(applyOwnerId&&(applyEpoch!==sessionEpoch||sessionOwnerId!==applyOwnerId||
      !session||!session.user||session.user.id!==applyOwnerId))throw syncCancelledError();
-  const applyScope=createSyncAbortScope(parentSignal);
+  const applyScope=createSyncAbortScope(parentSignal),commitStartedAt=Date.now();
   try{
    await applyScope.race(window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,entries),'atomic workspace replacement');
+   syncDiag('workspace-local-commit',null,{durationMs:Date.now()-commitStartedAt,ok:true});
    if(applyEpoch!==sessionEpoch||(applyOwnerId&&sessionOwnerId!==applyOwnerId))throw syncCancelledError();
+  }catch(error){
+   syncDiag('workspace-local-commit',null,{durationMs:Date.now()-commitStartedAt,ok:false,errorCategory:syncDiagErrorCategory(error)});
+   throw error;
   }finally{applyScope.clear();}
   state=safeState;
   if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(nextFeatures.fsrsSettings,{syncFeature:false,persist:false});
@@ -678,14 +683,30 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,parentSignal
   // Rebuild its owner-bound entity projection before later local deltas can target it.
   // Projection failure is non-fatal: the committed snapshots remain authoritative.
   if(typeof window.NexusRebuildEntityProjection==='function'){
-    const projectionScope=createSyncAbortScope(parentSignal);
+    const projectionScope=createSyncAbortScope(parentSignal),projectionStartedAt=Date.now();
     try{
-     await projectionScope.race(window.NexusRebuildEntityProjection(),'local entity projection rebuild');
+     const projectionResult=await projectionScope.race(
+      window.NexusRebuildEntityProjection({signal:projectionScope.signal}),'local entity projection rebuild');
+     const projectionDurationMs=Date.now()-projectionStartedAt;
+     if(projectionResult&&projectionResult.mode==='reused'){
+      syncDiag('projection-reuse',null,{durationMs:projectionDurationMs,ready:true,projectionRebuildMode:'reused'});
+     }else{
+      syncDiag('projection-rebuild',null,{durationMs:projectionDurationMs,
+       projectionRebuildAttempted:!(projectionResult&&projectionResult.skipped),
+       projectionRebuildOk:!(projectionResult&&projectionResult.ok===false),
+       projectionRebuildMode:projectionResult&&projectionResult.mode||'other'});
+     }
      if(applyEpoch!==sessionEpoch||(ownerId&&sessionOwnerId!==String(ownerId)))throw syncCancelledError();
+    }catch(error){
+     syncDiag('projection-rebuild',null,{durationMs:Date.now()-projectionStartedAt,
+      projectionRebuildAttempted:true,projectionRebuildOk:false,errorCategory:syncDiagErrorCategory(error)});
+     throw error;
     }finally{projectionScope.clear();}
   }
+  const renderStartedAt=Date.now();
   renderAll();
   const activeView=typeof document!=='undefined'&&typeof document.querySelector==='function'?document.querySelector('.view.active'):null;if(activeView&&activeView.id==='view-studyhub'&&window.NexusRenderHub)window.NexusRenderHub();
+  syncDiag('workspace-render',null,{durationMs:Date.now()-renderStartedAt,ok:true});
   return true;
 }
 async function applyRemote(payload,ownerId,serverVersion){
@@ -1317,18 +1338,19 @@ if(ready){await flushDurableLocalWrites();status('Synced');}syncDiag('initialize
  else setTimeout(()=>initializeSession(nextSession),0);
 }}}
 
-async function sameWorkspace(a,b){
+async function sameWorkspace(a,b,parentSignal){
  if(!a||!b)return false;
  const merger=window.NexusWorkspaceSyncMerge;
  if(!merger||typeof merger.sameAsync!=='function')
   throw new Error('Safe large-workspace comparison is unavailable.');
- const startedAt=Date.now(),scope=createSyncAbortScope(null,WORKSPACE_COMPARE_TIMEOUT_MS);
+ const startedAt=Date.now(),scope=createSyncAbortScope(parentSignal,WORKSPACE_COMPARE_TIMEOUT_MS);
  try{
   const same=await scope.race(
    merger.sameAsync({state:a.state||{},featureState:a.featureState||{}},
-    {state:b.state||{},featureState:b.featureState||{}}),
+    {state:b.state||{},featureState:b.featureState||{}},scope.signal),
    'large workspace comparison');
   const durationMs=Date.now()-startedAt;
+  syncDiag('workspace-comparison',null,{durationMs,same});
   if(durationMs>=10000)syncDiag('workspace-comparison-slow',null,{durationMs,same});
   return same;
  }catch(error){
@@ -1351,7 +1373,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   const current=queue.getPending(localStorage,userId);
   if(!current||current.status!=='pending'||current.ownerUserId!==userId||
      current.operationId!==pending.operationId||current.baseServerVersion!==serverVersion||
-     !(await sameWorkspace(current.payload,snapshot())))return false;
+     !(await sameWorkspace(current.payload,snapshot(),signal)))return false;
   await assertActiveUser(userId);
   const acknowledgement=queue.acknowledge(localStorage,userId,current.operationId,
     current.baseServerVersion,serverVersion);
