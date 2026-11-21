@@ -1346,6 +1346,13 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(initial.state.topics[0].name,'Original title');
   const originalWorkspace=await first.api.getWorkspace(owner);
   const workspaceRevision=originalWorkspace.workspaceRevision;
+  assert.equal(await first.api.isWorkspaceSnapshotCurrent(owner,
+    JSON.stringify(originalWorkspace.state),JSON.stringify(originalWorkspace.featureState)),true,
+    'an exact target-owner compatibility snapshot must be recognized without parsing it');
+  assert.equal(await first.api.isWorkspaceSnapshotCurrent(owner,
+    JSON.stringify({...originalWorkspace.state,settings:{theme:'changed'}}),
+    JSON.stringify(originalWorkspace.featureState)),false,
+    'a changed target-owner snapshot must not suppress its workspace revision marker');
   const initialReadiness=await first.api.getWorkspaceEntityProjectionReadiness(owner);
   assert.equal(initialReadiness.ready,true,
     'a complete owner-matched projection at the durable workspace revision must be reusable');
