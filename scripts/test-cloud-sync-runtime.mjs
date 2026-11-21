@@ -596,7 +596,7 @@ assert.ok(keepLocalStart>=0&&keepLocalEnd>keepLocalStart,
 const keepLocalSandbox={
   OWNER_KEY:'nexus.cloud.last-user-id',session:{user:{id:'account-A'}},ready:false,
   localStorage:{getItem:()=> 'account-A'},statusValue:'',helpText:'',retryCalls:0,
-  status(value){this.statusValue=value;},say(value){this.helpText=value;},scheduleRetry(){this.retryCalls++;}
+  status(value){keepLocalSandbox.statusValue=value;},say(value){keepLocalSandbox.helpText=value;},scheduleRetry(){keepLocalSandbox.retryCalls++;}
 };
 vm.createContext(keepLocalSandbox);
 vm.runInContext(source.slice(keepLocalStart,keepLocalEnd)+
