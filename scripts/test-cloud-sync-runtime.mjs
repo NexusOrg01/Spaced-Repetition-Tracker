@@ -600,7 +600,7 @@ const keepLocalSandbox={
 };
 vm.createContext(keepLocalSandbox);
 vm.runInContext(source.slice(keepLocalStart,keepLocalEnd)+
-  '\\nglobalThis.preserveForTest=preserveLocalWorkspaceAfterSyncFailure;',
+  '\nglobalThis.preserveForTest=preserveLocalWorkspaceAfterSyncFailure;',
   keepLocalSandbox,{filename:'owner-verified-sync-failure.js'});
 assert.equal(keepLocalSandbox.preserveForTest('account-A'),true,
   'a failed cloud verification must retain the active owner-verified local workspace');
