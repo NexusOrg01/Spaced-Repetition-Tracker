@@ -149,6 +149,8 @@ assert.match(source, /if\(timedOut\)throw syncTimeoutError\(isAuth\?'Supabase Au
   'the bounded fetch error path must preserve the actual request deadline');
 assert.match(source, /previousAccountHasChanges=await initScope\.race\(hasUnassignedWorkspaceChanges\(owner,newUserId,localPayload\),'previous account workspace comparison'\)/,
   'account handoff must await and cancel the previous-owner workspace comparison instead of leaving a detached rejection');
+assert.match(source, /if\(pendingForUser&&owner!==newUserId&&!previousAccountHasChanges\)\{await applyWorkspaceSnapshot\(/,
+  'the target account pending snapshot must only be restored after the previous-owner workspace comparison is complete');
 
 // Hosted Delta must actively pull remote edits; local-save and reconnect-only triggers
 // leave an already-open second device stale indefinitely. Poll only after the gated
@@ -248,7 +250,6 @@ assert.ok(deltaSyncSource.includes('cursor.requiresPull===false')&&
 assert.ok(initializationSource.includes('if(ready&&remote&&remote.payload&&!deltaSyncAttemptedDuringInitialization)')&&
   initializationSource.includes('const restoredSync=await upload()'),
   'a device that restores an existing cloud snapshot must run its initial sync coordinator even when it has no pending snapshot');
-
 
 const restoreBaseStart=source.indexOf('function restoreMissingQueueBaseFromVerifiedRemote(');
 const restoreBaseEnd=source.indexOf('async function initializeSession(s){',restoreBaseStart);
@@ -497,8 +498,7 @@ function makeQuery(table) {
     select() { return builder; },
     eq(key, value) { if (key === 'user_id') userId = value; if (key === 'updated_at') expectedStamp = value; return builder; },
     update(v) { operation = 'update'; values = v; return builder; },
-    insert(v) { operation = 'insert'; values = v; return builder; },
-    async maybeSingle() {
+    insert(v) { operation = 'insert'; values = v; return builder; },    async maybeSingle() {
       if(table==='nexus_user_data')remoteReadCount++;
       if (!networkAvailable) throw new Error('simulated offline network');
       if (deferNextRemoteRead) {
@@ -747,8 +747,7 @@ assert.ok(recoveredBase.state.topics.some(topic=>topic.id==='ambiguous-write-top
 const beforeMetadataOnly=rows.get(accountA.id);
 const metadataOnlyPending={...beforeMetadataOnly.payload,exportedAt:'2026-10-20T00:00:00.000Z'};
 queue.rememberStamp(storage,accountA.id,beforeMetadataOnly.updated_at);
-queue.commitWorkspace(storage,[
-  {key:STATE_KEY,value:JSON.stringify(beforeMetadataOnly.payload.state)},
+queue.commitWorkspace(storage,[  {key:STATE_KEY,value:JSON.stringify(beforeMetadataOnly.payload.state)},
   {key:FEATURE_KEY,value:JSON.stringify(beforeMetadataOnly.payload.featureState||{})}
 ],metadataOnlyPending);
 const metadataOnlyRemote={...beforeMetadataOnly,payload:{...beforeMetadataOnly.payload,exportedAt:'2026-10-20T14:00:00.000Z'},updated_at:new Date(Date.parse(beforeMetadataOnly.updated_at)+60000).toISOString()};
@@ -997,8 +996,7 @@ assert.ok(!getElement('cloudHelpText').textContent.includes('"undefined" is not 
   assert.ok(converged.streams.some(stream => stream.id === 'commerce-cloud-manual-stream'),
     'unrelated remote manual data must survive the full reconciliation');
   assert.ok(converged.topics.some(topic => topic.id === 'commerce-cloud-manual-topic'),
-    'unrelated remote manual topics must survive the full reconciliation');
-  assert.ok(!queue.hasPending(storage, accountA.id),
+    'unrelated remote manual topics must survive the full reconciliation');  assert.ok(!queue.hasPending(storage, accountA.id),
     'the repaired cloud workspace must be verified before the outbox entry is acknowledged');
 
   // Critical regression: the local device is clean and exactly matches its last-synced
@@ -1247,8 +1245,7 @@ for (const scenario of [
   const priorStamp = new Date(Date.now() - 60000).toISOString();
   const targetStamp = new Date(Date.now() + 60000).toISOString();
   const priorFeatures = featuresFor(null);
-  const targetRemotePayload = payloadFor(null);
-  rows.set(accountA.id, { user_id: accountA.id, payload: { state: baselineState, featureState: priorFeatures }, updated_at: priorStamp });
+  const targetRemotePayload = payloadFor(null);  rows.set(accountA.id, { user_id: accountA.id, payload: { state: baselineState, featureState: priorFeatures }, updated_at: priorStamp });
   rows.set(accountB.id, { user_id: accountB.id, payload: targetRemotePayload, updated_at: targetStamp });
 
   if (queue.hasPending(storage, accountA.id)) queue.archive(storage, accountA.id, 'reused-baseline-test-reset');
@@ -1497,7 +1494,6 @@ for (const scenario of [
   assert.ok(syncedCommerceCount === 46 || queue.hasPending(storage, accountA.id),
     'the newer Commerce install must either be verified in cloud or remain queued for recovery');
 }
-
 // Regression: both the current local workspace and cloud row can share an incomplete
 // snapshot after an earlier bad write. In that case ordinary local-vs-cloud comparison
 // says "equal"; the last verified base must still recover Commerce install intent and rows.
@@ -1747,8 +1743,7 @@ for (const scenario of [
     });
   }
   for(let index=0;index<retainedCount;index++){
-    baseState.topics.push({
-      id:'device-sync-retained-'+index,name:'Retained topic '+index,
+    baseState.topics.push({      id:'device-sync-retained-'+index,name:'Retained topic '+index,
       subjectId:'large-retained-subject',notes:'',custom:true,createdAt:'2026-10-01',
       lastReviewed:'',lastRating:null,dueDate:'',intervalDays:0,reviewCount:0,
       streak:0,lapses:0,archived:false
@@ -1997,8 +1992,7 @@ context.state=payloadPendingB.state;
 storage.setItem(STATE_KEY,JSON.stringify(payloadPendingB.state));
 storage.setItem(FEATURE_KEY,JSON.stringify(payloadPendingB.featureState));
 queue.commitWorkspace(storage,[
- {key:STATE_KEY,value:JSON.stringify(payloadPendingB.state)},
- {key:FEATURE_KEY,value:JSON.stringify(payloadPendingB.featureState)}
+ {key:STATE_KEY,value:JSON.stringify(payloadPendingB.state)}, {key:FEATURE_KEY,value:JSON.stringify(payloadPendingB.featureState)}
 ],payloadPendingB,{baseServerVersion:cloudBBeforeUpload.updated_at});
 assert.equal(queue.hasPending(storage,accountFastB.id),true,
   'account B must have a durable pending snapshot before its upload is interrupted');
