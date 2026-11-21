@@ -762,12 +762,40 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,parentSignal
      throw error;
     }finally{projectionScope.clear();}
   }else if(options.deferProjectionToUpload===true){
-    // A restored cloud snapshot is already atomically committed and owner-verified.
-    // Let upload() check the rollout gate first; its Delta path rebuilds/verifies this
-    // projection before use, while snapshot-mode accounts never need the Delta index.
-    syncDiag('projection-deferred-to-upload',null,{
-     ownerVerified:!!(ownerId&&localStorage.getItem(OWNER_KEY)===String(ownerId))
-    });
+    // Keep account handoff fast: first probe only the target owner's manifest and
+    // generation roots. Reuse a valid projection immediately, but defer any stale or
+    // missing projection rebuild until upload() has verified the authenticated Delta
+    // rollout gate. Snapshot-mode accounts do not need the Delta-only index.
+    const projectionScope=createSyncAbortScope(parentSignal),projectionStartedAt=Date.now();
+    const ownerVerified=!!(ownerId&&localStorage.getItem(OWNER_KEY)===String(ownerId));
+    try{
+     if(typeof window.NexusRebuildEntityProjection==='function'){
+      const projectionResult=await projectionScope.race(
+       window.NexusRebuildEntityProjection({signal:projectionScope.signal,reuseOnly:true}),
+       'local entity projection readiness');
+      const projectionDurationMs=Date.now()-projectionStartedAt;
+      if(projectionResult&&projectionResult.mode==='reused'){
+       syncDiag('projection-reuse',diagnosticWorkspace(),{
+        durationMs:projectionDurationMs,ready:true,projectionRebuildMode:'reused',ownerVerified
+       });
+      }else{
+       syncDiag('projection-deferred-to-upload',null,{
+        durationMs:projectionDurationMs,ownerVerified,
+        reason:projectionResult&&typeof projectionResult.reason==='string'
+         ?projectionResult.reason:'projection-not-current'
+       });
+      }
+     }else{
+      syncDiag('projection-deferred-to-upload',null,{durationMs:Date.now()-projectionStartedAt,ownerVerified,
+       reason:'projection-readiness-unavailable'});
+     }
+    }catch(error){
+     if(parentSignal&&parentSignal.aborted)throw error;
+     syncDiag('projection-deferred-to-upload',null,{
+      durationMs:Date.now()-projectionStartedAt,ownerVerified,
+      errorCategory:syncDiagErrorCategory(error),reason:'projection-readiness-unavailable'
+     });
+    }finally{projectionScope.clear();}
   }
   return true;
 }
