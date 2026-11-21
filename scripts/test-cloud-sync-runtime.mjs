@@ -204,7 +204,17 @@ for (const label of [
     'setCloudStatus must expose the normalized punctuation in the real UI node');
   assert.equal(statusRecoverySandbox.isTransientInitializationStatus(statusRecoverySandbox.statusValue), true,
     'the canonical status helper must recognize every normalized loading label');
+  assert.equal(statusRecoverySandbox.statusNode.attributes['data-sync-state'], 'attention',
+    'every non-Synced state must use the red attention treatment');
 }
+statusRecoverySandbox.setCloudStatus('Sync pending');
+assert.equal(statusRecoverySandbox.statusNode.attributes['data-sync-state'], 'attention',
+  'pending verification must remain in the red attention treatment');
+statusRecoverySandbox.setCloudStatus('Synced');
+assert.equal(statusRecoverySandbox.statusNode.attributes['data-sync-state'], 'synced',
+  'only the exact Synced state may use the green treatment');
+assert.equal(statusRecoverySandbox.statusNode.attributes['aria-busy'], 'false',
+  'verified Synced state must not be marked busy');
 
 statusRecoverySandbox.setCloudStatus('Loading account…');
 assert.equal(statusRecoverySandbox.recoverStatus('account-A', 12), true);
