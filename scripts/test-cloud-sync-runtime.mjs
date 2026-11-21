@@ -644,7 +644,7 @@ try{
    'account A fallback must restore A’s queued data, not account B data');
  assert.equal(queue.hasPending(storage,accountA.id),true,
    'account A’s cloud-pending snapshot must remain queued until a later verified retry');
- assert.equal(getElement('cloudStatus').textContent,'Sync delayed · local data ready',
+ assert.equal(getElement('cloudStatus').textContent,'Sync delayed - local data ready',
    'account A return must leave indefinite loading and show an honest delayed-sync status');
  assert.notEqual(getElement('cloudStatus').textContent,'Synced',
    'local-ready fallback must not falsely claim account A cloud verification completed');
@@ -1690,7 +1690,7 @@ for (const scenario of [
     'the offline handoff must not change account A cloud data');
   assert.equal(rows.get(accountB.id) ? JSON.stringify(rows.get(accountB.id)) : null, remoteBBefore,
     'the cached workspace must not trigger a cloud write while offline');
-  assert.equal(getElement('cloudStatus').textContent, 'Offline · local workspace',
+  assert.equal(getElement('cloudStatus').textContent, 'Offline - local workspace',
     'offline restoration must be shown as local-only, not synced');
 
   const accountC = { id: 'account-C-no-cache', email: 'c@example.test' };
@@ -2177,7 +2177,7 @@ try{
    'local-ready fallback must retain only the active account owner');
  assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id,'large-workspace-H',
    'local-ready fallback must preserve the active account workspace');
- assert.equal(getElement('cloudStatus').textContent,'Sync delayed · local data ready',
+ assert.equal(getElement('cloudStatus').textContent,'Sync delayed - local data ready',
    'a timed-out large comparison must replace the indefinite loading status with an honest local-ready status');
  assert.notEqual(getElement('cloudStatus').textContent,'Synced',
    'local fallback must never claim cloud verification succeeded');
