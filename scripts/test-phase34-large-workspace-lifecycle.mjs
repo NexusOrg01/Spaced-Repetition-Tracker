@@ -894,15 +894,24 @@ try {
     const dialog = document.querySelector('#accountChoiceDialog');
     return !!(dialog && dialog.open);
   }, null, { timeout: 30000 });
-  page.on('dialog', async dialog => {
-    if (dialog.type === 'confirm' &&
-        /replace this device’s offline workspace with this account’s cloud backup/.test(dialog.message)) {
-      await dialog.accept();
-      return;
-    }
-    await dialog.dismiss();
-  });
-  await page.locator('#accountChoiceDialog [data-account-choice="replace"]').click();
+  // Explicitly capture and accept the one expected confirmation for restoring
+  // the synthetic cloud backup into this brand-new empty browser profile.
+  const restoreConfirmationPromise = page.waitForEvent('dialog', { timeout: 10000 });
+  const restoreClickPromise = page.locator('#accountChoiceDialog [data-account-choice="replace"]').click();
+  const restoreConfirmation = await restoreConfirmationPromise;
+  const restoreConfirmationDetails = {
+    type: restoreConfirmation.type,
+    message: restoreConfirmation.message
+  };
+  console.log('DLA-08E_INITIAL_RESTORE_CONFIRMATION=' +
+    JSON.stringify(restoreConfirmationDetails));
+  assert.equal(restoreConfirmation.type, 'confirm',
+    'The initial disposable cloud restore must present a confirmation dialog.');
+  assert.match(restoreConfirmation.message,
+    /FINAL CONFIRMATION: replace this device’s offline workspace with this account’s cloud backup/,
+    'The restore confirmation must be the expected device-only cloud-to-local restore.');
+  await restoreConfirmation.accept();
+  await restoreClickPromise;
   await waitForAccountAndStatus(appEmailA, ownerA, 'Synced', 180000);
   const initialEvents = await readAppDiagnostics();
   const initialCloudRead = initialEvents.slice().reverse().find(event =>
