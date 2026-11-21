@@ -886,6 +886,15 @@ try {
 
   const signedInA = await signInAppTestAccount(appEmailA, appPasswordA);
   assert.equal(signedInA.userId, ownerA);
+  // The disposable browser context starts empty, while fixture A deliberately
+  // contains an existing cloud snapshot. Resolve the normal first-login choice
+  // exactly as a user would when restoring this account's cloud copy. This creates
+  // the owner-verified local cache required for the subsequent A→B→A handoff test.
+  await page.waitForFunction(() => {
+    const dialog = document.querySelector('#accountChoiceDialog');
+    return !!(dialog && dialog.open);
+  }, null, { timeout: 30000 });
+  await page.locator('#accountChoiceDialog [data-account-choice="replace"]').click();
   await waitForAccountAndStatus(appEmailA, ownerA, 'Synced', 180000);
   const initialEvents = await readAppDiagnostics();
   const initialCloudRead = initialEvents.slice().reverse().find(event =>
