@@ -126,9 +126,11 @@ assert.ok(mergeInputs.includes('state:payload.state') && mergeInputs.includes('i
   mergeInputs.includes('repairCurriculum&&window.NexusRepairNormalizedCurriculumState?window.NexusRepairNormalizedCurriculumState(normalized):normalized') &&
   cloudSync.includes('normalizeWorkspacePayload(remote.payload,true)'),
   'three-way reconciliation must retain trusted local/base snapshots by reference while repairing legacy remote curriculum state before merge');
-assert.ok(cloudSync.includes('async function sameWorkspace(a,b)') && cloudSync.includes('merger.sameAsync(') &&
+assert.ok(cloudSync.includes('async function sameWorkspace(a,b,parentSignal)') &&
+  cloudSync.includes('merger.sameAsync(') &&
+  cloudSync.includes('featureState:b.featureState||{}},scope.signal)') &&
   !cloudSync.includes('stableJson('),
-  'workspace equality checks must use cooperative structural comparison instead of allocating giant JSON strings');
+  'workspace equality checks must use cooperative structural comparison with session cancellation instead of allocating giant JSON strings');
 assert.ok(cloudSync.includes("syncDiag('upload-start',diagnosticWorkspace()") &&
   !cloudSync.includes("syncDiag('upload-start',snapshot()"),
   'diagnostic-only upload events must not deep-clone the entire workspace when diagnostics are disabled');
