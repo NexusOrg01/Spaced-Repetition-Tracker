@@ -958,6 +958,24 @@ try {
     restoreClickPromise
   ]);
   const initialRestoreConfirmedAt = Date.now();
+  // The cloud snapshot is committed and owner-bound before projection work begins.
+  // Verify the workspace unlocks promptly even while Delta's local projection rebuild
+  // and the final cloud synchronization continue.
+  await page.waitForFunction(({ email, userId }) => {
+    const account = document.querySelector('#cloudAccount');
+    const app = document.getElementById('app');
+    const lock = document.getElementById('workspaceIsolationLock');
+    return !!account && account.textContent.trim() === email &&
+      localStorage.getItem('nexus.cloud.last-user-id') === userId &&
+      document.documentElement.dataset.workspaceAuth === 'ready' &&
+      !!app && app.inert === false && !!lock && lock.hidden === true;
+  }, { email: appEmailA, userId: ownerA }, { timeout: 30000 });
+  const initialWorkspaceRevealMs = Date.now() - initialRestoreConfirmedAt;
+  const initialWorkspaceRevealStatus = String(
+    await page.locator('#cloudStatus').textContent() || ''
+  ).trim();
+  assert.ok(initialWorkspaceRevealMs <= 30000,
+    'A first-time cloud restore must reveal the correct owner-bound workspace within 30 seconds.');
   await waitForAccountAndStatus(appEmailA, ownerA, 'Synced', 180000);
   const initialRestoreToVerifiedMs = Date.now() - initialRestoreConfirmedAt;
   const initialSignInToVerifiedMs = Date.now() - initialAccountStartedAt;
@@ -992,12 +1010,12 @@ try {
     initialWatchdogDelayMs = Date.parse(initialWatchdog.at) - Date.parse(initialInitializationStarted.at);
     assert.ok(Number.isFinite(initialWatchdogDelayMs) && initialWatchdogDelayMs <= 40000,
       'The initial restore must leave or confirm its loading state by the 30-second watchdog deadline.');
-    assert.ok([
-      'local-ready-unverified',
-      'account-verification-delayed',
-      'already-terminal'
-    ].includes(initialWatchdog.watchdogOutcome),
-    'The 30-second watchdog must record a truthful non-Synced or already-terminal status outcome.');
+    assert.equal(initialWatchdog.watchdogOutcome, 'local-ready-unverified',
+      'A durably restored and owner-verified workspace must be reported as locally ready while cloud verification continues.');
+    assert.equal(initialWatchdog.ready, true,
+      'The first-restore watchdog must distinguish local workspace readiness from cloud verification completion.');
+    assert.equal(initialWatchdog.ownerMatches, true,
+      'The first-restore watchdog must only reveal the workspace after owner verification.');
     initialWatchdogOutcome = initialWatchdog.watchdogOutcome;
   }
 
@@ -1218,6 +1236,8 @@ try {
     browserOnline: onlineAtAccountReturn,
     initialSignInToVerifiedMs,
     initialRestoreToVerifiedMs,
+    initialWorkspaceRevealMs,
+    initialWorkspaceRevealStatus,
     initialAccountSyncMs: initialVerification.durationMs,
     initialWatchdogDelayMs,
     initialWatchdogOutcome,
