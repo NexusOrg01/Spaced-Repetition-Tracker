@@ -1401,6 +1401,39 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal((await first.api.getWorkspace(owner)).workspaceRevision,workspaceRevision,
     'metadata and entity projection writes must not fake a compatibility record revision');
 
+  // Aborting a large replacement after its first IndexedDB batch must leave the
+  // previously published generation selected and usable.
+  const generationBeforeAbort=afterFirst.generation;
+  const replacementState={...afterFirst.state,topics:Array.from({length:1200},(_,index)=>({
+    id:'cancel-rebuild-'+index,name:'Cancelled rebuild '+index,subjectId:'hydrate-subject'
+  }))};
+  const controller=new AbortController(),nativeYield=first.context.window.setTimeout;
+  let projectionYields=0;
+  first.context.window.setTimeout=(callback,...args)=>nativeYield(()=>{
+    projectionYields++;
+    if(projectionYields===1)controller.abort(new Error('projection rebuild cancelled'));
+    callback();
+  },...args);
+  try{
+    await assert.rejects(
+      first.api.migrateWorkspaceEntities(owner,replacementState,afterFirst.featureState,{
+        expectedRevision:first.api.getStatus().revision,signal:controller.signal
+      }),
+      /projection rebuild cancelled/,
+      'an aborted projection replacement must report cancellation'
+    );
+  }finally{
+    first.context.window.setTimeout=nativeYield;
+  }
+  assert.ok(projectionYields>=1,'the replacement must reach a cooperative batch yield before cancellation');
+  const afterAbort=await first.api.readWorkspaceEntities(owner);
+  assert.equal(afterAbort.generation,generationBeforeAbort,
+    'an interrupted projection candidate must never replace the previously active generation');
+  assert.equal(afterAbort.state.topics[0].name,'Entity-authoritative title',
+    'the previously published generation must remain readable after cancellation');
+  assert.equal((await first.api.getWorkspaceEntityProjectionReadiness(owner)).ready,true,
+    'a cancelled replacement must leave the old current projection reusable');
+
   // Simulate a fresh page context. Its first IndexedDB snapshot is older than the
   // entity projection; startup must hydrate the newer entity state before modules read it.
   const second=loadApi(makeWindow(native,idb));
