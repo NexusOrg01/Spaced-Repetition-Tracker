@@ -1201,6 +1201,8 @@ try {
     'workspace-snapshot-current',
     'projection-reuse',
     'projection-rebuild',
+    'projection-deferred-to-upload',
+    'delta-sync-result',
     'workspace-render',
     'initialize-status-watchdog',
     'initial-sync-verification'
