@@ -506,6 +506,8 @@ assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'second-offline-A
 assert.equal(rows.has(accountB.id), true, 'account B retains its own workspace while account A pending work is restored');
 assert.equal(rows.get(accountB.id).payload.state.topics.length, 0, 'returning to account A must not copy account A changes into account B cloud');
 assert.equal(queue.hasPending(storage, accountA.id), false, 'account A pending work must be acknowledged after verification');
+assert.equal(getElement('cloudStatus').textContent, 'Synced',
+  'returning to account A must finish in a terminal synced state after its queued snapshot is verified');
 
 
 const stableBase=rows.get(accountA.id);
@@ -1990,4 +1992,53 @@ assert.equal(queue.hasPending(storage,accountG.id),false,
 assert.equal(getElement('cloudStatus').textContent,'Synced',
   'the clean second-device restore must settle in the synced state');
 
-console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, target-account pending-snapshot isolation, first-login conflict gating, auth-session queue recovery, 77,144-record second-device deletion reconciliation, and pre-migration chunk-table compatibility.');
+// A 26 MB class workspace can take longer to compare than the initialization
+// budget on a constrained device. A comparison that never settles must not leave
+// the account screen displaying "Loading account…" forever or unlock another owner.
+const accountH={id:'account-H',email:'h@example.test'};
+const payloadH=payloadFor('large-workspace-H');
+const stampH='2026-11-21T03:00:00.000Z';
+rows.set(accountH.id,{user_id:accountH.id,payload:payloadH,updated_at:stampH});
+storage.setItem(OWNER,accountH.id);
+storage.setItem(STATE_KEY,JSON.stringify(payloadH.state));
+storage.setItem(FEATURE_KEY,JSON.stringify(payloadH.featureState));
+queue.rememberStamp(storage,accountH.id,stampH);
+queue.rememberBase(storage,accountH.id,
+  {state:payloadH.state,featureState:payloadH.featureState},stampH);
+context.state=payloadH.state;
+activeSession={user:accountH};
+networkAvailable=true;
+const originalSameAsync=window.NexusWorkspaceSyncMerge.sameAsync;
+const originalSetTimeout=context.setTimeout;
+window.NexusWorkspaceSyncMerge.sameAsync=()=>new Promise(()=>{});
+context.setTimeout=(callback,delay,...args)=>
+  originalSetTimeout(callback,delay===60000?25:delay,...args);
+try{
+ await window.NexusCloudSync.reconnect();
+ assert.equal(window.NexusCloudSync.getAccountState().signedIn,true,
+   'a comparison timeout must not sign the active account out');
+ assert.equal(window.NexusCloudSync.getAccountState().ready,true,
+   'a timed-out comparison must recover the active account-bound local workspace');
+ assert.equal(storage.getItem(OWNER),accountH.id,
+   'local-ready fallback must retain only the active account owner');
+ assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id,'large-workspace-H',
+   'local-ready fallback must preserve the active account workspace');
+ assert.equal(getElement('cloudStatus').textContent,'Sync delayed · local data ready',
+   'a timed-out large comparison must replace the indefinite loading status with an honest local-ready status');
+ assert.notEqual(getElement('cloudStatus').textContent,'Synced',
+   'local fallback must never claim cloud verification succeeded');
+}finally{
+ window.NexusWorkspaceSyncMerge.sameAsync=originalSameAsync;
+ context.setTimeout=originalSetTimeout;
+}
+await window.NexusCloudSync.reconnect();
+assert.equal(window.NexusCloudSync.getAccountState().ready,true,
+  'the account must remain ready after its large-workspace comparison can complete');
+assert.equal(getElement('cloudStatus').textContent,'Synced',
+  'a subsequent successful retry must clear the delayed status and confirm sync');
+assert.equal(rows.get(accountH.id).updated_at,stampH,
+  'a no-change retry must not rewrite the account snapshot');
+assert.equal(storage.getItem(OWNER),accountH.id,
+  'a successful retry must keep the same active account owner');
+
+console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, target-account pending-snapshot isolation, first-login conflict gating, auth-session queue recovery, stalled account read/upload handoff, bounded large-workspace comparison and local-ready recovery, 77,144-record second-device deletion reconciliation, and pre-migration chunk-table compatibility.');
