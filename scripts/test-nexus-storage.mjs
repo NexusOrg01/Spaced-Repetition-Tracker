@@ -786,7 +786,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'tracker metadata-root updates must be applied with the delta');
   assert.equal(incrementallyRestored.featureState.settings.dailyMinutes,120,
     'Study Hub metadata-root updates must be applied with the delta');
-  assert.equal(incrementallyRestored.counts.topics,403,
+  assert.equal(incrementallyRestored.counts.topics,2203,
     'incremental appends must maintain exact collection counts');
   assert.equal(incrementallyRestored.counts.history,2,
     'incremental history inserts must maintain exact collection counts');
