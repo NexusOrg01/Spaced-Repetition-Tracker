@@ -15,24 +15,75 @@ function productionDeltaClientGateOpen(){
 }
 const SYNC_DIAG_ENABLED=(()=>{try{const requested=new URLSearchParams(location.search).get('nexusSyncDiag')==='1';if(requested){localStorage.setItem('nexus.syncdiag.enabled','1');sessionStorage.setItem('nexus.syncdiag.enabled','1');}return requested||localStorage.getItem('nexus.syncdiag.enabled')==='1'||sessionStorage.getItem('nexus.syncdiag.enabled')==='1';}catch(_){return false;}})();
 const SYNC_DIAG_KEY='nexus.syncdiag.session.v1';
-const SYNC_REQUEST_TIMEOUT_MS=180000,REMOTE_DELTA_POLL_INTERVAL_MS=15000;
+const SYNC_REQUEST_TIMEOUT_MS=180000,SESSION_INITIALIZATION_TIMEOUT_MS=120000,
+ SUPABASE_AUTH_REQUEST_TIMEOUT_MS=15000,SUPABASE_DATA_REQUEST_TIMEOUT_MS=60000,
+ REMOTE_DELTA_POLL_INTERVAL_MS=15000;
 let hostedDeltaPollingEnabled=false,remoteDeltaPollTimer=null;
-// A per-page negative cache avoids repeating server-denied rollout/opt-out RPCs
-// on every snapshot save. A reload rechecks the private server-side controls.
 const productionDeltaIneligibleOwners=new Set();
-function createSyncAbortScope(){
- const controller=typeof AbortController==='function'?new AbortController():null;
- let expired=false;
- const timer=controller?setTimeout(()=>{expired=true;controller.abort();},SYNC_REQUEST_TIMEOUT_MS):null;
- return {signal:controller?controller.signal:null,timedOut:()=>expired,clear:()=>{if(timer)clearTimeout(timer);}};
+function syncCancelledError(message){
+ const error=new Error(message||'The active account changed. The previous operation was cancelled safely.');
+ error.code='NEXUS_SYNC_CANCELLED';return error;
 }
-function syncTimeoutError(){
- const error=new Error('Cloud sync exceeded its 180-second safety deadline. Your local workspace and pending changes remain preserved; Nexus will retry.');
- error.code='NEXUS_CLOUD_TIMEOUT';
- return error;
+function syncTimeoutError(operation){
+ const error=new Error(operation
+  ?'Nexus stopped waiting for '+operation+' because its safety deadline expired. Your local workspace and pending changes remain preserved; reconnect to retry.'
+  :'Cloud sync exceeded its 180-second safety deadline. Your local workspace and pending changes remain preserved; Nexus will retry.');
+ error.code='NEXUS_CLOUD_TIMEOUT';return error;
+}
+function createSyncAbortScope(parentSignal,timeoutMs=SYNC_REQUEST_TIMEOUT_MS){
+ const inheritedSignal=parentSignal||(activeInitializationScope&&activeInitializationScope.signal)||
+  (sessionAbortController&&sessionAbortController.signal)||null;
+ const controller=typeof AbortController==='function'?new AbortController():null;
+ let expired=false,aborted=false,timer=null,abortReject=null;
+ const abortPromise=new Promise((_,reject)=>{abortReject=reject;});abortPromise.catch(()=>{});
+ function abort(reason){
+  if(aborted)return;aborted=true;
+  if(controller&&!controller.signal.aborted)controller.abort();
+  if(abortReject)abortReject(reason||syncCancelledError());
+ }
+ const onParentAbort=()=>abort(syncCancelledError());
+ if(inheritedSignal){
+  if(inheritedSignal.aborted)onParentAbort();
+  else inheritedSignal.addEventListener('abort',onParentAbort,{once:true});
+ }
+ if(timeoutMs>0)timer=setTimeout(()=>{expired=true;abort(syncTimeoutError());},timeoutMs);
+ return {
+  signal:controller?controller.signal:inheritedSignal,timedOut:()=>expired,aborted:()=>aborted,
+  abort:()=>abort(syncCancelledError()),
+  race:promise=>Promise.race([Promise.resolve(promise),abortPromise]),
+  clear:()=>{if(timer)clearTimeout(timer);if(inheritedSignal)inheritedSignal.removeEventListener('abort',onParentAbort);}
+ };
 }
 function attachAbortSignal(query,signal){
  return signal&&query&&typeof query.abortSignal==='function'?query.abortSignal(signal):query;
+}
+function createBoundedSupabaseFetch(baseFetch){
+ return async function boundedSupabaseFetch(input,init={}){
+  if(typeof baseFetch!=='function'||typeof AbortController!=='function')return baseFetch(input,init);
+  const url=typeof input==='string'?input:(input&&input.url)||'';
+  const isAuth=/\/auth\/v1\//i.test(url),timeoutMs=isAuth?SUPABASE_AUTH_REQUEST_TIMEOUT_MS:SUPABASE_DATA_REQUEST_TIMEOUT_MS;
+  const controller=new AbortController(),signals=[init.signal,sessionAbortController&&sessionAbortController.signal].filter(Boolean);
+  let timedOut=false,externallyAborted=false,cleaned=false,timer=null;
+  const onAbort=()=>{externallyAborted=true;controller.abort();};
+  for(const signal of signals){if(signal.aborted){onAbort();break;}signal.addEventListener('abort',onAbort,{once:true});}
+  const cleanup=()=>{if(cleaned)return;cleaned=true;if(timer)clearTimeout(timer);for(const signal of signals)signal.removeEventListener('abort',onAbort);};
+  timer=setTimeout(()=>{timedOut=true;controller.abort();},timeoutMs);
+  try{
+   const response=await baseFetch(input,{...init,signal:controller.signal});let wrapped=false;
+   for(const method of ['arrayBuffer','blob','formData','json','text']){
+    const original=response&&response[method];if(typeof original!=='function')continue;
+    try{Object.defineProperty(response,method,{configurable:true,value:function(...args){
+     let result;try{result=original.apply(this,args);}catch(error){cleanup();throw error;}
+     return Promise.resolve(result).finally(cleanup);
+    }});wrapped=true;}catch(_){}
+   }
+   if(!wrapped||(response&&response.body===null))cleanup();
+   return response;
+  }catch(error){
+   cleanup();if(timedOut)throw syncTimeoutError(isAuth?'Supabase Auth request':'Supabase data request');
+   if(externallyAborted||controller.signal.aborted)throw syncCancelledError();throw error;
+  }
+ };
 }
 function syncDiagSummary(payload){
  const s=payload&&payload.state&&typeof payload.state==='object'?payload.state:{};
@@ -218,7 +269,7 @@ function installSyncDiagnosticsButton(){
 
 function isUnsafeCloudOrigin(){const host=location.hostname.toLowerCase(),url=String(config().url||'').trim();let cloudHost='';try{cloudHost=new URL(url).hostname.toLowerCase();}catch(_){}return cloudHost===new URL(LIVE_SUPABASE_URL).hostname&&host!=='spaced-repetition-tracker-delta.vercel.app'&&host!=='kkmalithmalshan2000-png.github.io';}
 function previewCloudBlockedMessage(){status('Preview · cloud sync disabled');say('Cloud sync is disabled on this preview/local copy to protect real cloud data. Nexus still works offline. To test cloud sync, configure a separate Supabase test project on this device.');}
-let client=null,session=null,syncing=false,ready=false,deletingAccount=false,deletionServiceCheckedUser=null,deletionServiceAvailable=false,timer=null,retryTimer=null,retryAttempt=0,lastRemoteStamp=null,lastRemoteStorageMode='legacy',supabaseLoadPromise=null,pendingSync=false,lastUserId=null,initializing=false,initializingUserId=null,queuedSession=null,hasQueuedSession=false;
+let client=null,session=null,syncing=false,ready=false,deletingAccount=false,deletionServiceCheckedUser=null,deletionServiceAvailable=false,timer=null,retryTimer=null,retryAttempt=0,lastRemoteStamp=null,lastRemoteStorageMode='legacy',supabaseLoadPromise=null,pendingSync=false,lastUserId=null,initializing=false,initializingUserId=null,queuedSession=null,hasQueuedSession=false,sessionEpoch=0,sessionOwnerId=null,sessionAbortController=typeof AbortController==='function'?new AbortController():null,activeInitializationScope=null,activeUploadScope=null,connectAttemptId=0;
 const el=id=>document.getElementById(id),status=m=>{if(el('cloudStatus'))el('cloudStatus').textContent=m;if(m==='Synced')clearRetry();},say=m=>{if(el('cloudHelpText'))el('cloudHelpText').textContent=m;updateConflictRecoveryButton();},config=()=>{if(isPreviewDeploymentOrigin())return {...STAGING_CONFIG};try{return {...DEFAULT_CONFIG,...JSON.parse(localStorage.getItem(CFG_KEY)||'{}')}}catch(_){return {...DEFAULT_CONFIG}}};
 // The callback must return to the exact deployment that initiated sign-in. If Supabase rejects this origin, fix its redirect allow-list; do not pin a callback to an older preview.
 function authRedirectUrl(){const target=new URL(location.pathname,location.origin);target.search='';target.hash='';return target.href;}
@@ -294,7 +345,22 @@ function resumeAfterConnectivity(){
   scheduleDeltaRemotePoll();
  }else connect();
 }
-function loadSupabaseLibrary(){if(window.supabase&&window.supabase.createClient)return Promise.resolve();if(supabaseLoadPromise)return supabaseLoadPromise;supabaseLoadPromise=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3';script.async=true;script.onload=()=>window.supabase&&window.supabase.createClient?resolve():reject(new Error('Supabase client did not initialize.'));script.onerror=()=>reject(new Error('Could not load Supabase client. Check internet access.'));document.head.appendChild(script);});return supabaseLoadPromise;}
+function loadSupabaseLibrary(){
+ if(window.supabase&&window.supabase.createClient)return Promise.resolve();
+ if(supabaseLoadPromise)return supabaseLoadPromise;
+ const script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3';script.async=true;
+ let settled=false,timerId=null,resolveLoad,rejectLoad;
+ const attempt=new Promise((resolve,reject)=>{resolveLoad=resolve;rejectLoad=reject;});
+ function finish(error){
+  if(settled)return;settled=true;if(timerId)clearTimeout(timerId);script.onload=null;script.onerror=null;
+  if(error){if(script.parentNode)script.parentNode.removeChild(script);if(supabaseLoadPromise===attempt)supabaseLoadPromise=null;rejectLoad(error);}
+  else resolveLoad();
+ }
+ timerId=setTimeout(()=>finish(new Error('Could not load the Supabase client within 12 seconds. Check the connection and retry.')),12000);
+ script.onload=()=>window.supabase&&window.supabase.createClient?finish(null):finish(new Error('The Supabase client script loaded but did not initialize.'));
+ script.onerror=()=>finish(new Error('Could not load the Supabase client. Check internet access and retry.'));
+ supabaseLoadPromise=attempt;document.head.appendChild(script);return attempt;
+}
 function setControls(){const previewBlocked=isUnsafeCloudOrigin(),logged=!!session,connected=logged&&ready&&!initializing,busy=logged&&!connected;if(logged&&ready&&deletionServiceCheckedUser!==session.user.id)checkAccountDeletionService();const google=el('cloudGoogleSignInBtn'),email=el('cloudEmailSignInBtn'),out=el('cloudSignOutBtn');if(out){out.disabled=!logged;out.setAttribute('aria-disabled',String(!logged));}if(google){google.hidden=false;google.disabled=logged||previewBlocked;google.classList.toggle('auth-signin-busy',logged);google.setAttribute('aria-disabled',String(logged||previewBlocked));google.setAttribute('aria-label','Sign in with Google');const label=google.querySelector('span');if(label)label.textContent='Sign in with Google';}if(email){email.hidden=false;email.disabled=logged||previewBlocked;email.classList.toggle('auth-signin-busy',logged);email.setAttribute('aria-disabled',String(logged||previewBlocked));email.setAttribute('aria-label','Sign in with email');const label=email.querySelector('span');if(label)label.textContent='Sign in with email';}if(el('cloudAccount'))el('cloudAccount').textContent=previewBlocked?'Preview/local copy — cloud sync disabled':logged?(session.user.email||'Signed-in account'):'Not signed in — offline mode is available';if(el('cloudAccount'))el('cloudAccount').title=previewBlocked?'Use a separate Supabase test project to test cloud sync here.':logged?'Account ID: '+session.user.id:'Your data stays on this device while signed out.';if(previewBlocked)previewCloudBlockedMessage();updateConflictRecoveryButton();installSyncDiagnosticsButton();if(window.NexusRefreshDeletionOptions)window.NexusRefreshDeletionOptions();}
 function snapshot(){return {app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:clone(state),featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}};}
 function diagnosticWorkspace(){return {state,featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}};}
@@ -330,15 +396,20 @@ function nextCloudStamp(previous){
  const now=Date.now(),prior=Date.parse(previous||'');
  return new Date(Number.isFinite(prior)?Math.max(now,prior+1):now).toISOString();
 }
-async function assertActiveUser(userId){const {data,error}=await client.auth.getSession();if(error)throw error;const activeId=data&&data.session&&data.session.user?data.session.user.id:null;if(activeId!==userId||!session||session.user.id!==userId)throw new Error('The active account changed during sync. No cloud data was applied or written. Retry the account connection.');}
+async function assertActiveUser(userId,expectedEpoch=sessionEpoch){
+ if(expectedEpoch!==sessionEpoch||sessionOwnerId!==userId||!session||!session.user||session.user.id!==userId)
+  throw syncCancelledError('The active account changed during sync. No cloud data was applied or written.');
+}
 async function fetchRemote(userId,knownWrite,signal){
- const scope=signal?null:createSyncAbortScope(),activeSignal=signal||scope.signal;
+ const scope=createSyncAbortScope(signal),activeSignal=scope.signal,readEpoch=sessionEpoch;
  const uid=userId||(session&&session.user&&session.user.id),startedAt=Date.now();
  try{
   if(!client||!uid)throw new Error('No active account is available for cloud sync.');
+  await assertActiveUser(uid,readEpoch);
   let query=client.from('nexus_user_data').select('payload,updated_at').eq('user_id',uid);
   query=attachAbortSignal(query,activeSignal);
-  const {data,error}=await query.maybeSingle();
+  const {data,error}=await scope.race(query.maybeSingle(),'cloud workspace verification');
+  await assertActiveUser(uid,readEpoch);
   const durationMs=Date.now()-startedAt;
  if(error){syncDiag('cloud-read-error',null,{errorCategory:syncDiagErrorCategory(error),durationMs});throw error;}
  let remote=data;
@@ -353,7 +424,8 @@ async function fetchRemote(userId,knownWrite,signal){
    remote={...remote,payload:knownWrite.payload,storageMode:'chunked',chunkManifest:remote.payload};
   }else{
    try{
-    const reconstructed=await chunks.readSnapshot(client,uid,remote.payload,activeSignal);
+    const reconstructed=await scope.race(chunks.readSnapshot(client,uid,remote.payload,activeSignal),'cloud chunk reconstruction');
+    await assertActiveUser(uid,readEpoch);
     remote={...remote,payload:reconstructed,storageMode:'chunked',chunkManifest:remote.payload};
    }catch(chunkError){
     syncDiag('cloud-chunk-read-error',null,{errorCategory:syncDiagErrorCategory(chunkError)});
@@ -367,7 +439,8 @@ async function fetchRemote(userId,knownWrite,signal){
   let syncStateQuery=client.from('nexus_workspace_sync_state')
    .select('mode').eq('user_id',uid);
   syncStateQuery=attachAbortSignal(syncStateQuery,activeSignal);
-  const syncStateRead=await syncStateQuery.maybeSingle();
+  const syncStateRead=await scope.race(syncStateQuery.maybeSingle(),'workspace sync-mode verification');
+  await assertActiveUser(uid,readEpoch);
   if(syncStateRead&&syncStateRead.error)throw new Error(
    'Could not verify the chunked workspace sync mode. The downloaded snapshot was not applied: '+
    String(syncStateRead.error.message||syncStateRead.error.code||'state read failed')
@@ -488,10 +561,13 @@ async function hasUnassignedWorkspaceChanges(owner,newUserId,localPayload){
  return priorBase?!(await sameWorkspace(localPayload,priorBase)):hasLocalWork(localPayload);
 }
 function chooseLocalData(){return new Promise(resolve=>{const dlg=el('accountChoiceDialog');if(!dlg){resolve('cancel');return;}let done=false;const onCancel=e=>e.preventDefault();const finish=v=>{if(done)return;done=true;dlg.removeEventListener('cancel',onCancel);if(dlg.open)dlg.close();resolve(v);};dlg.addEventListener('cancel',onCancel);dlg.querySelectorAll('[data-account-choice]').forEach(b=>b.onclick=()=>finish(b.dataset.accountChoice));if(!dlg.open)dlg.showModal();});}
-async function flushDurableLocalWrites(){
- const storage=window.NexusStorage,startedAt=Date.now();
- if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function')await storage.flush();
- syncDiag('local-storage-flush',null,{durationMs:Date.now()-startedAt,storageEnabled:!!(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled())});
+async function flushDurableLocalWrites(parentSignal){
+ const scope=createSyncAbortScope(parentSignal),storage=window.NexusStorage,startedAt=Date.now();
+ try{
+  if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function')
+   await scope.race(storage.flush(),'local workspace persistence');
+  syncDiag('local-storage-flush',null,{durationMs:Date.now()-startedAt,storageEnabled:!!(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled())});
+ }finally{scope.clear();}
 }
 async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
   if(!window.NexusBackupRestoreUtils||!window.NexusStorageKey||!window.NexusFeatureStorageKey||!window.NexusNormalizeFeatureState||!window.NexusSetFeatureState)throw new Error('Safe local workspace storage is unavailable. Cloud data was not applied.');
@@ -519,7 +595,11 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
   if(revisionEntry)entries.push(revisionEntry);
   // Free redundant snapshot space before applying a cloud workspace to this browser.
   if(window.NexusOfflineSyncQueue&&typeof window.NexusOfflineSyncQueue.compactMetadata==='function')window.NexusOfflineSyncQueue.compactMetadata(localStorage);
-  await window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,entries);
+  const applyEpoch=sessionEpoch,applyScope=createSyncAbortScope();
+  try{
+   await applyScope.race(window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,entries),'atomic workspace replacement');
+   if(applyEpoch!==sessionEpoch||(ownerId&&sessionOwnerId!==String(ownerId)))throw syncCancelledError();
+  }finally{applyScope.clear();}
   state=safeState;
   if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(nextFeatures.fsrsSettings,{syncFeature:false,persist:false});
   window.NexusSetFeatureState(nextFeatures,{persist:false,render:false,applyFsrs:false});
@@ -527,7 +607,11 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
   // Rebuild its owner-bound entity projection before later local deltas can target it.
   // Projection failure is non-fatal: the committed snapshots remain authoritative.
   if(typeof window.NexusRebuildEntityProjection==='function'){
-    await window.NexusRebuildEntityProjection();
+    const projectionScope=createSyncAbortScope();
+    try{
+     await projectionScope.race(window.NexusRebuildEntityProjection(),'local entity projection rebuild');
+     if(applyEpoch!==sessionEpoch||(ownerId&&sessionOwnerId!==String(ownerId)))throw syncCancelledError();
+    }finally{projectionScope.clear();}
   }
   renderAll();
   const activeView=typeof document!=='undefined'&&typeof document.querySelector==='function'?document.querySelector('.view.active'):null;if(activeView&&activeView.id==='view-studyhub'&&window.NexusRenderHub)window.NexusRenderHub();
@@ -835,13 +919,25 @@ function restoreMissingQueueBaseFromVerifiedRemote(queue,userId,pending,remote){
  },remote.updated_at);
  return true;
 }
-async function initializeSession(s){syncDiag('initialize-start',diagnosticWorkspace(),{hasSession:!!(s&&s.user),ownerPresent:!!localStorage.getItem(OWNER_KEY)});const requestedSession=s||null,requestedUserId=requestedSession&&requestedSession.user?requestedSession.user.id:null;if(initializing){
+async function initializeSession(s){
+ const requestedSession=s||null,requestedUserId=requestedSession&&requestedSession.user?requestedSession.user.id:null;
+ session=requestedSession;const requestedEpoch=rotateSessionContext(requestedSession);
+ syncDiag('initialize-start',diagnosticWorkspace(),{hasSession:!!requestedSession,ownerPresent:!!localStorage.getItem(OWNER_KEY)});
+ if(initializing){
  // Coalesce auth notifications to the latest observed session. If SIGNED_OUT
  // queued a null session, a later same-user SIGNED_IN/INITIAL_SESSION must replace it.
  session=requestedSession;
  if(requestedUserId!==initializingUserId||hasQueuedSession){queuedSession=requestedSession;hasQueuedSession=true;}
  return;
-}initializing=true;initializingUserId=requestedUserId;if(requestedUserId!==lastUserId){hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();}try{const newSession=requestedSession,newUserId=requestedUserId;session=newSession;ready=false;offlineReconnectRequired=false;lastRemoteStamp=null;clearTimeout(timer);setControls();if(!session){status(client?'Not signed in · offline ready':'Offline ready');say('You can continue studying offline. Your local data remains on this device when you sign out.');return;}status('Loading account…');await assertActiveUser(newUserId);let owner=localStorage.getItem(OWNER_KEY)||'';
+}initializing=true;initializingUserId=requestedUserId;
+ const initScope=createSyncAbortScope(sessionAbortController&&sessionAbortController.signal,SESSION_INITIALIZATION_TIMEOUT_MS);
+ activeInitializationScope=initScope;
+ if(requestedUserId!==lastUserId){hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();}
+ try{
+  const newSession=requestedSession,newUserId=requestedUserId;
+  ready=false;offlineReconnectRequired=false;lastRemoteStamp=null;clearTimeout(timer);setControls();
+  if(!newSession){status(client?'Not signed in · offline ready':'Offline ready');say('You can continue studying offline. Your local data remains on this device when you sign out.');return;}
+  status('Loading account…');await assertActiveUser(newUserId,requestedEpoch);let owner=localStorage.getItem(OWNER_KEY)||'';
 if(typeof navigator!=='undefined'&&navigator.onLine===false){
   // Do not wait for a remote snapshot read during a cold offline start. Resolve
   // only this authenticated owner's existing local workspace and keep account
@@ -869,7 +965,7 @@ if(typeof navigator!=='undefined'&&navigator.onLine===false){
   setControls();
   return;
 }
-const remote=await fetchRemote(newUserId);syncDiag('initialize-after-cloud-read',remote&&remote.payload,{remoteHasPayload:!!(remote&&remote.payload)});await assertActiveUser(newUserId);
+const remote=await initScope.race(fetchRemote(newUserId,null,initScope.signal),'initial workspace verification');syncDiag('initialize-after-cloud-read',remote&&remote.payload,{remoteHasPayload:!!(remote&&remote.payload)});await assertActiveUser(newUserId,requestedEpoch);
 // Capture the local workspace once, after the asynchronous cloud read. This includes
 // any offline edits made while the request was in flight without retaining a stale
 // deep clone and then cloning/comparing the complete large workspace a second time.
@@ -962,7 +1058,8 @@ if(ready&&remote&&remote.payload&&!deltaSyncAttemptedDuringInitialization){
  if(!restoredSync){ready=false;status('Sync not verified');say('This device loaded the account snapshot, but its initial sync-mode reconciliation was not verified. The local workspace is preserved; reconnect to retry.');return;}
 }
 if(ready){await flushDurableLocalWrites();status('Synced');}syncDiag('initialize-finished',diagnosticWorkspace(),{ready,remoteHadPayload:!!(remote&&remote.payload)});}catch(e){
- syncDiag('initialize-error',diagnosticWorkspace(),{});
+ if(e&&e.code==='NEXUS_SYNC_CANCELLED')return;
+ syncDiag('initialize-error',diagnosticWorkspace(),{errorCategory:syncDiagErrorCategory(e)});
  ready=false;
  let offlineWorkspaceSource=null;
  if(requestedUserId&&session&&session.user&&session.user.id===requestedUserId){
@@ -979,7 +1076,10 @@ if(ready){await flushDurableLocalWrites();status('Synced');}syncDiag('initialize
   say('Cloud sync error: '+((e&&e.message)||'unknown error')+'. Local changes are preserved and sync is paused. If you signed into another account while offline, its workspace is not cached here. The previous account remains protected and hidden. Reconnect to load the correct account.');
  }
  console.error('Nexus account initialization failed',e);scheduleRetry();
-}finally{syncDiag('initialize-settled',diagnosticWorkspace(),{hasSession:!!(session&&session.user),ready,ownerPresent:!!localStorage.getItem(OWNER_KEY)});initializing=false;initializingUserId=null;setControls();scheduleDeltaRemotePoll();if(hasQueuedSession){
+}finally{
+ initScope.clear();if(activeInitializationScope===initScope)activeInitializationScope=null;
+ syncDiag('initialize-settled',diagnosticWorkspace(),{hasSession:!!(session&&session.user),ready,ownerPresent:!!localStorage.getItem(OWNER_KEY)});
+ initializing=false;initializingUserId=null;setControls();scheduleDeltaRemotePoll();if(hasQueuedSession){
  const nextSession=queuedSession||session||null;queuedSession=null;hasQueuedSession=false;
  if(nextSession&&nextSession.user&&nextSession.user.id===lastUserId&&ready){session=nextSession;setControls();}
  else setTimeout(()=>initializeSession(nextSession),0);
@@ -987,6 +1087,7 @@ if(ready){await flushDurableLocalWrites();status('Synced');}syncDiag('initialize
 
 async function sameWorkspace(a,b){if(!a||!b)return false;const merger=window.NexusWorkspaceSyncMerge;if(!merger||typeof merger.sameAsync!=='function')throw new Error('Safe large-workspace comparison is unavailable.');return merger.sameAsync({state:a.state||{},featureState:a.featureState||{}},{state:b.state||{},featureState:b.featureState||{}});}
 async function runStagingEntityDeltaSync(ownerId,signal,action={}){
+ const operationEpoch=sessionEpoch;
  const queue=window.NexusOfflineSyncQueue,storage=window.NexusStorage;
  async function acknowledgeDeltaShadowSnapshot(queue,userId,pending,serverVersion){
   if(!queue||typeof queue.getPending!=='function'||typeof queue.acknowledge!=='function'||
@@ -1220,7 +1321,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
  }
  const makeClient=delta.createClient({
   enabled:true,client,storage,
-  getActiveOwner:()=>session&&session.user?session.user.id:'',
+  getActiveOwner:()=>operationEpoch===sessionEpoch&&session&&session.user?session.user.id:'',
   getLocalOwner:()=>localStorage.getItem(OWNER_KEY)||'',
   getLocalBase:userId=>queue.getBase(localStorage,userId),
   getLocalWorkspace:()=>snapshot(),
@@ -1509,22 +1610,28 @@ async function tryProductionDeltaAfterVerifiedSnapshot(ownerId,signal,triggerRea
 async function upload(){
  if(deletingAccount||!localQueueHealthy||!client||!session||!ready)return false;
  if(syncing){pendingSync=true;return false;}
- const uploadUserId=session.user.id;
- async function assertUploadOwner(){await assertActiveUser(uploadUserId);if(localStorage.getItem(OWNER_KEY)!==uploadUserId)throw new Error('The local workspace owner changed during sync. The pending snapshot was not applied to another account.');}
+ const uploadUserId=session.user.id,uploadEpoch=sessionEpoch;
+ async function assertUploadOwner(){await assertActiveUser(uploadUserId,uploadEpoch);if(localStorage.getItem(OWNER_KEY)!==uploadUserId)throw syncCancelledError('The local workspace owner changed during sync.');}
  if(localStorage.getItem(OWNER_KEY)!==uploadUserId){ready=false;status('Account queue paused');say('The active account does not own this local workspace. No cloud write was attempted. Reconnect to the correct account.');return false;}
- syncing=true;status('Syncing…');syncDiag('upload-start',diagnosticWorkspace(),{hasQueue:!!window.NexusOfflineSyncQueue});const uploadScope=createSyncAbortScope();let uploaded=false,retryReconcileAfterConflict=false,attemptedPayload=null,attemptedOperationId=null,attemptedBase=null,attemptedPriorStamp=null;
+ syncing=true;status('Syncing…');syncDiag('upload-start',diagnosticWorkspace(),{hasQueue:!!window.NexusOfflineSyncQueue});
+ const uploadScope=createSyncAbortScope(),previousUploadScope=activeUploadScope;activeUploadScope=uploadScope;
+ let uploaded=false,retryReconcileAfterConflict=false,attemptedPayload=null,attemptedOperationId=null,attemptedBase=null,attemptedPriorStamp=null;
  const queue=window.NexusOfflineSyncQueue;
  try{
-  const durableStorage=window.NexusStorage;if(durableStorage&&typeof durableStorage.isEnabled==='function'&&durableStorage.isEnabled()&&typeof durableStorage.flush==='function')await durableStorage.flush();
-   const {data:authData,error:authError}=await client.auth.getUser();
+  const durableStorage=window.NexusStorage;
+  if(durableStorage&&typeof durableStorage.isEnabled==='function'&&durableStorage.isEnabled()&&typeof durableStorage.flush==='function')
+   await uploadScope.race(durableStorage.flush(),'local workspace flush before sync');
+  await assertUploadOwner();
+  const {data:authData,error:authError}=await uploadScope.race(client.auth.getUser(),'Supabase account verification');
   if(authError)throw new Error('Supabase could not verify the active login before cloud write: '+authError.message);
   if(!authData.user||authData.user.id!==uploadUserId||!session||session.user.id!==uploadUserId)throw new Error('The active Google/account session changed or could not be verified. Cloud write paused to protect the other account. Sign in again and retry.');
   let deltaResult;
   try{
-   deltaResult=await runStagingEntityDeltaSync(uploadUserId,uploadScope.signal);
+   deltaResult=await uploadScope.race(runStagingEntityDeltaSync(uploadUserId,uploadScope.signal),'Entity Delta synchronization');
   }catch(deltaError){
-   const fallback=await tryAutomaticProductionDeltaDowngrade(
-    uploadUserId,uploadScope.signal,deltaError&&deltaError.code||'delta_sync_exception');
+   if(deltaError&&deltaError.code==='NEXUS_SYNC_CANCELLED')throw deltaError;
+   const fallback=await uploadScope.race(tryAutomaticProductionDeltaDowngrade(
+    uploadUserId,uploadScope.signal,deltaError&&deltaError.code||'delta_sync_exception'),'verified Delta downgrade');
    if(!fallback||fallback.ok!==true||fallback.mode!=='snapshot')throw deltaError;
    deltaResult={skipped:true,mode:'snapshot',reason:'verified_automatic_downgrade'};
   }
@@ -1533,8 +1640,8 @@ async function upload(){
   else if(deltaResult&&deltaResult.ok!==true&&deltaResult.blockedRecovery!==true&&
           (deltaResult.retryable===true||deltaResult.conflict===true||
            deltaResult.snapshotRequired===true||deltaResult.requiresSnapshotReconciliation===true)){
-   const fallback=await tryAutomaticProductionDeltaDowngrade(
-    uploadUserId,uploadScope.signal,deltaResult.reason||'recoverable_delta_sync_failure');
+   const fallback=await uploadScope.race(tryAutomaticProductionDeltaDowngrade(
+    uploadUserId,uploadScope.signal,deltaResult.reason||'recoverable_delta_sync_failure'),'verified Delta downgrade');
    if(fallback&&fallback.ok===true&&fallback.mode==='snapshot'){
     deltaResult={skipped:true,mode:'snapshot',reason:'verified_automatic_downgrade'};
     hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();
@@ -1571,7 +1678,7 @@ async function upload(){
    ),{code:'NEXUS_DELTA_STAGING_SYNC_BLOCKED'});
    lastRemoteStamp=deltaResult.cursor&&deltaResult.cursor.snapshotUpdatedAt||
     deltaResult.updated_at||lastRemoteStamp;
-   await flushDurableLocalWrites();
+   await uploadScope.race(flushDurableLocalWrites(uploadScope.signal),'local sync persistence');
    status('Synced');
    uploaded=true;
    return true;
@@ -1594,15 +1701,15 @@ async function upload(){
    if(verifiedBase&&verifiedBase.serverVersion===lastRemoteStamp&&
       await sameWorkspace(verifiedBase,snapshot())){
     if(queue)queue.rememberStamp(localStorage,uploadUserId,lastRemoteStamp);
-    const deltaBootstrap=await tryProductionDeltaAfterVerifiedSnapshot(
-     uploadUserId,uploadScope.signal,'verified_existing_snapshot_baseline');
+    const deltaBootstrap=await uploadScope.race(tryProductionDeltaAfterVerifiedSnapshot(
+     uploadUserId,uploadScope.signal,'verified_existing_snapshot_baseline'),'verified Delta enrollment');
     if(!deltaBootstrap.ok)throw Object.assign(new Error(
      'The existing snapshot baseline is verified, but the Production Delta re-enrollment check could not be completed safely.'
     ),{code:'NEXUS_DELTA_STAGING_SYNC_BLOCKED'});
     if(deltaBootstrap.delta){
-     await flushDurableLocalWrites();status('Synced');uploaded=true;return true;
+     await uploadScope.race(flushDurableLocalWrites(uploadScope.signal),'local sync persistence');status('Synced');uploaded=true;return true;
     }
-    await flushDurableLocalWrites();status('Synced');uploaded=true;return true;
+    await uploadScope.race(flushDurableLocalWrites(uploadScope.signal),'local sync persistence');status('Synced');uploaded=true;return true;
    }
   }
   const priorStamp=lastRemoteStamp;attemptedPriorStamp=priorStamp;
@@ -1627,18 +1734,18 @@ async function upload(){
     lastRemoteStamp=before.updated_at||null;
     queue.rememberBase(localStorage,uploadUserId,before.payload,lastRemoteStamp);
     queue.acknowledge(localStorage,uploadUserId,pending.operationId,pending.baseServerVersion,lastRemoteStamp);
-    const deltaBootstrap=await tryProductionDeltaAfterVerifiedSnapshot(
-     uploadUserId,uploadScope.signal,'verified_existing_snapshot_pending_ack');
+    const deltaBootstrap=await uploadScope.race(tryProductionDeltaAfterVerifiedSnapshot(
+     uploadUserId,uploadScope.signal,'verified_existing_snapshot_pending_ack'),'verified Delta enrollment');
     if(!deltaBootstrap.ok)throw Object.assign(new Error(
      'The cloud snapshot is verified, but the Production Delta re-enrollment check could not be completed safely.'
     ),{code:'NEXUS_DELTA_STAGING_SYNC_BLOCKED'});
-    await flushDurableLocalWrites();status('Synced');uploaded=true;return true;
+    await uploadScope.race(flushDurableLocalWrites(uploadScope.signal),'local sync persistence');status('Synced');uploaded=true;return true;
    }
    const actualStamp=before&&before.updated_at?before.updated_at:null;
    if(actualStamp!==(pending.baseServerVersion||null)){const conflict=new Error('The cloud revision changed since this offline snapshot was queued.');conflict.code='NEXUS_CLOUD_CONFLICT';throw conflict;}
    const stamp=nextCloudStamp(pending.baseServerVersion);
    await assertUploadOwner();
-   const writeResult=await writeRemoteSnapshot(uploadUserId,payload,pending.baseServerVersion,stamp,uploadScope.signal);
+   const writeResult=await uploadScope.race(writeRemoteSnapshot(uploadUserId,payload,pending.baseServerVersion,stamp,uploadScope.signal),'cloud snapshot upload');
    const verify=await fetchRemote(uploadUserId,writeResult,uploadScope.signal);
    await assertUploadOwner();
    const verificationMatches=!!(verify&&verify.payload&&await sameWorkspace(verify.payload,payload));syncDiag('upload-verification-readback',verify&&verify.payload,{readbackHasPayload:!!(verify&&verify.payload),matchesAttempted:verificationMatches});if(!verificationMatches){const conflict=new Error('The remote cloud snapshot changed during write verification.');conflict.code='NEXUS_CLOUD_CONFLICT';throw conflict;}
@@ -1648,7 +1755,7 @@ async function upload(){
    const laterPending=queue.getPending(localStorage,uploadUserId);if(laterPending&&laterPending.operationId!==pending.operationId&&(laterPending.baseServerVersion||null)===(pending.baseServerVersion||null))queue.rebase(localStorage,uploadUserId,snapshot(),lastRemoteStamp,'local-change-during-upload');
   }else{
    const stamp=nextCloudStamp(priorStamp);
-   const writeResult=await writeRemoteSnapshot(uploadUserId,payload,priorStamp,stamp,uploadScope.signal);
+   const writeResult=await uploadScope.race(writeRemoteSnapshot(uploadUserId,payload,priorStamp,stamp,uploadScope.signal),'cloud snapshot upload');
    const verify=await fetchRemote(uploadUserId,writeResult,uploadScope.signal);
    await assertUploadOwner();
    if(!verify||!verify.payload||!(await sameWorkspace(verify.payload,payload))){const conflict=new Error('The remote cloud snapshot changed during write verification.');conflict.code='NEXUS_CLOUD_CONFLICT';throw conflict;}
@@ -1660,14 +1767,15 @@ async function upload(){
     if(later&&later.baseServerVersion===(priorStamp||null))queue.rebase(localStorage,uploadUserId,snapshot(),lastRemoteStamp,'local-change-during-upload');
    }
   }
-  const deltaBootstrap=await tryProductionDeltaAfterVerifiedSnapshot(
-   uploadUserId,uploadScope.signal,'verified_new_or_updated_snapshot_baseline');
+  const deltaBootstrap=await uploadScope.race(tryProductionDeltaAfterVerifiedSnapshot(
+   uploadUserId,uploadScope.signal,'verified_new_or_updated_snapshot_baseline'),'verified Delta enrollment');
   if(!deltaBootstrap.ok)throw Object.assign(new Error(
    'The snapshot was verified, but Production Delta activation could not be verified. Snapshot writes remain paused.'
   ),{code:'NEXUS_DELTA_STAGING_SYNC_BLOCKED'});
-  await flushDurableLocalWrites();status('Synced');uploaded=true;
+  await uploadScope.race(flushDurableLocalWrites(uploadScope.signal),'local sync persistence');status('Synced');uploaded=true;
  }catch(e){
-  if(uploadScope.timedOut())e=syncTimeoutError();
+  if(e&&e.code==='NEXUS_SYNC_CANCELLED')return false;
+  if(uploadScope.timedOut())e=syncTimeoutError('cloud synchronization');
   syncDiag('upload-error',attemptedPayload,{errorCategory:syncDiagErrorCategory(e)});
   if(e&&e.code==='NEXUS_CLOUD_CONFLICT'){
    let alreadyCommitted=false;
@@ -1685,7 +1793,7 @@ async function upload(){
       if(queue)queue.rememberBase(localStorage,uploadUserId,latest.payload,lastRemoteStamp);
       if(queue&&attemptedOperationId)queue.acknowledge(localStorage,uploadUserId,attemptedOperationId,attemptedBase,lastRemoteStamp);
       else if(queue){queue.rememberStamp(localStorage,uploadUserId,lastRemoteStamp);const later=queue.getPending(localStorage,uploadUserId);if(later&&later.baseServerVersion===(attemptedPriorStamp||null))queue.rebase(localStorage,uploadUserId,snapshot(),lastRemoteStamp,'local-change-during-upload');}
-      await flushDurableLocalWrites();status('Synced');say('Verified: the cloud already contains this exact snapshot, so the interrupted write was safely acknowledged.');uploaded=true;alreadyCommitted=true;
+      await uploadScope.race(flushDurableLocalWrites(uploadScope.signal),'local sync persistence');status('Synced');say('Verified: the cloud already contains this exact snapshot, so the interrupted write was safely acknowledged.');uploaded=true;alreadyCommitted=true;
      }else if(latest&&latest.payload&&localStorage.getItem(OWNER_KEY)===uploadUserId&&session&&session.user.id===uploadUserId){
       // The write raced with a real cloud edit. Preserve the queued snapshot and
       // reconnect once this upload/init turn has settled so normal initialization
@@ -1711,7 +1819,9 @@ async function upload(){
   }
   else{ready=false;status('Sync error');say('Cloud upload failed or could not be verified. Local data and the pending snapshot are preserved. Nexus will retry automatically when the connection is available.');scheduleRetry();}
   console.error('Nexus cloud sync failed',e);
- }finally{uploadScope.clear();syncing=false;scheduleDeltaRemotePoll();if(retryReconcileAfterConflict){retryReconcileAfterConflict=false;setTimeout(()=>{const activeConnect=connectPromise;if(activeConnect)activeConnect.then(()=>connect());else connect();},0);}if(pendingSync){pendingSync=false;if(ready)schedule();else scheduleRetry();}}
+ }finally{
+  uploadScope.clear();if(activeUploadScope===uploadScope)activeUploadScope=previousUploadScope||null;
+  syncing=false;scheduleDeltaRemotePoll();if(retryReconcileAfterConflict){retryReconcileAfterConflict=false;setTimeout(()=>{const activeConnect=connectPromise;if(activeConnect)activeConnect.then(()=>connect());else connect();},0);}if(pendingSync){pendingSync=false;if(ready)schedule();else scheduleRetry();}}
  return uploaded;
 }
 let localQueueHealthy=true,localMutationRevision=0;
@@ -1774,25 +1884,71 @@ function createSafeAuthStorage(storage){
    removeItem(key){return storage.removeItem(key);}
   };
 }
-async function ensureClient(){if(isUnsafeCloudOrigin())throw new Error('Cloud sync is disabled on this preview/local copy to protect real cloud data.');if(client)return client;const c=config();if(!window.supabase||!window.supabase.createClient)await loadSupabaseLibrary();if(!client){client=window.supabase.createClient(c.url,c.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,storage:createSafeAuthStorage(localStorage)}});client.auth.onAuthStateChange((event,newSession)=>{session=newSession||null;syncDiag('auth-event',diagnosticWorkspace(),{event,hasSession:!!(newSession&&newSession.user),ownerPresent:!!localStorage.getItem(OWNER_KEY)});if(event==='TOKEN_REFRESHED'||event==='USER_UPDATED'){session=newSession;setControls();return;}if(event==='SIGNED_OUT'){session=null;ready=false;hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();deletionServiceCheckedUser=null;deletionServiceAvailable=false;clearTimeout(timer);clearRetry();if(initializing&&initializingUserId){queuedSession=null;hasQueuedSession=true;}status('Not signed in · offline ready');say('You can continue using your local data offline. Signing out does not erase it.');setControls();return;}if(event==='SIGNED_IN'||event==='INITIAL_SESSION'){
- const uid=newSession&&newSession.user?newSession.user.id:null;
- // Auth callbacks update the active session synchronously. If an initialization
- // already queued a different/null session, this later event must replace it
- // before the in-flight promise settles.
- if(initializing&&hasQueuedSession){queuedSession=newSession||null;hasQueuedSession=true;}
- if(uid!==lastUserId||!ready)setTimeout(()=>{
-  if(uid!==lastUserId||!ready)initializeSession(newSession);
-  else{session=newSession;setControls();}
- },0);
- else{session=newSession;setControls();}
-}});}return client;}
-let connectPromise=null,offlineReconnectRequired=false;function connect(){if(isUnsafeCloudOrigin()){previewCloudBlockedMessage();setControls();return Promise.resolve();}if(connectPromise)return connectPromise;connectPromise=(async()=>{try{await ensureClient();const {data:{session:s},error}=await client.auth.getSession();if(error)throw error;await initializeSession(s);}catch(e){
- if(typeof navigator!=='undefined'&&navigator.onLine===false){
+async function ensureClient(){
+ if(isUnsafeCloudOrigin())throw new Error('Cloud sync is disabled on this preview/local copy to protect real cloud data.');
+ if(client)return client;
+ const c=config();
+ if(!window.supabase||!window.supabase.createClient)await loadSupabaseLibrary();
+ if(!client){
+  const clientOptions={auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,storage:createSafeAuthStorage(localStorage)}};
+  if(typeof window.fetch==='function')clientOptions.global={fetch:createBoundedSupabaseFetch(window.fetch.bind(window))};
+  client=window.supabase.createClient(c.url,c.key,clientOptions);
+  client.auth.onAuthStateChange((event,newSession)=>{
+   session=newSession||null;rotateSessionContext(session);
+   syncDiag('auth-event',diagnosticWorkspace(),{event,hasSession:!!(newSession&&newSession.user),ownerPresent:!!localStorage.getItem(OWNER_KEY)});
+   if(event==='TOKEN_REFRESHED'||event==='USER_UPDATED'){session=newSession;setControls();return;}
+   if(event==='SIGNED_OUT'){
+    session=null;ready=false;hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();
+    deletionServiceCheckedUser=null;deletionServiceAvailable=false;clearTimeout(timer);clearRetry();
+    if(initializing&&initializingUserId){queuedSession=null;hasQueuedSession=true;}
+    status('Not signed in · offline ready');say('You can continue using your local data offline. Signing out does not erase it.');setControls();return;
+   }
+   if(event==='SIGNED_IN'||event==='INITIAL_SESSION'){
+    const uid=newSession&&newSession.user?newSession.user.id:null;
+    if(initializing&&hasQueuedSession){queuedSession=newSession||null;hasQueuedSession=true;}
+    if(uid!==lastUserId||!ready)setTimeout(()=>{
+     if(uid!==lastUserId||!ready)initializeSession(newSession);
+     else{session=newSession;setControls();}
+    },0);
+    else{session=newSession;setControls();}
+   }
+  });
+ }
+ return client;
+}
+let connectPromise=null,offlineReconnectRequired=false;
+function rotateSessionContext(nextSession){
+ const nextUserId=nextSession&&nextSession.user&&nextSession.user.id||null;
+ if(nextUserId===sessionOwnerId&&!(sessionAbortController&&sessionAbortController.signal.aborted))return sessionEpoch;
+ sessionEpoch++;sessionOwnerId=nextUserId;
+ if(sessionAbortController&&!sessionAbortController.signal.aborted)sessionAbortController.abort();
+ sessionAbortController=typeof AbortController==='function'?new AbortController():null;
+ if(activeInitializationScope)activeInitializationScope.abort();
+ if(activeUploadScope)activeUploadScope.abort();
+ connectAttemptId++;connectPromise=null;clearTimeout(timer);clearRetry();pendingSync=false;
+ hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();ready=false;
+ return sessionEpoch;
+}
+function connect(){
+ if(isUnsafeCloudOrigin()){previewCloudBlockedMessage();setControls();return Promise.resolve();}
+ if(connectPromise)return connectPromise;
+ const attemptId=++connectAttemptId,connectScope=createSyncAbortScope(sessionAbortController&&sessionAbortController.signal,30000);
+ const task=(async()=>{
+  try{
+   await connectScope.race(ensureClient(),'Supabase client initialization');
+   if(attemptId!==connectAttemptId)throw syncCancelledError();
+   const authResult=await connectScope.race(client.auth.getSession(),'initial account session verification');
+   if(attemptId!==connectAttemptId)throw syncCancelledError();
+   if(authResult.error)throw authResult.error;
+   await initializeSession(authResult.data&&authResult.data.session||null);
+  }catch(e){
+   if(e&&e.code==='NEXUS_SYNC_CANCELLED')return;
+   if(typeof navigator!=='undefined'&&navigator.onLine===false){
   // The Supabase SDK may itself be unavailable offline (it is loaded from a CDN).
   // Keep the durable local workspace usable, but do not infer or invent an account
   // session. The isolation guard will unlock only the previously associated device
   // workspace; a mismatched owner remains hidden.
-  session=null;ready=false;hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();
+  session=null;rotateSessionContext(null);ready=false;hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();
   offlineReconnectRequired=true;
   status(localStorage.getItem(OWNER_KEY)?'Offline · local workspace':'Offline ready');
   say('Internet is unavailable. Nexus is using this device’s saved workspace only. Cloud account verification and synchronization will resume after reconnecting.');
@@ -1802,7 +1958,13 @@ let connectPromise=null,offlineReconnectRequired=false;function connect(){if(isU
   say('Connection error: '+((e&&e.message)||'unknown error')+'. You can still use Nexus offline; reconnect to sign in and sync.');
   console.error('Nexus connection failed',e);scheduleRetry();
  }
-}finally{connectPromise=null;}})();return connectPromise;}
+}finally{
+   connectScope.clear();
+   if(connectAttemptId===attemptId&&connectPromise===task)connectPromise=null;
+  }
+ })();
+ connectPromise=task;return task;
+}
 async function googleSignIn(){try{if(isUnsafeCloudOrigin()){previewCloudBlockedMessage();setControls();return;}if(session){say('You are already signed in. Sign out before connecting a different account.');return;}status('Opening Google sign-in…');await ensureClient();const {data,error}=await client.auth.signInWithOAuth({provider:'google',options:{redirectTo:authRedirectUrl(),queryParams:{prompt:'select_account'}}});if(error)throw error;if(data&&data.url)location.assign(data.url);}catch(e){status('Google sign-in failed');say((e&&e.message)||'Could not start Google sign-in. Check your connection and try again.');console.error('Nexus Google sign-in failed',e);}}
 async function emailSignIn(){try{if(isUnsafeCloudOrigin()){previewCloudBlockedMessage();setControls();return;}if(session){say('You are already signed in. Sign out before connecting a different account.');return;}status('Preparing email sign-in…');await ensureClient();const email=prompt('Enter your email address to receive a sign-in link:');if(!email){status(session&&ready?'Synced':'Not signed in · offline ready');return;}const {error}=await client.auth.signInWithOtp({email,options:{emailRedirectTo:authRedirectUrl()}});if(error)throw error;say('Check your email for the sign-in link.');status('Email sign-in link sent');}catch(e){status('Email sign-in failed');say((e&&e.message)||'Could not send the sign-in link. Check your connection and try again.');console.error('Nexus email sign-in failed',e);}}
 async function checkAccountDeletionService(){
@@ -2199,7 +2361,16 @@ function installHostedQaReplayPanel(){
  panel.append(header,body);accountView.append(panel);
 }
 
-async function signOut(){if(client)await client.auth.signOut();session=null;ready=false;clearTimeout(timer);clearRetry();status('Not signed in · offline ready');say('You are signed out. Continue using this device offline; data remains local.');setControls();}
+async function signOut(){
+ const authClient=client;session=null;rotateSessionContext(null);ready=false;clearTimeout(timer);clearRetry();
+ status('Not signed in · offline ready');say('You are signed out. Continue using this device offline; data remains local.');setControls();
+ if(authClient&&authClient.auth&&typeof authClient.auth.signOut==='function'){
+  const signOutScope=createSyncAbortScope(sessionAbortController&&sessionAbortController.signal,10000);
+  try{await signOutScope.race(authClient.auth.signOut(),'Supabase sign out');}
+  catch(error){if(error&&error.code!=='NEXUS_SYNC_CANCELLED')console.warn('Supabase sign out was interrupted; local account access is already locked.',error);}
+  finally{signOutScope.clear();}
+ }
+}
 window.NexusCloudSync={schedule,upload,reconnect:connect,getAccountState,deleteAccount:deleteCurrentAccount,downgradeEntityDelta,
  noteCommittedLocalSave:(payload)=>{
   if(deletingAccount)return;
