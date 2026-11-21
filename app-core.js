@@ -467,6 +467,7 @@
       if(typeof storage.getWorkspaceEntityProjectionReadiness==='function'){
         try{
           const readiness=await storage.getWorkspaceEntityProjectionReadiness(owner);
+          window.NexusCloudSync?.noteProjectionReadiness?.(readiness);
           if(signal&&signal.aborted)throw signal.reason instanceof Error?signal.reason:new Error('Projection readiness check was cancelled.');
           if(readiness&&readiness.ready){
             return {ownerId:owner,mode:'reused',generation:readiness.generation,
