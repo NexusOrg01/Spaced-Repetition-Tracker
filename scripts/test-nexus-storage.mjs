@@ -1125,11 +1125,27 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   // later retry to build from the newer committed compatibility snapshot.
   const manifestKey='workspace-entities:'+encodeURIComponent(owner);
   const metaStore=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  const markerKey=loaded.api.getWorkspaceEntityRevisionKey(owner);
+  const raceBaseTracker={
+    ...trackerState,
+    topics:trackerState.topics.concat(Array.from({length:1800},(_,index)=>({
+      id:'projection-race-base-topic-'+index,subjectId:'projection-subject',
+      name:'Projection race base topic '+index
+    })))
+  };
+  await loaded.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(raceBaseTracker)},
+    {key:'recall.study.features.v1',value:featureJson},
+    {key:markerKey,value:'projection-race-base'}
+  ]);
+  await loaded.api.flush();
+  const raceBaseBuild=await loaded.api.syncWorkspaceEntities(owner,null,{replace:true});
+  assert.equal(raceBaseBuild.mode,'snapshot-backfill',
+    'the multi-batch race fixture must start from a valid active projection');
   const activeBeforeRace=metaStore.get(manifestKey);
   const changedTopic={id:'projection-topic-added-during-rebuild',
     subjectId:'projection-subject',name:'Committed during projection rebuild'};
-  const changedTracker={...trackerState,topics:[...trackerState.topics,changedTopic]};
-  const markerKey=loaded.api.getWorkspaceEntityRevisionKey(owner);
+  const changedTracker={...raceBaseTracker,topics:[...raceBaseTracker.topics,changedTopic]};
   let workspaceChangeCommitted=false;
   const schedulerBeforeWorkspaceRace=loaded.context.window.setTimeout;
   loaded.context.window.setTimeout=(callback,delay)=>{
@@ -1175,7 +1191,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'a retry must rebuild from the latest committed compatibility snapshot');
   const finalWorkspace=await loaded.api.readWorkspaceEntities(owner);
   assert.ok(finalWorkspace,'the retry must publish a verified entity generation');
-  assert.equal(finalWorkspace.state.topics.length,402);
+  assert.equal(finalWorkspace.state.topics.length,2202);
   assert.equal(finalWorkspace.state.topics.at(-1).id,changedTopic.id);
 }
 
