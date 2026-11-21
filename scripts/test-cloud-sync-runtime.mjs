@@ -589,6 +589,38 @@ assert.ok(uploadSource.includes('if(!pending&&deltaResult&&deltaResult.skipped)'
   uploadSource.includes('verifiedBase.serverVersion===lastRemoteStamp')&&
   uploadSource.includes('await sameWorkspace(verifiedBase,snapshot(),uploadScope.signal)'),
   'a no-change cloud restore must be verified against its committed base without rewriting the compatibility snapshot');
+const keepLocalStart=source.indexOf('function preserveLocalWorkspaceAfterSyncFailure(');
+const keepLocalEnd=source.indexOf('async function initializeSession(s){',keepLocalStart);
+assert.ok(keepLocalStart>=0&&keepLocalEnd>keepLocalStart,
+  'sync failure handling must preserve a previously owner-verified local workspace');
+const keepLocalSandbox={
+  OWNER_KEY:'nexus.cloud.last-user-id',session:{user:{id:'account-A'}},ready:false,
+  localStorage:{getItem:()=> 'account-A'},statusValue:'',helpText:'',retryCalls:0,
+  status(value){this.statusValue=value;},say(value){this.helpText=value;},scheduleRetry(){this.retryCalls++;}
+};
+vm.createContext(keepLocalSandbox);
+vm.runInContext(source.slice(keepLocalStart,keepLocalEnd)+
+  '\\nglobalThis.preserveForTest=preserveLocalWorkspaceAfterSyncFailure;',
+  keepLocalSandbox,{filename:'owner-verified-sync-failure.js'});
+assert.equal(keepLocalSandbox.preserveForTest('account-A'),true,
+  'a failed cloud verification must retain the active owner-verified local workspace');
+assert.equal(keepLocalSandbox.ready,true,
+  'cloud verification failure must not relock an already owner-verified local workspace');
+assert.equal(keepLocalSandbox.statusValue,'Sync pending',
+  'a local-ready account must report pending sync rather than an unavailable workspace');
+assert.equal(keepLocalSandbox.retryCalls,1,
+  'a local-ready account must receive a bounded automatic sync retry');
+assert.equal(keepLocalSandbox.preserveForTest('account-B'),false,
+  'a cached workspace must never be exposed when its owner differs from the active session');
+assert.equal(keepLocalSandbox.ready,false,
+  'an owner mismatch must continue to fail closed');
+assert.equal(keepLocalSandbox.statusValue,'Account verification delayed',
+  'an owner mismatch must retain the explicit verification-delayed state');
+assert.ok(uploadSource.includes('ready=ownerStillMatches')&&
+  uploadSource.includes("scheduleRetry();return false;")&&
+  uploadSource.includes("status(ownerStillMatches?'Sync pending':'Sync error')"),
+  'blocked or failed sync must retry while preserving a matching owner workspace');
+
 const deltaSyncStart=source.indexOf('async function runStagingEntityDeltaSync');
 const deltaSyncEnd=source.indexOf('async function upload(){',deltaSyncStart);
 const deltaSyncSource=source.slice(deltaSyncStart,deltaSyncEnd);
