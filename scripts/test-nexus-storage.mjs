@@ -665,9 +665,9 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.notEqual(resumedMigration.generation,afterChanges.generation,
     'retrying an interrupted migration must publish a new generation only after all batches commit');
   const resumedWorkspace=await loaded.api.readWorkspaceEntities('entity-owner-a');
-  assert.equal(resumedWorkspace.state.topics.length,402,'the resumed generation must contain the complete topic collection');
-  assert.equal(resumedWorkspace.counts.topics,402,'the resumed manifest must contain exact collection counts');
-  assert.equal(resumedWorkspace.rowCount,412,'the resumed manifest must publish an exact total entity row count');
+  assert.equal(resumedWorkspace.state.topics.length,2202,'the resumed generation must contain the complete topic collection');
+  assert.equal(resumedWorkspace.counts.topics,2202,'the resumed manifest must contain exact collection counts');
+  assert.equal(resumedWorkspace.rowCount,2212,'the resumed manifest must publish an exact total entity row count');
 
   const duplicateIdState={
     ...resumedWorkspace.state,
@@ -683,7 +683,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const afterDuplicateIdFailure=await loaded.api.readWorkspaceEntities('entity-owner-a');
   assert.equal(afterDuplicateIdFailure.generation,resumedMigration.generation,
     'a duplicate-ID migration must leave the previous complete generation active');
-  assert.equal(afterDuplicateIdFailure.rowCount,412,
+  assert.equal(afterDuplicateIdFailure.rowCount,2212,
     'a failed replacement must preserve the prior generation row-count integrity metadata');
   const missingIdState={
     ...resumedWorkspace.state,
@@ -699,7 +699,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const afterMissingIdFailure=await loaded.api.readWorkspaceEntities('entity-owner-a');
   assert.equal(afterMissingIdFailure.generation,resumedMigration.generation,
     'a missing-ID migration must leave the previous complete generation active');
-  assert.equal(afterMissingIdFailure.rowCount,412,
+  assert.equal(afterMissingIdFailure.rowCount,2212,
     'a failed migration with a missing ID must preserve the previous generation row count');
 
   // Existing entity rows/outbox entries remain physically stored but must be
