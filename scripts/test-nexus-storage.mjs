@@ -1346,6 +1346,34 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(initial.state.topics[0].name,'Original title');
   const originalWorkspace=await first.api.getWorkspace(owner);
   const workspaceRevision=originalWorkspace.workspaceRevision;
+  assert.equal(await first.api.isWorkspaceSnapshotCurrent(owner,
+    JSON.stringify(originalWorkspace.state),JSON.stringify(originalWorkspace.featureState)),true,
+    'an exact target-owner compatibility snapshot must be recognized without parsing it');
+  assert.equal(await first.api.isWorkspaceSnapshotCurrent(owner,
+    JSON.stringify({...originalWorkspace.state,settings:{theme:'changed'}}),
+    JSON.stringify(originalWorkspace.featureState)),false,
+    'a changed target-owner snapshot must not suppress its workspace revision marker');
+  const initialReadiness=await first.api.getWorkspaceEntityProjectionReadiness(owner);
+  assert.equal(initialReadiness.ready,true,
+    'a complete owner-matched projection at the durable workspace revision must be reusable');
+  assert.equal(initialReadiness.ownerId,owner);
+  assert.equal(initialReadiness.generation,initial.generation,
+    'readiness must identify the already-published generation without rebuilding it');
+  assert.equal(initialReadiness.workspaceRevision,workspaceRevision);
+
+  // A stale manifest must fail closed, and restoring its exact revision must make
+  // the same active generation reusable again without scanning/materializing rows.
+  const manifestStore=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  const manifestKey='workspace-entities:'+encodeURIComponent(owner);
+  const savedManifest=clone(manifestStore.get(manifestKey));
+  manifestStore.set(manifestKey,{...savedManifest,sourceWorkspaceRevision:workspaceRevision+1});
+  const staleReadiness=await first.api.getWorkspaceEntityProjectionReadiness(owner);
+  assert.equal(staleReadiness.ready,false,
+    'a projection whose source revision differs from the durable workspace must never be reused');
+  assert.equal(staleReadiness.reason,'stale-workspace-revision');
+  manifestStore.set(manifestKey,savedManifest);
+  assert.equal((await first.api.getWorkspaceEntityProjectionReadiness(owner)).ready,true,
+    'the unchanged active generation must remain reusable after its valid manifest is restored');
 
   await first.api.writeWorkspaceEntityChanges(owner,[{
     collection:'topics',id:'hydrate-topic',operation:'put',position:0,
@@ -1372,6 +1400,39 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(afterFirst.state.topics[0].name,'Entity-authoritative title');
   assert.equal((await first.api.getWorkspace(owner)).workspaceRevision,workspaceRevision,
     'metadata and entity projection writes must not fake a compatibility record revision');
+
+  // Aborting a large replacement after its first IndexedDB batch must leave the
+  // previously published generation selected and usable.
+  const generationBeforeAbort=afterFirst.generation;
+  const replacementState={...afterFirst.state,topics:Array.from({length:1200},(_,index)=>({
+    id:'cancel-rebuild-'+index,name:'Cancelled rebuild '+index,subjectId:'hydrate-subject'
+  }))};
+  const controller=new AbortController(),nativeYield=first.context.window.setTimeout;
+  let projectionYields=0;
+  first.context.window.setTimeout=(callback,...args)=>nativeYield(()=>{
+    projectionYields++;
+    if(projectionYields===1)controller.abort(new Error('projection rebuild cancelled'));
+    callback();
+  },...args);
+  try{
+    await assert.rejects(
+      first.api.migrateWorkspaceEntities(owner,replacementState,afterFirst.featureState,{
+        expectedRevision:first.api.getStatus().revision,signal:controller.signal
+      }),
+      /projection rebuild cancelled/,
+      'an aborted projection replacement must report cancellation'
+    );
+  }finally{
+    first.context.window.setTimeout=nativeYield;
+  }
+  assert.ok(projectionYields>=1,'the replacement must reach a cooperative batch yield before cancellation');
+  const afterAbort=await first.api.readWorkspaceEntities(owner);
+  assert.equal(afterAbort.generation,generationBeforeAbort,
+    'an interrupted projection candidate must never replace the previously active generation');
+  assert.equal(afterAbort.state.topics[0].name,'Entity-authoritative title',
+    'the previously published generation must remain readable after cancellation');
+  assert.equal((await first.api.getWorkspaceEntityProjectionReadiness(owner)).ready,true,
+    'a cancelled replacement must leave the old current projection reusable');
 
   // Simulate a fresh page context. Its first IndexedDB snapshot is older than the
   // entity projection; startup must hydrate the newer entity state before modules read it.
@@ -2049,3 +2110,48 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
 }
 
 console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, delta cursor receipt atomicity, recovery journal restart at prepared/staged/published phases, recovery write locks, failed-write recovery, and account-handoff isolation.');
+
+
+// DLA-08D: cancellation during projection-readiness preflight must propagate
+// immediately instead of falling through to full-workspace serialization.
+{
+  const appCoreSource=readFileSync(resolve(root,'app-core.js'),'utf8');
+  const projectionStart=appCoreSource.indexOf('  window.NexusRebuildEntityProjection=async(options={})=>{');
+  const projectionEnd=appCoreSource.indexOf('\n  function notify(',projectionStart);
+  assert.ok(projectionStart>=0&&projectionEnd>projectionStart,
+    'the projection rebuild entrypoint must be available for isolated cancellation testing');
+  const projectionSource=appCoreSource.slice(projectionStart,projectionEnd).trim();
+  const controller=new AbortController();
+  let serializedValues=0,projectionWrites=0;
+  const context={
+    window:{
+      NexusStorage:{
+        isEnabled:()=>true,
+        getWorkspaceEntityProjectionReadiness:async()=>{
+          controller.abort(new Error('projection readiness cancelled'));
+          return {ready:true,generation:'obsolete-generation',workspaceRevision:1,rowCount:1};
+        },
+        syncWorkspaceEntities:async()=>{projectionWrites++;return {ok:true};}
+      }
+    },
+    localStorage:{getItem:()=> 'projection-cancel-owner'},
+    state:{topics:[{id:'large-workspace-record'}]},
+    Error,
+    JSON:{
+      parse:JSON.parse,
+      stringify(value){serializedValues++;return JSON.stringify(value);}
+    },
+    console:{warn(){}}
+  };
+  vm.runInNewContext(projectionSource,context,{filename:'app-core-projection-cancellation-test.js'});
+  await assert.rejects(
+    context.window.NexusRebuildEntityProjection({signal:controller.signal}),
+    /projection readiness cancelled/,
+    'readiness cancellation must propagate rather than fall through to a guarded rebuild'
+  );
+  assert.equal(serializedValues,0,
+    'a cancelled readiness probe must not serialize the large compatibility workspace');
+  assert.equal(projectionWrites,0,
+    'a cancelled readiness probe must not schedule an IndexedDB projection write');
+  console.log('DLA-08D projection-readiness cancellation regression passed.');
+}

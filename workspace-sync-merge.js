@@ -178,12 +178,23 @@
   const MERGE_YIELD_BATCH=400;
   const SAME_YIELD_BATCH=2048;
   function yieldToBrowser(){return new Promise(resolve=>setTimeout(resolve,0));}
-  async function sameAsync(a,b){
+  function throwIfComparisonAborted(signal){
+    if(!signal||!signal.aborted)return;
+    const reason=signal.reason;
+    const error=new Error(reason&&typeof reason.message==='string'
+      ?reason.message:'Workspace comparison was cancelled.');
+    error.name='AbortError';error.code='NEXUS_SYNC_CANCELLED';
+    if(reason)error.cause=reason;
+    throw error;
+  }
+  async function sameAsync(a,b,signal){
+    throwIfComparisonAborted(signal);
     // Iterative structural comparison avoids giant stable-JSON strings and recursive
     // call-stack growth. A frame is retained per nesting level, not per record.
     const stack=[{a,b,entered:false}],hasOwn=Object.prototype.hasOwnProperty;
     let inspected=0;
     while(stack.length){
+      throwIfComparisonAborted(signal);
       const frame=stack[stack.length-1];
       if(!frame.entered){
         frame.entered=true;
@@ -213,7 +224,7 @@
       const key=frame.isArray?frame.index++:frame.keys[frame.index++];
       stack.push({a:frame.a[key],b:frame.b[key],entered:false});
       inspected++;
-      if(inspected%SAME_YIELD_BATCH===0)await yieldToBrowser();
+      if(inspected%SAME_YIELD_BATCH===0){await yieldToBrowser();throwIfComparisonAborted(signal);}
     }
     return true;
   }

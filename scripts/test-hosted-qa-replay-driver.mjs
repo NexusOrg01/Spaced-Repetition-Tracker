@@ -11,7 +11,7 @@ const driver = cloud.slice(start, end);
 
 for (const required of [
   "window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA!==true",
-  "window.NEXUS_ENTITY_DELTA_SYNC_QA_REF!=='fix/dla04-entity-projection-guard'",
+  "window.NEXUS_ENTITY_DELTA_SYNC_QA_REF!=='fix/sync-account-handoff-reliability'",
   "config().url!=='https://xuwfzibxhxzxxupprxsq.supabase.co'",
   "u.origin===location.origin",
   "client.auth.getUser()",

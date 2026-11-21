@@ -1196,7 +1196,7 @@ function makeStagingRuntimeHarness({
   gate=false,localOrigin=true,stagingUrl=stagingSupabaseUrl,recoveryIntent=null,
   syncResult={ok:true,publishedCount:1},recoveryResult={ok:true,recovered:true},
   missingChunkStorage=false,hostedQaGate=false,hostedQaOrigin='',hostedQaBranchOrigin='',
-  productionGate=false,browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/dla04-entity-projection-guard',
+  productionGate=false,browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/sync-account-handoff-reliability',
   remoteState={mode:'delta',protocol_version:1},remoteStateError=null,
   productionEnableResult={ok:true,mode:'delta'},productionEnableError=null,
   changeLocalOwnerOnEnable=false,
@@ -1339,7 +1339,7 @@ function makeStagingRuntimeHarness({
     new URL(runtimeOrigin).hostname==='spaced-repetition-tracker-delta.vercel.app'&&
     new URL(runtimeOrigin).origin==='https://spaced-repetition-tracker-delta.vercel.app';
   const context={
-    window,client,session:{user:{id:sessionUser}},
+    window,client,sessionEpoch:0,session:{user:{id:sessionUser}},
     LIVE_SUPABASE_URL:'https://txugbdavblpettcnhcxl.supabase.co',
     LIVE_APP_HOST:'spaced-repetition-tracker-delta.vercel.app',
     productionDeltaIneligibleOwners:new Set(),
@@ -1614,24 +1614,24 @@ const hostedSnapshotMode=makeStagingRuntimeHarness({
   remoteState:{mode:'snapshot',protocol_version:1}
 });
 const hostedSnapshotResult=await hostedSnapshotMode.run('account-A',stagingSignal);
-assert.equal(hostedSnapshotResult.skipped,true,
-  'a hosted QA workspace still in snapshot mode must use the established snapshot/chunk path');
-assert.equal(hostedSnapshotResult.mode,'snapshot');
-assert.equal(hostedSnapshotResult.reason,'server_snapshot_mode');
-assert.equal(hostedSnapshotMode.calls.createClient,0,
-  'snapshot-mode workspaces must not invoke Delta RPCs');
+assert.equal(hostedSnapshotResult.ok,true,
+  'a hosted QA workspace with a verified snapshot must auto-enroll through the authenticated global rollout RPC');
+assert.equal(hostedSnapshotMode.calls.rpc.name,'nexus_enable_entity_delta');
+assert.equal(hostedSnapshotMode.calls.rpcCount,1);
+assert.equal(hostedSnapshotMode.calls.createClient,1,
+  'a successfully enrolled hosted QA workspace must enter Delta synchronization');
 assert.equal(hostedSnapshotMode.calls.stateRead.filterValue,'account-A',
-  'the snapshot-mode preflight must be scoped to the authenticated owner');
+  'the snapshot-mode preflight and enrollment must be scoped to the authenticated owner');
 
 const hostedLegacyMode=makeStagingRuntimeHarness({
   gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
   hostedQaGate:true,hostedQaOrigin,browserOrigin:hostedQaOrigin,remoteState:null
 });
 const hostedLegacyResult=await hostedLegacyMode.run('account-A',stagingSignal);
-assert.equal(hostedLegacyResult.skipped,true,
-  'a workspace without a sync-state row must continue through the snapshot/chunk protocol');
-assert.equal(hostedLegacyResult.reason,'server_sync_state_missing');
-assert.equal(hostedLegacyMode.calls.createClient,0);
+assert.equal(hostedLegacyResult.ok,true,
+  'a hosted QA workspace without a sync-state row must enroll after verifying its existing cloud snapshot');
+assert.equal(hostedLegacyMode.calls.rpc.name,'nexus_enable_entity_delta');
+assert.equal(hostedLegacyMode.calls.createClient,1);
 
 const hostedStateReadFailure=makeStagingRuntimeHarness({
   gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
@@ -1921,7 +1921,7 @@ assert.equal(snapshotFallbackResult.reason,'legacy_snapshot_server',
 
 const uploadStart=cloudSyncSource.indexOf('async function upload(){');
 const uploadDeltaCall=cloudSyncSource.indexOf(
-  'deltaResult=await runStagingEntityDeltaSync(uploadUserId,uploadScope.signal);',uploadStart
+  "deltaResult=await uploadScope.race(runStagingEntityDeltaSync(uploadUserId,uploadScope.signal),'Entity Delta synchronization');",uploadStart
 );
 const legacyQueueStart=cloudSyncSource.indexOf('let pending=null;',uploadDeltaCall);
 assert.ok(uploadStart>=0&&uploadDeltaCall>uploadStart&&legacyQueueStart>uploadDeltaCall,
