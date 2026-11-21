@@ -968,12 +968,34 @@ async function checkpointPreviousAccountWorkspace(ownerId,targetUserId,payload){
  if(!payload||!payload.state||!payload.featureState)throw new Error('The previous account snapshot is incomplete. No workspace was switched.');
  const existingPending=queue.getPending(storage,ownerId),verifiedBase=queue.getBase(storage,ownerId);
  const baseVersion=existingPending?existingPending.baseServerVersion:(verifiedBase&&typeof verifiedBase.serverVersion==='string'?verifiedBase.serverVersion:queue.getStamp(storage,ownerId));
- const checkpoint={app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:new Date().toISOString(),state:clone(payload.state),featureState:clone(payload.featureState)};
+ // Serialize the outgoing account once. The same immutable bytes feed the
+ // owner-bound pending checkpoint and the durable-snapshot comparison below.
+ const trackerSnapshotJson=JSON.stringify(payload.state);
+ const featureSnapshotJson=JSON.stringify(payload.featureState);
+ if(typeof trackerSnapshotJson!=='string'||typeof featureSnapshotJson!=='string')
+  throw new Error('The previous account snapshot could not be serialized safely.');
+ const checkpoint={app:'Nexus Spaced Repetition Tracker',schema:4,
+  exportedAt:new Date().toISOString(),state:JSON.parse(trackerSnapshotJson),
+  featureState:JSON.parse(featureSnapshotJson)};
  const entries=[
-  {key:window.NexusStorageKey,value:JSON.stringify(checkpoint.state)},
-  {key:window.NexusFeatureStorageKey,value:JSON.stringify(checkpoint.featureState)}
+  {key:window.NexusStorageKey,value:trackerSnapshotJson},
+  {key:window.NexusFeatureStorageKey,value:featureSnapshotJson}
  ];
- const revisionEntry=window.NexusWorkspaceEntityRevisionEntry?.(ownerId);
+ // Parking an account's outbox snapshot does not itself change its records.
+ // Preserve its existing entity generation when these exact owner-bound bytes
+ // are already the durable workspace. If the comparison fails or storage cannot
+ // prove equality, keep the conservative revision bump and safe rebuild path.
+ let durableSnapshotUnchanged=false;
+ const durable=window.NexusStorage;
+ if(durable&&typeof durable.isWorkspaceSnapshotCurrent==='function'){
+  try{
+   durableSnapshotUnchanged=await durable.isWorkspaceSnapshotCurrent(
+    ownerId,trackerSnapshotJson,featureSnapshotJson
+   )===true;
+  }catch(_){}
+ }
+ const revisionEntry=durableSnapshotUnchanged
+  ?null:window.NexusWorkspaceEntityRevisionEntry?.(ownerId);
  if(revisionEntry)entries.push(revisionEntry);
  const committed=queue.commitWorkspace(storage,entries,checkpoint,{baseServerVersion:baseVersion,returnOperationPayload:false});
  const verified=queue.getPending(storage,ownerId);
