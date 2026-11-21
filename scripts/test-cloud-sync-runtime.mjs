@@ -147,6 +147,8 @@ assert.match(source, /interrupt\(syncTimeoutError\(isAuth\?'Supabase Auth reques
   'the Supabase fetch deadline must be reported with its configured 15/60-second timeout');
 assert.match(source, /if\(timedOut\)throw syncTimeoutError\(isAuth\?'Supabase Auth request':'Supabase data request',timeoutMs\)/,
   'the bounded fetch error path must preserve the actual request deadline');
+assert.match(source, /previousAccountHasChanges=await initScope\.race\(hasUnassignedWorkspaceChanges\(owner,newUserId,localPayload\),'previous account workspace comparison'\)/,
+  'account handoff must await and cancel the previous-owner workspace comparison instead of leaving a detached rejection');
 
 // Hosted Delta must actively pull remote edits; local-save and reconnect-only triggers
 // leave an already-open second device stale indefinitely. Poll only after the gated

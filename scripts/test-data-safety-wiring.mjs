@@ -74,7 +74,7 @@ for (const asset of ['backup-restore-utils.js','offline-sync-queue.js','curricul
 assert.ok(storageSource.includes("const DB_NAME = 'nexus-workspace-v1'") && storageSource.includes('function commitLocalStorageEntries(entries)') && storageSource.includes('async function persistPending()'), 'the IndexedDB layer must expose the compatibility write path and durable flush logic');
 assert.ok(storageSource.includes("const WORKSPACES = 'workspaces'") && storageSource.includes('function seedWorkspaceProjection') && storageSource.includes('getWorkspace: readWorkspace'), 'IndexedDB must retain verifiable owner-scoped workspace projections');
 assert.ok(storageSource.includes('FALLBACK_JOURNAL_KEY') && storageSource.includes('function fallbackAtomicWrite(entries)') && storageSource.includes('valueHash(currentNativeValue)'), 'browser-storage fallback edits must be checksummed and reconciled before an older IndexedDB snapshot can overwrite them');
-assert.ok(cloudSync.includes('async function recoverCachedWorkspaceForOfflineAccount(userId)') && cloudSync.includes('queue.getPending(localStorage,userId)') && cloudSync.includes('durable.getWorkspace(userId)') && cloudSync.includes('queue.getBase(localStorage,userId)'), 'offline sign-in must restore only the exact account’s pending/cache/base workspace');
+assert.ok(cloudSync.includes('async function recoverCachedWorkspaceForOfflineAccount(userId,parentSignal)') && cloudSync.includes('queue.getPending(localStorage,userId)') && cloudSync.includes('durable.getWorkspace(userId)') && cloudSync.includes('queue.getBase(localStorage,userId)'), 'offline sign-in must restore only the exact account’s pending/cache/base workspace');
 const durableTrackerSave=section(appCore,'function save(options={}){','window.NexusRebuildEntityProjection=()=>{','durable tracker save');
 assert.ok(durableTrackerSave.includes("textContent='Saving to this device…';") &&
   durableTrackerSave.includes('const durableFlush=storage.flush();') &&
@@ -84,25 +84,25 @@ assert.ok(durableTrackerSave.includes("textContent='Saving to this device…';")
   durableTrackerSave.includes("textContent='Save failed — export backup';"),
   'the tracker must show a pending state and report success only after the durable storage promise resolves');
 assert.ok(bootstrap.includes('registerServiceWorker();') && bootstrap.includes("navigator.serviceWorker.register('./sw.js', { scope: './' })"), 'the storage-gated bootstrap must register the service worker directly without waiting for the window load event');
-assert.ok(cloudSync.includes('await durableStorage.flush()'), 'cloud uploads must wait for the IndexedDB write queue to commit before selecting a snapshot');
+assert.ok(cloudSync.includes('await uploadScope.race(durableStorage.flush()'), 'cloud uploads must wait for the IndexedDB write queue to commit before selecting a snapshot');
 assert.ok(cloudSync.includes("{key:'nexus.fsrs.settings.v1',value:JSON.stringify(nextFeatures.fsrsSettings)}") && cloudSync.includes('NexusFSRS.setSettings(nextFeatures.fsrsSettings'), 'account hydration must persist and activate the account-scoped FSRS scheduler preferences');
 assert.ok(fsrsBundle.includes('featureState.fsrsSettings = Object.assign({}, settings)') && fsrsBundle.includes('NexusSetFeatureState(featureState'), 'changing FSRS preferences must place them in the synchronized Study Hub state');
 assert.ok(!fsrsBundle.includes('fsrsEnabled') && !fsrsBundle.includes('prevInterval') && !fsrsBundle.includes('old multiplier method') && fsrsBundle.includes('N.previewButtons(t || {})'), 'FSRS-6 must be the only topic-review scheduling path; legacy enable flags cannot select the old multiplier method');
 assert.ok(fsrsBundle.includes('if (retentionControl) retentionControl.value = String(settings.request_retention)') && fsrsBundle.includes('if (maximumControl) maximumControl.value = String(settings.maximum_interval)'), 'backup/cloud-applied FSRS tuning values must refresh already-mounted controls');
 assert.ok(backupUtils.includes('function normalizeFsrsSettings') && backupUtils.includes("fsrsSettings: normalizeFsrsSettings(input.fsrsSettings"), 'backup import/export normalization must validate FSRS settings');
-assert.ok(cloudSync.includes('async function flushDurableLocalWrites()') && cloudSync.includes("await flushDurableLocalWrites();status('Synced');"), 'sync queue acknowledgements, bases, and cloud write verification metadata must be durable before a synced status is shown');
+assert.ok(cloudSync.includes('async function flushDurableLocalWrites(parentSignal)') && cloudSync.includes("await uploadScope.race(flushDurableLocalWrites(uploadScope.signal),'local sync persistence');status('Synced');"), 'sync queue acknowledgements, bases, and cloud write verification metadata must be durable before a synced status is shown');
 assert.ok(cloudSync.includes("await flushDurableLocalWrites();\n  ready=true;"), 'restoring a remote workspace must durably commit the associated merge base before marking the account ready');
 const hydratedWorkspace = section(cloudSync, 'async function applyWorkspaceSnapshot(', 'async function applyRemote(', 'cloud workspace persistence');
-const workspaceCommit = hydratedWorkspace.indexOf('await window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,entries);');
+const workspaceCommit = hydratedWorkspace.indexOf("await applyScope.race(window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,entries),'atomic workspace replacement');");
 const workspacePublish = hydratedWorkspace.indexOf('state=safeState;');
 assert.ok(workspaceCommit >= 0 && workspacePublish > workspaceCommit, 'cloud/local workspace hydration must wait for the atomic durable commit before publishing the new in-memory state');
 assert.ok(cloudSync.includes('async function applyRemote(payload,ownerId,serverVersion)') && cloudSync.includes('await applyWorkspaceSnapshot('), 'remote restore and account switching must await durable workspace hydration before reporting the account ready');
-assert.ok(cloudSync.includes('async function applyLocalMerged(localPayload,remotePayload)') && cloudSync.includes('await applyLocalMerged('), 'manual merge must wait for its local durable commit before proceeding to upload or claiming success');
+assert.ok(cloudSync.includes('async function applyLocalMerged(localPayload,remotePayload)') && cloudSync.includes('await initScope.race(applyLocalMerged('), 'manual merge must wait for its local durable commit before proceeding to upload or claiming success');
 assert.ok(bootstrap.includes('await window.NexusStorage.bootstrap({ hydrateEntities: true })') && bootstrap.includes('for (const asset of RUNTIME_ASSETS) await loadScript(asset)'), 'app modules must wait for entity-first storage initialization and load sequentially');
 assert.ok(appSource.includes('window.NexusStorageKey = STORAGE_KEY;'), 'expose the primary storage key for shared transactions');
 assert.ok(runtimeAssets.indexOf('workspace-sync-merge.js') >= 0 && runtimeAssets.indexOf('cloud-sync.js') > runtimeAssets.indexOf('workspace-sync-merge.js'), 'three-way merge engine must load before cloud sync runtime');
 assert.ok(runtimeAssets.indexOf('entity-delta-sync.js') >= 0 && runtimeAssets.indexOf('cloud-sync.js') > runtimeAssets.indexOf('entity-delta-sync.js'), 'the gated entity-delta transport must load before cloud sync without activating itself');
-assert.ok(cloudSync.includes('reconcileConcurrentSnapshot(newUserId,remote)'), 'same-account pending snapshots on stale cloud revisions must attempt automatic merge before the workspace-choice fallback');
+assert.ok(cloudSync.includes('reconcileConcurrentSnapshot(newUserId,remote,requestedEpoch)'), 'same-account pending snapshots on stale cloud revisions must attempt automatic merge before the workspace-choice fallback');
 assert.ok(cloudSync.includes('queue.getBase(localStorage,userId)'), 'automatic conflict resolution must compare the last synced base, local edits, and cloud edits');
 assert.ok(cloudSync.includes('conflicts:result.conflicts') && cloudSync.includes('conflictMetadata:{baseServerVersion:pending.baseServerVersion,remoteServerVersion:remoteStamp}'), 'overlapping edit alternatives must share the same atomic commit as the merge before cloud overwrite can happen');
 assert.ok(cloudSync.includes("queue.rebaseWithBase(localStorage,userId,mergedSnapshot,remoteStamp,'automatic-three-way-merge'"), 'the merge snapshot, base, queue, local workspace and conflict archive are persisted in one transaction');
@@ -186,7 +186,7 @@ assert.ok(cloudSync.includes('Enable sync diagnostics') && cloudSync.includes('D
 assert.ok(cloudSync.includes('scheduleRetry();localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;return;'), 'transient merge-verification races must use bounded automatic retry');
 assert.ok(cloudSync.includes('sameWorkspace(remoteData,pendingForUser.payload)'), 'routine conflict detection must compare workspace contents, not exported-at metadata');
 assert.ok(cloudSync.includes('function nextCloudStamp(previous)') && cloudSync.includes('policy.nextRevisionStamp(previous)'), 'revision creation must prevent same-millisecond writes from reusing a compare-and-swap version');
-assert.ok(cloudSync.includes('reconcileOwnedWorkspace(newUserId,localPayload,remote)'), 'same-account stale workspace with no pending queue must load cloud or enter automatic merge, not the account-choice dialog');
+assert.ok(cloudSync.includes('reconcileOwnedWorkspace(newUserId,localPayload,remote,requestedEpoch)'), 'same-account stale workspace with no pending queue must load cloud or enter automatic merge, not the account-choice dialog');
 assert.ok(cloudSync.includes('base&&typeof base.serverVersion===\'string\'?base.serverVersion:null'), 'recovery of unqueued local edits must use the base revision, not the just-fetched cloud revision');
 assert.ok(cloudSync.includes('function downloadConflictRecovery()'), 'users must be able to download archived same-account conflict alternatives');
 assert.ok(cloudSync.includes('queue.getConflictHistory(localStorage,owner)'), 'the conflict-recovery export must retrieve history for the selected account only');
@@ -246,7 +246,7 @@ assert.ok(dangerScreen.includes('id="workspaceDeletionDialog"') && dangerScreen.
 assert.ok(dangerScreen.includes('Neither option can remotely erase offline copies on other devices') && dangerScreen.includes('Your account and sign-in remain active'), 'deletion warnings must distinguish workspace-only reset from permanent account deletion and disclose other-device copies');
 assert.ok(restore.includes("archivePending:mode==='REPLACE'"), 'replace restore must archive the prior pending snapshot after explicit confirmation');
 
-const cloud = section(cloudSync, 'function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){', 'async function initializeSession(s)', 'cloud workspace hydration');
+const cloud = section(cloudSync, 'async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,parentSignal){', 'async function initializeSession(s)', 'cloud workspace hydration');
 const cloudCommit = cloud.indexOf('commitLocalStorageAtomically(localStorage,entries)');
 const cloudCompact = cloud.indexOf('window.NexusOfflineSyncQueue.compactMetadata(localStorage)');
 assert.ok(cloudCompact >= 0 && cloudCommit > cloudCompact, 'compact legacy sync snapshots before cloud hydration writes the restored workspace');
@@ -260,7 +260,7 @@ assert.ok(cloud.includes('window.NexusSetFeatureState(nextFeatures,{persist:fals
 assert.ok(cloud.includes('function resetToEmpty(ownerId){') && cloud.includes('applyWorkspaceSnapshot(emptyState(),{},ownerId)'), 'new-account reset commits the owner marker with the empty workspace');
 assert.ok(cloudSync.includes('resetToEmpty(newUserId)'), 'account switching must pass the new owner into every clean-workspace reset');
 assert.ok(cloudSync.includes('if(owner&&owner!==newUserId){'), 'only a workspace already owned by another account may bypass the data-choice flow');
-assert.ok(cloudSync.includes('if(localHasWork){') && cloudSync.includes('let choice=await chooseLocalData();') && cloudSync.includes("status('Data choice required')"), 'unassigned offline work must enter the explicit three-way choice before account initialization can replace it');
+assert.ok(cloudSync.includes('if(localHasWork){') && cloudSync.includes("let choice=await initScope.race(chooseLocalData(initScope.signal),'workspace data choice')") && cloudSync.includes("status('Data choice required')"), 'unassigned offline work must enter the explicit three-way choice before account initialization can replace it');
 assert.ok(cloudSync.includes('applyWorkspaceSnapshot(normalizeState(localPayload.state),window.NexusNormalizeFeatureState(localPayload.featureState||{}),newUserId);owner=newUserId;'), 'the selected offline workspace must be assigned to the account atomically before merge or upload');
 assert.ok(cloudSync.includes('function enqueueInitialSnapshot(ownerId)') && (cloudSync.match(/enqueueInitialSnapshot\(newUserId\)/g)||[]).length>=3, 'new-account initial state must be queued before cloud insert for lost-response recovery');
 assert.ok(cloudSync.includes('The cloud backup was not rewritten.'), 'loading an existing cloud copy must not needlessly update its remote revision');
@@ -281,14 +281,14 @@ const destructiveChoiceGuard = accountChoice.indexOf("while(choice==='replace-cl
 const choiceExecution = accountChoice.indexOf("if(choice==='merge'){");
 assert.ok(destructiveChoiceGuard >= 0 && choiceExecution > destructiveChoiceGuard, 'confirm destructive account choices before applying or uploading workspace data');
 const destructiveGuard = accountChoice.slice(destructiveChoiceGuard, choiceExecution);
-assert.ok(destructiveGuard.includes("choice=await chooseLocalData();"), 'cancelling a destructive confirmation must reopen the three-way account choice');
+assert.ok(destructiveGuard.includes("choice=await initScope.race(chooseLocalData(initScope.signal),'workspace data choice');"), 'cancelling a destructive confirmation must reopen the three-way account choice');
 assert.ok(destructiveGuard.includes('Your offline data has not been changed.'), 'cancellation must explicitly preserve the offline workspace');
 assert.ok(destructiveGuard.includes('Unsynced local changes that are not in the cloud will be lost.'), 'replacing local data with cloud data must warn about unsynced local changes');
 assert.ok(destructiveGuard.includes('no cloud backup is available to restore it.'), 'starting clean without a cloud backup must warn about local data loss');
 assert.ok(!destructiveGuard.includes('applyRemote(') && !destructiveGuard.includes('resetToEmpty(') && !destructiveGuard.includes('upload()'), 'cancelling must not apply cloud data, clear local data, or upload anything');
 assert.ok(!accountChoice.includes('Cloud replacement cancelled; the account cloud data was loaded.'), 'cancelled cloud replacement must never silently replace local data');
 assert.ok(accountChoice.includes('lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;'), 'confirmed cloud replacement must retain the observed revision for conditional writes');
-assert.ok(accountChoice.includes("if(choice==='merge'){lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;await applyLocalMerged("), 'merging with an existing cloud backup must use the fetched revision for a conditional write');
+assert.ok(accountChoice.includes("if(choice==='merge'){lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;await initScope.race(applyLocalMerged("), 'merging with an existing cloud backup must use the fetched revision for a conditional write');
 
 assert.ok(serviceWorker.includes("const CACHE_PREFIX='nexus-rating-analytics-';") && serviceWorker.includes("const CACHE_NAME=CACHE_PREFIX+'v33';"), 'cache version must advance after updating the Danger Zone deletion flow');
 assert.ok(serviceWorker.includes("'./nexus-storage.js'") && serviceWorker.includes("'./nexus-app-bootstrap.js'") && serviceWorker.includes("'./nexus-app-inline.js'") && serviceWorker.includes("'./app-core.js'") && serviceWorker.includes("'./study-hub.js'") && serviceWorker.includes("'./explore-curriculum.js'") && serviceWorker.includes("'./backup-restore-utils.js'") && serviceWorker.includes("'./offline-sync-queue.js'") && serviceWorker.includes("'./workspace-isolation-guard.js'") && serviceWorker.includes("'./nexus-build-config.js'") && serviceWorker.includes("'./cloud-sync-recovery.js'") && serviceWorker.includes("'./entity-delta-sync.js'") && serviceWorker.includes("'./cloud-sync.js'"), 'offline app shell must cache the storage bootstrap and dependent app scripts');
