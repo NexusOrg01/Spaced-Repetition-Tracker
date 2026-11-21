@@ -1420,7 +1420,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   // Aborting a large replacement after its first IndexedDB batch must leave the
   // previously published generation selected and usable.
   const generationBeforeAbort=afterFirst.generation;
-  const replacementState={...afterFirst.state,topics:Array.from({length:1200},(_,index)=>({
+  const replacementState={...afterFirst.state,topics:Array.from({length:2200},(_,index)=>({
     id:'cancel-rebuild-'+index,name:'Cancelled rebuild '+index,subjectId:'hydrate-subject'
   }))};
   const controller=new AbortController(),nativeYield=first.context.window.setTimeout;
