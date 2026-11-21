@@ -1115,6 +1115,7 @@ if(ready){await flushDurableLocalWrites();status('Synced');}syncDiag('initialize
  if(recoveredOwnerMatches){
   // The account-bound local copy is safe to use, but it is not proof of cloud sync.
   ready=true;
+  lastUserId=requestedUserId;
   const offline=typeof navigator!=='undefined'&&navigator.onLine===false;
   status(offline?'Offline · local workspace':'Sync delayed · local data ready');
   say('Cloud verification did not finish. This account’s local workspace is available and remains isolated; unsynced changes stay queued under this account. Nexus will retry automatically. Do not clear this browser’s data.');
