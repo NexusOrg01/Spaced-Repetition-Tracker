@@ -2184,6 +2184,17 @@ function createSafeAuthStorage(storage){
    removeItem(key){return storage.removeItem(key);}
   };
 }
+function authStateEventBelongsToCurrentOwner(event,nextSession){
+ // Supabase TOKEN_REFRESHED and USER_UPDATED events describe the current
+ // session; unlike SIGNED_IN they must never switch workspace ownership.
+ if(event!=='TOKEN_REFRESHED'&&event!=='USER_UPDATED')return true;
+ const incomingUserId=nextSession&&nextSession.user&&nextSession.user.id||null;
+ return !!incomingUserId&&incomingUserId===sessionOwnerId;
+}
+function authInitializationCallbackIsCurrent(userId,expectedEpoch){
+ return !!userId&&sessionEpoch===expectedEpoch&&sessionOwnerId===userId&&
+  !!session&&!!session.user&&session.user.id===userId;
+}
 async function ensureClient(){
  if(isUnsafeCloudOrigin())throw new Error('Cloud sync is disabled on this preview/local copy to protect real cloud data.');
  if(client)return client;
@@ -2194,6 +2205,13 @@ async function ensureClient(){
   if(typeof window.fetch==='function')clientOptions.global={fetch:createBoundedSupabaseFetch(window.fetch.bind(window))};
   client=window.supabase.createClient(c.url,c.key,clientOptions);
   client.auth.onAuthStateChange((event,newSession)=>{
+   if(!authStateEventBelongsToCurrentOwner(event,newSession)){
+    // A late refresh/profile notification from the outgoing account is not an
+    // identity transition. Ignore it before it can rotate the epoch, abort the
+    // returning owner's sync, or synchronously re-lock the verified workspace.
+    syncDiag('auth-event',diagnosticWorkspace(),{event,hasSession:!!(newSession&&newSession.user),ownerPresent:!!localStorage.getItem(OWNER_KEY)});
+    return;
+   }
    session=newSession||null;rotateSessionContext(session);
    syncDiag('auth-event',diagnosticWorkspace(),{event,hasSession:!!(newSession&&newSession.user),ownerPresent:!!localStorage.getItem(OWNER_KEY)});
    if(event==='TOKEN_REFRESHED'||event==='USER_UPDATED'){session=newSession;setControls();return;}
@@ -2206,10 +2224,17 @@ async function ensureClient(){
    if(event==='SIGNED_IN'||event==='INITIAL_SESSION'){
     const uid=newSession&&newSession.user?newSession.user.id:null;
     if(initializing&&hasQueuedSession){queuedSession=newSession||null;hasQueuedSession=true;}
-    if(uid!==lastUserId||!ready)setTimeout(()=>{
-     if(uid!==lastUserId||!ready)initializeSession(newSession);
-     else{session=newSession;setControls();}
-    },0);
+    if(uid!==lastUserId||!ready){
+     const callbackEpoch=sessionEpoch;
+     setTimeout(()=>{
+      // Auth callbacks are delivered asynchronously. A queued notification from
+      // an outgoing session must become inert after any subsequent identity
+      // rotation, including an A→B→A cycle that returns to the same user ID.
+      if(!authInitializationCallbackIsCurrent(uid,callbackEpoch))return;
+      if(uid!==lastUserId||!ready)initializeSession(newSession);
+      else{session=newSession;setControls();}
+     },0);
+    }
     else{session=newSession;setControls();}
    }
   });
