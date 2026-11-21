@@ -44,8 +44,10 @@ assert.match(source,/function rotateSessionContext\(nextSession\)[\s\S]*?activeI
   'an account identity change must cancel the previous initializer and uploader immediately');
 assert.match(source,/function createBoundedSupabaseFetch\([\s\S]*?SUPABASE_AUTH_REQUEST_TIMEOUT_MS[\s\S]*?SUPABASE_DATA_REQUEST_TIMEOUT_MS[\s\S]*?Promise\.race/,
   'Auth and Data API fetches must settle on timeout or session cancellation');
-assert.match(source,/function loadSupabaseLibrary\([\s\S]*?within 12 seconds[\s\S]*?supabaseLoadPromise=null/,
-  'a failed Supabase SDK load must time out and reset the cached promise');
+assert.match(source,/function loadSupabaseLibrary\([\s\S]*?within 12 seconds/,
+  'a failed Supabase SDK load must have a bounded loading deadline');
+assert.match(source,/if\(supabaseLoadPromise===attempt\)supabaseLoadPromise=null/,
+  'a failed Supabase SDK load must reset the rejected cached promise');
 assert.match(source,/getActiveOwner:\(\)=>operationEpoch===sessionEpoch/,
   'a stale Delta operation must be rejected even after an A-to-B-to-A account switch');
 
