@@ -631,7 +631,24 @@ async function flushDurableLocalWrites(parentSignal){
   syncDiag('local-storage-flush',null,{durationMs:Date.now()-startedAt,storageEnabled:!!(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled())});
  }finally{scope.clear();}
 }
-async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,parentSignal){
+function sameJsonStructure(left,right){
+ if(left===right)return true;
+ if(Array.isArray(left)||Array.isArray(right)){
+  if(!Array.isArray(left)||!Array.isArray(right)||left.length!==right.length)return false;
+  for(let i=0;i<left.length;i++)if(!sameJsonStructure(left[i],right[i]))return false;
+  return true;
+ }
+ if(left&&right&&typeof left==='object'&&typeof right==='object'){
+  const leftKeys=Object.keys(left),rightKeys=Object.keys(right);
+  if(leftKeys.length!==rightKeys.length)return false;
+  for(const key of leftKeys){
+   if(!Object.prototype.hasOwnProperty.call(right,key)||!sameJsonStructure(left[key],right[key]))return false;
+  }
+  return true;
+ }
+ return Object.is(left,right);
+}
+async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,parentSignal,options={}){
   const applyEpoch=sessionEpoch,applyOwnerId=ownerId?String(ownerId):null;
   if(applyOwnerId&&(applyEpoch!==sessionEpoch||sessionOwnerId!==applyOwnerId||
      !session||!session.user||session.user.id!==applyOwnerId))throw syncCancelledError();
@@ -664,6 +681,14 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,parentSignal
   const storage=window.NexusStorage;
   if(ownerId&&storage&&typeof storage.isWorkspaceSnapshotCurrent==='function'){
     unchangedDurableSnapshot=await storage.isWorkspaceSnapshotCurrent(String(ownerId),trackerSnapshotJson,featureSnapshotJson);
+  }
+  // An IndexedDB-cached snapshot is already the incoming owner's durable source.
+  // Normalization may change object-key order without changing any JSON values.
+  // Preserve the projection revision in that case; only a semantic data change
+  // should invalidate the existing entity generation and force a full rebuild.
+  if(!unchangedDurableSnapshot&&options.preserveProjectionIfEquivalent===true){
+    unchangedDurableSnapshot=sameJsonStructure(safeState,nextState)&&
+      sameJsonStructure(nextFeatures,rawFeatures);
   }
   syncDiag('workspace-snapshot-current',null,{same:unchangedDurableSnapshot});
   if(applyEpoch!==sessionEpoch||(applyOwnerId&&sessionOwnerId!==applyOwnerId))throw syncCancelledError();
@@ -999,7 +1024,9 @@ async function recoverCachedWorkspaceForOfflineAccount(userId,parentSignal){
  if(!payload)return null;
  const normalizedState=normalizeState(payload.state);
  const normalizedFeatures=window.NexusNormalizeFeatureState(payload.featureState);
- await applyWorkspaceSnapshot(normalizedState,normalizedFeatures,userId,parentSignal);
+ await applyWorkspaceSnapshot(normalizedState,normalizedFeatures,userId,parentSignal,{
+  preserveProjectionIfEquivalent:source==='indexeddb'
+ });
  await flushDurableLocalWrites(parentSignal);
  if(oversizedQueueDetected){
   rebuildOversizedOfflineQueue(queue,userId,snapshot(),
