@@ -536,22 +536,25 @@ assert.equal(remainingReceiptsAfterCompaction.data.length, 0);
 check('A1 publishes a verified replacement snapshot and compacts the old operation history through revision ' + revision,
   compactedPublication.verified === true && compactionCleanup.complete === true &&
   remainingOpsAfterCompaction.data.length === 0 && remainingReceiptsAfterCompaction.data.length === 0);
-const compactedSnapshotReadBack = await readSnapshotRow(clientA1, ownerA);
-await verifyFinalWorkspace(compactedSnapshotReadBack.payload);
+const compactedSnapshotRow = await readSnapshotRow(clientA1, ownerA);
+const compactedSnapshotReadBack = await chunkStorage.readSnapshot(
+  clientA1, ownerA, compactedSnapshotRow.payload
+);
+await verifyFinalWorkspace(compactedSnapshotReadBack);
 assert.deepEqual(
-  compactedSnapshotReadBack.payload.state.topics.map(row => row.id).sort(),
+  compactedSnapshotReadBack.state.topics.map(row => row.id).sort(),
   compactedWorkspace.payload.state.topics.map(row => row.id).sort(),
   'The verified replacement snapshot must contain the exact surviving topic IDs after subject deletion.'
 );
 assert.deepEqual(
-  compactedSnapshotReadBack.payload.state.history.map(row => row.id).sort(),
+  compactedSnapshotReadBack.state.history.map(row => row.id).sort(),
   compactedWorkspace.payload.state.history.map(row => row.id).sort(),
   'The verified replacement snapshot must contain the exact surviving history IDs after subject deletion.'
 );
 check('Compacted cloud snapshot read-back matches exact topic/history IDs after the 24,573-record subject deletion',
-  compactedSnapshotReadBack.payload.state.topics.length === 53080 &&
-  compactedSnapshotReadBack.payload.state.history.length === 59460 &&
-  !compactedSnapshotReadBack.payload.state.subjects.some(row => row.id === 'subject-3'));
+  compactedSnapshotReadBack.state.topics.length === 53080 &&
+  compactedSnapshotReadBack.state.history.length === 59460 &&
+  !compactedSnapshotReadBack.state.subjects.some(row => row.id === 'subject-3'));
 
 const remoteTailTopic = compactedWorkspace.payload.state.topics.find(row => row.id === 'topic-050001');
 assert.ok(remoteTailTopic, 'The independent topic edited by both devices must remain after the large deletion');
