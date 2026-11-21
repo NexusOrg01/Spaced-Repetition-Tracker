@@ -455,7 +455,8 @@
   // CSV import, JSON restore, undo, or account-bound workspace replacement. The
   // durable snapshot remains authoritative; projection failure is non-fatal and
   // leaves a visible diagnostic for later recovery.
-  window.NexusRebuildEntityProjection=async()=>{
+  window.NexusRebuildEntityProjection=async(options={})=>{
+    const signal=options&&options.signal||null;
     const storage=window.NexusStorage,owner=localStorage.getItem('nexus.cloud.last-user-id')||'';
     if(!owner||!storage||typeof storage.isEnabled!=='function'||!storage.isEnabled()||
        typeof storage.syncWorkspaceEntities!=='function')return {skipped:true};
@@ -466,6 +467,7 @@
       if(typeof storage.getWorkspaceEntityProjectionReadiness==='function'){
         try{
           const readiness=await storage.getWorkspaceEntityProjectionReadiness(owner);
+          if(signal&&signal.aborted)throw signal.reason instanceof Error?signal.reason:new Error('Projection readiness check was cancelled.');
           if(readiness&&readiness.ready){
             return {ownerId:owner,mode:'reused',generation:readiness.generation,
               sourceWorkspaceRevision:readiness.workspaceRevision,rowCount:readiness.rowCount};
@@ -480,10 +482,11 @@
       const trackerSnapshot=JSON.stringify(state),featureSnapshot=JSON.stringify(featureState);
       const trackerRoot=JSON.parse(JSON.stringify(trackerEntityRoot()));
       const featureRoot=JSON.parse(JSON.stringify(featureEntityRoot(featureState)));
+      if(signal&&signal.aborted)throw signal.reason instanceof Error?signal.reason:new Error('Projection rebuild was cancelled.');
       const durablePromise=typeof storage.flush==='function'?storage.flush():Promise.resolve();
       return await storage.syncWorkspaceEntities(owner,null,{
         trackerRoot,featureRoot,trackerSnapshotJson:trackerSnapshot,
-        featureSnapshotJson:featureSnapshot,replace:true,durablePromise
+        featureSnapshotJson:featureSnapshot,replace:true,durablePromise,signal
       });
     }catch(error){
       console.warn('Nexus entity projection rebuild failed; the durable snapshot remains active.',error);
