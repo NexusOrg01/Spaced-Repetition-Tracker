@@ -810,12 +810,13 @@ const browser = await chromium.launch({
   args: ['--no-sandbox', '--disable-dev-shm-usage']
 });
 let appLevelTimingEvidence = null;
+let page = null;
 try {
   const context = await browser.newContext({
     serviceWorkers: 'block',
     viewport: { width: 1280, height: 900 }
   });
-  const page = await context.newPage();
+  page = await context.newPage();
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(String(error && error.message || error)));
   await page.goto('http://127.0.0.1:4173/index.html?nexusSyncDiag=1', {
