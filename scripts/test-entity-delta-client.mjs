@@ -1614,24 +1614,24 @@ const hostedSnapshotMode=makeStagingRuntimeHarness({
   remoteState:{mode:'snapshot',protocol_version:1}
 });
 const hostedSnapshotResult=await hostedSnapshotMode.run('account-A',stagingSignal);
-assert.equal(hostedSnapshotResult.skipped,true,
-  'a hosted QA workspace still in snapshot mode must use the established snapshot/chunk path');
-assert.equal(hostedSnapshotResult.mode,'snapshot');
-assert.equal(hostedSnapshotResult.reason,'server_snapshot_mode');
-assert.equal(hostedSnapshotMode.calls.createClient,0,
-  'snapshot-mode workspaces must not invoke Delta RPCs');
+assert.equal(hostedSnapshotResult.ok,true,
+  'a hosted QA workspace with a verified snapshot must auto-enroll through the authenticated global rollout RPC');
+assert.equal(hostedSnapshotMode.calls.rpc.name,'nexus_enable_entity_delta');
+assert.equal(hostedSnapshotMode.calls.rpcCount,1);
+assert.equal(hostedSnapshotMode.calls.createClient,1,
+  'a successfully enrolled hosted QA workspace must enter Delta synchronization');
 assert.equal(hostedSnapshotMode.calls.stateRead.filterValue,'account-A',
-  'the snapshot-mode preflight must be scoped to the authenticated owner');
+  'the snapshot-mode preflight and enrollment must be scoped to the authenticated owner');
 
 const hostedLegacyMode=makeStagingRuntimeHarness({
   gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
   hostedQaGate:true,hostedQaOrigin,browserOrigin:hostedQaOrigin,remoteState:null
 });
 const hostedLegacyResult=await hostedLegacyMode.run('account-A',stagingSignal);
-assert.equal(hostedLegacyResult.skipped,true,
-  'a workspace without a sync-state row must continue through the snapshot/chunk protocol');
-assert.equal(hostedLegacyResult.reason,'server_sync_state_missing');
-assert.equal(hostedLegacyMode.calls.createClient,0);
+assert.equal(hostedLegacyResult.ok,true,
+  'a hosted QA workspace without a sync-state row must enroll after verifying its existing cloud snapshot');
+assert.equal(hostedLegacyMode.calls.rpc.name,'nexus_enable_entity_delta');
+assert.equal(hostedLegacyMode.calls.createClient,1);
 
 const hostedStateReadFailure=makeStagingRuntimeHarness({
   gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
