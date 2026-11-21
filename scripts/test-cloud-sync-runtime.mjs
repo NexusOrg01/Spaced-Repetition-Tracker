@@ -38,6 +38,19 @@ assert.ok(source.includes('if(pending||hostedDeltaPollingEnabled)schedule();')&&
 assert.match(source,/async function acknowledgeDeltaShadowSnapshot\([\s\S]*?current\.operationId!==pending\.operationId[\s\S]*?sameWorkspace\(current\.payload,snapshot\(\)\)[\s\S]*?queue\.acknowledge\(/,
   'a compatibility snapshot may be retired only after matching owner, operation, server stamp and current workspace');
 
+assert.match(source,/SESSION_INITIALIZATION_TIMEOUT_MS=120000/,
+  'workspace initialization must have a hard upper deadline');
+assert.match(source,/function rotateSessionContext\(nextSession\)[\s\S]*?activeInitializationScope\.abort\(\)[\s\S]*?activeUploadScope\.abort\(\)/,
+  'an account identity change must cancel the previous initializer and uploader immediately');
+assert.match(source,/function createBoundedSupabaseFetch\([\s\S]*?SUPABASE_AUTH_REQUEST_TIMEOUT_MS[\s\S]*?SUPABASE_DATA_REQUEST_TIMEOUT_MS[\s\S]*?Promise\.race/,
+  'Auth and Data API fetches must settle on timeout or session cancellation');
+assert.match(source,/function loadSupabaseLibrary\([\s\S]*?within 12 seconds/,
+  'a failed Supabase SDK load must have a bounded loading deadline');
+assert.match(source,/if\(supabaseLoadPromise===attempt\)supabaseLoadPromise=null/,
+  'a failed Supabase SDK load must reset the rejected cached promise');
+assert.match(source,/getActiveOwner:\(\)=>operationEpoch===sessionEpoch/,
+  'a stale Delta operation must be rejected even after an A-to-B-to-A account switch');
+
 const syncMarkerLimitMatch=source.match(/const MAX_SYNC_CURRICULUM_MARKERS=(\d+);/);
 const mergeStateStart=source.indexOf('function mergeState(local,remote){');
 const mergeStateEnd=source.indexOf('function hasLocalWork(',mergeStateStart);
@@ -70,7 +83,7 @@ const initializationStart=source.indexOf('async function initializeSession(s){')
 const initializationEnd=source.indexOf('async function sameWorkspace(',initializationStart);
 assert.ok(initializationStart>=0&&initializationEnd>initializationStart,'cloud initialization source must be inspectable');
 const initializationSource=source.slice(initializationStart,initializationEnd);
-const initializationRemoteRead=initializationSource.indexOf('const remote=await fetchRemote(newUserId);');
+const initializationRemoteRead=initializationSource.indexOf('fetchRemote(newUserId,null,initScope.signal)');
 const initializationLocalSnapshot=initializationSource.indexOf('let localPayload=snapshot();');
 assert.ok(initializationRemoteRead>=0&&initializationLocalSnapshot>initializationRemoteRead,
   'large local state must be snapshotted after the asynchronous cloud read so an offline edit during the request is included');
@@ -1749,6 +1762,137 @@ assert.equal(window.NexusCloudSync.getAccountState().ready,true,
   'the account must finish initialization after the duplicate auth-event burst');
 assert.equal(getElement('cloudStatus').textContent,'Synced',
   'duplicate auth events must not leave the sync status in a signed-out or loading state');
+
+// Account A's cloud read can remain unresolved while the user signs into account B.
+// B must load and become usable without waiting for A's promise to settle. Releasing A
+// afterwards must not apply or publish any stale A workspace into B.
+const accountStalledA={id:'account-stalled-A',email:'stalled-a@example.test'};
+const accountFastB={id:'account-fast-B',email:'fast-b@example.test'};
+const payloadStalledA=payloadFor('stalled-A-local');
+const payloadFastB=payloadFor('fast-B-cloud');
+const stampStalledA='2026-11-21T02:00:00.000Z';
+const stampFastB='2026-11-21T02:01:00.000Z';
+rows.set(accountStalledA.id,{user_id:accountStalledA.id,payload:payloadStalledA,updated_at:stampStalledA});
+rows.set(accountFastB.id,{user_id:accountFastB.id,payload:payloadFastB,updated_at:stampFastB});
+queue.rememberStamp(storage,accountStalledA.id,stampStalledA);
+queue.rememberBase(storage,accountStalledA.id,
+  {state:payloadStalledA.state,featureState:payloadStalledA.featureState},stampStalledA);
+storage.setItem(OWNER,accountStalledA.id);
+storage.setItem(STATE_KEY,JSON.stringify(payloadStalledA.state));
+storage.setItem(FEATURE_KEY,JSON.stringify(payloadStalledA.featureState));
+context.state=payloadStalledA.state;
+activeSession={user:accountStalledA};
+networkAvailable=true;
+releaseDeferredRemoteRead=null;
+deferNextRemoteRead=true;
+const stalledAccountInitialization=window.NexusCloudSync.reconnect();
+for(let i=0;i<200&&!releaseDeferredRemoteRead;i++)await new Promise(resolve=>setTimeout(resolve,5));
+assert.equal(typeof releaseDeferredRemoteRead,'function',
+  'the previous account cloud read must be held before switching accounts');
+const stalledReadRelease=releaseDeferredRemoteRead;
+const switchStartedAt=Date.now();
+authStateCallback('SIGNED_OUT',null);
+activeSession={user:accountFastB};
+authStateCallback('SIGNED_IN',{user:accountFastB});
+for(let i=0;i<1000&&(
+  storage.getItem(OWNER)!==accountFastB.id||
+  window.NexusCloudSync.getAccountState().ready!==true||
+  getElement('cloudStatus').textContent!=='Synced'
+);i++)await new Promise(resolve=>setTimeout(resolve,10));
+const switchDurationMs=Date.now()-switchStartedAt;
+assert.equal(storage.getItem(OWNER),accountFastB.id,
+  'the new account must take ownership after the old session is cancelled');
+assert.equal(window.NexusCloudSync.getAccountState().signedIn,true,
+  'the newly selected account must remain signed in');
+assert.equal(window.NexusCloudSync.getAccountState().ready,true,
+  'account B must finish workspace verification while A’s cloud read is still unresolved');
+assert.equal(getElement('cloudStatus').textContent,'Synced',
+  'account B must reach a terminal synced state without releasing account A’s pending read');
+assert.ok(switchDurationMs<10000,
+  'account switching must not wait for the previous unresponsive cloud read');
+assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id,'fast-B-cloud',
+  'account B must display its own workspace rather than account A local data');
+stalledReadRelease();
+releaseDeferredRemoteRead=null;
+await Promise.race([
+ stalledAccountInitialization,
+ new Promise((_,reject)=>setTimeout(()=>reject(new Error('Cancelled account-A initialization did not settle after the account switch.')),10000))
+]);
+await new Promise(resolve=>setTimeout(resolve,100));
+assert.equal(storage.getItem(OWNER),accountFastB.id,
+  'a late account-A read must not change the active local owner marker');
+assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id,'fast-B-cloud',
+  'a late account-A read must not overwrite account B workspace contents');
+assert.equal(rows.get(accountFastB.id).payload.state.topics[0].id,'fast-B-cloud',
+  'a cancelled account-A request must not publish into account B cloud data');
+
+// Repeat the handoff while account B has an actual snapshot upload in flight.
+// The in-flight upload must release its coordinator slot immediately on B -> C,
+// while B's account-bound pending snapshot remains parked for a later return to B.
+const accountQuickC={id:'account-quick-C',email:'quick-c@example.test'};
+const payloadQuickC=payloadFor('quick-C-cloud');
+rows.set(accountQuickC.id,{user_id:accountQuickC.id,payload:payloadQuickC,updated_at:'2026-11-21T02:02:00.000Z'});
+const cloudBBeforeUpload=rows.get(accountFastB.id);
+queue.rememberStamp(storage,accountFastB.id,cloudBBeforeUpload.updated_at);
+queue.rememberBase(storage,accountFastB.id,{
+ state:cloudBBeforeUpload.payload.state,
+ featureState:cloudBBeforeUpload.payload.featureState
+},cloudBBeforeUpload.updated_at);
+const payloadPendingB=payloadFor('fast-B-pending-upload');
+context.state=payloadPendingB.state;
+storage.setItem(STATE_KEY,JSON.stringify(payloadPendingB.state));
+storage.setItem(FEATURE_KEY,JSON.stringify(payloadPendingB.featureState));
+queue.commitWorkspace(storage,[
+ {key:STATE_KEY,value:JSON.stringify(payloadPendingB.state)},
+ {key:FEATURE_KEY,value:JSON.stringify(payloadPendingB.featureState)}
+],payloadPendingB,{baseServerVersion:cloudBBeforeUpload.updated_at});
+assert.equal(queue.hasPending(storage,accountFastB.id),true,
+  'account B must have a durable pending snapshot before its upload is interrupted');
+activeSession={user:accountFastB};
+releaseDeferredRemoteRead=null;
+deferNextRemoteRead=true;
+const interruptedBUpload=window.NexusCloudSync.upload();
+for(let i=0;i<200&&!releaseDeferredRemoteRead;i++)await new Promise(resolve=>setTimeout(resolve,5));
+assert.equal(typeof releaseDeferredRemoteRead,'function',
+  'account B upload must reach its deliberately stalled cloud read');
+const interruptedBReadRelease=releaseDeferredRemoteRead;
+const uploadSwitchStartedAt=Date.now();
+authStateCallback('SIGNED_OUT',null);
+activeSession={user:accountQuickC};
+authStateCallback('SIGNED_IN',{user:accountQuickC});
+for(let i=0;i<1000&&(
+ storage.getItem(OWNER)!==accountQuickC.id||
+ window.NexusCloudSync.getAccountState().ready!==true||
+ getElement('cloudStatus').textContent!=='Synced'
+);i++)await new Promise(resolve=>setTimeout(resolve,10));
+const uploadSwitchDurationMs=Date.now()-uploadSwitchStartedAt;
+assert.equal(storage.getItem(OWNER),accountQuickC.id,
+  'account C must take over while account B upload is still unresolved');
+assert.equal(window.NexusCloudSync.getAccountState().ready,true,
+  'account C workspace verification must finish without waiting for B upload');
+assert.equal(getElement('cloudStatus').textContent,'Synced',
+  'account C must reach a terminal synced state while B upload remains unresolved');
+assert.ok(uploadSwitchDurationMs<10000,
+  'account switching must release the previous account upload coordinator promptly');
+assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id,'quick-C-cloud',
+  'account C must display only its own workspace after the interrupted B upload');
+assert.equal(queue.hasPending(storage,accountFastB.id),true,
+  'account B pending work must remain parked after its upload is cancelled');
+interruptedBReadRelease();
+releaseDeferredRemoteRead=null;
+await Promise.race([
+ interruptedBUpload,
+ new Promise((_,reject)=>setTimeout(()=>reject(new Error('Cancelled account-B upload did not settle after switching to account C.')),10000))
+]);
+await new Promise(resolve=>setTimeout(resolve,100));
+assert.equal(storage.getItem(OWNER),accountQuickC.id,
+  'a late account-B upload read must not alter account C local ownership');
+assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id,'quick-C-cloud',
+  'a late account-B upload read must not overwrite account C workspace');
+assert.equal(rows.get(accountFastB.id).payload.state.topics[0].id,'fast-B-cloud',
+  'the cancelled B upload must not publish its pending snapshot to the wrong cloud account');
+assert.equal(rows.get(accountQuickC.id).payload.state.topics[0].id,'quick-C-cloud',
+  'account C cloud workspace must remain isolated from account B pending work');
 
 // Production can receive the Web build before OPS-01 installs the chunk table.
 // A bounded legacy JSONB workspace must keep syncing until that schema is ready.
