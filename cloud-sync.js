@@ -577,6 +577,9 @@ async function flushDurableLocalWrites(parentSignal){
  }finally{scope.clear();}
 }
 async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
+  const applyEpoch=sessionEpoch,applyOwnerId=ownerId?String(ownerId):null;
+  if(applyOwnerId&&(applyEpoch!==sessionEpoch||sessionOwnerId!==applyOwnerId||
+     !session||!session.user||session.user.id!==applyOwnerId))throw syncCancelledError();
   if(!window.NexusBackupRestoreUtils||!window.NexusStorageKey||!window.NexusFeatureStorageKey||!window.NexusNormalizeFeatureState||!window.NexusSetFeatureState)throw new Error('Safe local workspace storage is unavailable. Cloud data was not applied.');
   const safeState=window.NexusRepairCurriculumState?window.NexusRepairCurriculumState(nextState):nextState;
   const previousOwner=localStorage.getItem(OWNER_KEY)||'';
@@ -602,10 +605,12 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId){
   if(revisionEntry)entries.push(revisionEntry);
   // Free redundant snapshot space before applying a cloud workspace to this browser.
   if(window.NexusOfflineSyncQueue&&typeof window.NexusOfflineSyncQueue.compactMetadata==='function')window.NexusOfflineSyncQueue.compactMetadata(localStorage);
-  const applyEpoch=sessionEpoch,applyScope=createSyncAbortScope();
+  if(applyOwnerId&&(applyEpoch!==sessionEpoch||sessionOwnerId!==applyOwnerId||
+     !session||!session.user||session.user.id!==applyOwnerId))throw syncCancelledError();
+  const applyScope=createSyncAbortScope();
   try{
    await applyScope.race(window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,entries),'atomic workspace replacement');
-   if(applyEpoch!==sessionEpoch||(ownerId&&sessionOwnerId!==String(ownerId)))throw syncCancelledError();
+   if(applyEpoch!==sessionEpoch||(applyOwnerId&&sessionOwnerId!==applyOwnerId))throw syncCancelledError();
   }finally{applyScope.clear();}
   state=safeState;
   if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(nextFeatures.fsrsSettings,{syncFeature:false,persist:false});
