@@ -79,7 +79,7 @@ function createBoundedSupabaseFetch(baseFetch){
   for(const signal of signals){if(signal.aborted){onAbort();break;}signal.addEventListener('abort',onAbort,{once:true});}
   const cleanup=()=>{if(cleaned)return;cleaned=true;if(timer)clearTimeout(timer);for(const signal of signals)signal.removeEventListener('abort',onAbort);};
   const race=promise=>Promise.race([Promise.resolve(promise),interruption]);
-  timer=setTimeout(()=>{timedOut=true;interrupt(syncTimeoutError(isAuth?'Supabase Auth request':'Supabase data request'));},timeoutMs);
+  timer=setTimeout(()=>{timedOut=true;interrupt(syncTimeoutError(isAuth?'Supabase Auth request':'Supabase data request',timeoutMs));},timeoutMs);
   try{
    const response=await race(baseFetch(input,{...init,signal:controller.signal}));
    let wrapped=false;
@@ -93,7 +93,7 @@ function createBoundedSupabaseFetch(baseFetch){
    if(!wrapped||(response&&response.body===null))cleanup();
    return response;
   }catch(error){
-   cleanup();if(timedOut)throw syncTimeoutError(isAuth?'Supabase Auth request':'Supabase data request');
+   cleanup();if(timedOut)throw syncTimeoutError(isAuth?'Supabase Auth request':'Supabase data request',timeoutMs);
    if(externallyAborted||controller.signal.aborted)throw syncCancelledError();throw error;
   }
  };
