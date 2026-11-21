@@ -296,6 +296,7 @@ async function runAuthSessionRecheck(verifiedUserId) {
     authSessionVerificationTimer: null,
     sessionEpoch: 12,
     sessionOwnerId: 'account-A',
+    OWNER_KEY: 'nexus.cloud.last-user-id',
     session: { user: { id: 'account-A' } },
     client: { auth: { async getSession() {
       return { data: { session: verifiedUserId ? { user: { id: verifiedUserId } } : null } };
