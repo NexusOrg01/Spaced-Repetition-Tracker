@@ -562,6 +562,22 @@ assert.match(source, /previousAccountHasChanges=await initScope\.race\(hasUnassi
 assert.match(source, /if\(pendingForUser&&owner!==newUserId&&!previousAccountHasChanges\)\{await applyWorkspaceSnapshot\(/,
   'the target account pending snapshot must only be restored after the previous-owner workspace comparison is complete');
 
+// A cloud restore must reveal its atomically committed, owner-verified workspace
+// without waiting for the Delta-only IndexedDB projection. The subsequent upload
+// checks the rollout gate and performs the guarded rebuild before any Delta access.
+assert.match(source,
+  /if\(typeof window\.NexusRebuildEntityProjection==='function'&&options\.deferProjectionToUpload!==true\)/,
+  'cloud restore must be able to defer the Delta projection without changing other snapshot-replacement flows');
+assert.match(source,
+  /else if\(options\.deferProjectionToUpload===true\)[\s\S]*?projection-deferred-to-upload/,
+  'a deferred cloud-restore projection must be recorded explicitly in diagnostics');
+assert.match(source,
+  /async function applyRemote\([\s\S]*?await applyWorkspaceSnapshot\(payload\.state,payload\.featureState,ownerId,null,\{deferProjectionToUpload:true\}\)/,
+  'cloud restore must return after durable owner-bound application and hand projection work to upload');
+assert.match(source,
+  /if\(!gateOpen\)return \{skipped:true,reason:'staging_delta_gate_closed'\};[\s\S]*?storage\.waitForWorkspaceEntitySync\(ownerId\)[\s\S]*?storage\.syncWorkspaceEntities\(ownerId,null,\{replace:true\}\)/,
+  'the upload coordinator must skip projection for snapshot-mode accounts and rebuild it before using an enabled Delta path');
+
 // Hosted Delta must actively pull remote edits; local-save and reconnect-only triggers
 // leave an already-open second device stale indefinitely. Poll only after the gated
 // Delta path has returned a mechanically verified success, and pause while hidden/offline.
