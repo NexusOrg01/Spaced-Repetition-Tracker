@@ -723,7 +723,14 @@
     return removed;
   }
   async function migrateWorkspaceEntities(ownerId,stateSnapshot,featureSnapshot,options={}){
-    const owner=entityOwnerKey(ownerId);
+    const owner=entityOwnerKey(ownerId),signal=options.signal||null;
+    const throwIfAborted=()=>{
+      if(!signal||!signal.aborted)return;
+      if(signal.reason instanceof Error)throw signal.reason;
+      const error=new Error('The active account changed while rebuilding its entity projection.');
+      error.name='AbortError';error.code='NEXUS_SYNC_CANCELLED';throw error;
+    };
+    throwIfAborted();
     if(entityRemovalOwners.has(owner))throw new Error('This account workspace is being permanently deleted.');
     if(!enabled||!database)throw new Error('IndexedDB must be enabled before the per-entity migration can run.');
     if(committedOwnerId!==owner)throw new Error('The active account does not match the requested entity migration owner.');
@@ -778,6 +785,7 @@
       const request=tx.objectStore('migrationMeta').get(manifestKey);
       request.onsuccess=()=>set(request.result||null);
     });
+    throwIfAborted();
     if(hasSourceSnapshotGuard&&!(await sourceWorkspaceIsCurrent())){
       const error=new Error('The compatibility workspace changed before its entity projection rebuild could start.');
       error.nexusEntityProjectionFailureReason='source-snapshot-changed';
@@ -791,6 +799,7 @@
     const counts={},positionBounds={},batch=[];
     let rowCount=0,failureStage='stage-manifest',publicationFailureReason=null;
     try{
+    throwIfAborted();
     await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
       tx.objectStore('migrationMeta').put({
         // Retain the prior generation's integrity metadata (rowCount, counts,
@@ -813,6 +822,7 @@
     });
       failureStage='generate-rows';
       for(const row of generateWorkspaceEntityRows(owner,generation,stateSnapshot,featureSnapshot)){
+        throwIfAborted();
         batch.push(row);rowCount++;
         if(row.collection!=='_meta'){
           counts[row.collection]=(counts[row.collection]||0)+1;
@@ -823,6 +833,7 @@
         if(batch.length>=ENTITY_BATCH_SIZE){
           failureStage='write-row-batch';
           await writeWorkspaceEntityBatch(batch.splice(0,batch.length));
+          throwIfAborted();
           failureStage='generate-rows';
           if(!(await sourceWorkspaceIsCurrent())){
             const error=new Error('The active workspace changed during entity migration. The previous entity generation remains active.');
@@ -830,13 +841,16 @@
             throw error;
           }
           await new Promise(resolve=>root.setTimeout(resolve,0));
+          throwIfAborted();
         }
       }
       if(batch.length){
         failureStage='write-row-batch';
         await writeWorkspaceEntityBatch(batch.splice(0,batch.length));
+        throwIfAborted();
       }
       failureStage='verify-publication';
+      throwIfAborted();
       if(!(await sourceWorkspaceIsCurrent())){
         const error=new Error('The active workspace changed during entity migration. The previous entity generation remains active.');
         if(hasSourceSnapshotGuard)error.nexusEntityProjectionFailureReason='source-snapshot-changed';
@@ -852,6 +866,11 @@
         const values={manifest:null,workspace:null};let remaining=hasSourceSnapshotGuard?2:1;
         const publish=()=>{
           remaining--;if(remaining!==0)return;
+          if(signal&&signal.aborted){
+            publicationFailureReason='cancelled';
+            try{tx.abort();}catch(_){}
+            return;
+          }
           const current=values.manifest,workspace=values.workspace;
           const snapshotRowIsCurrent=!hasSourceSnapshotGuard||(
             validWorkspaceRow(workspace,owner)&&
@@ -917,6 +936,7 @@
           workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;publish();};
         }
       });
+      throwIfAborted();
       failureStage='verify-publication';
       let prunedRows=0,prunedOutboxRows=0;
       if(deferActivation){
@@ -937,6 +957,13 @@
       return {ownerId:owner,generation,rowCount,counts,sourceRevision:revision,
         sourceWorkspaceRevision,prunedRows,prunedOutboxRows};
     }catch(error){
+      if(signal&&signal.aborted){
+        if(signal.reason instanceof Error)error=signal.reason;
+        else{
+          const cancelled=new Error('The active account changed while rebuilding its entity projection.');
+          cancelled.name='AbortError';cancelled.code='NEXUS_SYNC_CANCELLED';cancelled.cause=error;error=cancelled;
+        }
+      }
       if(publicationFailureReason&&error&&typeof error==='object'){
         error.nexusEntityProjectionFailureReason=publicationFailureReason;
       }
@@ -2251,8 +2278,17 @@
     const featureSnapshotJson=typeof options.featureSnapshotJson==='string'?options.featureSnapshotJson:null;
     const replace=options.replace===true||capturedChanges===null;
     const task=entitySyncSerial.catch(()=>undefined).then(async()=>{
+      const throwIfAborted=()=>{
+        const signal=options.signal;
+        if(!signal||!signal.aborted)return;
+        if(signal.reason instanceof Error)throw signal.reason;
+        const error=new Error('The active account changed before entity synchronization could begin.');
+        error.name='AbortError';error.code='NEXUS_SYNC_CANCELLED';throw error;
+      };
+      throwIfAborted();
       if(entityRemovalOwners.has(owner))throw new Error('This account workspace is being permanently deleted.');
       if(options.durablePromise&&typeof options.durablePromise.then==='function')await options.durablePromise;
+      throwIfAborted();
       if(!enabled||committedOwnerId!==owner)throw new Error('The active account changed before entity synchronization could begin.');
       // A later compatibility save can be committed before an earlier entity task
       // starts (both use the same serialized IndexedDB queue). Never publish an
@@ -2329,7 +2365,8 @@
           // Re-read the database-wide revision immediately before entering migration.
           // Queue-only writes may advance it while the workspace revision stays stable.
           expectedRevision:revision,sourceWorkspaceRevision,sourceWorkspaceSnapshotRevision,
-          trackerSnapshotJson:sourceTrackerSnapshotJson,featureSnapshotJson:sourceFeatureSnapshotJson
+          trackerSnapshotJson:sourceTrackerSnapshotJson,featureSnapshotJson:sourceFeatureSnapshotJson,
+          signal:options.signal
         });
         entitySyncError=null;entitySyncLastSuccessAt=timestamp();
         return {...result,mode:'snapshot-backfill'};
