@@ -283,7 +283,7 @@ assert.ok(dangerScreen.includes('id="workspaceDeletionDialog"') && dangerScreen.
 assert.ok(dangerScreen.includes('Neither option can remotely erase offline copies on other devices') && dangerScreen.includes('Your account and sign-in remain active'), 'deletion warnings must distinguish workspace-only reset from permanent account deletion and disclose other-device copies');
 assert.ok(restore.includes("archivePending:mode==='REPLACE'"), 'replace restore must archive the prior pending snapshot after explicit confirmation');
 
-const cloud = section(cloudSync, 'async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,parentSignal){', 'async function initializeSession(s)', 'cloud workspace hydration');
+const cloud = section(cloudSync, 'async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,parentSignal,options={}){', 'async function initializeSession(s)', 'cloud workspace hydration');
 const cloudCommit = cloud.indexOf('commitLocalStorageAtomically(localStorage,entries)');
 const cloudCompact = cloud.indexOf('window.NexusOfflineSyncQueue.compactMetadata(localStorage)');
 assert.ok(cloudCompact >= 0 && cloudCommit > cloudCompact, 'compact legacy sync snapshots before cloud hydration writes the restored workspace');
