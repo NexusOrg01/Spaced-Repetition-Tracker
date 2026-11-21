@@ -38,7 +38,10 @@ function createSyncAbortScope(parentSignal,timeoutMs=SYNC_REQUEST_TIMEOUT_MS){
  const abortPromise=new Promise((_,reject)=>{abortReject=reject;});abortPromise.catch(()=>{});
  function abort(reason){
   if(aborted)return;aborted=true;
-  if(controller&&!controller.signal.aborted)controller.abort();
+  if(controller&&!controller.signal.aborted){
+   try{controller.abort(reason||syncCancelledError());}
+   catch(_){controller.abort();}
+  }
   if(abortReject)abortReject(reason||syncCancelledError());
  }
  const onParentAbort=()=>abort(syncCancelledError());
@@ -573,8 +576,8 @@ function chooseLocalData(signal){return new Promise((resolve,reject)=>{
  const onCancel=event=>event.preventDefault();
  const cleanup=()=>{dlg.removeEventListener('cancel',onCancel);if(signal)signal.removeEventListener('abort',onAbort);};
  const finish=value=>{if(done)return;done=true;cleanup();if(dlg.open)dlg.close();resolve(value);};
- const cancel=()=>{if(done)return;done=true;cleanup();if(dlg.open)dlg.close();reject(syncCancelledError('The account changed while Nexus was waiting for a workspace choice.'));};
- const onAbort=()=>cancel();
+ const cancel=reason=>{if(done)return;done=true;cleanup();if(dlg.open)dlg.close();reject(reason||syncCancelledError('The account changed while Nexus was waiting for a workspace choice.'));};
+ const onAbort=()=>cancel(signal&&signal.reason instanceof Error?signal.reason:null);
  if(signal){if(signal.aborted){cancel();return;}signal.addEventListener('abort',onAbort,{once:true});}
  dlg.addEventListener('cancel',onCancel);
  dlg.querySelectorAll('[data-account-choice]').forEach(button=>button.onclick=()=>finish(button.dataset.accountChoice));
