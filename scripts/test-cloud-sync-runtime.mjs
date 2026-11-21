@@ -349,6 +349,9 @@ assert.match(source,
   /client\.auth\.onAuthStateChange\(\(event,newSession\)=>\{\s*if\(!authStateEventBelongsToCurrentOwner\(event,newSession\)\)\{/,
   'the actual Supabase listener must reject stale refreshes before assigning session or rotating the workspace lock');
 assert.match(source,
+  /if\(authSessionVerificationPending\)clearAuthSessionVerification\(\);\s*session=newSession\|\|null;rotateSessionContext\(session\);/,
+  'a matching current-owner auth event must settle a pending cross-tab verification before controls and sync resume');
+assert.match(source,
   /authSessionVerificationPending=true;[\s\S]*?verifyCurrentAuthSessionAfterMismatch\(\);/,
   'a mismatched refresh must request authoritative getSession verification rather than silently switching owners');
 assert.match(source,
