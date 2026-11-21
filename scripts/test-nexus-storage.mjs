@@ -2117,7 +2117,7 @@ console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth is
 {
   const appCoreSource=readFileSync(resolve(root,'app-core.js'),'utf8');
   const projectionStart=appCoreSource.indexOf('  window.NexusRebuildEntityProjection=async(options={})=>{');
-  const projectionEnd=appCoreSource.indexOf('\\n  function notify(',projectionStart);
+  const projectionEnd=appCoreSource.indexOf('\n  function notify(',projectionStart);
   assert.ok(projectionStart>=0&&projectionEnd>projectionStart,
     'the projection rebuild entrypoint must be available for isolated cancellation testing');
   const projectionSource=appCoreSource.slice(projectionStart,projectionEnd).trim();
