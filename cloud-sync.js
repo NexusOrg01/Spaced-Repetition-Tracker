@@ -2259,6 +2259,7 @@ async function ensureClient(){
     // only a confirmed identity change is allowed to rotate and lock the workspace.
     syncDiag('auth-event',diagnosticWorkspace(),{event,hasSession:!!(newSession&&newSession.user),ownerPresent:!!localStorage.getItem(OWNER_KEY)});
     authSessionVerificationPending=true;
+    if(activeUploadScope)activeUploadScope.abort();
     status('Account verification delayed');
     say('Checking the current account session before resuming cloud sync. Your verified local workspace remains available.');
     verifyCurrentAuthSessionAfterMismatch();
