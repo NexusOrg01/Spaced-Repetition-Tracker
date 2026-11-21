@@ -891,9 +891,13 @@ async function checkpointPreviousAccountWorkspace(ownerId,targetUserId,payload){
  ];
  const revisionEntry=window.NexusWorkspaceEntityRevisionEntry?.(ownerId);
  if(revisionEntry)entries.push(revisionEntry);
- queue.commitWorkspace(storage,entries,checkpoint,{baseServerVersion:baseVersion,returnOperationPayload:false});
+ const committed=queue.commitWorkspace(storage,entries,checkpoint,{baseServerVersion:baseVersion,returnOperationPayload:false});
  const verified=queue.getPending(storage,ownerId);
- if(!verified||verified.ownerUserId!==ownerId||!(await sameWorkspace(verified.payload,checkpoint)))throw new Error('The previous account’s pending snapshot could not be verified. The account switch was stopped.');
+ if(!verified||verified.status!=='pending'||verified.ownerUserId!==ownerId||
+    !verified.payload||!verified.payload.state||!verified.payload.featureState||
+    !committed||!committed.operation||verified.operationId!==committed.operation.operationId||
+    verified.localSequence!==committed.operation.localSequence)
+  throw new Error('The previous account’s pending snapshot could not be verified. The account switch was stopped.');
  return true;
 }
 async function recoverCachedWorkspaceForOfflineAccount(userId,parentSignal){
@@ -1069,14 +1073,38 @@ if(owner&&owner!==newUserId){
   const previousOwner=owner,previousPayload=snapshot(),checkpointStartedAt=Date.now();
   try{
    await initScope.race(flushDurableLocalWrites(initScope.signal),'outgoing account durable checkpoint');
-   previousAccountHasChanges=await initScope.race(
-    hasUnassignedWorkspaceChanges(previousOwner,newUserId,previousPayload),
-    'previous account workspace comparison');
-   if(previousAccountHasChanges){
-    await initScope.race(
-     checkpointPreviousAccountWorkspace(previousOwner,newUserId,previousPayload),
-     'previous account checkpoint');
+   const outgoingQueue=window.NexusOfflineSyncQueue;
+   if(!outgoingQueue||typeof outgoingQueue.getPending!=='function'||
+      typeof outgoingQueue.getBase!=='function')
+    throw new Error('Safe outgoing-account queue verification is unavailable.');
+   const existingOutgoingPending=outgoingQueue.getPending(localStorage,previousOwner);
+   if(existingOutgoingPending){
+    if(existingOutgoingPending.ownerUserId!==previousOwner||!existingOutgoingPending.payload||
+       !existingOutgoingPending.payload.state||!existingOutgoingPending.payload.featureState)
+     throw new Error('The outgoing account pending snapshot is invalid.');
+    // Every committed app save updates the owner-bound outbox atomically. A valid
+    // pending record is already the durable checkpoint; do not re-compare 26 MB.
+    previousAccountHasChanges=true;
     previousAccountCheckpointed=true;
+   }else{
+    const outgoingBase=outgoingQueue.getBase(localStorage,previousOwner);
+    if(outgoingBase&&outgoingBase.state&&outgoingBase.featureState){
+     // With no pending operation, the atomic-save contract says this owner is
+     // already at its verified base. Re-reading every entity is unnecessary.
+     previousAccountHasChanges=false;
+     previousAccountCheckpointed=true;
+    }else if(hasLocalWork(previousPayload)){
+     // No prior verified base exists. Preserve the account snapshot without using
+     // an unbounded structural comparison as a gate to the incoming cache.
+     await initScope.race(
+      checkpointPreviousAccountWorkspace(previousOwner,newUserId,previousPayload),
+      'previous account checkpoint');
+     previousAccountHasChanges=true;
+     previousAccountCheckpointed=true;
+    }else{
+     previousAccountHasChanges=false;
+     previousAccountCheckpointed=true;
+    }
    }
    await assertActiveUser(newUserId,requestedEpoch);
    syncDiag('account-handoff-outgoing-checkpoint',null,{
