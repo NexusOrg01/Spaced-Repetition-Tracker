@@ -1073,13 +1073,20 @@ try {
 
   const returnCloudChunkRead = afterDeadline.slice().reverse().find(event =>
     event.stage === 'cloud-chunk-read' &&
+    typeof event.at === 'string' && event.at >= accountAReturnStartedIso &&
     event.payloadUtf8Bytes === TARGET_BYTES &&
     event.chunkCount === 103
   ) || null;
   const returnCloudRead = afterDeadline.slice().reverse().find(event =>
     event.stage === 'cloud-read' &&
+    typeof event.at === 'string' && event.at >= accountAReturnStartedIso &&
     event.payloadUtf8Bytes === TARGET_BYTES &&
     event.chunkCount === 103
+  ) || null;
+  const returnProjectionCompletion = afterDeadline.slice().reverse().find(event =>
+    (event.stage === 'projection-reuse' || event.stage === 'projection-rebuild') &&
+    typeof event.at === 'string' && event.at >= accountAReturnStartedIso &&
+    event.ownerVerified === true
   ) || null;
   const phaseStages = new Set([
     'account-handoff-outgoing-checkpoint',
@@ -1149,12 +1156,14 @@ try {
     returnTerminalOutcomeMs,
     returnSyncWallMs,
     projectionCheckStarted: phaseTimings.some(event => event.stage === 'projection-check-start'),
-    projectionCompletedByDeadline: phaseTimings.some(event =>
-      event.stage === 'projection-reuse' || event.stage === 'projection-rebuild'
-    ),
+    projectionCompletedByDeadline: !!returnProjectionCompletion,
     phasesNotObservedByDeadline,
     phaseTimings
   };
+  assert.ok(returnProjectionCompletion,
+    'The returning owner’s IndexedDB projection must be reused or safely rebuilt before the 60-second deadline.');
+  assert.ok(returnCloudChunkRead && returnCloudRead,
+    'The returning account must continue into a fresh, complete 26.9 MB cloud read after cached workspace reveal.');
   assert.equal(pageErrors.length, 0,
     'The app-level A→B→A browser run must not raise uncaught JavaScript exceptions.');
   console.log('DLA-08E_APP_LEVEL_TIMING=' + JSON.stringify(appLevelTimingEvidence));
