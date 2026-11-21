@@ -306,6 +306,7 @@ function isTransientInitializationStatus(value){
 function setCloudStatus(value){
  const node=el('cloudStatus');if(!node)return;
  const text=normalizeSyncUiText(value);node.textContent=text;
+ node.setAttribute('data-sync-state',text==='Synced'?'synced':'attention');
  const busy=/^(connecting|loading account|checking local and cloud data|comparing local and cloud data|restoring account workspace|reconciling cloud changes|syncing|opening google sign-in|preparing email sign-in|preparing snapshot downgrade)\b/i.test(text);
  node.setAttribute('aria-busy',String(busy));
 }
