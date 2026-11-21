@@ -156,8 +156,8 @@ function makeRetrySandbox(ownerId, ready = true) {
     navigator: { onLine: true }, window: { NexusCloudSyncRecovery: recovery },
     isUnsafeCloudOrigin: () => false, el: id => id === 'cloudStatus' ? { textContent: 'Sync delayed - local data ready' } : null,
     uploadCalls: 0, connectCalls: 0, retryCallback: null,
-    upload() { this.uploadCalls++; }, connect() { this.connectCalls++; },
-    setTimeout(callback) { this.retryCallback = callback; return 7; }, clearTimeout() {}
+    upload() { sandbox.uploadCalls++; }, connect() { sandbox.connectCalls++; },
+    setTimeout(callback) { sandbox.retryCallback = callback; return 7; }, clearTimeout() {}
   };
   vm.createContext(sandbox);
   vm.runInContext(source.slice(retryStart, retryEnd) +
