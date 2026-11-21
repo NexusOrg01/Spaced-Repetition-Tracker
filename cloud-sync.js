@@ -63,18 +63,25 @@ function createBoundedSupabaseFetch(baseFetch){
   const url=typeof input==='string'?input:(input&&input.url)||'';
   const isAuth=/\/auth\/v1\//i.test(url),timeoutMs=isAuth?SUPABASE_AUTH_REQUEST_TIMEOUT_MS:SUPABASE_DATA_REQUEST_TIMEOUT_MS;
   const controller=new AbortController(),signals=[init.signal,sessionAbortController&&sessionAbortController.signal].filter(Boolean);
-  let timedOut=false,externallyAborted=false,cleaned=false,timer=null;
-  const onAbort=()=>{externallyAborted=true;controller.abort();};
+  let timedOut=false,externallyAborted=false,cleaned=false,timer=null,interruptReject=null,interrupted=false;
+  const interruption=new Promise((_,reject)=>{interruptReject=reject;});interruption.catch(()=>{});
+  const interrupt=reason=>{
+   if(interrupted)return;interrupted=true;controller.abort();
+   if(interruptReject)interruptReject(reason||syncCancelledError());
+  };
+  const onAbort=()=>{externallyAborted=true;interrupt(syncCancelledError());};
   for(const signal of signals){if(signal.aborted){onAbort();break;}signal.addEventListener('abort',onAbort,{once:true});}
   const cleanup=()=>{if(cleaned)return;cleaned=true;if(timer)clearTimeout(timer);for(const signal of signals)signal.removeEventListener('abort',onAbort);};
-  timer=setTimeout(()=>{timedOut=true;controller.abort();},timeoutMs);
+  const race=promise=>Promise.race([Promise.resolve(promise),interruption]);
+  timer=setTimeout(()=>{timedOut=true;interrupt(syncTimeoutError(isAuth?'Supabase Auth request':'Supabase data request'));},timeoutMs);
   try{
-   const response=await baseFetch(input,{...init,signal:controller.signal});let wrapped=false;
+   const response=await race(baseFetch(input,{...init,signal:controller.signal}));
+   let wrapped=false;
    for(const method of ['arrayBuffer','blob','formData','json','text']){
     const original=response&&response[method];if(typeof original!=='function')continue;
     try{Object.defineProperty(response,method,{configurable:true,value:function(...args){
      let result;try{result=original.apply(this,args);}catch(error){cleanup();throw error;}
-     return Promise.resolve(result).finally(cleanup);
+     return race(result).finally(cleanup);
     }});wrapped=true;}catch(_){}
    }
    if(!wrapped||(response&&response.body===null))cleanup();
@@ -1088,6 +1095,7 @@ if(ready){await flushDurableLocalWrites();status('Synced');}syncDiag('initialize
 async function sameWorkspace(a,b){if(!a||!b)return false;const merger=window.NexusWorkspaceSyncMerge;if(!merger||typeof merger.sameAsync!=='function')throw new Error('Safe large-workspace comparison is unavailable.');return merger.sameAsync({state:a.state||{},featureState:a.featureState||{}},{state:b.state||{},featureState:b.featureState||{}});}
 async function runStagingEntityDeltaSync(ownerId,signal,action={}){
  const operationEpoch=sessionEpoch;
+ if(signal&&signal.aborted)throw syncCancelledError();
  const queue=window.NexusOfflineSyncQueue,storage=window.NexusStorage;
  async function acknowledgeDeltaShadowSnapshot(queue,userId,pending,serverVersion){
   if(!queue||typeof queue.getPending!=='function'||typeof queue.acknowledge!=='function'||
@@ -1149,7 +1157,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
  // snapshot/chunk writer. A read error or unknown mode fails closed; never
  // downgrade a workspace that may already be in Delta mode.
  if(!recoveryPending){
-  await assertActiveUser(ownerId);
+  await assertActiveUser(ownerId,operationEpoch);
   let stateQuery=client.from('nexus_workspace_sync_state')
    .select('mode').eq('user_id',ownerId);
   stateQuery=attachAbortSignal(stateQuery,signal);
@@ -1158,14 +1166,14 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    'Could not safely verify this workspace sync mode. The snapshot writer was not started: '+
    String(stateRead.error.message||stateRead.error.code||'remote state read failed')
   );
-  await assertActiveUser(ownerId);
+  await assertActiveUser(ownerId,operationEpoch);
   let remoteMode=stateRead.data&&stateRead.data.mode||'';
   if(productionGate&&!(action&&action.downgrade===true)&&remoteMode!=='delta'&&
      !productionDeltaIneligibleOwners.has(ownerId)){
    // Only owners with an existing cloud snapshot are candidates for the
    // authenticated enable RPC. A first-time workspace still follows the
    // normal snapshot writer; it is never blocked waiting for a Delta setup.
-   await assertActiveUser(ownerId);
+   await assertActiveUser(ownerId,operationEpoch);
    if(localStorage.getItem(OWNER_KEY)!==ownerId){
     return {ok:false,retryable:true,reason:'production_delta_owner_changed_before_enable'};
    }
@@ -1176,7 +1184,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    if(snapshotRead.error)throw new Error(
     'Could not verify the production canary snapshot timestamp. Snapshot sync was not started: '+
     String(snapshotRead.error.message||snapshotRead.error.code||'snapshot timestamp read failed'));
-   await assertActiveUser(ownerId);
+   await assertActiveUser(ownerId,operationEpoch);
    const snapshotUpdatedAt=snapshotRead.data&&snapshotRead.data.updated_at;
    if(typeof snapshotUpdatedAt==='string'&&snapshotUpdatedAt.length>0){
     const enableResponse=await client.rpc('nexus_enable_entity_delta',{
@@ -1190,7 +1198,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
      return {ok:false,retryable:true,reason:'production_delta_owner_changed_during_enable'};
     }
     if(enableData&&enableData.ok===true&&enableData.mode==='delta'){
-     await assertActiveUser(ownerId);
+     await assertActiveUser(ownerId,operationEpoch);
      let verifyQuery=client.from('nexus_workspace_sync_state')
       .select('mode').eq('user_id',ownerId);
      verifyQuery=attachAbortSignal(verifyQuery,signal);
@@ -1198,7 +1206,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
      if(verifiedState.error||!verifiedState.data||verifiedState.data.mode!=='delta'){
       throw new Error('The production Delta enablement response could not be verified against the owner sync state.');
      }
-     await assertActiveUser(ownerId);
+     await assertActiveUser(ownerId,operationEpoch);
      remoteMode='delta';
     }else if(enableData&&(enableData.code==='pilot_not_enabled'||
         enableData.code==='rollout_not_enabled')){
@@ -1237,13 +1245,13 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
  // once, under the same authenticated owner, before the Delta client reads the
  // outbox. Never repair the remote cursor/base or fall through to snapshot upload.
  if(!recoveryPending){
-  await assertActiveUser(ownerId);
+  await assertActiveUser(ownerId,operationEpoch);
   if(localStorage.getItem(OWNER_KEY)!==ownerId){
    return {ok:false,snapshotRequired:true,reason:'entity_projection_owner_unavailable',
     phase:'local-publish'};
   }
   let projection=await storage.waitForWorkspaceEntitySync(ownerId);
-  await assertActiveUser(ownerId);
+  await assertActiveUser(ownerId,operationEpoch);
   if(localStorage.getItem(OWNER_KEY)!==ownerId){
    return {ok:false,snapshotRequired:true,reason:'entity_projection_owner_unavailable',
     phase:'local-publish'};
@@ -1255,12 +1263,12 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
      (projection.reason==='entity_projection_unavailable'||projection.reason==='stale_entity_projection')){
    projectionRebuildAttempted=true;
    try{
-    await assertActiveUser(ownerId);
+    await assertActiveUser(ownerId,operationEpoch);
     if(localStorage.getItem(OWNER_KEY)!==ownerId){
      throw new Error('The active owner-bound local projection rebuild is unavailable.');
     }
     const rebuilt=await storage.syncWorkspaceEntities(ownerId,null,{replace:true});
-    await assertActiveUser(ownerId);
+    await assertActiveUser(ownerId,operationEpoch);
     if(localStorage.getItem(OWNER_KEY)!==ownerId||!rebuilt||
        rebuilt.skipped===true||rebuilt.ok===false){
      const error=new Error('The local entity projection rebuild did not complete.');
@@ -1384,7 +1392,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    cursor.requiresPull===false);
   const outbox=cursorCurrent?await storage.readWorkspaceEntityOutboxGroups(
    ownerId,Number(cursor.acknowledgedSequence),1000,1048576):null;
-  await assertActiveUser(ownerId);
+  await assertActiveUser(ownerId,operationEpoch);
   const outboxCurrent=!!(localStorage.getItem(OWNER_KEY)===ownerId&&outbox&&!outbox.unavailable&&!outbox.snapshotRequired&&
    outbox.ownerId===ownerId&&outbox.generation===cursor.generation&&
    Number(outbox.workspaceRevision)===Number(cursor.workspaceRevision)&&
@@ -1446,7 +1454,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   let result=await makeClient.synchronize(ownerId,{signal,maxRounds:20,maxGroups:20,maxBytes:1048576});
  if(result&&result.skipped&&result.mode==='snapshot')return {skipped:true,reason:'legacy_snapshot_server'};
  if(result&&result.ok===true){
-  await assertActiveUser(ownerId);
+  await assertActiveUser(ownerId,operationEpoch);
   if(localStorage.getItem(OWNER_KEY)!==ownerId){
    return {ok:false,retryable:true,reason:'entity_projection_owner_unavailable'};
   }
@@ -1470,7 +1478,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   }
   const outbox=await storage.readWorkspaceEntityOutboxGroups(
    ownerId,Number(cursor.acknowledgedSequence),1000,1048576);
-  await assertActiveUser(ownerId);
+  await assertActiveUser(ownerId,operationEpoch);
   if(localStorage.getItem(OWNER_KEY)!==ownerId){
    return {ok:false,retryable:true,reason:'entity_projection_owner_unavailable'};
   }
@@ -1523,7 +1531,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
 }
 
 async function readProductionEntityDeltaMode(ownerId,signal){
- await assertActiveUser(ownerId);
+ await assertActiveUser(ownerId,operationEpoch);
  if(localStorage.getItem(OWNER_KEY)!==ownerId)
   return {ok:false,reason:'active_account_does_not_own_local_workspace'};
  let query=client.from('nexus_workspace_sync_state').select('mode').eq('user_id',ownerId);
@@ -1531,7 +1539,7 @@ async function readProductionEntityDeltaMode(ownerId,signal){
  const read=await query.maybeSingle();
  if(read.error)throw new Error('Could not verify the owner sync mode before snapshot fallback: '+
   String(read.error.message||read.error.code||'sync-state read failed'));
- await assertActiveUser(ownerId);
+ await assertActiveUser(ownerId,operationEpoch);
  if(localStorage.getItem(OWNER_KEY)!==ownerId)
   return {ok:false,reason:'active_account_does_not_own_local_workspace'};
  const mode=read.data&&read.data.mode||'snapshot';
@@ -1577,7 +1585,7 @@ async function tryAutomaticProductionDeltaDowngrade(ownerId,signal,triggerReason
 
 async function tryProductionDeltaAfterVerifiedSnapshot(ownerId,signal,triggerReason){
  if(!productionDeltaClientGateOpen())return {ok:true,skipped:true,reason:'production_delta_gate_closed'};
- await assertActiveUser(ownerId);
+ await assertActiveUser(ownerId,operationEpoch);
  if(localStorage.getItem(OWNER_KEY)!==ownerId)
   return {ok:false,reason:'active_account_does_not_own_local_workspace'};
  if(productionDeltaIneligibleOwners.has(ownerId))
