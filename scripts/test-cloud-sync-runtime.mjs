@@ -161,7 +161,7 @@ function makeRetrySandbox(ownerId, ready = true) {
   };
   vm.createContext(sandbox);
   vm.runInContext(source.slice(retryStart, retryEnd) +
-    '\\nglobalThis.runScheduleRetry = scheduleRetry;', sandbox,
+    '\nglobalThis.runScheduleRetry = scheduleRetry;', sandbox,
     { filename: 'account-handoff-retry.js' });
   return sandbox;
 }
