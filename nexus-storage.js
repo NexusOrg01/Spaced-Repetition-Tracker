@@ -496,6 +496,10 @@
   const ENTITY_META_COLLECTIONS=['trackerMeta','featureMeta'];
   const ALL_ENTITY_COLLECTIONS=new Set([...TRACKER_ENTITY_COLLECTIONS,...FEATURE_ENTITY_COLLECTIONS,...ENTITY_META_COLLECTIONS]);
   const ENTITY_BATCH_SIZE=400;
+  // Snapshot backfill writes many immutable entity rows. Use a larger bounded
+  // transaction page than ordinary outbox/cleanup scans to amortize IndexedDB
+  // commit overhead, while yielding between pages so the UI remains responsive.
+  const ENTITY_MIGRATION_BATCH_SIZE=2000;
   let entityGenerationSequence=0;
   let entitySyncSerial=Promise.resolve();
   // Prevent new entity writes from recreating rows while an account is being deleted.
@@ -832,7 +836,7 @@
           bounds.min=Math.min(bounds.min,row.position);
           bounds.max=Math.max(bounds.max,row.position);
         }
-        if(batch.length>=ENTITY_BATCH_SIZE){
+        if(batch.length>=ENTITY_MIGRATION_BATCH_SIZE){
           failureStage='write-row-batch';
           await writeWorkspaceEntityBatch(batch.splice(0,batch.length));
           throwIfAborted();
