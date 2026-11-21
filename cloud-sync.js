@@ -1074,7 +1074,7 @@ async function recoverCachedWorkspaceForOfflineAccount(userId,parentSignal){
  const normalizedState=normalizeState(payload.state);
  const normalizedFeatures=window.NexusNormalizeFeatureState(payload.featureState);
  await applyWorkspaceSnapshot(normalizedState,normalizedFeatures,userId,parentSignal,{
-  preserveProjectionIfEquivalent:source==='indexeddb'
+  deferProjectionToUpload:true
  });
  await flushDurableLocalWrites(parentSignal);
  if(oversizedQueueDetected){
