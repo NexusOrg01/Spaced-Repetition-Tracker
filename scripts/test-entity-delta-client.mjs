@@ -1339,7 +1339,7 @@ function makeStagingRuntimeHarness({
     new URL(runtimeOrigin).hostname==='spaced-repetition-tracker-delta.vercel.app'&&
     new URL(runtimeOrigin).origin==='https://spaced-repetition-tracker-delta.vercel.app';
   const context={
-    window,client,session:{user:{id:sessionUser}},
+    window,client,sessionEpoch:0,session:{user:{id:sessionUser}},
     LIVE_SUPABASE_URL:'https://txugbdavblpettcnhcxl.supabase.co',
     LIVE_APP_HOST:'spaced-repetition-tracker-delta.vercel.app',
     productionDeltaIneligibleOwners:new Set(),
@@ -1921,7 +1921,7 @@ assert.equal(snapshotFallbackResult.reason,'legacy_snapshot_server',
 
 const uploadStart=cloudSyncSource.indexOf('async function upload(){');
 const uploadDeltaCall=cloudSyncSource.indexOf(
-  'deltaResult=await runStagingEntityDeltaSync(uploadUserId,uploadScope.signal);',uploadStart
+  "deltaResult=await uploadScope.race(runStagingEntityDeltaSync(uploadUserId,uploadScope.signal),'Entity Delta synchronization');",uploadStart
 );
 const legacyQueueStart=cloudSyncSource.indexOf('let pending=null;',uploadDeltaCall);
 assert.ok(uploadStart>=0&&uploadDeltaCall>uploadStart&&legacyQueueStart>uploadDeltaCall,

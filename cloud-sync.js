@@ -828,7 +828,7 @@ function hasMissingBaselineCurriculumIntent(userId,localPayload,remotePayload){
  }
  return false;
 }
-async function reconcileOwnedWorkspace(userId,localPayload,remote,expectedEpoch=sessionEpoch);
+async function reconcileOwnedWorkspace(userId,localPayload,remote,expectedEpoch=sessionEpoch){
  const queue=window.NexusOfflineSyncQueue;
  if(!queue||!userId||!localPayload||!remote)return {ok:false,conflicts:0,reason:'Safe same-account reconciliation is unavailable.'};
  const base=queue.getBase(localStorage,userId);
