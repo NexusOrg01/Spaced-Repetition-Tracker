@@ -726,8 +726,10 @@
     const owner=entityOwnerKey(ownerId),signal=options.signal||null;
     const throwIfAborted=()=>{
       if(!signal||!signal.aborted)return;
-      if(signal.reason instanceof Error)throw signal.reason;
-      const error=new Error('The active account changed while rebuilding its entity projection.');
+      const reason=signal.reason;
+      const error=new Error(reason&&typeof reason.message==='string'
+        ?reason.message:'The active account changed while rebuilding its entity projection.');
+      if(reason)error.cause=reason;
       error.name='AbortError';error.code='NEXUS_SYNC_CANCELLED';throw error;
     };
     throwIfAborted();
@@ -958,11 +960,11 @@
         sourceWorkspaceRevision,prunedRows,prunedOutboxRows};
     }catch(error){
       if(signal&&signal.aborted){
-        if(signal.reason instanceof Error)error=signal.reason;
-        else{
-          const cancelled=new Error('The active account changed while rebuilding its entity projection.');
-          cancelled.name='AbortError';cancelled.code='NEXUS_SYNC_CANCELLED';cancelled.cause=error;error=cancelled;
-        }
+        const reason=signal.reason;
+        const cancelled=new Error(reason&&typeof reason.message==='string'
+          ?reason.message:'The active account changed while rebuilding its entity projection.');
+        cancelled.name='AbortError';cancelled.code='NEXUS_SYNC_CANCELLED';
+        cancelled.cause=reason||error;error=cancelled;
       }
       if(publicationFailureReason&&error&&typeof error==='object'){
         error.nexusEntityProjectionFailureReason=publicationFailureReason;
@@ -2281,8 +2283,10 @@
       const throwIfAborted=()=>{
         const signal=options.signal;
         if(!signal||!signal.aborted)return;
-        if(signal.reason instanceof Error)throw signal.reason;
-        const error=new Error('The active account changed before entity synchronization could begin.');
+        const reason=signal.reason;
+        const error=new Error(reason&&typeof reason.message==='string'
+          ?reason.message:'The active account changed before entity synchronization could begin.');
+        if(reason)error.cause=reason;
         error.name='AbortError';error.code='NEXUS_SYNC_CANCELLED';throw error;
       };
       throwIfAborted();
