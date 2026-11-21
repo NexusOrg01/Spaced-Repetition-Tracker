@@ -1087,7 +1087,6 @@ if(owner&&owner!==newUserId){
     previousAccountHasChanges=true;
     previousAccountCheckpointed=true;
    }else{
-    const outgoingBase=outgoingQueue.getBase(localStorage,previousOwner);
     // A verified base does not prove the live shared local snapshot is unchanged:
     // signed-out edits can occur after that base was recorded without an outbox row.
     // Preserve any user-data workspace now, without a large structural comparison.
@@ -1100,7 +1099,6 @@ if(owner&&owner!==newUserId){
     }else{
      previousAccountHasChanges=false;
      previousAccountCheckpointed=true;
-    }
     }
    }
    await assertActiveUser(newUserId,requestedEpoch);
