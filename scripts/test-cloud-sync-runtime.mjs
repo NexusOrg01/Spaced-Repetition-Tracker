@@ -200,7 +200,8 @@ for (const label of [
   'Loading account…',
   'Checking local and cloud data…',
   'Comparing local and cloud data…',
-  'Restoring account workspace…'
+  'Restoring account workspace…',
+  'Syncing…'
 ]) {
   statusRecoverySandbox.setCloudStatus(label);
   assert.equal(statusRecoverySandbox.statusValue, label.replace(/…/g, '...'),
@@ -282,7 +283,9 @@ assert.equal(statusRecoverySandbox.recoverStatus('account-A', 11), false,
   'a stale initialization must not alter the newer session status');
 
 statusRecoverySandbox.ready = true;
-statusRecoverySandbox.setCloudStatus('Checking local and cloud data…');
+statusRecoverySandbox.setCloudStatus('Syncing…');
+assert.equal(statusRecoverySandbox.isTransientInitializationStatus(statusRecoverySandbox.statusValue), true,
+  'an active Syncing status must remain transient until cloud verification settles');
 assert.equal(statusRecoverySandbox.watchdogDelay, 30000,
   'the real initialization watchdog must remain set to the 30-second deadline');
 statusRecoverySandbox.watchdogCallback();
