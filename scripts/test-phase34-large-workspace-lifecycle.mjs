@@ -1095,6 +1095,8 @@ try {
     'workspace-comparison',
     'workspace-local-commit',
     'projection-check-start',
+    'projection-readiness',
+    'workspace-snapshot-current',
     'projection-reuse',
     'projection-rebuild',
     'workspace-render',
@@ -1117,12 +1119,16 @@ try {
     payloadUtf8Bytes: Number.isSafeInteger(event.payloadUtf8Bytes) ? event.payloadUtf8Bytes : null,
     topicCount: Number.isSafeInteger(event.workspace?.topicCount) ? event.workspace.topicCount : null,
     historyRows: Number.isSafeInteger(event.workspace?.reviewHistoryCount) ? event.workspace.reviewHistoryCount : null,
-    projectionRebuildMode: typeof event.projectionRebuildMode === 'string' ? event.projectionRebuildMode : null
+    projectionRebuildMode: typeof event.projectionRebuildMode === 'string' ? event.projectionRebuildMode : null,
+    same: typeof event.same === 'boolean' ? event.same : null,
+    reason: typeof event.reason === 'string' ? event.reason : null
   }));
   const expectedReturnPhases = [
     'cloud-chunk-read',
     'cloud-read',
     'workspace-comparison',
+    'projection-readiness',
+    'workspace-snapshot-current',
     'projection-reuse',
     'projection-rebuild',
     'initial-sync-verification'
@@ -1157,6 +1163,8 @@ try {
     returnSyncWallMs,
     projectionCheckStarted: phaseTimings.some(event => event.stage === 'projection-check-start'),
     projectionCompletedByDeadline: !!returnProjectionCompletion,
+    projectionReadinessReason: phaseTimings.find(event => event.stage === 'projection-readiness')?.reason || null,
+    workspaceSnapshotCurrent: phaseTimings.find(event => event.stage === 'workspace-snapshot-current')?.same ?? null,
     phasesNotObservedByDeadline,
     phaseTimings
   };
