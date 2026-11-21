@@ -604,10 +604,10 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'migration must reject a workspace owner different from the committed session');
 
   // A failed replacement generation must never displace the currently readable
-  // generation. The first 400 rows commit, then the next batch is interrupted.
+  // generation. The first 2,000 rows commit, then the next batch is interrupted.
   const expandedState={
     ...afterChanges.state,
-    topics:afterChanges.state.topics.concat(Array.from({length:400},(_,index)=>({
+    topics:afterChanges.state.topics.concat(Array.from({length:2000},(_,index)=>({
       id:'expanded-topic-'+index,subjectId:'subject-1',name:'Expanded topic '+index,reviewCount:0
     })))
   };
