@@ -1346,6 +1346,27 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(initial.state.topics[0].name,'Original title');
   const originalWorkspace=await first.api.getWorkspace(owner);
   const workspaceRevision=originalWorkspace.workspaceRevision;
+  const initialReadiness=await first.api.getWorkspaceEntityProjectionReadiness(owner);
+  assert.equal(initialReadiness.ready,true,
+    'a complete owner-matched projection at the durable workspace revision must be reusable');
+  assert.equal(initialReadiness.ownerId,owner);
+  assert.equal(initialReadiness.generation,initial.generation,
+    'readiness must identify the already-published generation without rebuilding it');
+  assert.equal(initialReadiness.workspaceRevision,workspaceRevision);
+
+  // A stale manifest must fail closed, and restoring its exact revision must make
+  // the same active generation reusable again without scanning/materializing rows.
+  const manifestStore=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  const manifestKey='workspace-entities:'+encodeURIComponent(owner);
+  const savedManifest=clone(manifestStore.get(manifestKey));
+  manifestStore.set(manifestKey,{...savedManifest,sourceWorkspaceRevision:workspaceRevision+1});
+  const staleReadiness=await first.api.getWorkspaceEntityProjectionReadiness(owner);
+  assert.equal(staleReadiness.ready,false,
+    'a projection whose source revision differs from the durable workspace must never be reused');
+  assert.equal(staleReadiness.reason,'stale-workspace-revision');
+  manifestStore.set(manifestKey,savedManifest);
+  assert.equal((await first.api.getWorkspaceEntityProjectionReadiness(owner)).ready,true,
+    'the unchanged active generation must remain reusable after its valid manifest is restored');
 
   await first.api.writeWorkspaceEntityChanges(owner,[{
     collection:'topics',id:'hydrate-topic',operation:'put',position:0,
