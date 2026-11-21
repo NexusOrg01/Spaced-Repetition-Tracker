@@ -87,7 +87,9 @@ const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
   vm.createContext(sandbox);
   vm.runInContext(
     source.slice(checkpointStart, checkpointEnd) +
-      '\\nglobalThis.runCheckpoint = checkpointPreviousAccountWorkspace;',
+      `
+globalThis.runCheckpoint = checkpointPreviousAccountWorkspace;
+      `,
     sandbox,
     { filename: 'unchanged-account-checkpoint.js' }
   );
