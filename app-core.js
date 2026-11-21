@@ -465,8 +465,9 @@
       // owner-bound manifest, durable workspace revision and generation roots before
       // serializing/cloning the full compatibility workspace for a replacement.
       if(typeof storage.getWorkspaceEntityProjectionReadiness==='function'){
+        let readiness=null;
         try{
-          const readiness=await storage.getWorkspaceEntityProjectionReadiness(owner);
+          readiness=await storage.getWorkspaceEntityProjectionReadiness(owner);
           window.NexusCloudSync?.noteProjectionReadiness?.(readiness);
           if(signal&&signal.aborted)throw signal.reason instanceof Error?signal.reason:new Error('Projection readiness check was cancelled.');
           if(readiness&&readiness.ready){
@@ -475,8 +476,21 @@
           }
         }catch(error){
           if(signal&&signal.aborted)throw error;
+          if(options.reuseOnly===true){
+            return {ownerId:owner,mode:'deferred',reason:'projection-readiness-unavailable'};
+          }
           console.warn('Nexus entity projection readiness could not be verified; attempting a guarded rebuild.',error);
         }
+        // Account handoff can render the owner-verified compatibility snapshot before
+        // the network confirms whether this account is in Delta mode. In reuse-only
+        // mode, retain a valid generation but do not serialize/rebuild a stale one.
+        // The authenticated Delta upload gate performs the guarded rebuild if needed.
+        if(options.reuseOnly===true){
+          return {ownerId:owner,mode:'deferred',
+            reason:readiness&&typeof readiness.reason==='string'?readiness.reason:'projection-readiness-unavailable'};
+        }
+      }else if(options.reuseOnly===true){
+        return {ownerId:owner,mode:'deferred',reason:'projection-readiness-unavailable'};
       }
       const featureState=window.NexusGetFeatureStateForCommit
         ?window.NexusGetFeatureStateForCommit()
