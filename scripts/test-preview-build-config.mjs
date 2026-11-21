@@ -200,8 +200,8 @@ const hostedQaEnv = {
   VERCEL_PROJECT_ID: 'prj_UgPzqFpvqBaKkKXi2Vm2COxqUsDi',
   VERCEL_ENV: 'preview',
   VERCEL_GIT_COMMIT_REF: hostedQaBranch,
-  VERCEL_URL: 'nexus-dla-03-git-feat-dla-03-safe-snapshot-downgrade-recall-ed03.vercel.app',
-  VERCEL_BRANCH_URL: 'nexus-app-git-fix-dla04-entity-projection-guard-recall-ed03.vercel.app',
+  VERCEL_URL: 'nexus-preview-deployment.vercel.app',
+  VERCEL_BRANCH_URL: 'nexus-preview-branch.vercel.app',
   NEXUS_ENTITY_DELTA_QA_ENABLED: 'true',
   NEXUS_SUPABASE_URL: hostedQaProject,
   NEXUS_SUPABASE_ANON_KEY: previewEnv.NEXUS_SUPABASE_ANON_KEY
@@ -250,15 +250,15 @@ assert.deepEqual(hostedQaConfig, {
 const hostedQaGate = resolveHostedQaEntityDeltaEnabled(hostedQaEnv, hostedQaConfig);
 assert.deepEqual(hostedQaGate, {
   enabled: true,
-  origin: 'https://spaced-repetition-tracker-git-fix-sync-accou-8f743d-recall-ed03.vercel.app',
-  branchOrigin: 'https://nexus-app-git-fix-dla04-entity-projection-guard-recall-ed03.vercel.app',
+  origin: 'https://nexus-preview-deployment.vercel.app',
+  branchOrigin: 'https://nexus-preview-branch.vercel.app',
   ref: hostedQaBranch
 }, 'hosted QA must require the explicit flag, exact branch, exact project, and deployment-specific Vercel origin');
 const hostedQaConfigScript = renderConfigScript(hostedQaConfig, false, hostedQaGate);
 assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=true'));
 assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_REF="fix/sync-account-handoff-reliability"'));
-assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN="https://spaced-repetition-tracker-git-fix-sync-accou-8f743d-recall-ed03.vercel.app"'));
-assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_BRANCH_ORIGIN="https://nexus-app-git-fix-dla04-entity-projection-guard-recall-ed03.vercel.app"'),
+assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN="https://nexus-preview-deployment.vercel.app"'));
+assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_BRANCH_ORIGIN="https://nexus-preview-branch.vercel.app"'),
   'the exact Vercel branch URL must also be embedded as an approved hosted QA origin');
 assert.ok(renderConfigScript(hostedQaConfig, false, null).includes('window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=false'));
 
