@@ -2799,51 +2799,6 @@ async function runHostedQaOwnerIsolationChecks(){
   ownerBVisibleReceiptRows:before.receipts.length,
   ownerAOperationIdSuffix:ownerA.operationId.slice(-8)};
 }
-function installHostedQaReplayPanel(){
- if(!hostedQaReplayGateOpen()||!document||!document.getElementById||
-    document.getElementById('nexusHostedQaReplayPanel'))return;
- const accountView=document.getElementById('view-account');
- if(!accountView)return;
- const panel=document.createElement('section');panel.id='nexusHostedQaReplayPanel';panel.className='panel';
- panel.style.marginTop='15px';
- const header=document.createElement('div');header.className='panel-head';
- const heading=document.createElement('div'),title=document.createElement('h3'),subtitle=document.createElement('p');
- title.textContent='DLA-04 hosted protocol checks';
- subtitle.textContent='Staging-only checks for the signed-in QA account.';
- heading.append(title,subtitle);header.append(heading);
- const body=document.createElement('div');body.className='panel-body';
- const replayNote=document.createElement('p');replayNote.className='muted small';
- replayNote.textContent='Owner-A: checks an existing operation replay, altered-payload rejection, stale-revision rejection, and unchanged server state.';
- const replayButton=document.createElement('button');replayButton.type='button';replayButton.className='btn btn-primary';
- replayButton.textContent='Run Owner-A replay checks';
- const replayOutput=document.createElement('pre');replayOutput.setAttribute('aria-live','polite');
- replayOutput.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;margin:12px 0 0;font-size:12px;color:var(--muted);';
- replayOutput.textContent='Sign in to the designated Owner-A staging account, then run the replay checks.';
- replayButton.addEventListener('click',async()=>{
-  replayButton.disabled=true;replayButton.textContent='Running checks…';
-  replayOutput.textContent='Verifying Owner-A account and staging protocol…';
-  try{replayOutput.textContent=JSON.stringify(await runHostedQaReplayChecks(),null,2);}
-  catch(_){replayOutput.textContent=JSON.stringify({ok:false,reason:'hosted_qa_check_failed_safely'},null,2);}
-  finally{replayButton.disabled=false;replayButton.textContent='Run Owner-A replay checks';}
- });
- const ownerBNote=document.createElement('p');ownerBNote.className='muted small';ownerBNote.style.marginTop='16px';
- ownerBNote.textContent='Owner-B: use the separate designated snapshot-mode QA account. Negative RPC probes reuse Owner-A identifiers/checkpoint values and must be rejected. Only owner IDs, operation IDs, and timestamps are read; workspace payloads are not downloaded. No workspace records or settings should change.';
- const ownerBButton=document.createElement('button');ownerBButton.type='button';ownerBButton.className='btn btn-secondary';
- ownerBButton.textContent='Run Owner-B isolation checks';
- const ownerBOutput=document.createElement('pre');ownerBOutput.setAttribute('aria-live','polite');
- ownerBOutput.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;margin:12px 0 0;font-size:12px;color:var(--muted);';
- ownerBOutput.textContent='Sign in to the designated Owner-B staging account, then run the isolation checks.';
- ownerBButton.addEventListener('click',async()=>{
-  ownerBButton.disabled=true;ownerBButton.textContent='Running checks…';
-  ownerBOutput.textContent='Verifying Owner-B identity, row-level isolation, and rejected cross-owner RPC requests…';
-  try{ownerBOutput.textContent=JSON.stringify(await runHostedQaOwnerIsolationChecks(),null,2);}
-  catch(_){ownerBOutput.textContent=JSON.stringify({ok:false,reason:'owner_b_isolation_check_failed_safely'},null,2);}
-  finally{ownerBButton.disabled=false;ownerBButton.textContent='Run Owner-B isolation checks';}
- });
- body.append(replayNote,replayButton,replayOutput,ownerBNote,ownerBButton,ownerBOutput);
- panel.append(header,body);accountView.append(panel);
-}
-
 async function signOut(){
  const authClient=client;session=null;rotateSessionContext(null);ready=false;clearTimeout(timer);clearRetry();
  status('Not signed in · offline ready');say('You are signed out. Continue using this device offline; data remains local.');setControls();
