@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { webcrypto } from 'node:crypto';
+import { chromium } from 'playwright';
 
 const require = createRequire(import.meta.url);
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 const chunkStorage = require('../cloud-chunk-storage.js');
+const backupUtils = require('../backup-restore-utils.js');
 const merge = require('../workspace-sync-merge.js');
 require('../entity-delta-sync.js');
 
@@ -770,6 +772,284 @@ check('Unlisted account B cannot read C snapshot/chunks and remains snapshot-onl
   foreignSnapshotRows.data.length === 0 && foreignChunkRows.data.length === 0 &&
   finalForeignState.mode === 'snapshot' && Number(finalForeignState.head_revision) === 0 &&
   finalForeignPage.mode === 'snapshot' && finalForeignPage.groups.length === 0);
+
+
+console.log('Preparing the exact 26.9 MB snapshot for DLA-08E app-level A→B→A acceptance…');
+const appFixturePayload = structuredClone(initialPayload);
+delete appFixturePayload.__nexusDeltaSync;
+let appFixtureSerialized = JSON.stringify(appFixturePayload);
+const appFixtureBytesBeforePadding = Buffer.byteLength(appFixtureSerialized, 'utf8');
+const appFixturePadding = TARGET_BYTES - appFixtureBytesBeforePadding;
+assert.ok(appFixturePadding >= 0, 'The marker-free app fixture must fit within the exact 26.9 MB target.');
+appFixturePayload.state.topics[0].notes += 'x'.repeat(appFixturePadding);
+appFixtureSerialized = JSON.stringify(appFixturePayload);
+assert.equal(Buffer.byteLength(appFixtureSerialized, 'utf8'), TARGET_BYTES);
+const beforeAppFixtureRow = await readSnapshotRow(clientA1Restart, ownerA);
+const appFixturePublication = await chunkStorage.writeSnapshot(
+  clientA1Restart, ownerA, appFixturePayload, beforeAppFixtureRow.updated_at,
+  new Date().toISOString(), backupUtils, appFixtureSerialized
+);
+assert.equal(appFixturePublication.manifest.totalBytes, TARGET_BYTES);
+assert.equal(appFixturePublication.manifest.chunkCount, 103);
+const appFixtureRow = await readSnapshotRow(clientA1Restart, ownerA);
+const appFixtureReadback = await chunkStorage.readSnapshot(clientA1Restart, ownerA, appFixtureRow.payload);
+assert.equal(await merge.sameAsync(appFixturePayload, appFixtureReadback), true);
+const appFixtureState = await rpc(clientA1Restart, 'nexus_get_entity_sync_state');
+assert.equal(appFixtureState.mode, 'snapshot');
+assert.equal(appFixtureReadback.state.topics.length, INITIAL_TOPICS);
+assert.equal(appFixtureReadback.state.history.length, INITIAL_HISTORY);
+check('DLA-08E prepares an authenticated 26,900,000-byte snapshot-mode app fixture with 103 verified chunks',
+  appFixturePublication.verifiedChunks === true &&
+  appFixturePublication.manifest.totalBytes === TARGET_BYTES &&
+  appFixturePublication.manifest.chunkCount === 103 &&
+  appFixtureState.mode === 'snapshot');
+
+console.log('Launching the Nexus Web app in Chromium against disposable local Supabase…');
+const browser = await chromium.launch({
+  headless: true,
+  args: ['--no-sandbox', '--disable-dev-shm-usage']
+});
+let appLevelTimingEvidence = null;
+try {
+  const context = await browser.newContext({
+    serviceWorkers: 'block',
+    viewport: { width: 1280, height: 900 }
+  });
+  const page = await context.newPage();
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(String(error && error.message || error)));
+  await page.goto('http://127.0.0.1:4173/index.html?nexusSyncDiag=1', {
+    waitUntil: 'domcontentloaded'
+  });
+  await page.waitForFunction(() =>
+    !!(window.supabase && typeof window.supabase.createClient === 'function') &&
+    !!document.querySelector('#cloudStatus') &&
+    !!document.querySelector('#cloudAccount'),
+  null, { timeout: 30000 });
+  await page.waitForFunction(() => {
+    const status = document.querySelector('#cloudStatus');
+    return !!status && !/^Connecting/i.test(status.textContent.trim());
+  }, null, { timeout: 30000 });
+
+  await page.evaluate(({ api, anon }) => {
+    window.__nexusDla08AuthClient = window.supabase.createClient(api, anon, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: false
+      }
+    });
+  }, { api: API, anon: ANON });
+
+  async function signInAppTestAccount(email, password) {
+    return page.evaluate(async ({ email, password }) => {
+      const authClient = window.__nexusDla08AuthClient;
+      if (!authClient) throw new Error('The isolated browser Auth client is unavailable.');
+      const result = await authClient.auth.signInWithPassword({ email, password });
+      if (result.error) throw new Error('Disposable browser sign-in failed: ' + result.error.message);
+      if (!result.data || !result.data.user || !result.data.session) {
+        throw new Error('Disposable browser sign-in did not return an authenticated session.');
+      }
+      return { userId: result.data.user.id, email: result.data.user.email };
+    }, { email, password });
+  }
+
+  async function waitForAccountAndStatus(email, userId, requiredStatus, timeoutMs) {
+    await page.waitForFunction(({ email, userId, requiredStatus }) => {
+      const account = document.querySelector('#cloudAccount');
+      const status = document.querySelector('#cloudStatus');
+      if (!account || !status || account.textContent.trim() !== email) return false;
+      if (localStorage.getItem('nexus.cloud.last-user-id') !== userId) return false;
+      return requiredStatus === 'any' ||
+        status.textContent.trim() === requiredStatus;
+    }, { email, userId, requiredStatus }, { timeout: timeoutMs });
+  }
+
+  async function readAppDiagnostics() {
+    return page.evaluate(() => {
+      try {
+        const rows = JSON.parse(localStorage.getItem('nexus.syncdiag.session.v1') || '[]');
+        return Array.isArray(rows) ? rows : [];
+      } catch (_) {
+        return [];
+      }
+    });
+  }
+
+  const appEmailA = process.env.PHASE34_EMAIL_C;
+  const appPasswordA = process.env.PHASE34_PASSWORD_C;
+  const appEmailB = process.env.PHASE34_EMAIL_B;
+  const appPasswordB = process.env.PHASE34_PASSWORD_B;
+  assert.ok(appEmailA && appPasswordA && appEmailB && appPasswordB,
+    'The isolated local browser fixture must provide both disposable account credentials.');
+
+  const signedInA = await signInAppTestAccount(appEmailA, appPasswordA);
+  assert.equal(signedInA.userId, ownerA);
+  await waitForAccountAndStatus(appEmailA, ownerA, 'Synced', 180000);
+  const initialEvents = await readAppDiagnostics();
+  const initialCloudRead = initialEvents.slice().reverse().find(event =>
+    event.stage === 'cloud-read' &&
+    event.payloadUtf8Bytes === TARGET_BYTES &&
+    event.chunkCount === 103
+  );
+  const initialVerification = initialEvents.slice().reverse().find(event =>
+    event.stage === 'initial-sync-verification' && event.ok === true
+  );
+  assert.ok(initialCloudRead,
+    'The real Nexus app must read the exact 26.9 MB / 103-chunk account-A fixture.');
+  assert.ok(initialVerification && Number.isSafeInteger(initialVerification.durationMs),
+    'The real Nexus app must record initial verified sync timing for account A.');
+
+  const signedInB = await signInAppTestAccount(appEmailB, appPasswordB);
+  assert.equal(signedInB.userId, ownerB);
+  const accountBStartedAt = Date.now();
+  await waitForAccountAndStatus(appEmailB, ownerB, 'Synced', 90000);
+  const accountBReadyMs = Date.now() - accountBStartedAt;
+
+  const accountAReturnStartedAt = Date.now();
+  const accountAReturnStartedIso = new Date(accountAReturnStartedAt).toISOString();
+  const returnedA = await signInAppTestAccount(appEmailA, appPasswordA);
+  assert.equal(returnedA.userId, ownerA);
+  await page.waitForFunction(({ email, userId }) => {
+    const account = document.querySelector('#cloudAccount');
+    const status = document.querySelector('#cloudStatus');
+    if (!account || !status || account.textContent.trim() !== email) return false;
+    if (localStorage.getItem('nexus.cloud.last-user-id') !== userId) return false;
+    let events = [];
+    try {
+      const parsed = JSON.parse(localStorage.getItem('nexus.syncdiag.session.v1') || '[]');
+      events = Array.isArray(parsed) ? parsed : [];
+    } catch (_) {}
+    return events.some(event =>
+      event.stage === 'online-account-workspace-restored' &&
+      event.workspace &&
+      event.workspace.topicCount === 77144 &&
+      event.workspace.reviewHistoryCount === 72001 &&
+      Number.isSafeInteger(event.durationMs)
+    );
+  }, { email: appEmailA, userId: ownerA }, { timeout: 65000 });
+  const cachedRevealWallMs = Date.now() - accountAReturnStartedAt;
+  const returnEventsAtReveal = await readAppDiagnostics();
+  const cachedRevealEvent = returnEventsAtReveal.slice().reverse().find(event =>
+    event.stage === 'online-account-workspace-restored' &&
+    event.workspace &&
+    event.workspace.topicCount === INITIAL_TOPICS &&
+    event.workspace.reviewHistoryCount === INITIAL_HISTORY
+  );
+  assert.ok(cachedRevealEvent, 'The returning owner’s large cached workspace restore must be diagnosed.');
+  assert.ok(cachedRevealEvent.durationMs <= 30000,
+    'The measured owner-scoped cache restore operation must finish within 30 seconds.');
+  assert.ok(cachedRevealWallMs <= 30000,
+    'The complete live A→B→A return must reveal the owner-verified cached workspace within 30 seconds.');
+
+  let returnVerification = null;
+  try {
+    await page.waitForFunction(startedAt => {
+      let events = [];
+      try {
+        const parsed = JSON.parse(localStorage.getItem('nexus.syncdiag.session.v1') || '[]');
+        events = Array.isArray(parsed) ? parsed : [];
+      } catch (_) {}
+      return events.some(event =>
+        event.stage === 'initial-sync-verification' &&
+        typeof event.at === 'string' &&
+        event.at >= startedAt
+      );
+    }, accountAReturnStartedIso, { timeout: 65000 });
+    const afterVerification = await readAppDiagnostics();
+    returnVerification = afterVerification.slice().reverse().find(event =>
+      event.stage === 'initial-sync-verification' &&
+      typeof event.at === 'string' &&
+      event.at >= accountAReturnStartedIso
+    ) || null;
+  } catch (_) {
+    returnVerification = null;
+  }
+
+  const returnStatus = await page.locator('#cloudStatus').textContent();
+  const returnStatusText = String(returnStatus || '').trim();
+  const returnSyncWallMs = Date.now() - accountAReturnStartedAt;
+  const explicitDelayedStates = new Set([
+    'Sync pending',
+    'Account verification delayed',
+    'Sync delayed - local data ready',
+    'Sync unavailable',
+    'Sync not verified',
+    'Automatic merge not verified',
+    'Account handoff paused'
+  ]);
+  const verifiedWithinDeadline = !!(
+    returnVerification &&
+    returnVerification.ok === true &&
+    returnVerification.durationMs <= 60000 &&
+    returnStatusText === 'Synced'
+  );
+  const delayedWithinDeadline = !!(
+    returnVerification &&
+    returnVerification.ok === false &&
+    returnVerification.durationMs <= 60000 &&
+    explicitDelayedStates.has(returnStatusText)
+  );
+  assert.ok(returnVerification,
+    'The returning account must reach a recorded verified or explicit delayed/error initialization outcome.');
+  assert.ok(returnSyncWallMs <= 60000,
+    'The account-return initialization must settle within the 60-second acceptance deadline.');
+  assert.ok(verifiedWithinDeadline || delayedWithinDeadline,
+    'The account-return outcome must be verified Synced or an explicit truthful delayed/error state within 60 seconds.');
+
+  const returnCloudRead = returnEventsAtReveal.slice().reverse().find(event =>
+    event.stage === 'cloud-read' && event.payloadUtf8Bytes === TARGET_BYTES && event.chunkCount === 103
+  ) || (await readAppDiagnostics()).slice().reverse().find(event =>
+    event.stage === 'cloud-read' && event.payloadUtf8Bytes === TARGET_BYTES && event.chunkCount === 103
+  ) || null;
+
+  appLevelTimingEvidence = {
+    fixtureBytes: TARGET_BYTES,
+    fixtureChunks: 103,
+    topics: INITIAL_TOPICS,
+    historyRows: INITIAL_HISTORY,
+    initialAccountSyncMs: initialVerification.durationMs,
+    initialRemoteReadMs: initialCloudRead.durationMs,
+    accountBReadyMs,
+    returningAccountOwnerMatch: true,
+    cachedRevealWallMs,
+    cachedRevealDurationMs: cachedRevealEvent.durationMs,
+    returningCloudReadMs: returnCloudRead && Number.isSafeInteger(returnCloudRead.durationMs)
+      ? returnCloudRead.durationMs : null,
+    returnSyncVerificationMs: returnVerification.durationMs,
+    returnSyncVerified: verifiedWithinDeadline,
+    returnTerminalStatus: returnStatusText,
+    returnSyncWallMs
+  };
+  assert.equal(pageErrors.length, 0,
+    'The app-level A→B→A browser run must not raise uncaught JavaScript exceptions.');
+  console.log('DLA-08E_APP_LEVEL_TIMING=' + JSON.stringify(appLevelTimingEvidence));
+  check('DLA-08E real Nexus Web app reveals the returning 26.9 MB owner-verified workspace within 30 seconds',
+    cachedRevealWallMs <= 30000 && cachedRevealEvent.durationMs <= 30000);
+  check('DLA-08E real Nexus Web app verifies cloud sync or records an explicit delayed/error outcome within 60 seconds',
+    verifiedWithinDeadline || delayedWithinDeadline);
+} catch (error) {
+  try {
+    const diagnostics = await page.evaluate(() => ({
+      account: document.querySelector('#cloudAccount')?.textContent || '',
+      status: document.querySelector('#cloudStatus')?.textContent || '',
+      ownerPresent: !!localStorage.getItem('nexus.cloud.last-user-id'),
+      events: (() => {
+        try { return JSON.parse(localStorage.getItem('nexus.syncdiag.session.v1') || '[]'); }
+        catch (_) { return []; }
+      })()
+    }));
+    console.log('DLA-08E_APP_LEVEL_FAILURE=' + JSON.stringify({
+      message: String(error && error.message || error),
+      diagnostics
+    }));
+  } catch (_) {
+    console.log('DLA-08E_APP_LEVEL_FAILURE=' + String(error && error.message || error));
+  }
+  throw error;
+} finally {
+  await browser.close();
+}
 
 console.log('PASS — ' + checks.length + ' large-workspace two-device lifecycle assertions completed.');
 console.log('Evidence: ' + JSON.stringify({
