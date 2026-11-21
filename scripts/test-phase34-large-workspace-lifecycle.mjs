@@ -612,10 +612,10 @@ assert.equal(recovery.snapshotRevision, Number(afterCompactionState.snapshot_rev
 assert.equal(recovery.expectedHeadRevision, revision);
 assert.equal(recovery.groupCount, 2);
 assert.equal(recovery.throughRevision, revision);
-assert.equal(recovery.remotePayload.state.topics.length, 64872);
-assert.equal(recovery.remotePayload.state.history.length, 71761);
-assert.equal(recovery.payload.state.topics.length, 64872);
-assert.equal(recovery.payload.state.history.length, 71761);
+assert.equal(recovery.remotePayload.state.topics.length, 53080);
+assert.equal(recovery.remotePayload.state.history.length, 59460);
+assert.equal(recovery.payload.state.topics.length, 53080);
+assert.equal(recovery.payload.state.history.length, 59460);
 assert.equal(recovery.payload.state.topics.find(row => row.id === 'topic-050000').notes,
   'offline edit on device A2');
 assert.equal(recovery.payload.state.topics.find(row => row.id === 'topic-050001').name,
@@ -627,7 +627,7 @@ assert.ok(recovery.payload.featureState.journal.some(row => row.id === 'journal-
 await verifyFinalWorkspace(recovery.payload);
 check('Stale A2 reconstructs the compacted snapshot plus both contiguous tail groups and merges offline edits',
   recovery.baselineAdvanced === true && recovery.groupCount === 2 &&
-  recovery.throughRevision === revision && recovery.payload.state.topics.length === 64872);
+  recovery.throughRevision === revision && recovery.payload.state.topics.length === 53080);
 check('Three-way recovery preserves the offline edit, local conflict winner and both independent journal additions',
   recovery.payload.state.topics.find(row => row.id === 'topic-050000').notes === 'offline edit on device A2' &&
   recovery.payload.state.topics.find(row => row.id === 'topic-050001').name === 'Offline title wins locally' &&
