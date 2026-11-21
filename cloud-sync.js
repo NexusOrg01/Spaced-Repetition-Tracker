@@ -288,7 +288,7 @@ function installSyncDiagnosticsButton(){
 
 function isUnsafeCloudOrigin(){const host=location.hostname.toLowerCase(),url=String(config().url||'').trim();let cloudHost='';try{cloudHost=new URL(url).hostname.toLowerCase();}catch(_){}return cloudHost===new URL(LIVE_SUPABASE_URL).hostname&&host!=='spaced-repetition-tracker-delta.vercel.app'&&host!=='kkmalithmalshan2000-png.github.io';}
 function previewCloudBlockedMessage(){status('Preview · cloud sync disabled');say('Cloud sync is disabled on this preview/local copy to protect real cloud data. Nexus still works offline. To test cloud sync, configure a separate Supabase test project on this device.');}
-let client=null,session=null,syncing=false,syncingEpoch=null,ready=false,deletingAccount=false,deletionServiceCheckedUser=null,deletionServiceAvailable=false,timer=null,retryTimer=null,retryAttempt=0,lastRemoteStamp=null,lastRemoteStorageMode='legacy',supabaseLoadPromise=null,pendingSync=false,lastUserId=null,initializing=false,initializingUserId=null,queuedSession=null,hasQueuedSession=false,sessionEpoch=0,sessionOwnerId=null,sessionAbortController=typeof AbortController==='function'?new AbortController():null,activeInitializationScope=null,activeUploadScope=null,connectAttemptId=0;
+let client=null,session=null,syncing=false,syncingEpoch=null,ready=false,deletingAccount=false,deletionServiceCheckedUser=null,deletionServiceAvailable=false,timer=null,retryTimer=null,retryAttempt=0,lastRemoteStamp=null,lastRemoteStorageMode='legacy',supabaseLoadPromise=null,pendingSync=false,lastUserId=null,initializing=false,initializingUserId=null,queuedSession=null,hasQueuedSession=false,sessionEpoch=0,sessionOwnerId=null,sessionAbortController=typeof AbortController==='function'?new AbortController():null,activeInitializationScope=null,activeUploadScope=null,connectAttemptId=0,authSessionVerificationPending=false,authSessionVerificationAttempt=0,authSessionVerificationTimer=null;
 function normalizeSyncUiText(value){
  return String(value==null?'':value)
   .replace(/\\n/g,'\n')
@@ -370,6 +370,7 @@ function scheduleDeltaRemotePoll(){
 }
 function resumeAfterConnectivity(){
  if(isUnsafeCloudOrigin()||(typeof navigator!=='undefined'&&!navigator.onLine))return;
+ if(authSessionVerificationPending){verifyCurrentAuthSessionAfterMismatch();return;}
  if(initializing)return;
  if(offlineReconnectRequired){
   offlineReconnectRequired=false;
@@ -1897,7 +1898,7 @@ async function tryProductionDeltaAfterVerifiedSnapshot(ownerId,signal,triggerRea
 }
 
 async function upload(){
- if(deletingAccount||!localQueueHealthy||!client||!session||!ready)return false;
+ if(authSessionVerificationPending||deletingAccount||!localQueueHealthy||!client||!session||!ready)return false;
  const uploadUserId=session.user.id,uploadEpoch=sessionEpoch;
  if(syncing&&syncingEpoch===uploadEpoch){pendingSync=true;return false;}
  async function assertUploadOwner(){await assertActiveUser(uploadUserId,uploadEpoch);if(localStorage.getItem(OWNER_KEY)!==uploadUserId)throw syncCancelledError('The local workspace owner changed during sync.');}
@@ -2165,7 +2166,7 @@ function recordWorkspaceSave(payload,reason){
   console.error('Nexus could not queue the latest local workspace safely',e);
  }
 }
-function schedule(){if(deletingAccount||!localQueueHealthy||!client||!session||!ready||(typeof navigator!=='undefined'&&!navigator.onLine))return;clearTimeout(timer);timer=setTimeout(()=>{if(syncing){pendingSync=true;return;}upload();},650);}
+function schedule(){if(authSessionVerificationPending||deletingAccount||!localQueueHealthy||!client||!session||!ready||(typeof navigator!=='undefined'&&!navigator.onLine))return;clearTimeout(timer);timer=setTimeout(()=>{if(syncing){pendingSync=true;return;}upload();},650);}
 function createSafeAuthStorage(storage){
   // A literal "undefined" or other invalid value in Supabase's persisted
   // session key can make auth initialization throw before account sync starts.
@@ -2183,6 +2184,52 @@ function createSafeAuthStorage(storage){
    setItem(key,value){return storage.setItem(key,value);},
    removeItem(key){return storage.removeItem(key);}
   };
+}
+function clearAuthSessionVerification(){
+ authSessionVerificationPending=false;authSessionVerificationAttempt++;
+ if(authSessionVerificationTimer){clearTimeout(authSessionVerificationTimer);authSessionVerificationTimer=null;}
+}
+function verifyCurrentAuthSessionAfterMismatch(){
+ if(!authSessionVerificationPending||!client||!client.auth||typeof client.auth.getSession!=='function')return;
+ if(authSessionVerificationTimer){clearTimeout(authSessionVerificationTimer);authSessionVerificationTimer=null;}
+ const attempt=++authSessionVerificationAttempt,expectedEpoch=sessionEpoch;
+ authSessionVerificationTimer=setTimeout(async()=>{
+  authSessionVerificationTimer=null;
+  if(attempt!==authSessionVerificationAttempt||expectedEpoch!==sessionEpoch||!authSessionVerificationPending)return;
+  try{
+   // Run after the Supabase auth callback has returned; awaiting getSession inside
+   // onAuthStateChange can deadlock the client's auth-state lock.
+   const result=await client.auth.getSession();
+   if(attempt!==authSessionVerificationAttempt||expectedEpoch!==sessionEpoch||!authSessionVerificationPending)return;
+   if(result&&result.error)throw result.error;
+   const verifiedSession=result&&result.data&&result.data.session||null;
+   const verifiedUserId=verifiedSession&&verifiedSession.user&&verifiedSession.user.id||null;
+   if(verifiedUserId===sessionOwnerId){
+    clearAuthSessionVerification();
+    session=verifiedSession;setControls();
+    if(ready&&localStorage.getItem(OWNER_KEY)===verifiedUserId)schedule();
+    return;
+   }
+   clearAuthSessionVerification();
+   session=verifiedSession;rotateSessionContext(verifiedSession);
+   if(verifiedSession){await initializeSession(verifiedSession);return;}
+   ready=false;hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();clearTimeout(timer);clearRetry();
+   status('Not signed in · offline ready');
+   say('The current sign-in session is no longer active. Your local workspace remains stored on this device. Sign in again to verify the account before syncing.');
+   setControls();
+  }catch(error){
+   if(attempt!==authSessionVerificationAttempt||expectedEpoch!==sessionEpoch||!authSessionVerificationPending)return;
+   // Keep the cached account workspace available, but freeze every cloud write
+   // until an authoritative session read succeeds. Retry on reconnect/focus and
+   // at a slow bounded interval; never launch a full workspace initialization here.
+   status('Account verification delayed');
+   say('Nexus received an account-session change it could not yet verify. Your current local workspace remains available and cloud writes are paused until account verification succeeds.');
+   authSessionVerificationTimer=setTimeout(()=>{
+    authSessionVerificationTimer=null;verifyCurrentAuthSessionAfterMismatch();
+   },15000);
+   console.warn('Nexus could not immediately reconcile an auth-session notification.',error);
+  }
+ },0);
 }
 function authStateEventBelongsToCurrentOwner(event,nextSession){
  // Supabase TOKEN_REFRESHED and USER_UPDATED events describe the current
@@ -2206,15 +2253,22 @@ async function ensureClient(){
   client=window.supabase.createClient(c.url,c.key,clientOptions);
   client.auth.onAuthStateChange((event,newSession)=>{
    if(!authStateEventBelongsToCurrentOwner(event,newSession)){
-    // A late refresh/profile notification from the outgoing account is not an
-    // identity transition. Ignore it before it can rotate the epoch, abort the
-    // returning owner's sync, or synchronously re-lock the verified workspace.
+    // This notification may be stale, or another tab may have changed the real
+    // auth session. Pause writes and verify getSession after this callback returns;
+    // only a confirmed identity change is allowed to rotate and lock the workspace.
     syncDiag('auth-event',diagnosticWorkspace(),{event,hasSession:!!(newSession&&newSession.user),ownerPresent:!!localStorage.getItem(OWNER_KEY)});
+    authSessionVerificationPending=true;
+    status('Account verification delayed');
+    say('Checking the current account session before resuming cloud sync. Your verified local workspace remains available.');
+    verifyCurrentAuthSessionAfterMismatch();
     return;
    }
    session=newSession||null;rotateSessionContext(session);
    syncDiag('auth-event',diagnosticWorkspace(),{event,hasSession:!!(newSession&&newSession.user),ownerPresent:!!localStorage.getItem(OWNER_KEY)});
-   if(event==='TOKEN_REFRESHED'||event==='USER_UPDATED'){session=newSession;setControls();return;}
+   if(event==='TOKEN_REFRESHED'||event==='USER_UPDATED'){
+    if(authSessionVerificationPending&&newSession&&newSession.user&&newSession.user.id===sessionOwnerId)clearAuthSessionVerification();
+    session=newSession;setControls();if(ready)schedule();return;
+   }
    if(event==='SIGNED_OUT'){
     session=null;ready=false;hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();
     deletionServiceCheckedUser=null;deletionServiceAvailable=false;clearTimeout(timer);clearRetry();
@@ -2260,6 +2314,7 @@ function lockWorkspaceBeforeAccountChange(){
 function rotateSessionContext(nextSession){
  const nextUserId=nextSession&&nextSession.user&&nextSession.user.id||null;
  if(nextUserId===sessionOwnerId&&!(sessionAbortController&&sessionAbortController.signal.aborted))return sessionEpoch;
+ clearAuthSessionVerification();
  lockWorkspaceBeforeAccountChange();
  sessionEpoch++;sessionOwnerId=nextUserId;
  if(sessionAbortController&&!sessionAbortController.signal.aborted)sessionAbortController.abort();
