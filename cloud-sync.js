@@ -2264,10 +2264,13 @@ async function ensureClient(){
     verifyCurrentAuthSessionAfterMismatch();
     return;
    }
+   // The owner predicate above has already confirmed this event belongs to
+   // the active workspace. It can therefore settle any pending cross-tab
+   // verification without waiting for the fallback getSession timer.
+   if(authSessionVerificationPending)clearAuthSessionVerification();
    session=newSession||null;rotateSessionContext(session);
    syncDiag('auth-event',diagnosticWorkspace(),{event,hasSession:!!(newSession&&newSession.user),ownerPresent:!!localStorage.getItem(OWNER_KEY)});
    if(event==='TOKEN_REFRESHED'||event==='USER_UPDATED'){
-    if(authSessionVerificationPending&&newSession&&newSession.user&&newSession.user.id===sessionOwnerId)clearAuthSessionVerification();
     session=newSession;setControls();if(ready)schedule();return;
    }
    if(event==='SIGNED_OUT'){
