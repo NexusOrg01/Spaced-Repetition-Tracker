@@ -254,7 +254,7 @@ assert.equal(accountLockRoot.dataset.workspaceAuth, 'ready',
 // session after A→B→A. It must not be treated as an identity transition: the old
 // listener rotated the session epoch and synchronously displayed the isolation
 // lock even though the returning owner's verified cache and sync were active.
-const authGuardStart = source.indexOf('function authStateEventBelongsToCurrentOwner(');
+const authGuardStart = source.indexOf('function clearAuthSessionVerification(');
 const authGuardEnd = source.indexOf('async function ensureClient()', authGuardStart);
 assert.ok(authGuardStart >= 0 && authGuardEnd > authGuardStart,
   'auth refresh ownership and queued initialization epoch guards must be available');
