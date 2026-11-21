@@ -2232,11 +2232,12 @@ function verifyCurrentAuthSessionAfterMismatch(){
  },0);
 }
 function authStateEventBelongsToCurrentOwner(event,nextSession){
- // Supabase TOKEN_REFRESHED and USER_UPDATED events describe the current
- // session; unlike SIGNED_IN they must never switch workspace ownership.
- if(event!=='TOKEN_REFRESHED'&&event!=='USER_UPDATED')return true;
+ // Every event is only a notification. If its user differs from the active
+ // workspace owner, verify auth.getSession() after the callback returns before
+ // assigning session state or rotating the workspace lock. This also covers
+ // delayed SIGNED_IN / INITIAL_SESSION events from an outgoing browser tab.
  const incomingUserId=nextSession&&nextSession.user&&nextSession.user.id||null;
- return !!incomingUserId&&incomingUserId===sessionOwnerId;
+ return incomingUserId===sessionOwnerId;
 }
 function authInitializationCallbackIsCurrent(userId,expectedEpoch){
  return !!userId&&sessionEpoch===expectedEpoch&&sessionOwnerId===userId&&
