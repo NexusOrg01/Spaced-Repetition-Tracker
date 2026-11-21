@@ -1416,7 +1416,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    }catch(_){return false;}
   });
   hostedQaGate=window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA===true&&
-   window.NEXUS_ENTITY_DELTA_SYNC_QA_REF==='fix/dla04-entity-projection-guard'&&
+   window.NEXUS_ENTITY_DELTA_SYNC_QA_REF==='fix/sync-account-handoff-reliability'&&
    config().url==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&
    qaProject.origin==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&
    exactQaOriginMatches;
@@ -1447,7 +1447,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   );
   await assertActiveUser(ownerId,operationEpoch);
   let remoteMode=stateRead.data&&stateRead.data.mode||'';
-  if(productionGate&&!(action&&action.downgrade===true)&&remoteMode!=='delta'&&
+  if((productionGate||hostedQaGate)&&!(action&&action.downgrade===true)&&remoteMode!=='delta'&&
      !productionDeltaIneligibleOwners.has(ownerId)){
    // Only owners with an existing cloud snapshot are candidates for the
    // authenticated enable RPC. A first-time workspace still follows the
@@ -2393,7 +2393,7 @@ async function downgradeEntityDelta(){
 
 function hostedQaReplayGateOpen(){
  if(window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA!==true||
-    window.NEXUS_ENTITY_DELTA_SYNC_QA_REF!=='fix/dla04-entity-projection-guard'||
+    window.NEXUS_ENTITY_DELTA_SYNC_QA_REF!=='fix/sync-account-handoff-reliability'||
     !location||location.protocol!=='https:'||config().url!=='https://xuwfzibxhxzxxupprxsq.supabase.co')return false;
  const origins=[window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN,window.NEXUS_ENTITY_DELTA_SYNC_QA_BRANCH_ORIGIN];
  return origins.some(value=>{
