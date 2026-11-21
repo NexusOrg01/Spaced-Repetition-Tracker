@@ -278,8 +278,17 @@ assert.equal(authGuardSandbox.authStateEventBelongsToCurrentOwner(
   'TOKEN_REFRESHED', { user: { id: 'account-A' } }), true,
   'a token refresh for the active owner must still be accepted');
 assert.equal(authGuardSandbox.authStateEventBelongsToCurrentOwner(
-  'SIGNED_IN', { user: { id: 'account-B' } }), true,
-  'a genuine sign-in remains an authoritative account identity transition');
+  'SIGNED_IN', { user: { id: 'account-B' } }), false,
+  'even a delayed sign-in for another owner must be verified against the current auth session');
+assert.equal(authGuardSandbox.authStateEventBelongsToCurrentOwner(
+  'INITIAL_SESSION', { user: { id: 'account-B' } }), false,
+  'a delayed initial-session event for another owner must not rotate the active workspace');
+assert.equal(authGuardSandbox.authStateEventBelongsToCurrentOwner(
+  'SIGNED_OUT', null), false,
+  'a sign-out notification must be reconciled when it conflicts with the active owner');
+assert.equal(authGuardSandbox.authStateEventBelongsToCurrentOwner(
+  'SIGNED_IN', { user: { id: 'account-A' } }), true,
+  'a sign-in notification for the already active owner may proceed without relocking');
 assert.equal(authGuardSandbox.authInitializationCallbackIsCurrent('account-A', 12), true,
   'a queued initialization callback for the still-active session may proceed');
 assert.equal(authGuardSandbox.authInitializationCallbackIsCurrent('account-A', 11), false,
