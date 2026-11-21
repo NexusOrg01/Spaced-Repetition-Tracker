@@ -1447,6 +1447,8 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   );
   await assertActiveUser(ownerId,operationEpoch);
   let remoteMode=stateRead.data&&stateRead.data.mode||'';
+  if(remoteMode&&remoteMode!=='snapshot'&&remoteMode!=='delta')throw new Error(
+   'The remote workspace has an unsupported sync mode. The snapshot writer was not started.');
   if((productionGate||hostedQaGate)&&!(action&&action.downgrade===true)&&remoteMode!=='delta'&&
      !productionDeltaIneligibleOwners.has(ownerId)){
    // Only owners with an existing cloud snapshot are candidates for the
