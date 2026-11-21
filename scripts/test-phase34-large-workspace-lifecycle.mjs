@@ -1172,10 +1172,19 @@ try {
     typeof event.at === 'string' && event.at >= accountAReturnStartedIso &&
     event.ownerVerified === true
   ) || null;
-  const returnProjectionReuse = afterDeadline.slice().reverse().find(event =>
-    event.stage === 'projection-reuse' &&
+  const returnProjectionDeferred = afterDeadline.slice().reverse().find(event =>
+    event.stage === 'projection-deferred-to-upload' &&
     typeof event.at === 'string' && event.at >= accountAReturnStartedIso &&
     event.ownerVerified === true
+  ) || null;
+  const returnProjectionRebuild = afterDeadline.slice().reverse().find(event =>
+    event.stage === 'projection-rebuild' &&
+    typeof event.at === 'string' && event.at >= accountAReturnStartedIso
+  ) || null;
+  const returnDeltaSnapshotMode = afterDeadline.slice().reverse().find(event =>
+    event.stage === 'delta-sync-result' &&
+    typeof event.at === 'string' && event.at >= accountAReturnStartedIso &&
+    event.reason === 'server_snapshot_mode'
   ) || null;
   const returnWorkspaceSnapshotCurrent = afterDeadline.slice().reverse().find(event =>
     event.stage === 'workspace-snapshot-current' &&
@@ -1220,10 +1229,9 @@ try {
     'cloud-chunk-read',
     'cloud-read',
     'workspace-comparison',
-    'projection-readiness',
     'workspace-snapshot-current',
-    'projection-reuse',
-    'projection-rebuild',
+    'projection-deferred-to-upload',
+    'delta-sync-result',
     'initial-sync-verification'
   ];
   const phasesNotObservedByDeadline = expectedReturnPhases.filter(stage =>
@@ -1261,7 +1269,9 @@ try {
     returnSyncWallMs,
     projectionCheckStarted: phaseTimings.some(event => event.stage === 'projection-check-start'),
     projectionCompletedByDeadline: !!returnProjectionCompletion,
-    projectionReusedByDeadline: !!returnProjectionReuse,
+    projectionDeferredToUpload: !!returnProjectionDeferred,
+    projectionRebuiltByDeadline: !!returnProjectionRebuild,
+    remoteSnapshotModeConfirmed: !!returnDeltaSnapshotMode,
     projectionReadinessReason: phaseTimings.find(event => event.stage === 'projection-readiness')?.reason || null,
     workspaceSnapshotCurrent: returnWorkspaceSnapshotCurrent?.same ?? null,
     phasesNotObservedByDeadline,
@@ -1269,8 +1279,12 @@ try {
   };
   assert.ok(returnWorkspaceSnapshotCurrent && returnWorkspaceSnapshotCurrent.same === true,
     'A semantically unchanged IndexedDB-cached workspace must preserve its existing workspace revision.');
-  assert.ok(returnProjectionReuse,
-    'The returning owner’s valid IndexedDB entity projection must be reused, not rebuilt, before the 60-second deadline.');
+  assert.ok(returnProjectionDeferred,
+    'The snapshot-mode returning account must defer Delta-only projection work until the upload gate is checked.');
+  assert.ok(returnDeltaSnapshotMode,
+    'The returning account must confirm server snapshot mode before using the compatibility snapshot path.');
+  assert.equal(returnProjectionRebuild, null,
+    'A snapshot-mode account must not rebuild a Delta-only projection during A→B→A handoff.');
   assert.ok(returnCloudChunkRead && returnCloudRead,
     'The returning account must continue into a fresh, complete 26.9 MB cloud read after cached workspace reveal.');
   assert.equal(pageErrors.length, 0,
