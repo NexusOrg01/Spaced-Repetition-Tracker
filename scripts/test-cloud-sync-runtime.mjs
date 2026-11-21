@@ -247,6 +247,47 @@ assert.equal(rotationSandbox.rotateForTest({ user: { id: 'account-B' } }), 5,
 assert.equal(accountLockRoot.dataset.workspaceAuth, 'ready',
   'a same-owner auth refresh must not unnecessarily re-lock the active workspace');
 
+// A late token-refresh/profile event can still arrive for the outgoing auth
+// session after A→B→A. It must not be treated as an identity transition: the old
+// listener rotated the session epoch and synchronously displayed the isolation
+// lock even though the returning owner's verified cache and sync were active.
+const authGuardStart = source.indexOf('function authStateEventBelongsToCurrentOwner(');
+const authGuardEnd = source.indexOf('async function ensureClient()', authGuardStart);
+assert.ok(authGuardStart >= 0 && authGuardEnd > authGuardStart,
+  'auth refresh ownership and queued initialization epoch guards must be available');
+const authGuardSandbox = {
+  sessionOwnerId: 'account-A',
+  sessionEpoch: 12,
+  session: { user: { id: 'account-A' } }
+};
+vm.createContext(authGuardSandbox);
+vm.runInContext(source.slice(authGuardStart, authGuardEnd) +
+  '\\nglobalThis.authStateEventBelongsToCurrentOwner = authStateEventBelongsToCurrentOwner;' +
+  '\\nglobalThis.authInitializationCallbackIsCurrent = authInitializationCallbackIsCurrent;',
+  authGuardSandbox, { filename: 'stale-account-auth-event-guard.js' });
+assert.equal(authGuardSandbox.authStateEventBelongsToCurrentOwner(
+  'TOKEN_REFRESHED', { user: { id: 'account-B' } }), false,
+  'a late refresh for outgoing Account B must be rejected while Account A owns the active session');
+assert.equal(authGuardSandbox.authStateEventBelongsToCurrentOwner(
+  'USER_UPDATED', { user: { id: 'account-B' } }), false,
+  'a late profile update for outgoing Account B must not rotate Account A');
+assert.equal(authGuardSandbox.authStateEventBelongsToCurrentOwner(
+  'TOKEN_REFRESHED', { user: { id: 'account-A' } }), true,
+  'a token refresh for the active owner must still be accepted');
+assert.equal(authGuardSandbox.authStateEventBelongsToCurrentOwner(
+  'SIGNED_IN', { user: { id: 'account-B' } }), true,
+  'a genuine sign-in remains an authoritative account identity transition');
+assert.equal(authGuardSandbox.authInitializationCallbackIsCurrent('account-A', 12), true,
+  'a queued initialization callback for the still-active session may proceed');
+assert.equal(authGuardSandbox.authInitializationCallbackIsCurrent('account-A', 11), false,
+  'a queued initialization callback from before the most recent account rotation must be inert');
+assert.match(source,
+  /client\\.auth\\.onAuthStateChange\\(\\(event,newSession\\)=>\\{\\s*if\\(!authStateEventBelongsToCurrentOwner\\(event,newSession\\)\\)\\{/,
+  'the actual Supabase listener must reject stale refreshes before assigning session or rotating the workspace lock');
+assert.match(source,
+  /const callbackEpoch=sessionEpoch;[\\s\\S]*?if\\(!authInitializationCallbackIsCurrent\\(uid,callbackEpoch\\)\\)return;/,
+  'the actual deferred sign-in initialization callback must be fenced by the epoch that scheduled it');
+
 const indexHtml = readFileSync(resolve(root, 'index.html'), 'utf8');
 assert.match(indexHtml,
   /html\[data-workspace-auth="pending"\] \.app\s*\{\s*visibility:\s*hidden\s*!important;/,
