@@ -191,7 +191,7 @@ assert.ok(syncDiagnosticSummary.includes('totalRecordCount') && syncDiagnosticSu
 assert.ok(cloudSync.includes('Enable sync diagnostics') && cloudSync.includes('Download sync diagnostics (safe summary)') &&
   cloudSync.includes('workspace-merge-normalize-error') && cloudSync.includes('workspace-merge-commit-error'),
   'users must be able to enable/download safe diagnostics and the reconciliation failure stages must be captured');
-assert.ok(cloudSync.includes('scheduleRetry();localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;return;'), 'transient merge-verification races must use bounded automatic retry');
+assert.ok(cloudSync.includes('preserveLocalWorkspaceAfterSyncFailure(newUserId') && cloudSync.includes('scheduleRetry();return ownerMatches;'), 'transient merge-verification races must keep the owner-verified workspace available and use bounded automatic retry');
 assert.ok(cloudSync.includes('sameWorkspace(remoteData,pendingForUser.payload)'), 'routine conflict detection must compare workspace contents, not exported-at metadata');
 assert.ok(cloudSync.includes('function nextCloudStamp(previous)') && cloudSync.includes('policy.nextRevisionStamp(previous)'), 'revision creation must prevent same-millisecond writes from reusing a compare-and-swap version');
 assert.ok(cloudSync.includes('reconcileOwnedWorkspace(newUserId,localPayload,remote,requestedEpoch)'), 'same-account stale workspace with no pending queue must load cloud or enter automatic merge, not the account-choice dialog');
