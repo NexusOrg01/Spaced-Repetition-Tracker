@@ -224,6 +224,7 @@ const rotationSandbox = {
   pendingSync: false,
   hostedDeltaPollingEnabled: true,
   clearDeltaRemotePoll() {},
+  clearAuthSessionVerification() {},
   ready: true,
   AbortController
 };
