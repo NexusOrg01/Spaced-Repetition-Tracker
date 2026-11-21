@@ -281,6 +281,57 @@ assert.equal(authGuardSandbox.authInitializationCallbackIsCurrent('account-A', 1
   'a queued initialization callback for the still-active session may proceed');
 assert.equal(authGuardSandbox.authInitializationCallbackIsCurrent('account-A', 11), false,
   'a queued initialization callback from before the most recent account rotation must be inert');
+// A mismatched refresh is not blindly accepted or discarded. It pauses cloud writes,
+// then checks the auth client's current session outside the auth callback. A stale
+// B notification must keep A open; a confirmed B session must still rotate and lock.
+async function runAuthSessionRecheck(verifiedUserId) {
+  let timerCallback = null, controlRefreshes = 0, schedules = 0,
+      rotations = 0, initializations = 0;
+  const sandbox = {
+    authSessionVerificationPending: true,
+    authSessionVerificationAttempt: 0,
+    authSessionVerificationTimer: null,
+    sessionEpoch: 12,
+    sessionOwnerId: 'account-A',
+    session: { user: { id: 'account-A' } },
+    client: { auth: { async getSession() {
+      return { data: { session: verifiedUserId ? { user: { id: verifiedUserId } } : null } };
+    } } },
+    ready: true,
+    localStorage: { getItem: () => 'account-A' },
+    setTimeout(callback) { timerCallback = callback; return 9; },
+    clearTimeout() {},
+    setControls() { controlRefreshes++; },
+    schedule() { schedules++; },
+    status() {},
+    say() {},
+    rotateSessionContext(next) { rotations++; sandbox.sessionOwnerId = next && next.user ? next.user.id : null; sandbox.sessionEpoch++; },
+    async initializeSession(next) { initializations++; sandbox.session = next; }
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(source.slice(authGuardStart, authGuardEnd) +
+    '\\nglobalThis.runAuthSessionRecheck = verifyCurrentAuthSessionAfterMismatch;',
+    sandbox, { filename: 'auth-session-reconciliation.js' });
+  sandbox.runAuthSessionRecheck();
+  assert.equal(typeof timerCallback, 'function',
+    'a mismatched auth refresh must defer session verification until after its callback returns');
+  await timerCallback();
+  return { sandbox, controlRefreshes, schedules, rotations, initializations };
+}
+const staleRefresh = await runAuthSessionRecheck('account-A');
+assert.equal(staleRefresh.rotations, 0,
+  'a delayed B refresh followed by authoritative A session must not rotate the workspace epoch');
+assert.equal(staleRefresh.initializations, 0,
+  'a stale B refresh must not restart Account A workspace initialization');
+assert.equal(staleRefresh.sandbox.authSessionVerificationPending, false,
+  'successful same-owner verification must release the temporary sync pause');
+assert.equal(staleRefresh.schedules, 1,
+  'successful same-owner verification must resume the existing sync coordinator');
+const confirmedAccountChange = await runAuthSessionRecheck('account-B');
+assert.equal(confirmedAccountChange.rotations, 1,
+  'a mismatched refresh confirmed by getSession as Account B must perform the real identity rotation');
+assert.equal(confirmedAccountChange.initializations, 1,
+  'a verified new owner must enter the normal owner-scoped initialization path');
 assert.match(source,
   /client\.auth\.onAuthStateChange\(\(event,newSession\)=>\{\s*if\(!authStateEventBelongsToCurrentOwner\(event,newSession\)\)\{/,
   'the actual Supabase listener must reject stale refreshes before assigning session or rotating the workspace lock');
