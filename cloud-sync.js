@@ -297,6 +297,10 @@ function normalizeSyncUiText(value){
   .replace(/\s*·\s*/g,' - ')
   .replace(/;/g,'.');
 }
+function isTransientInitializationStatus(value){
+ const normalized=normalizeSyncUiText(value).trim();
+ return /^(Loading account\.{3}|Checking local and cloud data\.{3}|Comparing local and cloud data\.{3}|Restoring account workspace\.{3})$/.test(normalized);
+}
 function setCloudStatus(value){
  const node=el('cloudStatus');if(!node)return;
  const text=normalizeSyncUiText(value);node.textContent=text;
@@ -982,7 +986,7 @@ function restoreMissingQueueBaseFromVerifiedRemote(queue,userId,pending,remote){
 function recoverStaleInitializationStatus(userId,expectedEpoch){
  if(!userId||sessionEpoch!==expectedEpoch||!session||!session.user||session.user.id!==userId)return false;
  const currentStatus=el('cloudStatus')?el('cloudStatus').textContent:'';
- if(!/^(Loading account…|Checking local and cloud data…|Comparing local and cloud data…|Restoring account workspace…)$/.test(currentStatus))return false;
+ if(!isTransientInitializationStatus(currentStatus))return false;
  const ownerMatches=localStorage.getItem(OWNER_KEY)===userId;
  if(ready&&ownerMatches){
   status('Sync pending');
@@ -1014,7 +1018,7 @@ async function initializeSession(s){
   if(activeInitializationScope!==initScope||sessionEpoch!==requestedEpoch||
      !session||!session.user||session.user.id!==requestedUserId)return;
   const currentStatus=el('cloudStatus')?el('cloudStatus').textContent:'';
-  if(!/^(Loading account…|Checking local and cloud data…|Comparing local and cloud data…|Restoring account workspace…)$/.test(currentStatus))return;
+  if(!isTransientInitializationStatus(currentStatus))return;
   if(ready&&localStorage.getItem(OWNER_KEY)===requestedUserId){
    status('Sync pending');
    say('The workspace is available, but account synchronization is taking longer than expected. Nexus is continuing verification. Keep this browser’s data.');

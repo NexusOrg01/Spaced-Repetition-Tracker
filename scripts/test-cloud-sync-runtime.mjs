@@ -23,50 +23,124 @@ const commercePack = commerceCatalogue.packs.find(pack => pack.id === 'sl-al-com
 const workspaceMerge = require('../workspace-sync-merge.js');
 const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
 
-// A completed/coalesced account initialization must never leave a transient
-// loading label behind. The fallback must not claim Synced without cloud proof.
+// The UI normalizer rewrites the Unicode ellipsis before putting status text
+// into the DOM. Recovery and the 30-second watchdog must match the displayed
+// normalized string, not the pre-normalized source value.
+const statusUiStart = source.indexOf('function normalizeSyncUiText(');
+const statusUiEnd = source.indexOf('\nconst el=id=>', statusUiStart);
+assert.ok(statusUiStart >= 0 && statusUiEnd > statusUiStart,
+  'the real UI normalizer and status setter must remain available for regression testing');
 const statusRecoveryStart = source.indexOf('function recoverStaleInitializationStatus(');
 const statusRecoveryEnd = source.indexOf('async function initializeSession(', statusRecoveryStart);
 assert.ok(statusRecoveryStart >= 0 && statusRecoveryEnd > statusRecoveryStart,
   'account initialization must include a terminal-status recovery guard');
+const watchdogStart = source.indexOf('const statusWatchdog=setTimeout(()=>{', statusRecoveryEnd);
+const watchdogMarker = '},30000);';
+const watchdogEnd = source.indexOf(watchdogMarker, watchdogStart);
+assert.ok(watchdogStart >= 0 && watchdogEnd > watchdogStart,
+  'account initialization must retain its 30-second loading-state watchdog');
+
 const statusRecoverySandbox = {
   OWNER_KEY: 'nexus.cloud.last-user-id',
   sessionEpoch: 12,
   session: { user: { id: 'account-A' } },
+  requestedUserId: 'account-A',
+  requestedEpoch: 12,
+  initScope: { id: 'active-initialization' },
+  activeInitializationScope: null,
   ready: true,
-  statusValue: 'Loading account…',
+  statusNode: {
+    textContent: '',
+    attributes: {},
+    setAttribute(name, value) { this.attributes[name] = value; }
+  },
+  get statusValue() { return this.statusNode.textContent; },
   retryCalls: 0,
+  watchdogDelay: null,
+  watchdogCallback: null,
   localStorage: { getItem: key => key === 'nexus.cloud.last-user-id' ? 'account-A' : null },
-  el: id => id === 'cloudStatus' ? { get textContent() { return statusRecoverySandbox.statusValue; } } : null,
-  status: value => { statusRecoverySandbox.statusValue = value; },
+  el: id => id === 'cloudStatus' ? statusRecoverySandbox.statusNode : null,
+  status: value => statusRecoverySandbox.setCloudStatus(value),
   say: () => {},
   syncDiag: () => {},
   diagnosticWorkspace: () => ({}),
-  scheduleRetry: () => { statusRecoverySandbox.retryCalls++; }
+  scheduleRetry: () => { statusRecoverySandbox.retryCalls++; },
+  setTimeout: (callback, delay) => {
+    statusRecoverySandbox.watchdogDelay = delay;
+    statusRecoverySandbox.watchdogCallback = callback;
+    return delay;
+  }
 };
+statusRecoverySandbox.activeInitializationScope = statusRecoverySandbox.initScope;
 vm.createContext(statusRecoverySandbox);
+vm.runInContext(source.slice(statusUiStart, statusUiEnd) +
+  '\nglobalThis.setCloudStatus = setCloudStatus;' +
+  '\nglobalThis.isTransientInitializationStatus = isTransientInitializationStatus;',
+  statusRecoverySandbox, { filename: 'normalized-sync-status.js' });
 vm.runInContext(source.slice(statusRecoveryStart, statusRecoveryEnd) +
   '\nglobalThis.recoverStatus = recoverStaleInitializationStatus;',
   statusRecoverySandbox, { filename: 'initialization-status-recovery.js' });
+vm.runInContext(source.slice(watchdogStart, watchdogEnd + watchdogMarker.length) +
+  '\nglobalThis.runStatusWatchdog = statusWatchdog;',
+  statusRecoverySandbox, { filename: 'initialization-status-watchdog.js' });
+
+for (const label of [
+  'Loading account…',
+  'Checking local and cloud data…',
+  'Comparing local and cloud data…',
+  'Restoring account workspace…'
+]) {
+  statusRecoverySandbox.setCloudStatus(label);
+  assert.equal(statusRecoverySandbox.statusValue, label.replace(/…/g, '...'),
+    'setCloudStatus must expose the normalized punctuation in the real UI node');
+  assert.equal(statusRecoverySandbox.isTransientInitializationStatus(statusRecoverySandbox.statusValue), true,
+    'the canonical status helper must recognize every normalized loading label');
+}
+
+statusRecoverySandbox.setCloudStatus('Loading account…');
 assert.equal(statusRecoverySandbox.recoverStatus('account-A', 12), true);
 assert.equal(statusRecoverySandbox.statusValue, 'Sync pending',
   'a restored account with matching ownership must leave Loading and remain explicitly unverified');
 assert.equal(statusRecoverySandbox.retryCalls, 1,
-  'a restored account with pending verification must schedule a bounded reconnect retry');
-assert.equal(statusRecoverySandbox.statusValue === 'Synced', false,
+  'a restored account with pending verification must schedule a reconnect retry');
+assert.notEqual(statusRecoverySandbox.statusValue, 'Synced',
   'the status fallback must never claim cloud verification without a successful sync');
-statusRecoverySandbox.statusValue = 'Loading account…';
+
+statusRecoverySandbox.setCloudStatus('Restoring account workspace…');
 statusRecoverySandbox.ready = false;
 assert.equal(statusRecoverySandbox.recoverStatus('account-A', 12), true);
 assert.equal(statusRecoverySandbox.statusValue, 'Account verification delayed',
   'an account that is not ready must expose a truthful verification delay');
 assert.equal(statusRecoverySandbox.retryCalls, 2,
-  'an unready account must also schedule a bounded reconnect retry');
-statusRecoverySandbox.statusValue = 'Loading account…';
+  'an unready account must also schedule a reconnect retry');
+statusRecoverySandbox.setCloudStatus('Loading account…');
 assert.equal(statusRecoverySandbox.recoverStatus('account-A', 11), false,
   'a stale initialization must not alter the newer session status');
-assert.match(source, /const statusWatchdog=setTimeout\([\s\S]*?\},30000\)/,
-  'long-running account initialization must replace an indefinite loading label with a progress warning');
+
+statusRecoverySandbox.ready = true;
+statusRecoverySandbox.setCloudStatus('Checking local and cloud data…');
+assert.equal(statusRecoverySandbox.watchdogDelay, 30000,
+  'the real initialization watchdog must remain set to the 30-second deadline');
+statusRecoverySandbox.watchdogCallback();
+assert.equal(statusRecoverySandbox.statusValue, 'Sync pending',
+  'the 30-second watchdog must recognize the normalized loading label and leave it pending');
+assert.equal(statusRecoverySandbox.retryCalls, 3,
+  'the watchdog must schedule retry after the pending status transition');
+
+statusRecoverySandbox.ready = false;
+statusRecoverySandbox.setCloudStatus('Restoring account workspace…');
+statusRecoverySandbox.watchdogCallback();
+assert.equal(statusRecoverySandbox.statusValue, 'Account verification delayed',
+  'the 30-second watchdog must show a verification delay when no verified local workspace is ready');
+assert.equal(statusRecoverySandbox.retryCalls, 4,
+  'the delayed watchdog branch must schedule retry');
+
+statusRecoverySandbox.setCloudStatus('Synced');
+statusRecoverySandbox.watchdogCallback();
+assert.equal(statusRecoverySandbox.statusValue, 'Synced',
+  'the watchdog must leave an already terminal verified status unchanged');
+assert.equal(statusRecoverySandbox.retryCalls, 4,
+  'the watchdog must not schedule another retry after the status is already terminal');
 
 // Account ownership changes must synchronously hide the prior workspace before the
 // browser can paint while the MutationObserver refreshes the visible isolation card.
