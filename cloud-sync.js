@@ -115,7 +115,8 @@ function syncDiagSummary(payload){
 const SYNC_DIAG_STAGES=new Set([
  'auth-event','baseline-restored-from-remote','cloud-chunk-read-error','cloud-read','cloud-read-error','cloud-write-complete','cloud-write-error',
  'curriculum-install-save-requested','delta-auto-downgrade-result','delta-snapshot-downgrade-result','delta-sync-result','delta-recovery-verification','diagnostics-enabled','entity-projection-rebuild','entity-sync-result','initialize-after-cloud-read',
- 'initialize-error','initialize-finished','initialize-local-fallback','initialize-settled','initialize-start','initialize-status-watchdog','initialize-stale-status-recovered','local-save-queue-error',
+ 'initialize-error','initialize-finished','initialize-local-fallback','initialize-settled','initialize-start','initialize-status-watchdog','initialize-stale-status-recovered',
+ 'account-handoff-checkpoint-failed','account-handoff-outgoing-checkpoint','online-account-workspace-restored','local-save-queue-error',
  'local-save-queued','local-storage-flush','offline-account-base-unavailable','offline-account-pending-unavailable',
  'offline-account-queue-rebuilt','offline-account-recovery-error','offline-account-workspace-restored',
  'offline-account-workspace-unavailable','offline-queue-rebuilt-after-size-limit','snapshot-recovery-complete',
@@ -1034,7 +1035,7 @@ async function initializeSession(s){
   const newSession=requestedSession,newUserId=requestedUserId;
   ready=false;offlineReconnectRequired=false;lastRemoteStamp=null;clearTimeout(timer);setControls();
   if(!newSession){status(client?'Not signed in · offline ready':'Offline ready');say('You can continue studying offline. Your local data remains on this device when you sign out.');return;}
-  status('Loading account…');await assertActiveUser(newUserId,requestedEpoch);let owner=localStorage.getItem(OWNER_KEY)||'';
+  status('Loading account…');await assertActiveUser(newUserId,requestedEpoch);let owner=localStorage.getItem(OWNER_KEY)||'';let previousAccountHasChanges=null,previousAccountCheckpointed=false;
 if(typeof navigator!=='undefined'&&navigator.onLine===false){
   // Do not wait for a remote snapshot read during a cold offline start. Resolve
   // only this authenticated owner's existing local workspace and keep account
@@ -1062,12 +1063,78 @@ if(typeof navigator!=='undefined'&&navigator.onLine===false){
   setControls();
   return;
 }
+if(owner&&owner!==newUserId){
+  // Preserve the outgoing account before any network wait, then reveal only a
+  // cache that is independently keyed to and verified for the incoming owner.
+  const previousOwner=owner,previousPayload=snapshot(),checkpointStartedAt=Date.now();
+  try{
+   await initScope.race(flushDurableLocalWrites(initScope.signal),'outgoing account durable checkpoint');
+   previousAccountHasChanges=await initScope.race(
+    hasUnassignedWorkspaceChanges(previousOwner,newUserId,previousPayload),
+    'previous account workspace comparison');
+   if(previousAccountHasChanges){
+    await initScope.race(
+     checkpointPreviousAccountWorkspace(previousOwner,newUserId,previousPayload),
+     'previous account checkpoint');
+    previousAccountCheckpointed=true;
+   }
+   await assertActiveUser(newUserId,requestedEpoch);
+   syncDiag('account-handoff-outgoing-checkpoint',null,{
+    durationMs:Date.now()-checkpointStartedAt,
+    pendingPreserved:!!(window.NexusOfflineSyncQueue&&window.NexusOfflineSyncQueue.getPending(localStorage,previousOwner)),
+    changedSinceVerifiedBase:!!previousAccountHasChanges
+   });
+  }catch(checkpointError){
+   if(checkpointError&&checkpointError.code==='NEXUS_SYNC_CANCELLED')throw checkpointError;
+   syncDiag('account-handoff-checkpoint-failed',null,{
+    durationMs:Date.now()-checkpointStartedAt,
+    errorCategory:syncDiagErrorCategory(checkpointError)
+   });
+   const blocked=new Error('The previous account workspace could not be safely checkpointed. The target account remains hidden.');
+   blocked.code='NEXUS_ACCOUNT_HANDOFF_CHECKPOINT_FAILED';
+   blocked.cause=checkpointError;
+   throw blocked;
+  }
+
+  const cacheStartedAt=Date.now();
+  let cachedSource=null;
+  try{
+   cachedSource=await initScope.race(
+    recoverCachedWorkspaceForOfflineAccount(newUserId,initScope.signal),
+    'incoming account cached workspace restore');
+  }catch(cacheError){
+   if(cacheError&&cacheError.code==='NEXUS_SYNC_CANCELLED')throw cacheError;
+   // A cache read failure does not authorize falling back to the outgoing
+   // account's shared local snapshot. Continue only with the incoming cloud read.
+   syncDiag('offline-account-recovery-error',null,{
+    source:'online-account-handoff',
+    errorCategory:syncDiagErrorCategory(cacheError)
+   });
+  }
+  await assertActiveUser(newUserId,requestedEpoch);
+  if(cachedSource){
+   owner=newUserId;
+   ready=true;
+   lastUserId=newUserId;
+   status('Sync pending');
+   say('Loaded this account’s saved workspace. Cloud comparison and synchronization are continuing; keep this device’s data until verification finishes.');
+   syncDiag('online-account-workspace-restored',diagnosticWorkspace(),{
+    source:cachedSource,
+    durationMs:Date.now()-cacheStartedAt,
+    ownerVerified:true,
+    cloudVerificationPending:true
+   });
+   // The account/isolation observer sees the new account title only after the
+   // owner marker has been committed by applyWorkspaceSnapshot().
+   setControls();
+  }
+}
 const remote=await initScope.race(fetchRemote(newUserId,null,initScope.signal),'initial workspace verification');syncDiag('initialize-after-cloud-read',remote&&remote.payload,{remoteHasPayload:!!(remote&&remote.payload)});await assertActiveUser(newUserId,requestedEpoch);status('Checking local and cloud data…');
 // Capture the local workspace once, after the asynchronous cloud read. This includes
 // any offline edits made while the request was in flight without retaining a stale
 // deep clone and then cloning/comparing the complete large workspace a second time.
 let localPayload=snapshot();let deltaSyncAttemptedDuringInitialization=false;owner=localStorage.getItem(OWNER_KEY)||'';
-if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,remote&&remote.updated_at||null);let pendingForUser=window.NexusOfflineSyncQueue?window.NexusOfflineSyncQueue.getPending(localStorage,newUserId):null;const restoredQueueBase=restoreMissingQueueBaseFromVerifiedRemote(window.NexusOfflineSyncQueue,newUserId,pendingForUser,remote);if(restoredQueueBase)syncDiag('baseline-restored-from-remote',null,{baselineRestored:true,reason:'queued-base-version-matches-remote-snapshot'});let adoptedUnassignedLocalWorkspace=false;if(!owner&&hasLocalWork(localPayload)&&!pendingForUser&&!(remote&&remote.payload)){const accountPayload={state:emptyState(),featureState:{}};const mergedState=mergeState(localPayload.state,accountPayload.state);const mergedFeatures=window.NexusMergeFeatureState(localPayload.featureState||{},accountPayload.featureState||{},{});await applyWorkspaceSnapshot(mergedState,mergedFeatures,newUserId);const baseVersion=pendingForUser?(pendingForUser.baseServerVersion||null):(remote&&remote.updated_at||null);if(!window.NexusOfflineSyncQueue||typeof window.NexusOfflineSyncQueue.rebase!=='function')throw new Error('Safe account-bound offline sync queue is unavailable. The guest workspace remains saved locally.');window.NexusOfflineSyncQueue.rebase(localStorage,newUserId,snapshot(),baseVersion,'merge-unassigned-local-workspace');pendingForUser=window.NexusOfflineSyncQueue.getPending(localStorage,newUserId);owner=newUserId;localPayload=snapshot();adoptedUnassignedLocalWorkspace=true;}let previousAccountHasChanges=null;if(pendingForUser&&owner!==newUserId){previousAccountHasChanges=await initScope.race(hasUnassignedWorkspaceChanges(owner,newUserId,localPayload),'previous account workspace comparison');}if(pendingForUser&&owner!==newUserId&&!previousAccountHasChanges){await applyWorkspaceSnapshot(normalizeState(pendingForUser.payload.state),window.NexusNormalizeFeatureState(pendingForUser.payload.featureState||{}),newUserId);owner=newUserId;localPayload=snapshot();}if(pendingForUser&&remote&&remote.payload&&(await sameWorkspace(remote.payload,pendingForUser.payload))&&!hasMissingBaselineCurriculumIntent(newUserId,pendingForUser.payload,remote.payload)){window.NexusOfflineSyncQueue.rememberBase(localStorage,newUserId,remote.payload,remote.updated_at||null);window.NexusOfflineSyncQueue.acknowledge(localStorage,newUserId,pendingForUser.operationId,pendingForUser.baseServerVersion,remote.updated_at);pendingForUser=null;}let unassignedPendingConflict=false;
+if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,remote&&remote.updated_at||null);let pendingForUser=window.NexusOfflineSyncQueue?window.NexusOfflineSyncQueue.getPending(localStorage,newUserId):null;const restoredQueueBase=restoreMissingQueueBaseFromVerifiedRemote(window.NexusOfflineSyncQueue,newUserId,pendingForUser,remote);if(restoredQueueBase)syncDiag('baseline-restored-from-remote',null,{baselineRestored:true,reason:'queued-base-version-matches-remote-snapshot'});let adoptedUnassignedLocalWorkspace=false;if(!owner&&hasLocalWork(localPayload)&&!pendingForUser&&!(remote&&remote.payload)){const accountPayload={state:emptyState(),featureState:{}};const mergedState=mergeState(localPayload.state,accountPayload.state);const mergedFeatures=window.NexusMergeFeatureState(localPayload.featureState||{},accountPayload.featureState||{},{});await applyWorkspaceSnapshot(mergedState,mergedFeatures,newUserId);const baseVersion=pendingForUser?(pendingForUser.baseServerVersion||null):(remote&&remote.updated_at||null);if(!window.NexusOfflineSyncQueue||typeof window.NexusOfflineSyncQueue.rebase!=='function')throw new Error('Safe account-bound offline sync queue is unavailable. The guest workspace remains saved locally.');window.NexusOfflineSyncQueue.rebase(localStorage,newUserId,snapshot(),baseVersion,'merge-unassigned-local-workspace');pendingForUser=window.NexusOfflineSyncQueue.getPending(localStorage,newUserId);owner=newUserId;localPayload=snapshot();adoptedUnassignedLocalWorkspace=true;}if(pendingForUser&&owner!==newUserId&&previousAccountHasChanges===null){previousAccountHasChanges=await initScope.race(hasUnassignedWorkspaceChanges(owner,newUserId,localPayload),'previous account workspace comparison');}if(pendingForUser&&owner!==newUserId&&!previousAccountHasChanges){await applyWorkspaceSnapshot(normalizeState(pendingForUser.payload.state),window.NexusNormalizeFeatureState(pendingForUser.payload.featureState||{}),newUserId);owner=newUserId;localPayload=snapshot();}if(pendingForUser&&remote&&remote.payload&&(await sameWorkspace(remote.payload,pendingForUser.payload))&&!hasMissingBaselineCurriculumIntent(newUserId,pendingForUser.payload,remote.payload)){window.NexusOfflineSyncQueue.rememberBase(localStorage,newUserId,remote.payload,remote.updated_at||null);window.NexusOfflineSyncQueue.acknowledge(localStorage,newUserId,pendingForUser.operationId,pendingForUser.baseServerVersion,remote.updated_at);pendingForUser=null;}let unassignedPendingConflict=false;
 if(!owner&&pendingForUser&&hasLocalWork(localPayload)&&(!remote||!remote.payload||!(await sameWorkspace(remote.payload,pendingForUser.payload)))){
  const pendingPayload=normalizeWorkspacePayload(pendingForUser.payload);
  // Keep both offline copies in memory until the user chooses. mergeState and
@@ -1085,7 +1152,7 @@ if(!owner&&pendingForUser&&hasLocalWork(localPayload)&&(!remote||!remote.payload
  // must never be uploaded through the new session.
  const previousOwner=owner;
  if(previousAccountHasChanges===null)previousAccountHasChanges=await initScope.race(hasUnassignedWorkspaceChanges(previousOwner,newUserId,localPayload),'previous account workspace comparison');
- if(previousAccountHasChanges)await initScope.race(checkpointPreviousAccountWorkspace(previousOwner,newUserId,localPayload),'previous account checkpoint');
+ if(previousAccountHasChanges&&!previousAccountCheckpointed){await initScope.race(checkpointPreviousAccountWorkspace(previousOwner,newUserId,localPayload),'previous account checkpoint');previousAccountCheckpointed=true;}
  if(pendingForUser){
   // Restore only the target account's own pending snapshot, then reconcile it against
   // that account's current cloud revision. Do not run the generic cross-account choice.
@@ -1156,6 +1223,15 @@ if(ready&&remote&&remote.payload&&!deltaSyncAttemptedDuringInitialization){
 }
 if(ready){await flushDurableLocalWrites();status('Synced');}syncDiag('initialize-finished',diagnosticWorkspace(),{ready,remoteHadPayload:!!(remote&&remote.payload)});}catch(e){
  if(e&&e.code==='NEXUS_SYNC_CANCELLED')return;
+ if(e&&e.code==='NEXUS_ACCOUNT_HANDOFF_CHECKPOINT_FAILED'){
+  ready=false;
+  syncDiag('account-handoff-checkpoint-failed',null,{errorCategory:syncDiagErrorCategory(e.cause||e)});
+  status('Account handoff paused');
+  say('The previous account’s committed and pending changes could not be safely checkpointed. The target account was not loaded and remains hidden. Reconnect to retry; do not clear this browser’s data.');
+  console.error('Nexus account handoff checkpoint failed',e.cause||e);
+  scheduleRetry();
+  return;
+ }
  syncDiag('initialize-error',diagnosticWorkspace(),{errorCategory:syncDiagErrorCategory(e)});
  ready=false;
  // Initialization may have expired while a large comparison or storage operation

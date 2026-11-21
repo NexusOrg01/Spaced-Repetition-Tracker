@@ -1712,6 +1712,120 @@ for (const scenario of [
     'the lightweight committed-save hook must leave the already-committed queue payload intact');
 }
 
+// Online account handoff must reveal the incoming owner's queued workspace
+// before waiting on that owner's intentionally delayed remote snapshot read.
+{
+  if (queue.hasPending(storage, accountA.id)) queue.archive(storage, accountA.id, 'online-account-handoff-reset');
+  if (queue.hasPending(storage, accountB.id)) queue.archive(storage, accountB.id, 'online-account-handoff-reset');
+
+  const baseA = payloadFor('online-handoff-A-base');
+  const outgoingA = JSON.parse(JSON.stringify(baseA));
+  outgoingA.state.topics.push({
+    id: 'online-handoff-A-pending-topic', name: 'A pending local edit',
+    subjectId: outgoingA.state.subjects[0].id, custom: true
+  });
+  const stampA = '2026-11-21T03:10:00.000Z';
+  rows.set(accountA.id, { user_id: accountA.id, payload: baseA, updated_at: stampA });
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(outgoingA.state));
+  storage.setItem(FEATURE_KEY, JSON.stringify(outgoingA.featureState));
+  context.state = JSON.parse(JSON.stringify(outgoingA.state));
+  queue.rememberBase(storage, accountA.id,
+    { state: baseA.state, featureState: baseA.featureState }, stampA);
+  queue.rememberStamp(storage, accountA.id, stampA);
+  queue.commitWorkspace(storage, [
+    { key: STATE_KEY, value: JSON.stringify(outgoingA.state) },
+    { key: FEATURE_KEY, value: JSON.stringify(outgoingA.featureState) }
+  ], outgoingA, { baseServerVersion: stampA });
+
+  const baseB = payloadFor('online-handoff-B-base');
+  const pendingB = JSON.parse(JSON.stringify(baseB));
+  pendingB.state.topics.push({
+    id: 'online-handoff-B-pending-topic', name: 'B pending local edit',
+    subjectId: pendingB.state.subjects[0].id, custom: true
+  });
+  const stampB = '2026-11-21T03:11:00.000Z';
+  rows.set(accountB.id, { user_id: accountB.id, payload: baseB, updated_at: stampB });
+  queue.rememberBase(storage, accountB.id,
+    { state: baseB.state, featureState: baseB.featureState }, stampB);
+  queue.rememberStamp(storage, accountB.id, stampB);
+  storage.setItem(OWNER, accountB.id);
+  storage.setItem(STATE_KEY, JSON.stringify(pendingB.state));
+  storage.setItem(FEATURE_KEY, JSON.stringify(pendingB.featureState));
+  context.state = JSON.parse(JSON.stringify(pendingB.state));
+  queue.commitWorkspace(storage, [
+    { key: STATE_KEY, value: JSON.stringify(pendingB.state) },
+    { key: FEATURE_KEY, value: JSON.stringify(pendingB.featureState) }
+  ], pendingB, { baseServerVersion: stampB });
+
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(outgoingA.state));
+  storage.setItem(FEATURE_KEY, JSON.stringify(outgoingA.featureState));
+  context.state = JSON.parse(JSON.stringify(outgoingA.state));
+
+  const remoteABefore = JSON.stringify(rows.get(accountA.id));
+  const remoteBBefore = JSON.stringify(rows.get(accountB.id));
+  activeSession = { user: accountB };
+  networkAvailable = true;
+  deferNextRemoteRead = true;
+  releaseDeferredRemoteRead = null;
+
+  const initialization = window.NexusCloudSync.reconnect();
+  for (let i = 0; i < 200 && !releaseDeferredRemoteRead; i++) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.equal(typeof releaseDeferredRemoteRead, 'function',
+    'the online handoff test must stop at B’s remote-read boundary');
+  assert.equal(storage.getItem(OWNER), accountB.id,
+    'B’s owner-bound local cache must become active before B’s cloud read resolves');
+  const localB = JSON.parse(storage.getItem(STATE_KEY));
+  assert.ok(localB.topics.some(topic => topic.id === 'online-handoff-B-pending-topic'),
+    'the cached B pending snapshot must be revealed while its cloud read is still pending');
+  assert.equal(localB.topics.some(topic => topic.id === 'online-handoff-A-pending-topic'), false,
+    'A’s committed workspace must never be displayed as B while the cloud read is pending');
+  assert.equal(getElement('cloudStatus').textContent, 'Sync pending',
+    'a local-ready handoff must expose a truthful pending state before cloud verification');
+  assert.equal(window.NexusCloudSync.getAccountState().ready, true,
+    'B’s owner-verified local workspace must be ready while cloud verification continues');
+  assert.ok(queue.getPending(storage, accountA.id).payload.state.topics.some(topic => topic.id === 'online-handoff-A-pending-topic'),
+    'A’s outgoing edit must be checkpointed under A before B is shown');
+  assert.ok(queue.hasPending(storage, accountB.id),
+    'B’s pending cloud update must remain queued until its own cloud read can be reconciled');
+  assert.equal(JSON.stringify(rows.get(accountA.id)), remoteABefore,
+    'the handoff checkpoint must not write A’s pending data to A cloud as part of local restoration');
+  assert.equal(JSON.stringify(rows.get(accountB.id)), remoteBBefore,
+    'the cached B workspace must not be uploaded before B’s remote baseline is read');
+
+  const releaseIncomingRead = releaseDeferredRemoteRead;
+  releaseIncomingRead();
+  releaseDeferredRemoteRead = null;
+  let handoffTimeout;
+  try {
+    await Promise.race([
+      initialization,
+      new Promise((_, reject) => {
+        handoffTimeout = setTimeout(() => reject(new Error('The cached online account handoff did not reconcile after the remote read was released.')), 10000);
+      })
+    ]);
+  } finally {
+    clearTimeout(handoffTimeout);
+  }
+  assert.equal(storage.getItem(OWNER), accountB.id,
+    'B must remain the active owner after its cloud reconciliation');
+  assert.ok(rows.get(accountB.id).payload.state.topics.some(topic => topic.id === 'online-handoff-B-pending-topic'),
+    'B’s cached changes must be verified in B cloud after reconciliation');
+  assert.ok(queue.hasPending(storage, accountA.id),
+    'A’s pending workspace must remain parked after B reaches sync');
+  assert.equal(queue.hasPending(storage, accountB.id), false,
+    'B’s pending queue must clear only after its own cloud state is verified');
+  assert.equal(rows.get(accountB.id).payload.state.topics.some(topic => topic.id === 'online-handoff-A-pending-topic'), false,
+    'A’s outgoing workspace must never be uploaded into B cloud');
+  assert.equal(JSON.stringify(rows.get(accountA.id)), remoteABefore,
+    'B synchronization must not modify A cloud data');
+  assert.equal(getElement('cloudStatus').textContent, 'Synced',
+    'the online account handoff must finish with a verified terminal sync state');
+}
+
 // A different authenticated account must recover only its own cached local workspace
 // when the cloud is unreachable; account A's visible data must never be uploaded as B.
 {
