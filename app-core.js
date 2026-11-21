@@ -473,6 +473,7 @@
               sourceWorkspaceRevision:readiness.workspaceRevision,rowCount:readiness.rowCount};
           }
         }catch(error){
+          if(signal&&signal.aborted)throw error;
           console.warn('Nexus entity projection readiness could not be verified; attempting a guarded rebuild.',error);
         }
       }
@@ -489,6 +490,7 @@
         featureSnapshotJson:featureSnapshot,replace:true,durablePromise,signal
       });
     }catch(error){
+      if(signal&&signal.aborted)throw error;
       console.warn('Nexus entity projection rebuild failed; the durable snapshot remains active.',error);
       return {ok:false,error:String(error&&error.message||error)};
     }
