@@ -125,7 +125,7 @@ const SYNC_DIAG_STAGES=new Set([
  'workspace-merge-commit-start','workspace-merge-complete','workspace-merge-error',
  'workspace-merge-normalize-complete','workspace-merge-normalize-error','workspace-merge-normalize-start',
  'workspace-merge-restarted','workspace-merge-start','workspace-saved-locally',
- 'workspace-comparison','workspace-local-commit','projection-reuse','projection-rebuild','workspace-render','initial-sync-verification'
+ 'workspace-comparison','workspace-local-commit','projection-reuse','projection-rebuild','projection-check-start','workspace-render','initial-sync-verification'
 ]);
 function sanitizeSyncDiagEvent(event){
  if(!event||typeof event!=='object'||Array.isArray(event)||!SYNC_DIAG_STAGES.has(event.stage))return null;
@@ -148,7 +148,7 @@ function sanitizeSyncDiagEvent(event){
   if(value===null)safe[key]=null;
   else if(Number.isSafeInteger(value)&&value>=0)safe[key]=Math.min(value,100000000);
  }
- const booleanFields=['hasPayload','hasUpdatedAt','chunkStorageUnavailable','cleanupBacklogMayRemain','cleanupFailed','priorQueueRetainedForRecovery','storageEnabled','cooperative','queueRebuilt','ready','remoteHadPayload','remoteHasPayload','hasSession','ownerPresent','ok','resumed','hasQueue','skipped','fromPending','hasPending','matchesAttempted','readbackHasPayload','hadPending','compactionPending','cleanupPending','projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches','baselineRestored','recovered','triggerConflict','triggerSnapshotRequired','triggerRequiresSnapshotReconciliation','cursorRequiresPull','timedOut','same'];
+ const booleanFields=['hasPayload','hasUpdatedAt','chunkStorageUnavailable','cleanupBacklogMayRemain','cleanupFailed','priorQueueRetainedForRecovery','storageEnabled','cooperative','queueRebuilt','ready','remoteHadPayload','remoteHasPayload','hasSession','ownerPresent','ownerVerified','ok','resumed','hasQueue','skipped','fromPending','hasPending','matchesAttempted','readbackHasPayload','hadPending','compactionPending','cleanupPending','projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches','baselineRestored','recovered','triggerConflict','triggerSnapshotRequired','triggerRequiresSnapshotReconciliation','cursorRequiresPull','timedOut','same'];
  for(const key of booleanFields){if(typeof event[key]==='boolean')safe[key]=event[key];}
  const enums={
   storageMode:['chunked','legacy-schema-compatibility','legacy','empty'],
@@ -689,26 +689,27 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,parentSignal
   const renderStartedAt=Date.now();
   renderAll();
   const activeView=typeof document!=='undefined'&&typeof document.querySelector==='function'?document.querySelector('.view.active'):null;if(activeView&&activeView.id==='view-studyhub'&&window.NexusRenderHub)window.NexusRenderHub();
-  syncDiag('workspace-render',null,{durationMs:Date.now()-renderStartedAt,ok:true});
+  syncDiag('workspace-render',diagnosticWorkspace(),{durationMs:Date.now()-renderStartedAt,ok:true,ownerVerified:!!(ownerId&&localStorage.getItem(OWNER_KEY)===String(ownerId))});
   // Delta publication/pull remains gated by waitForWorkspaceEntitySync. Rendering
   // compatibility data is not evidence that its entity projection is current.
   if(typeof window.NexusRebuildEntityProjection==='function'){
     const projectionScope=createSyncAbortScope(parentSignal),projectionStartedAt=Date.now();
+    syncDiag('projection-check-start',diagnosticWorkspace(),{ownerVerified:!!(ownerId&&localStorage.getItem(OWNER_KEY)===String(ownerId))});
     try{
      const projectionResult=await projectionScope.race(
       window.NexusRebuildEntityProjection({signal:projectionScope.signal}),'local entity projection rebuild');
      const projectionDurationMs=Date.now()-projectionStartedAt;
      if(projectionResult&&projectionResult.mode==='reused'){
-      syncDiag('projection-reuse',null,{durationMs:projectionDurationMs,ready:true,projectionRebuildMode:'reused'});
+      syncDiag('projection-reuse',diagnosticWorkspace(),{durationMs:projectionDurationMs,ready:true,projectionRebuildMode:'reused',ownerVerified:!!(ownerId&&localStorage.getItem(OWNER_KEY)===String(ownerId))});
      }else{
-      syncDiag('projection-rebuild',null,{durationMs:projectionDurationMs,
+      syncDiag('projection-rebuild',diagnosticWorkspace(),{durationMs:projectionDurationMs,ownerVerified:!!(ownerId&&localStorage.getItem(OWNER_KEY)===String(ownerId)), 
        projectionRebuildAttempted:!(projectionResult&&projectionResult.skipped),
        projectionRebuildOk:!(projectionResult&&projectionResult.ok===false),
        projectionRebuildMode:projectionResult&&projectionResult.mode||'other'});
      }
      if(applyEpoch!==sessionEpoch||(ownerId&&sessionOwnerId!==String(ownerId)))throw syncCancelledError();
     }catch(error){
-     syncDiag('projection-rebuild',null,{durationMs:Date.now()-projectionStartedAt,
+     syncDiag('projection-rebuild',diagnosticWorkspace(),{durationMs:Date.now()-projectionStartedAt,ownerVerified:!!(ownerId&&localStorage.getItem(OWNER_KEY)===String(ownerId)), 
       projectionRebuildAttempted:true,projectionRebuildOk:false,errorCategory:syncDiagErrorCategory(error)});
      throw error;
     }finally{projectionScope.clear();}
