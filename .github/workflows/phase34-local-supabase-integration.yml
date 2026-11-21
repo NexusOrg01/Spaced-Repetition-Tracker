@@ -1,8 +1,6 @@
 name: Phase 3.4 local authenticated two-client integration
 
 on:
-  push:
-    branches: [fix/sync-account-handoff-reliability]
   pull_request:
     branches: [main, feat/dla-01-hosted-qa-gate, fix/dla04-entity-projection-guard]
     paths:
