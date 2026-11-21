@@ -193,7 +193,7 @@ assert.ok(renderConfigScript(existingStagingConfig,true).includes('window.NEXUS_
 assert.ok(renderConfigScript(null,true).includes('window.NEXUS_ENTITY_DELTA_SYNC_STAGING=false'));
 
 
-const hostedQaBranch = 'fix/dla04-entity-projection-guard';
+const hostedQaBranch = 'fix/sync-account-handoff-reliability';
 const hostedQaProject = 'https://xuwfzibxhxzxxupprxsq.supabase.co';
 const hostedQaEnv = {
   VERCEL: '1',
@@ -250,14 +250,14 @@ assert.deepEqual(hostedQaConfig, {
 const hostedQaGate = resolveHostedQaEntityDeltaEnabled(hostedQaEnv, hostedQaConfig);
 assert.deepEqual(hostedQaGate, {
   enabled: true,
-  origin: 'https://nexus-dla-03-git-feat-dla-03-safe-snapshot-downgrade-recall-ed03.vercel.app',
+  origin: 'https://spaced-repetition-tracker-git-fix-sync-accou-8f743d-recall-ed03.vercel.app',
   branchOrigin: 'https://nexus-app-git-fix-dla04-entity-projection-guard-recall-ed03.vercel.app',
   ref: hostedQaBranch
 }, 'hosted QA must require the explicit flag, exact branch, exact project, and deployment-specific Vercel origin');
 const hostedQaConfigScript = renderConfigScript(hostedQaConfig, false, hostedQaGate);
 assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=true'));
-assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_REF="fix/dla04-entity-projection-guard"'));
-assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN="https://nexus-dla-03-git-feat-dla-03-safe-snapshot-downgrade-recall-ed03.vercel.app"'));
+assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_REF="fix/sync-account-handoff-reliability"'));
+assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_ORIGIN="https://spaced-repetition-tracker-git-fix-sync-accou-8f743d-recall-ed03.vercel.app"'));
 assert.ok(hostedQaConfigScript.includes('window.NEXUS_ENTITY_DELTA_SYNC_QA_BRANCH_ORIGIN="https://nexus-app-git-fix-dla04-entity-projection-guard-recall-ed03.vercel.app"'),
   'the exact Vercel branch URL must also be embedded as an approved hosted QA origin');
 assert.ok(renderConfigScript(hostedQaConfig, false, null).includes('window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA=false'));
