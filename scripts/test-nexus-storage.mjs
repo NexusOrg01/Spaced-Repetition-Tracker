@@ -2110,3 +2110,48 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
 }
 
 console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, delta cursor receipt atomicity, recovery journal restart at prepared/staged/published phases, recovery write locks, failed-write recovery, and account-handoff isolation.');
+
+
+// DLA-08D: cancellation during projection-readiness preflight must propagate
+// immediately instead of falling through to full-workspace serialization.
+{
+  const appCoreSource=readFileSync(resolve(root,'app-core.js'),'utf8');
+  const projectionStart=appCoreSource.indexOf('  window.NexusRebuildEntityProjection=async(options={})=>{');
+  const projectionEnd=appCoreSource.indexOf('\\n  function notify(',projectionStart);
+  assert.ok(projectionStart>=0&&projectionEnd>projectionStart,
+    'the projection rebuild entrypoint must be available for isolated cancellation testing');
+  const projectionSource=appCoreSource.slice(projectionStart,projectionEnd).trim();
+  const controller=new AbortController();
+  let serializedValues=0,projectionWrites=0;
+  const context={
+    window:{
+      NexusStorage:{
+        isEnabled:()=>true,
+        getWorkspaceEntityProjectionReadiness:async()=>{
+          controller.abort(new Error('projection readiness cancelled'));
+          return {ready:true,generation:'obsolete-generation',workspaceRevision:1,rowCount:1};
+        },
+        syncWorkspaceEntities:async()=>{projectionWrites++;return {ok:true};}
+      }
+    },
+    localStorage:{getItem:()=> 'projection-cancel-owner'},
+    state:{topics:[{id:'large-workspace-record'}]},
+    Error,
+    JSON:{
+      parse:JSON.parse,
+      stringify(value){serializedValues++;return JSON.stringify(value);}
+    },
+    console:{warn(){}}
+  };
+  vm.runInNewContext(projectionSource,context,{filename:'app-core-projection-cancellation-test.js'});
+  await assert.rejects(
+    context.window.NexusRebuildEntityProjection({signal:controller.signal}),
+    /projection readiness cancelled/,
+    'readiness cancellation must propagate rather than fall through to a guarded rebuild'
+  );
+  assert.equal(serializedValues,0,
+    'a cancelled readiness probe must not serialize the large compatibility workspace');
+  assert.equal(projectionWrites,0,
+    'a cancelled readiness probe must not schedule an IndexedDB projection write');
+  console.log('DLA-08D projection-readiness cancellation regression passed.');
+}
