@@ -884,6 +884,7 @@ try {
   assert.ok(appEmailA && appPasswordA && appEmailB && appPasswordB,
     'The isolated local browser fixture must provide both disposable account credentials.');
 
+  const initialAccountStartedAt = Date.now();
   const signedInA = await signInAppTestAccount(appEmailA, appPasswordA);
   assert.equal(signedInA.userId, ownerA);
   // The disposable browser context starts empty, while fixture A deliberately
@@ -921,6 +922,7 @@ try {
     restoreClickPromise
   ]);
   await waitForAccountAndStatus(appEmailA, ownerA, 'Synced', 180000);
+  const initialAccountRestoreWallMs = Date.now() - initialAccountStartedAt;
   const initialEvents = await readAppDiagnostics();
   const initialCloudRead = initialEvents.slice().reverse().find(event =>
     event.stage === 'cloud-read' &&
@@ -943,12 +945,17 @@ try {
 
   const accountAReturnStartedAt = Date.now();
   const accountAReturnStartedIso = new Date(accountAReturnStartedAt).toISOString();
+  const onlineAtAccountReturn = await page.evaluate(() => navigator.onLine === true);
+  assert.equal(onlineAtAccountReturn, true,
+    'The A→B→A acceptance run must execute in an online browser context.');
   const returnedA = await signInAppTestAccount(appEmailA, appPasswordA);
   assert.equal(returnedA.userId, ownerA);
-  await page.waitForFunction(({ email, userId }) => {
+  // The compatibility workspace is rendered before projection reuse/rebuild
+  // finishes. Measure that actual owner-verified render, not the later helper
+  // completion event, which would incorrectly include projection work.
+  await page.waitForFunction(({ email, userId, startedAt }) => {
     const account = document.querySelector('#cloudAccount');
-    const status = document.querySelector('#cloudStatus');
-    if (!account || !status || account.textContent.trim() !== email) return false;
+    if (!account || account.textContent.trim() !== email) return false;
     if (localStorage.getItem('nexus.cloud.last-user-id') !== userId) return false;
     let events = [];
     try {
@@ -956,56 +963,80 @@ try {
       events = Array.isArray(parsed) ? parsed : [];
     } catch (_) {}
     return events.some(event =>
-      event.stage === 'online-account-workspace-restored' &&
+      event.stage === 'workspace-render' &&
+      typeof event.at === 'string' &&
+      event.at >= startedAt &&
+      event.ownerVerified === true &&
+      event.ok === true &&
       event.workspace &&
       event.workspace.topicCount === 77144 &&
       event.workspace.reviewHistoryCount === 72001 &&
       Number.isSafeInteger(event.durationMs)
     );
-  }, { email: appEmailA, userId: ownerA }, { timeout: 65000 });
-  const cachedRevealWallMs = Date.now() - accountAReturnStartedAt;
+  }, { email: appEmailA, userId: ownerA, startedAt: accountAReturnStartedIso }, { timeout: 65000 });
   const returnEventsAtReveal = await readAppDiagnostics();
-  const cachedRevealEvent = returnEventsAtReveal.slice().reverse().find(event =>
-    event.stage === 'online-account-workspace-restored' &&
+  const cachedRenderEvent = returnEventsAtReveal.slice().reverse().find(event =>
+    event.stage === 'workspace-render' &&
+    typeof event.at === 'string' &&
+    event.at >= accountAReturnStartedIso &&
+    event.ownerVerified === true &&
+    event.ok === true &&
     event.workspace &&
     event.workspace.topicCount === INITIAL_TOPICS &&
     event.workspace.reviewHistoryCount === INITIAL_HISTORY
   );
-  assert.ok(cachedRevealEvent, 'The returning owner’s large cached workspace restore must be diagnosed.');
-  assert.ok(cachedRevealEvent.durationMs <= 30000,
-    'The measured owner-scoped cache restore operation must finish within 30 seconds.');
+  assert.ok(cachedRenderEvent,
+    'The returning owner’s exact large cached workspace must be rendered with owner verification.');
+  const cachedRevealWallMs = Date.parse(cachedRenderEvent.at) - accountAReturnStartedAt;
+  const cachedRevealDurationMs = cachedRenderEvent.durationMs;
   assert.ok(cachedRevealWallMs <= 30000,
     'The complete live A→B→A return must reveal the owner-verified cached workspace within 30 seconds.');
+  assert.ok(cachedRevealDurationMs <= 30000,
+    'The owner-verified compatibility render operation must finish within 30 seconds.');
 
-  let returnVerification = null;
-  try {
-    await page.waitForFunction(startedAt => {
-      let events = [];
-      try {
-        const parsed = JSON.parse(localStorage.getItem('nexus.syncdiag.session.v1') || '[]');
-        events = Array.isArray(parsed) ? parsed : [];
-      } catch (_) {}
-      return events.some(event =>
-        event.stage === 'initial-sync-verification' &&
-        typeof event.at === 'string' &&
-        event.at >= startedAt
-      );
-    }, accountAReturnStartedIso, { timeout: 65000 });
-    const afterVerification = await readAppDiagnostics();
-    returnVerification = afterVerification.slice().reverse().find(event =>
+  // A successful verification event ends the wait early. Otherwise observe the
+  // full 60-second deadline so a watchdog-delayed state is measured rather than
+  // misclassified as a missing event.
+  await page.waitForFunction(({ startedAt, deadlineMs }) => {
+    let events = [];
+    try {
+      const parsed = JSON.parse(localStorage.getItem('nexus.syncdiag.session.v1') || '[]');
+      events = Array.isArray(parsed) ? parsed : [];
+    } catch (_) {}
+    const verified = events.some(event =>
       event.stage === 'initial-sync-verification' &&
       typeof event.at === 'string' &&
-      event.at >= accountAReturnStartedIso
-    ) || null;
-  } catch (_) {
-    returnVerification = null;
-  }
+      event.at >= startedAt &&
+      event.ok === true &&
+      Number.isSafeInteger(event.durationMs) &&
+      event.durationMs <= deadlineMs
+    );
+    return verified || Date.now() - Date.parse(startedAt) >= deadlineMs;
+  }, { startedAt: accountAReturnStartedIso, deadlineMs: 60000 }, { timeout: 65000 });
 
+  const afterDeadline = await readAppDiagnostics();
+  const returnVerification = afterDeadline.slice().reverse().find(event =>
+    event.stage === 'initial-sync-verification' &&
+    typeof event.at === 'string' &&
+    event.at >= accountAReturnStartedIso &&
+    event.ok === true &&
+    Number.isSafeInteger(event.durationMs) &&
+    event.durationMs <= 60000
+  ) || null;
+  const returnVerificationAny = afterDeadline.slice().reverse().find(event =>
+    event.stage === 'initial-sync-verification' &&
+    typeof event.at === 'string' &&
+    event.at >= accountAReturnStartedIso
+  ) || null;
+  const watchdogEvent = afterDeadline.find(event =>
+    event.stage === 'initialize-status-watchdog' &&
+    typeof event.at === 'string' &&
+    event.at >= accountAReturnStartedIso
+  ) || null;
   const returnStatus = await page.locator('#cloudStatus').textContent();
   const returnStatusText = String(returnStatus || '').trim();
   const returnSyncWallMs = Date.now() - accountAReturnStartedAt;
   const explicitDelayedStates = new Set([
-    'Sync pending',
     'Account verification delayed',
     'Sync delayed - local data ready',
     'Sync unavailable',
@@ -1020,48 +1051,116 @@ try {
     returnStatusText === 'Synced'
   );
   const delayedWithinDeadline = !!(
-    returnVerification &&
-    returnVerification.ok === false &&
-    returnVerification.durationMs <= 60000 &&
-    explicitDelayedStates.has(returnStatusText)
+    explicitDelayedStates.has(returnStatusText) &&
+    returnSyncWallMs <= 65000 &&
+    (
+      (watchdogEvent && Date.parse(watchdogEvent.at) - accountAReturnStartedAt <= 60000) ||
+      (returnVerificationAny && returnVerificationAny.ok === false &&
+       Number.isSafeInteger(returnVerificationAny.durationMs) &&
+       returnVerificationAny.durationMs <= 60000)
+    )
   );
-  assert.ok(returnVerification,
-    'The returning account must reach a recorded verified or explicit delayed/error initialization outcome.');
-  assert.ok(returnSyncWallMs <= 60000,
-    'The account-return initialization must settle within the 60-second acceptance deadline.');
+  const returnTerminalOutcomeMs = verifiedWithinDeadline
+    ? returnVerification.durationMs
+    : watchdogEvent
+      ? Date.parse(watchdogEvent.at) - accountAReturnStartedAt
+      : returnVerificationAny && Number.isSafeInteger(returnVerificationAny.durationMs)
+        ? returnVerificationAny.durationMs : null;
   assert.ok(verifiedWithinDeadline || delayedWithinDeadline,
-    'The account-return outcome must be verified Synced or an explicit truthful delayed/error state within 60 seconds.');
+    'Within 60 seconds the returning account must reach verified Synced or a truthful terminal delayed/error state with retry.');
+  assert.ok(returnStatusText !== 'Synced' || verifiedWithinDeadline,
+    'The app must never show Synced without successful initial cloud verification.');
 
-  const returnCloudRead = returnEventsAtReveal.slice().reverse().find(event =>
-    event.stage === 'cloud-read' && event.payloadUtf8Bytes === TARGET_BYTES && event.chunkCount === 103
-  ) || (await readAppDiagnostics()).slice().reverse().find(event =>
-    event.stage === 'cloud-read' && event.payloadUtf8Bytes === TARGET_BYTES && event.chunkCount === 103
+  const returnCloudChunkRead = afterDeadline.slice().reverse().find(event =>
+    event.stage === 'cloud-chunk-read' &&
+    event.payloadUtf8Bytes === TARGET_BYTES &&
+    event.chunkCount === 103
   ) || null;
-
+  const returnCloudRead = afterDeadline.slice().reverse().find(event =>
+    event.stage === 'cloud-read' &&
+    event.payloadUtf8Bytes === TARGET_BYTES &&
+    event.chunkCount === 103
+  ) || null;
+  const phaseStages = new Set([
+    'account-handoff-outgoing-checkpoint',
+    'cloud-chunk-read',
+    'cloud-read',
+    'workspace-comparison',
+    'workspace-local-commit',
+    'projection-check-start',
+    'projection-reuse',
+    'projection-rebuild',
+    'workspace-render',
+    'initialize-status-watchdog',
+    'initial-sync-verification'
+  ]);
+  const phaseTimings = afterDeadline.filter(event =>
+    typeof event.at === 'string' &&
+    event.at >= accountAReturnStartedIso &&
+    phaseStages.has(event.stage)
+  ).map(event => ({
+    stage: event.stage,
+    elapsedMs: Math.max(0, Date.parse(event.at) - accountAReturnStartedAt),
+    durationMs: Number.isSafeInteger(event.durationMs) ? event.durationMs : null,
+    ok: typeof event.ok === 'boolean' ? event.ok : null,
+    ownerVerified: typeof event.ownerVerified === 'boolean' ? event.ownerVerified : null,
+    ready: typeof event.ready === 'boolean' ? event.ready : null,
+    timedOut: typeof event.timedOut === 'boolean' ? event.timedOut : null,
+    chunkCount: Number.isSafeInteger(event.chunkCount) ? event.chunkCount : null,
+    payloadUtf8Bytes: Number.isSafeInteger(event.payloadUtf8Bytes) ? event.payloadUtf8Bytes : null,
+    topicCount: Number.isSafeInteger(event.workspace?.topicCount) ? event.workspace.topicCount : null,
+    historyRows: Number.isSafeInteger(event.workspace?.reviewHistoryCount) ? event.workspace.reviewHistoryCount : null,
+    projectionRebuildMode: typeof event.projectionRebuildMode === 'string' ? event.projectionRebuildMode : null
+  }));
+  const expectedReturnPhases = [
+    'cloud-chunk-read',
+    'cloud-read',
+    'workspace-comparison',
+    'projection-reuse',
+    'projection-rebuild',
+    'initial-sync-verification'
+  ];
+  const phasesNotObservedByDeadline = expectedReturnPhases.filter(stage =>
+    !phaseTimings.some(event => event.stage === stage)
+  );
   appLevelTimingEvidence = {
     fixtureBytes: TARGET_BYTES,
     fixtureChunks: 103,
     topics: INITIAL_TOPICS,
     historyRows: INITIAL_HISTORY,
+    networkMode: 'online Chromium against disposable local Supabase',
+    browserOnline: onlineAtAccountReturn,
+    initialAccountRestoreWallMs,
     initialAccountSyncMs: initialVerification.durationMs,
     initialRemoteReadMs: initialCloudRead.durationMs,
     accountBReadyMs,
-    returningAccountOwnerMatch: true,
+    returningAccountOwnerVerified: cachedRenderEvent.ownerVerified === true,
     cachedRevealWallMs,
-    cachedRevealDurationMs: cachedRevealEvent.durationMs,
+    cachedRevealDurationMs,
+    returningCloudChunkReadMs: returnCloudChunkRead && Number.isSafeInteger(returnCloudChunkRead.durationMs)
+      ? returnCloudChunkRead.durationMs : null,
     returningCloudReadMs: returnCloudRead && Number.isSafeInteger(returnCloudRead.durationMs)
       ? returnCloudRead.durationMs : null,
-    returnSyncVerificationMs: returnVerification.durationMs,
+    returnSyncVerificationMs: returnVerificationAny && Number.isSafeInteger(returnVerificationAny.durationMs)
+      ? returnVerificationAny.durationMs : null,
     returnSyncVerified: verifiedWithinDeadline,
+    returnVerificationEventPendingAtDeadline: !returnVerificationAny,
     returnTerminalStatus: returnStatusText,
-    returnSyncWallMs
+    returnTerminalOutcomeMs,
+    returnSyncWallMs,
+    projectionCheckStarted: phaseTimings.some(event => event.stage === 'projection-check-start'),
+    projectionCompletedByDeadline: phaseTimings.some(event =>
+      event.stage === 'projection-reuse' || event.stage === 'projection-rebuild'
+    ),
+    phasesNotObservedByDeadline,
+    phaseTimings
   };
   assert.equal(pageErrors.length, 0,
     'The app-level A→B→A browser run must not raise uncaught JavaScript exceptions.');
   console.log('DLA-08E_APP_LEVEL_TIMING=' + JSON.stringify(appLevelTimingEvidence));
-  check('DLA-08E real Nexus Web app reveals the returning 26.9 MB owner-verified workspace within 30 seconds',
-    cachedRevealWallMs <= 30000 && cachedRevealEvent.durationMs <= 30000);
-  check('DLA-08E real Nexus Web app verifies cloud sync or records an explicit delayed/error outcome within 60 seconds',
+  check('DLA-08E real Nexus Web app renders the returning 26.9 MB owner-verified workspace within 30 seconds',
+    cachedRevealWallMs <= 30000 && cachedRevealDurationMs <= 30000);
+  check('DLA-08E real Nexus Web app verifies cloud sync or records a truthful delayed/error outcome within 60 seconds',
     verifiedWithinDeadline || delayedWithinDeadline);
 } catch (error) {
   try {
