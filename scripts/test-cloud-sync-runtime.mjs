@@ -310,7 +310,7 @@ async function runAuthSessionRecheck(verifiedUserId) {
   };
   vm.createContext(sandbox);
   vm.runInContext(source.slice(authGuardStart, authGuardEnd) +
-    '\\nglobalThis.runAuthSessionRecheck = verifyCurrentAuthSessionAfterMismatch;',
+    '\nglobalThis.runAuthSessionRecheck = verifyCurrentAuthSessionAfterMismatch;',
     sandbox, { filename: 'auth-session-reconciliation.js' });
   sandbox.runAuthSessionRecheck();
   assert.equal(typeof timerCallback, 'function',
@@ -335,6 +335,15 @@ assert.equal(confirmedAccountChange.initializations, 1,
 assert.match(source,
   /client\.auth\.onAuthStateChange\(\(event,newSession\)=>\{\s*if\(!authStateEventBelongsToCurrentOwner\(event,newSession\)\)\{/,
   'the actual Supabase listener must reject stale refreshes before assigning session or rotating the workspace lock');
+assert.match(source,
+  /authSessionVerificationPending=true;[\\s\\S]*?verifyCurrentAuthSessionAfterMismatch\\(\\);/,
+  'a mismatched refresh must request authoritative getSession verification rather than silently switching owners');
+assert.match(source,
+  /function schedule\\(\\)\\{if\\(authSessionVerificationPending\\|\\|/,
+  'normal upload scheduling must pause until a mismatched auth session has been verified');
+assert.match(source,
+  /async function upload\\(\\)\\{\\s*if\\(authSessionVerificationPending\\|\\|/,
+  'the cloud writer must not run while active auth identity is uncertain');
 assert.match(source,
   /const callbackEpoch=sessionEpoch;[\s\S]*?if\(!authInitializationCallbackIsCurrent\(uid,callbackEpoch\)\)return;/,
   'the actual deferred sign-in initialization callback must be fenced by the epoch that scheduled it');
