@@ -740,7 +740,7 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,parentSignal
   if(applyEpoch!==sessionEpoch||(applyOwnerId&&sessionOwnerId!==applyOwnerId))throw syncCancelledError();
   // Delta publication/pull remains gated by waitForWorkspaceEntitySync. Rendering
   // compatibility data is not evidence that its entity projection is current.
-  if(typeof window.NexusRebuildEntityProjection==='function'){
+  if(typeof window.NexusRebuildEntityProjection==='function'&&options.deferProjectionToUpload!==true){
     const projectionScope=createSyncAbortScope(parentSignal),projectionStartedAt=Date.now();
     syncDiag('projection-check-start',diagnosticWorkspace(),{ownerVerified:!!(ownerId&&localStorage.getItem(OWNER_KEY)===String(ownerId))});
     try{
@@ -761,14 +761,23 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,parentSignal
       projectionRebuildAttempted:true,projectionRebuildOk:false,errorCategory:syncDiagErrorCategory(error)});
      throw error;
     }finally{projectionScope.clear();}
+  }else if(options.deferProjectionToUpload===true){
+    // A restored cloud snapshot is already atomically committed and owner-verified.
+    // Let upload() check the rollout gate first; its Delta path rebuilds/verifies this
+    // projection before use, while snapshot-mode accounts never need the Delta index.
+    syncDiag('projection-deferred-to-upload',null,{
+     ownerVerified:!!(ownerId&&localStorage.getItem(OWNER_KEY)===String(ownerId))
+    });
   }
   return true;
 }
 async function applyRemote(payload,ownerId,serverVersion){
   if(!payload||!payload.state||!Array.isArray(payload.state.streams))throw new Error('Cloud backup format is invalid.');
   ready=false;
-  // applyWorkspaceSnapshot performs the one required normalize/repair pass itself.
-  await applyWorkspaceSnapshot(payload.state,payload.featureState,ownerId);
+  // Keep restore availability independent from the Delta-only IndexedDB projection.
+  // The initialization flow immediately calls upload(), whose rollout-gated Delta
+  // path rebuilds and verifies the projection before use; snapshot-mode accounts skip it.
+  await applyWorkspaceSnapshot(payload.state,payload.featureState,ownerId,null,{deferProjectionToUpload:true});
   if(ownerId&&window.NexusOfflineSyncQueue){
    const appliedFeatures=window.NexusGetFeatureState?window.NexusGetFeatureState():{};
    window.NexusOfflineSyncQueue.rememberBase(localStorage,ownerId,{state,featureState:appliedFeatures},serverVersion||null);
