@@ -894,6 +894,14 @@ try {
     const dialog = document.querySelector('#accountChoiceDialog');
     return !!(dialog && dialog.open);
   }, null, { timeout: 30000 });
+  page.on('dialog', async dialog => {
+    if (dialog.type === 'confirm' &&
+        /replace this device’s offline workspace with this account’s cloud backup/.test(dialog.message)) {
+      await dialog.accept();
+      return;
+    }
+    await dialog.dismiss();
+  });
   await page.locator('#accountChoiceDialog [data-account-choice="replace"]').click();
   await waitForAccountAndStatus(appEmailA, ownerA, 'Synced', 180000);
   const initialEvents = await readAppDiagnostics();
