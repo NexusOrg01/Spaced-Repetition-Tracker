@@ -83,7 +83,7 @@ class FakeTransaction {
       if (!original) throw new Error('Unknown object store: ' + name);
       // Stored rows are immutable: get/getAll return detached clones and put
       // clones incoming values. A shallow map copy preserves rollback semantics
-      // without cloning every historical entity on each 400-row write batch.
+      // without cloning every historical entity on each bounded entity-write batch.
       this.maps.set(name, mode === 'readwrite' ? new Map(original) : original);
     }
     this.pending = 0;
