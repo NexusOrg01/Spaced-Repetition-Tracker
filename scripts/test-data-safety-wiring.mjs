@@ -75,7 +75,7 @@ assert.ok(storageSource.includes("const DB_NAME = 'nexus-workspace-v1'") && stor
 assert.ok(storageSource.includes("const WORKSPACES = 'workspaces'") && storageSource.includes('function seedWorkspaceProjection') && storageSource.includes('getWorkspace: readWorkspace'), 'IndexedDB must retain verifiable owner-scoped workspace projections');
 assert.ok(storageSource.includes('FALLBACK_JOURNAL_KEY') && storageSource.includes('function fallbackAtomicWrite(entries)') && storageSource.includes('valueHash(currentNativeValue)'), 'browser-storage fallback edits must be checksummed and reconciled before an older IndexedDB snapshot can overwrite them');
 assert.ok(cloudSync.includes('async function recoverCachedWorkspaceForOfflineAccount(userId,parentSignal)') && cloudSync.includes('queue.getPending(localStorage,userId)') && cloudSync.includes('durable.getWorkspace(userId)') && cloudSync.includes('queue.getBase(localStorage,userId)'), 'offline sign-in must restore only the exact account’s pending/cache/base workspace');
-const durableTrackerSave=section(appCore,'function save(options={}){','window.NexusRebuildEntityProjection=()=>{','durable tracker save');
+const durableTrackerSave=section(appCore,'function save(options={}){','window.NexusRebuildEntityProjection=','durable tracker save');
 assert.ok(durableTrackerSave.includes("textContent='Saving to this device…';") &&
   durableTrackerSave.includes('const durableFlush=storage.flush();') &&
   durableTrackerSave.includes('durableFlush.then(()=>{') &&
