@@ -143,6 +143,10 @@ assert.match(source, /syncTimeoutError\(activeOperation,timeoutMs\)/,
   'a sync scope timeout must report its own configured deadline');
 assert.match(source, /race:\(promise,operation\)=>\{if\(typeof operation==='string'&&operation\.trim\(\)\)activeOperation=operation/,
   'the timeout diagnostic must name the operation waiting on the scope');
+assert.match(source, /interrupt\(syncTimeoutError\(isAuth\?'Supabase Auth request':'Supabase data request',timeoutMs\)\)/,
+  'the Supabase fetch deadline must be reported with its configured 15/60-second timeout');
+assert.match(source, /if\(timedOut\)throw syncTimeoutError\(isAuth\?'Supabase Auth request':'Supabase data request',timeoutMs\)/,
+  'the bounded fetch error path must preserve the actual request deadline');
 
 // Hosted Delta must actively pull remote edits; local-save and reconnect-only triggers
 // leave an already-open second device stale indefinitely. Poll only after the gated
