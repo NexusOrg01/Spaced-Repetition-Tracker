@@ -256,11 +256,17 @@ assert.ok(previewOrigin.includes("host.endsWith('.pages.dev')") &&
   previewOrigin.includes("host!=='spaced-repetition-tracker.pages.dev'") &&
   previewOrigin.includes("host!=='nexussrt.netlify.app'"),
   'Cloudflare and hosted previews must retain preview-only controls without misclassifying known production aliases');
-assert.ok(cloudSync.includes('function normalizeSyncUiText(value)') && cloudSync.includes('aria-busy'),
-  'cloud status text must be normalized and expose its loading state');
+assert.ok(cloudSync.includes('function normalizeSyncUiText(value)') &&
+  cloudSync.includes("node.setAttribute('data-sync-state',text==='Synced'?'synced':'attention')") &&
+  cloudSync.includes('aria-busy'),
+  'cloud status text must be normalized and expose both its loading and exact verified state');
 assert.ok(index.includes('id="workspaceIsolationProgress"') &&
-  index.includes('#cloudStatus[aria-busy="true"]::before') &&
-  index.includes('@keyframes nexus-sync-spin'), 'workspace and sync loading states must render lightweight CSS spinners');
+  index.includes('#cloudStatus::before') &&
+  index.includes('#cloudStatus[data-sync-state="synced"]') &&
+  index.includes('rgba(255,55,92,.28)') &&
+  index.includes('rgba(34,197,94,.27)') &&
+  index.includes('@keyframes nexus-sync-spin'),
+  'sync status must keep a rotating indicator visible, glow red for non-Synced states and green only for Synced');
 assert.ok(guard.includes("const progress=doc.getElementById('workspaceIsolationProgress')") &&
   guard.includes("progress.hidden=['error','offline-mismatch','offline-unassigned'].includes(decision.phase)") &&
   guard.includes('verification delayed'), 'workspace spinner must be hidden during retry delay and ownership errors');
