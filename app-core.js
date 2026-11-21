@@ -455,11 +455,25 @@
   // CSV import, JSON restore, undo, or account-bound workspace replacement. The
   // durable snapshot remains authoritative; projection failure is non-fatal and
   // leaves a visible diagnostic for later recovery.
-  window.NexusRebuildEntityProjection=()=>{
+  window.NexusRebuildEntityProjection=async()=>{
     const storage=window.NexusStorage,owner=localStorage.getItem('nexus.cloud.last-user-id')||'';
     if(!owner||!storage||typeof storage.isEnabled!=='function'||!storage.isEnabled()||
-       typeof storage.syncWorkspaceEntities!=='function')return Promise.resolve({skipped:true});
+       typeof storage.syncWorkspaceEntities!=='function')return {skipped:true};
     try{
+      // A returning account may already have a complete generation. Probe only its
+      // owner-bound manifest, durable workspace revision and generation roots before
+      // serializing/cloning the full compatibility workspace for a replacement.
+      if(typeof storage.getWorkspaceEntityProjectionReadiness==='function'){
+        try{
+          const readiness=await storage.getWorkspaceEntityProjectionReadiness(owner);
+          if(readiness&&readiness.ready){
+            return {ownerId:owner,mode:'reused',generation:readiness.generation,
+              sourceWorkspaceRevision:readiness.workspaceRevision,rowCount:readiness.rowCount};
+          }
+        }catch(error){
+          console.warn('Nexus entity projection readiness could not be verified; attempting a guarded rebuild.',error);
+        }
+      }
       const featureState=window.NexusGetFeatureStateForCommit
         ?window.NexusGetFeatureStateForCommit()
         :window.NexusGetFeatureState?window.NexusGetFeatureState():{};
@@ -467,16 +481,13 @@
       const trackerRoot=JSON.parse(JSON.stringify(trackerEntityRoot()));
       const featureRoot=JSON.parse(JSON.stringify(featureEntityRoot(featureState)));
       const durablePromise=typeof storage.flush==='function'?storage.flush():Promise.resolve();
-      return storage.syncWorkspaceEntities(owner,null,{
+      return await storage.syncWorkspaceEntities(owner,null,{
         trackerRoot,featureRoot,trackerSnapshotJson:trackerSnapshot,
         featureSnapshotJson:featureSnapshot,replace:true,durablePromise
-      }).catch(error=>{
-        console.warn('Nexus entity projection rebuild failed; the durable snapshot remains active.',error);
-        return {ok:false,error:String(error&&error.message||error)};
       });
     }catch(error){
-      console.warn('Nexus entity projection rebuild could not be scheduled; the durable snapshot remains active.',error);
-      return Promise.resolve({ok:false,error:String(error&&error.message||error)});
+      console.warn('Nexus entity projection rebuild failed; the durable snapshot remains active.',error);
+      return {ok:false,error:String(error&&error.message||error)};
     }
   };
   function notify(text,undoable=false,options={}){$('toastText').textContent=text;$('undoBtn').style.display=undoable?'':'none';$('toast').classList.toggle('undoable',undoable);$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),2600);}
