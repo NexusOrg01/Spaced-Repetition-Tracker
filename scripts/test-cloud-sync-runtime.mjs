@@ -23,6 +23,51 @@ const commercePack = commerceCatalogue.packs.find(pack => pack.id === 'sl-al-com
 const workspaceMerge = require('../workspace-sync-merge.js');
 const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
 
+// A completed/coalesced account initialization must never leave a transient
+// loading label behind. The fallback must not claim Synced without cloud proof.
+const statusRecoveryStart = source.indexOf('function recoverStaleInitializationStatus(');
+const statusRecoveryEnd = source.indexOf('async function initializeSession(', statusRecoveryStart);
+assert.ok(statusRecoveryStart >= 0 && statusRecoveryEnd > statusRecoveryStart,
+  'account initialization must include a terminal-status recovery guard');
+const statusRecoverySandbox = {
+  OWNER_KEY: 'nexus.cloud.last-user-id',
+  sessionEpoch: 12,
+  session: { user: { id: 'account-A' } },
+  ready: true,
+  statusValue: 'Loading account…',
+  retryCalls: 0,
+  localStorage: { getItem: key => key === 'nexus.cloud.last-user-id' ? 'account-A' : null },
+  el: id => id === 'cloudStatus' ? { get textContent() { return statusRecoverySandbox.statusValue; } } : null,
+  status: value => { statusRecoverySandbox.statusValue = value; },
+  say: () => {},
+  syncDiag: () => {},
+  diagnosticWorkspace: () => ({}),
+  scheduleRetry: () => { statusRecoverySandbox.retryCalls++; }
+};
+vm.createContext(statusRecoverySandbox);
+vm.runInContext(source.slice(statusRecoveryStart, statusRecoveryEnd) +
+  '\nglobalThis.recoverStatus = recoverStaleInitializationStatus;',
+  statusRecoverySandbox, { filename: 'initialization-status-recovery.js' });
+assert.equal(statusRecoverySandbox.recoverStatus('account-A', 12), true);
+assert.equal(statusRecoverySandbox.statusValue, 'Sync pending',
+  'a restored account with matching ownership must leave Loading and remain explicitly unverified');
+assert.equal(statusRecoverySandbox.retryCalls, 1,
+  'a restored account with pending verification must schedule a bounded reconnect retry');
+assert.equal(statusRecoverySandbox.statusValue === 'Synced', false,
+  'the status fallback must never claim cloud verification without a successful sync');
+statusRecoverySandbox.statusValue = 'Loading account…';
+statusRecoverySandbox.ready = false;
+assert.equal(statusRecoverySandbox.recoverStatus('account-A', 12), true);
+assert.equal(statusRecoverySandbox.statusValue, 'Account verification delayed',
+  'an account that is not ready must expose a truthful verification delay');
+assert.equal(statusRecoverySandbox.retryCalls, 2,
+  'an unready account must also schedule a bounded reconnect retry');
+statusRecoverySandbox.statusValue = 'Loading account…';
+assert.equal(statusRecoverySandbox.recoverStatus('account-A', 11), false,
+  'a stale initialization must not alter the newer session status');
+assert.match(source, /const statusWatchdog=setTimeout\([\s\S]*?\},30000\)/,
+  'long-running account initialization must replace an indefinite loading label with a progress warning');
+
 // Hosted Delta must actively pull remote edits; local-save and reconnect-only triggers
 // leave an already-open second device stale indefinitely. Poll only after the gated
 // Delta path has returned a mechanically verified success, and pause while hidden/offline.
