@@ -302,7 +302,7 @@ function normalizeSyncUiText(value){
 }
 function isTransientInitializationStatus(value){
  const normalized=normalizeSyncUiText(value).trim();
- return /^(Loading account\.{3}|Checking local and cloud data\.{3}|Comparing local and cloud data\.{3}|Restoring account workspace\.{3})$/.test(normalized);
+ return /^(Loading account\.{3}|Checking local and cloud data\.{3}|Comparing local and cloud data\.{3}|Restoring account workspace\.{3}|Syncing\.{3})$/.test(normalized);
 }
 function setCloudStatus(value){
  const node=el('cloudStatus');if(!node)return;
