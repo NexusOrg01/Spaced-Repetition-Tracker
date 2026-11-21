@@ -1088,14 +1088,10 @@ if(owner&&owner!==newUserId){
     previousAccountCheckpointed=true;
    }else{
     const outgoingBase=outgoingQueue.getBase(localStorage,previousOwner);
-    if(outgoingBase&&outgoingBase.state&&outgoingBase.featureState){
-     // With no pending operation, the atomic-save contract says this owner is
-     // already at its verified base. Re-reading every entity is unnecessary.
-     previousAccountHasChanges=false;
-     previousAccountCheckpointed=true;
-    }else if(hasLocalWork(previousPayload)){
-     // No prior verified base exists. Preserve the account snapshot without using
-     // an unbounded structural comparison as a gate to the incoming cache.
+    // A verified base does not prove the live shared local snapshot is unchanged:
+    // signed-out edits can occur after that base was recorded without an outbox row.
+    // Preserve any user-data workspace now, without a large structural comparison.
+    if(hasLocalWork(previousPayload)){
      await initScope.race(
       checkpointPreviousAccountWorkspace(previousOwner,newUserId,previousPayload),
       'previous account checkpoint');
@@ -1104,6 +1100,7 @@ if(owner&&owner!==newUserId){
     }else{
      previousAccountHasChanges=false;
      previousAccountCheckpointed=true;
+    }
     }
    }
    await assertActiveUser(newUserId,requestedEpoch);
