@@ -860,7 +860,16 @@
       }
       failureStage='publish-manifest';
       publicationFailureReason=null;
+      let publicationTransaction=null;
+      const abortPublication=()=>{
+        if(signal&&signal.aborted&&publicationTransaction){
+          try{publicationTransaction.abort();}catch(_){}
+        }
+      };
+      if(signal)signal.addEventListener('abort',abortPublication);
+      try{
       await transaction(['migrationMeta',WORKSPACES],'readwrite',(tx,set)=>{
+        publicationTransaction=tx;
         const store=tx.objectStore('migrationMeta'),workspaces=tx.objectStore(WORKSPACES);
         const manifestRequest=store.get(manifestKey);
         const workspaceRequest=hasSourceSnapshotGuard
@@ -938,6 +947,10 @@
           workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;publish();};
         }
       });
+      }finally{
+        if(signal)signal.removeEventListener('abort',abortPublication);
+        publicationTransaction=null;
+      }
       throwIfAborted();
       failureStage='verify-publication';
       let prunedRows=0,prunedOutboxRows=0;
