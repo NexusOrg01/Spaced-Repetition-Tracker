@@ -142,6 +142,53 @@ assert.equal(statusRecoverySandbox.statusValue, 'Synced',
 assert.equal(statusRecoverySandbox.retryCalls, 4,
   'the watchdog must not schedule another retry after the status is already terminal');
 
+// A delayed but owner-verified local workspace must retry its sync coordinator, not
+// restart account initialization and re-enter the full workspace-loading handoff.
+const retryStart = source.indexOf('function scheduleRetry(){');
+const retryEnd = source.indexOf('function clearDeltaRemotePoll()', retryStart);
+assert.ok(retryStart >= 0 && retryEnd > retryStart,
+  'the real account retry scheduler must remain available for regression testing');
+function makeRetrySandbox(ownerId, ready = true) {
+  const sandbox = {
+    retryTimer: null, retryAttempt: 0, syncing: false, initializing: false, ready,
+    session: { user: { id: 'account-A' } }, OWNER_KEY: 'nexus.cloud.last-user-id',
+    localStorage: { getItem: key => key === 'nexus.cloud.last-user-id' ? ownerId : null },
+    navigator: { onLine: true }, window: { NexusCloudSyncRecovery: recovery },
+    isUnsafeCloudOrigin: () => false, el: id => id === 'cloudStatus' ? { textContent: 'Sync delayed - local data ready' } : null,
+    uploadCalls: 0, connectCalls: 0, retryCallback: null,
+    upload() { this.uploadCalls++; }, connect() { this.connectCalls++; },
+    setTimeout(callback) { this.retryCallback = callback; return 7; }, clearTimeout() {}
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(source.slice(retryStart, retryEnd) +
+    '\\nglobalThis.runScheduleRetry = scheduleRetry;', sandbox,
+    { filename: 'account-handoff-retry.js' });
+  return sandbox;
+}
+const ownerVerifiedRetry = makeRetrySandbox('account-A');
+ownerVerifiedRetry.runScheduleRetry();
+assert.equal(typeof ownerVerifiedRetry.retryCallback, 'function',
+  'a delayed local-ready account must schedule its normal bounded retry');
+ownerVerifiedRetry.retryCallback();
+assert.equal(ownerVerifiedRetry.uploadCalls, 1,
+  'a local-ready retry must resume the authenticated account sync coordinator');
+assert.equal(ownerVerifiedRetry.connectCalls, 0,
+  'a local-ready retry must not rerun account initialization or show the workspace-loading handoff');
+const wrongOwnerRetry = makeRetrySandbox('account-B');
+wrongOwnerRetry.runScheduleRetry();
+wrongOwnerRetry.retryCallback();
+assert.equal(wrongOwnerRetry.uploadCalls, 0,
+  'a retry must never sync when the cached workspace belongs to a different account');
+assert.equal(wrongOwnerRetry.connectCalls, 1,
+  'a workspace-owner mismatch must use the guarded full account-verification path');
+const unreadyRetry = makeRetrySandbox('account-A', false);
+unreadyRetry.runScheduleRetry();
+unreadyRetry.retryCallback();
+assert.equal(unreadyRetry.uploadCalls, 0,
+  'an account without a verified local workspace must not skip initialization');
+assert.equal(unreadyRetry.connectCalls, 1,
+  'an unready account must retain the normal account-verification retry');
+
 // Account ownership changes must synchronously hide the prior workspace before the
 // browser can paint while the MutationObserver refreshes the visible isolation card.
 const workspaceLockStart = source.indexOf('function lockWorkspaceBeforeAccountChange(');
