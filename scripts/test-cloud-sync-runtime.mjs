@@ -150,6 +150,8 @@ assert.ok(retryStart >= 0 && retryEnd > retryStart,
   'the real account retry scheduler must remain available for regression testing');
 function makeRetrySandbox(ownerId, ready = true) {
   const sandbox = {
+    authSessionVerificationPending: false,
+    verifyCurrentAuthSessionAfterMismatch() {},
     retryTimer: null, retryAttempt: 0, syncing: false, initializing: false, ready,
     session: { user: { id: 'account-A' } }, OWNER_KEY: 'nexus.cloud.last-user-id',
     localStorage: { getItem: key => key === 'nexus.cloud.last-user-id' ? ownerId : null },
