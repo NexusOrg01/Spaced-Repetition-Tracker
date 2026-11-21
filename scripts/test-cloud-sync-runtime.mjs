@@ -616,6 +616,8 @@ assert.equal(keepLocalSandbox.ready,false,
   'an owner mismatch must continue to fail closed');
 assert.equal(keepLocalSandbox.statusValue,'Account verification delayed',
   'an owner mismatch must retain the explicit verification-delayed state');
+assert.ok((initializationSource.match(/preserveLocalWorkspaceAfterSyncFailure\\(newUserId/g)||[]).length>=10),
+  'initialization, account-handoff, and merge verification failures must preserve an owner-verified local workspace and schedule retry');
 assert.ok(uploadSource.includes('ready=ownerStillMatches')&&
   uploadSource.includes("scheduleRetry();return false;")&&
   uploadSource.includes("status(ownerStillMatches?'Sync pending':'Sync error')"),
