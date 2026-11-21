@@ -2118,6 +2118,47 @@
       request.onsuccess=()=>set(request.result||null);
     });
   }
+  // Cheap, owner/revision-aware readiness probe for snapshot handoff. It reads only
+  // the manifest and two generation roots; it never scans or materializes the large
+  // entity collection merely to decide whether a full rebuild can be skipped.
+  async function getWorkspaceEntityProjectionReadiness(ownerId){
+    const owner=entityOwnerKey(ownerId);
+    const unavailable=reason=>({ready:false,ownerId:owner,reason});
+    if(entityRemovalOwners.has(owner))return unavailable('workspace-removal-locked');
+    if(!enabled||!database)return unavailable('indexeddb-unavailable');
+    if(committedOwnerId!==owner)return unavailable('owner-mismatch');
+    if(entityRecoveryLockedOwners.has(owner))return unavailable('recovery-locked');
+    const manifest=await readEntityManifest(owner);
+    if(!manifest||manifest.ownerId!==owner||manifest.status!=='ready'||
+       manifest.formatVersion!==1||typeof manifest.activeGeneration!=='string'||!manifest.activeGeneration||
+       !Number.isSafeInteger(Number(manifest.rowCount))||Number(manifest.rowCount)<2||
+       !manifest.counts||typeof manifest.counts!=='object'||Array.isArray(manifest.counts)||
+       manifest.pendingRecoveryIntentId||manifest.pendingGeneration){
+      return unavailable('manifest-not-ready');
+    }
+    const workspaceRevision=await readWorkspaceRevision(owner);
+    if(!Number.isSafeInteger(workspaceRevision)||
+       !Number.isSafeInteger(Number(manifest.sourceWorkspaceRevision))||
+       Number(manifest.sourceWorkspaceRevision)!==workspaceRevision){
+      return unavailable('stale-workspace-revision');
+    }
+    const roots=await readWorkspaceEntityRoots(owner,manifest.activeGeneration);
+    if(!roots||!roots.tracker||!roots.features)return unavailable('active-generation-roots-invalid');
+    // Close races with account rotation, a new manifest, or a workspace commit.
+    const [latestManifest,latestWorkspaceRevision]=await Promise.all([
+      readEntityManifest(owner),readWorkspaceRevision(owner)
+    ]);
+    if(!enabled||committedOwnerId!==owner||entityRemovalOwners.has(owner)||
+       entityRecoveryLockedOwners.has(owner)||!latestManifest||latestManifest.ownerId!==owner||
+       latestManifest.status!=='ready'||latestManifest.activeGeneration!==manifest.activeGeneration||
+       latestManifest.pendingGeneration||latestManifest.pendingRecoveryIntentId||
+       latestWorkspaceRevision!==workspaceRevision||
+       Number(latestManifest.sourceWorkspaceRevision)!==workspaceRevision){
+      return unavailable('projection-changed-during-readiness-check');
+    }
+    return {ready:true,ownerId:owner,generation:manifest.activeGeneration,
+      workspaceRevision,rowCount:Number(manifest.rowCount)};
+  }
   async function waitForWorkspaceEntitySync(ownerId){
     const owner=entityOwnerKey(ownerId);
     if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner){
@@ -3199,6 +3240,7 @@
     getWorkspaceEntityRevisionKey,
     migrateWorkspaceEntities,
     readWorkspaceEntities,
+    getWorkspaceEntityProjectionReadiness,
     beginWorkspaceEntityRecovery,
     readWorkspaceEntityRecovery,
     markWorkspaceEntityRecoveryPublished,
