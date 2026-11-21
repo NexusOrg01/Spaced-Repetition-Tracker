@@ -643,14 +643,24 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,parentSignal
   // Legacy cloud snapshots and older cached runtimes may not expose FSRS preferences.
   // The scheduler-settings compatibility key must always receive a valid JSON value.
   if(!nextFeatures.fsrsSettings||typeof nextFeatures.fsrsSettings!=='object'||Array.isArray(nextFeatures.fsrsSettings))nextFeatures.fsrsSettings={request_retention:0.9,maximum_interval:120,enable_fuzz:false,w:null};
+  const trackerSnapshotJson=JSON.stringify(safeState),featureSnapshotJson=JSON.stringify(nextFeatures);
   const entries=[
-    {key:window.NexusStorageKey,value:JSON.stringify(safeState)},
-    {key:window.NexusFeatureStorageKey,value:JSON.stringify(nextFeatures)},
+    {key:window.NexusStorageKey,value:trackerSnapshotJson},
+    {key:window.NexusFeatureStorageKey,value:featureSnapshotJson},
     {key:'nexus.fsrs.cards.v1',value:JSON.stringify(Object.fromEntries((safeState.topics||[]).filter(topic=>topic&&topic.fsrs).map(topic=>[String(topic.id),topic.fsrs])))},
      {key:'nexus.fsrs.settings.v1',value:JSON.stringify(nextFeatures.fsrsSettings)}
   ];
   if(ownerId)entries.push({key:OWNER_KEY,value:String(ownerId)});
-  const revisionEntry=window.NexusWorkspaceEntityRevisionEntry?.(ownerId);
+  // A→B→A may restore the exact same durable owner snapshot. Avoid advancing its
+  // workspace revision in that case, otherwise its already-current entity generation
+  // would be needlessly marked stale and rebuilt.
+  let unchangedDurableSnapshot=false;
+  const storage=window.NexusStorage;
+  if(ownerId&&storage&&typeof storage.isWorkspaceSnapshotCurrent==='function'){
+    unchangedDurableSnapshot=await storage.isWorkspaceSnapshotCurrent(String(ownerId),trackerSnapshotJson,featureSnapshotJson);
+  }
+  if(applyEpoch!==sessionEpoch||(applyOwnerId&&sessionOwnerId!==applyOwnerId))throw syncCancelledError();
+  const revisionEntry=unchangedDurableSnapshot?null:window.NexusWorkspaceEntityRevisionEntry?.(ownerId);
   if(revisionEntry)entries.push(revisionEntry);
   // Free redundant snapshot space before applying a cloud workspace to this browser.
   if(window.NexusOfflineSyncQueue&&typeof window.NexusOfflineSyncQueue.compactMetadata==='function')window.NexusOfflineSyncQueue.compactMetadata(localStorage);
