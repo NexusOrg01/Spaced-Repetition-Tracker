@@ -468,7 +468,11 @@ async function fetchRemote(userId,knownWrite,signal){
    remote={...remote,payload:knownWrite.payload,storageMode:'chunked',chunkManifest:remote.payload};
   }else{
    try{
+   const chunkReadStartedAt=Date.now();
     const reconstructed=await scope.race(chunks.readSnapshot(client,uid,remote.payload,activeSignal),'cloud chunk reconstruction');
+   syncDiag('cloud-chunk-read',null,{durationMs:Date.now()-chunkReadStartedAt,
+    chunkCount:Number.isSafeInteger(remote.payload.chunkCount)?remote.payload.chunkCount:null,
+    payloadUtf8Bytes:Number.isSafeInteger(remote.payload.totalBytes)?remote.payload.totalBytes:null});
     await assertActiveUser(uid,readEpoch);
     remote={...remote,payload:reconstructed,storageMode:'chunked',chunkManifest:remote.payload};
    }catch(chunkError){
@@ -1975,7 +1979,7 @@ async function upload(){
    const verifiedBase=queue&&typeof queue.getBase==='function'
     ?queue.getBase(localStorage,uploadUserId):null;
    if(verifiedBase&&verifiedBase.serverVersion===lastRemoteStamp&&
-      await sameWorkspace(verifiedBase,snapshot())){
+      await sameWorkspace(verifiedBase,snapshot(),uploadScope.signal)){
     if(queue)queue.rememberStamp(localStorage,uploadUserId,lastRemoteStamp);
     const deltaBootstrap=await uploadScope.race(tryProductionDeltaAfterVerifiedSnapshot(
      uploadUserId,uploadScope.signal,'verified_existing_snapshot_baseline'),'verified Delta enrollment');
@@ -1994,7 +1998,7 @@ async function upload(){
   if(window.NexusRepairCurriculumState&&window.NexusStorageKey&&queue){
    const beforeRepairState=state;
    state=window.NexusRepairNormalizedCurriculumState?window.NexusRepairNormalizedCurriculumState(state):window.NexusRepairCurriculumState(state);
-   if(!(await sameWorkspace({state:beforeRepairState,featureState:{}},{state,featureState:{}}))){
+   if(!(await sameWorkspace({state:beforeRepairState,featureState:{}},{state,featureState:{}},uploadScope.signal))){
     const repairPayload={state:clone(state),featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}};
     queue.commitWorkspace(localStorage,[{key:window.NexusStorageKey,value:JSON.stringify(state)}],repairPayload,{baseServerVersion:pending?pending.baseServerVersion:(priorStamp||null),returnOperationPayload:false});
     pending=queue.getPending(localStorage,uploadUserId);
@@ -2005,7 +2009,7 @@ async function upload(){
   if(pending){
    const before=await fetchRemote(uploadUserId,null,uploadScope.signal);
    await assertUploadOwner();
-   if(before&&before.payload&&(await sameWorkspace(before.payload,payload))){
+   if(before&&before.payload&&(await sameWorkspace(before.payload,payload,uploadScope.signal))){
      syncDiag('upload-skipped-cloud-already-matches',before.payload,{matchesAttempted:true});
     lastRemoteStamp=before.updated_at||null;
     queue.rememberBase(localStorage,uploadUserId,before.payload,lastRemoteStamp);
@@ -2024,7 +2028,7 @@ async function upload(){
    const writeResult=await uploadScope.race(writeRemoteSnapshot(uploadUserId,payload,pending.baseServerVersion,stamp,uploadScope.signal),'cloud snapshot upload');
    const verify=await fetchRemote(uploadUserId,writeResult,uploadScope.signal);
    await assertUploadOwner();
-   const verificationMatches=!!(verify&&verify.payload&&await sameWorkspace(verify.payload,payload));syncDiag('upload-verification-readback',verify&&verify.payload,{readbackHasPayload:!!(verify&&verify.payload),matchesAttempted:verificationMatches});if(!verificationMatches){const conflict=new Error('The remote cloud snapshot changed during write verification.');conflict.code='NEXUS_CLOUD_CONFLICT';throw conflict;}
+   const verificationMatches=!!(verify&&verify.payload&&await sameWorkspace(verify.payload,payload,uploadScope.signal));syncDiag('upload-verification-readback',verify&&verify.payload,{readbackHasPayload:!!(verify&&verify.payload),matchesAttempted:verificationMatches});if(!verificationMatches){const conflict=new Error('The remote cloud snapshot changed during write verification.');conflict.code='NEXUS_CLOUD_CONFLICT';throw conflict;}
    lastRemoteStamp=verify.updated_at||stamp;
    queue.rememberBase(localStorage,uploadUserId,verify.payload,lastRemoteStamp);
    queue.acknowledge(localStorage,uploadUserId,pending.operationId,pending.baseServerVersion,lastRemoteStamp);
@@ -2061,7 +2065,7 @@ async function upload(){
      await assertUploadOwner();
      const latest=await fetchRemote(uploadUserId,null,uploadScope.signal);
      await assertUploadOwner();
-     if(latest&&latest.payload&&(await sameWorkspace(latest.payload,attemptedPayload))){
+     if(latest&&latest.payload&&(await sameWorkspace(latest.payload,attemptedPayload,uploadScope.signal))){
       lastRemoteStamp=latest.updated_at||null;
       // A matching read-back proves this exact snapshot is the new cloud baseline,
       // even when the conditional write returned an ambiguous conflict response.
