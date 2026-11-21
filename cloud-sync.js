@@ -691,6 +691,13 @@ async function applyWorkspaceSnapshot(nextState,rawFeatures,ownerId,parentSignal
   renderAll();
   const activeView=typeof document!=='undefined'&&typeof document.querySelector==='function'?document.querySelector('.view.active'):null;if(activeView&&activeView.id==='view-studyhub'&&window.NexusRenderHub)window.NexusRenderHub();
   syncDiag('workspace-render',diagnosticWorkspace(),{durationMs:Date.now()-renderStartedAt,ok:true,ownerVerified:!!(ownerId&&localStorage.getItem(OWNER_KEY)===String(ownerId))});
+  // Persist the incoming owner marker before checking projection readiness. The
+  // atomic compatibility write is queued through NexusStorage; until it is flushed,
+  // committedOwnerId can still name the outgoing account. Checking readiness first
+  // falsely rejects a valid returning-account projection and can trigger a full
+  // 77k-record rebuild before cloud verification is even allowed to start.
+  await flushDurableLocalWrites(parentSignal);
+  if(applyEpoch!==sessionEpoch||(applyOwnerId&&sessionOwnerId!==applyOwnerId))throw syncCancelledError();
   // Delta publication/pull remains gated by waitForWorkspaceEntitySync. Rendering
   // compatibility data is not evidence that its entity projection is current.
   if(typeof window.NexusRebuildEntityProjection==='function'){
