@@ -68,6 +68,82 @@ assert.equal(statusRecoverySandbox.recoverStatus('account-A', 11), false,
 assert.match(source, /const statusWatchdog=setTimeout\([\s\S]*?\},30000\)/,
   'long-running account initialization must replace an indefinite loading label with a progress warning');
 
+// Account ownership changes must synchronously hide the prior workspace before the
+// browser can paint while the MutationObserver refreshes the visible isolation card.
+const workspaceLockStart = source.indexOf('function lockWorkspaceBeforeAccountChange(');
+const workspaceLockEnd = source.indexOf('function connect()', workspaceLockStart);
+assert.ok(workspaceLockStart >= 0 && workspaceLockEnd > workspaceLockStart,
+  'account handoff must synchronously lock the workspace during session rotation');
+const accountLockApp = { inert: false };
+const accountLockOverlay = {
+  hidden: true,
+  attributes: {},
+  setAttribute(name, value) { this.attributes[name] = value; }
+};
+const accountLockRoot = { dataset: { workspaceAuth: 'ready' } };
+const accountLockDocument = {
+  documentElement: accountLockRoot,
+  querySelector(selector) { return selector === '.app' ? accountLockApp : null; },
+  getElementById(id) { return id === 'workspaceIsolationLock' ? accountLockOverlay : null; }
+};
+const rotationSandbox = {
+  document: accountLockDocument,
+  sessionEpoch: 4,
+  sessionOwnerId: 'account-A',
+  sessionAbortController: null,
+  activeInitializationScope: null,
+  activeUploadScope: null,
+  connectAttemptId: 8,
+  connectPromise: null,
+  timer: null,
+  clearTimeout,
+  clearRetry() {},
+  pendingSync: false,
+  hostedDeltaPollingEnabled: true,
+  clearDeltaRemotePoll() {},
+  ready: true,
+  AbortController
+};
+vm.createContext(rotationSandbox);
+vm.runInContext(source.slice(workspaceLockStart, workspaceLockEnd) +
+  '\nglobalThis.rotateForTest = rotateSessionContext;', rotationSandbox,
+  { filename: 'account-handoff-lock-test.js' });
+const switchedEpoch = rotationSandbox.rotateForTest({ user: { id: 'account-B' } });
+assert.equal(switchedEpoch, 5, 'the account switch must rotate its session epoch');
+assert.equal(accountLockRoot.dataset.workspaceAuth, 'pending',
+  'the document must enter the hidden state synchronously on account change');
+assert.equal(accountLockApp.inert, true,
+  'the prior account app must become non-interactive before asynchronous guard refresh');
+assert.equal(accountLockOverlay.hidden, false,
+  'the isolation card must be displayed immediately while the new account loads');
+assert.equal(accountLockOverlay.attributes['aria-hidden'], 'false',
+  'the isolation card must remain exposed to assistive technology while locked');
+accountLockRoot.dataset.workspaceAuth = 'ready';
+accountLockApp.inert = false;
+accountLockOverlay.hidden = true;
+assert.equal(rotationSandbox.rotateForTest({ user: { id: 'account-B' } }), 5,
+  'a duplicate auth event for the same owner must not rotate the account epoch');
+assert.equal(accountLockRoot.dataset.workspaceAuth, 'ready',
+  'a same-owner auth refresh must not unnecessarily re-lock the active workspace');
+
+const indexHtml = readFileSync(resolve(root, 'index.html'), 'utf8');
+assert.match(indexHtml,
+  /html\[data-workspace-auth="pending"\] \.app\s*\{\s*visibility:\s*hidden\s*!important;/,
+  'the first-paint pending state must hide the full app before account verification');
+assert.match(indexHtml,
+  /#workspaceIsolationLock\{[^}]*background:\s*var\(--bg,#09090b\)/,
+  'the account isolation surface must use a fully opaque background');
+assert.doesNotMatch(indexHtml,
+  /#workspaceIsolationLock\{[^}]*background:\s*rgba\(/,
+  'the isolation background must not reveal prior-account content through transparency');
+
+// Timeout errors must carry the actual scope duration and operation label, rather
+// than rewriting 30/60/120-second deadlines as the global 180-second deadline.
+assert.match(source, /syncTimeoutError\(activeOperation,timeoutMs\)/,
+  'a sync scope timeout must report its own configured deadline');
+assert.match(source, /race:\(promise,operation\)=>\{if\(typeof operation==='string'&&operation\.trim\(\)\)activeOperation=operation/,
+  'the timeout diagnostic must name the operation waiting on the scope');
+
 // Hosted Delta must actively pull remote edits; local-save and reconnect-only triggers
 // leave an already-open second device stale indefinitely. Poll only after the gated
 // Delta path has returned a mechanically verified success, and pause while hidden/offline.
