@@ -963,7 +963,7 @@ try {
   // and the final cloud synchronization continue.
   await page.waitForFunction(({ email, userId }) => {
     const account = document.querySelector('#cloudAccount');
-    const app = document.getElementById('app');
+    const app = document.querySelector('.app');
     const lock = document.getElementById('workspaceIsolationLock');
     return !!account && account.textContent.trim() === email &&
       localStorage.getItem('nexus.cloud.last-user-id') === userId &&
