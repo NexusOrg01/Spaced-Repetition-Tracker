@@ -252,6 +252,10 @@ async function downloadSyncDiagnostics(){
  link.href=url;link.download='nexus-sync-diagnostics.json';document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
 }
 function installSyncDiagnosticsButton(){
+ if(!isPreviewDeploymentOrigin()){
+  ['nexusSyncDiagnosticsToggle','nexusSyncDiagnosticsDownload'].forEach(id=>{const button=el(id);if(button)button.remove();});
+  return;
+ }
  const help=el('cloudHelpText'),anchor=help&&help.parentNode?help:null;
  const place=button=>{
   if(anchor){button.style.marginTop='8px';button.style.marginRight='8px';anchor.insertAdjacentElement('afterend',button);}
@@ -283,11 +287,32 @@ function installSyncDiagnosticsButton(){
 function isUnsafeCloudOrigin(){const host=location.hostname.toLowerCase(),url=String(config().url||'').trim();let cloudHost='';try{cloudHost=new URL(url).hostname.toLowerCase();}catch(_){}return cloudHost===new URL(LIVE_SUPABASE_URL).hostname&&host!=='spaced-repetition-tracker-delta.vercel.app'&&host!=='kkmalithmalshan2000-png.github.io';}
 function previewCloudBlockedMessage(){status('Preview · cloud sync disabled');say('Cloud sync is disabled on this preview/local copy to protect real cloud data. Nexus still works offline. To test cloud sync, configure a separate Supabase test project on this device.');}
 let client=null,session=null,syncing=false,syncingEpoch=null,ready=false,deletingAccount=false,deletionServiceCheckedUser=null,deletionServiceAvailable=false,timer=null,retryTimer=null,retryAttempt=0,lastRemoteStamp=null,lastRemoteStorageMode='legacy',supabaseLoadPromise=null,pendingSync=false,lastUserId=null,initializing=false,initializingUserId=null,queuedSession=null,hasQueuedSession=false,sessionEpoch=0,sessionOwnerId=null,sessionAbortController=typeof AbortController==='function'?new AbortController():null,activeInitializationScope=null,activeUploadScope=null,connectAttemptId=0;
-const el=id=>document.getElementById(id),status=m=>{if(el('cloudStatus'))el('cloudStatus').textContent=m;if(m==='Synced')clearRetry();},say=m=>{if(el('cloudHelpText'))el('cloudHelpText').textContent=m;updateConflictRecoveryButton();},config=()=>{if(isPreviewDeploymentOrigin())return {...STAGING_CONFIG};try{return {...DEFAULT_CONFIG,...JSON.parse(localStorage.getItem(CFG_KEY)||'{}')}}catch(_){return {...DEFAULT_CONFIG}}};
+function normalizeSyncUiText(value){
+ return String(value==null?'':value)
+  .replace(/\\n/g,'\n')
+  .replace(/[’‘]/g,"'")
+  .replace(/[“”]/g,'"')
+  .replace(/[–—]/g,'-')
+  .replace(/…/g,'...')
+  .replace(/\s*·\s*/g,' - ')
+  .replace(/;/g,'.');
+}
+function setCloudStatus(value){
+ const node=el('cloudStatus');if(!node)return;
+ const text=normalizeSyncUiText(value);node.textContent=text;
+ const busy=/^(connecting|loading account|checking local and cloud data|comparing local and cloud data|restoring account workspace|reconciling cloud changes|syncing|opening google sign-in|preparing email sign-in|preparing snapshot downgrade)\b/i.test(text);
+ node.setAttribute('aria-busy',String(busy));
+}
+const el=id=>document.getElementById(id),status=m=>{setCloudStatus(m);if(m==='Synced')clearRetry();},say=m=>{if(el('cloudHelpText'))el('cloudHelpText').textContent=normalizeSyncUiText(m);updateConflictRecoveryButton();},config=()=>{if(isPreviewDeploymentOrigin())return {...STAGING_CONFIG};try{return {...DEFAULT_CONFIG,...JSON.parse(localStorage.getItem(CFG_KEY)||'{}')}}catch(_){return {...DEFAULT_CONFIG}}};
 // The callback must return to the exact deployment that initiated sign-in. If Supabase rejects this origin, fix its redirect allow-list; do not pin a callback to an older preview.
 function authRedirectUrl(){const target=new URL(location.pathname,location.origin);target.search='';target.hash='';return target.href;}
 function conflictRecoveryOwner(){return session&&session.user&&session.user.id||localStorage.getItem(OWNER_KEY)||'';}
 function updateConflictRecoveryButton(){
+ if(!isPreviewDeploymentOrigin()){
+  const existingButton=el('nexusConflictRecoveryDownload');
+  if(existingButton)existingButton.remove();
+  return;
+ }
  const help=el('cloudHelpText'),queue=window.NexusOfflineSyncQueue;
  if(!help||!queue||typeof help.insertAdjacentElement!=='function')return;
  let button=el('nexusConflictRecoveryDownload');

@@ -1109,7 +1109,7 @@
   function deleteTopic(id){
     markDeleteDiagnosticPhase('topic:lookup');
     const t=getTopic(id);if(!t)return;
-    if(!confirm(`Delete “${t.name}” from the topic tracker? Existing history entries will be retained.`))return;
+    if(!confirm(`Delete "${t.name}" from the topic tracker? Existing history entries will be retained.`))return;
     markDeleteDiagnosticPhase('topic:undo-snapshot');
     startUndoBulkDelete('Topic deleted.',{silent:true});
     markDeleteDiagnosticPhase('topic:curriculum-tombstone');
@@ -1170,7 +1170,7 @@
     for(const entry of state.history){
       if(entry.subjectId===id||topicIdSet.has(entry.topicId)){historyCount++;historyIds.push(entry.id);}
     }
-    if(!confirm(`Delete subject “${subject.name}” and all its data?\n\nThis permanently removes ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. Undo is available for 15 seconds after deletion. Export a full JSON backup first if unsure.`))return;
+    if(!confirm(`Delete subject "${subject.name}" and all its data?\n\nThis permanently removes ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. Undo is available for 15 seconds after deletion. Export a full JSON backup first if unsure.`))return;
     markDeleteDiagnosticPhase('subject:undo-snapshot');
     startUndoBulkDelete('Subject and its data deleted.',{silent:true});
     markDeleteDiagnosticPhase('subject:curriculum-tombstone');
@@ -1232,7 +1232,7 @@
         historyCount++;historyIds.push(entry.id);
       }
     }
-    if(!confirm(`Delete stream “${stream.name}” and all nested data?\n\nThis permanently removes ${subjectIds.length} subject(s), ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. Undo is available for 15 seconds after deletion. Export a full JSON backup first if unsure.`))return;
+    if(!confirm(`Delete stream "${stream.name}" and all nested data?\n\nThis permanently removes ${subjectIds.length} subject(s), ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. Undo is available for 15 seconds after deletion. Export a full JSON backup first if unsure.`))return;
     markDeleteDiagnosticPhase('stream:undo-snapshot');
     startUndoBulkDelete('Stream and its data deleted.',{silent:true});
     markDeleteDiagnosticPhase('stream:curriculum-tombstone');
@@ -1283,7 +1283,7 @@
   }
   function deleteExam(id){
     markDeleteDiagnosticPhase('exam:lookup');
-    const exam=state.exams.find(item=>item.id===id);if(!exam||!confirm(`Delete “${exam.name}”?`))return;
+    const exam=state.exams.find(item=>item.id===id);if(!exam||!confirm(`Delete "${exam.name}"?`))return;
     markDeleteDiagnosticPhase('exam:undo-snapshot');
     startUndoArrayReplacement('Exam deleted.','exams',{silent:true});
     markDeleteDiagnosticPhase('exam:filter');
@@ -1299,7 +1299,7 @@
   function exportHistory(){const rows=[['Review date','Stream','Subject','Topic','Rating','Rating meaning','Interval days','Next due','Note'],...state.history.map(h=>[h.reviewedAt,h.streamName,h.subjectName,h.topicName,h.rating,RATING_LABELS[h.rating],h.intervalDays,h.dueDate,h.note])];downloadFile(`nexus-history-${today()}.csv`,'\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('History CSV exported.');}
   function exportTopics(){const rows=[['Stream','Subject','Topic','Notes','Last reviewed','Last rating','Next due','Interval days','Review count','Streak','Lapses','Status'],...state.topics.map(t=>{const d=subjectDisplay(t);return[d.stream,d.subject,t.name,t.notes,t.lastReviewed,t.lastRating,t.dueDate,t.intervalDays,t.reviewCount,t.streak,t.lapses,status(t)];})];downloadFile(`nexus-topics-${today()}.csv`,'\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('Topics CSV exported.');}
   async function importBackup(file){if(!file)return;try{const parsed=JSON.parse(await file.text()),raw=parsed?.state||parsed;const restored=normalizeState(raw);if(!restored.topics||!restored.history||!restored.subjects)throw new Error('Required backup sections are missing.');if(!confirm(`Import ${restored.topics.length} topics, ${restored.history.length} history records, and ${restored.exams.length} exams? This replaces current local data.`))return;startUndoWorkspaceReplace('Backup imported.');state=restored;save({replaceEntities:true});renderAll();switchView('overview');notify('Backup restored.',true);}catch(err){alert(`Could not import this backup. ${err.message||'Check the file format.'}`);}finally{$('importFile').value='';}}
-  function clearHistory(){if(!state.history.length){notify('History is already empty.');return;}if(!confirm('DANGER ZONE — Clear every saved review-history entry?\n\nAll rating analytics, review-history exports and historical counts based on these records will be lost. Topic schedules may remain unchanged. Use Undo immediately or restore a backup if this was accidental. Continue?'))return;startUndoHistoryChange('History cleared.');state.history=[];save({replaceEntities:true});renderAll();notify('History cleared; schedules remain unchanged.',true);}
+  function clearHistory(){if(!state.history.length){notify('History is already empty.');return;}if(!confirm('DANGER ZONE - Clear every saved review history entry?\n\nAll rating analytics, review-history exports and historical counts based on these records will be lost. Topic schedules may remain unchanged. Use Undo immediately or restore a backup if this was accidental. Continue?'))return;startUndoHistoryChange('History cleared.');state.history=[];save({replaceEntities:true});renderAll();notify('History cleared. Schedules remain unchanged.',true);}
   function resetAll(){if(!confirm('Reset all local data, including topics, custom streams, subjects, exams, settings and history? Download a backup first if you may need it.'))return;startUndoWorkspaceReplace('Tracker reset.');state=baseState();save({replaceEntities:true});renderAll();switchView('overview');notify('Tracker reset.',true);}
   function applyTheme(){document.documentElement.dataset.theme=state.settings.theme;const themeColor=document.querySelector('meta[name="theme-color"]');if(themeColor){const appBackground=getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();if(appBackground)themeColor.setAttribute('content',appBackground);}$('themeSelect').value=state.settings.theme;$('themeBtn').textContent=state.settings.theme==='light'?'☀':state.settings.theme==='dark'?'☾':'◐';$('themeBtn').title=`Theme: ${state.settings.theme}. Click to cycle.`;}
   function cycleTheme(){const seq=['system','light','dark'];state.settings.theme=seq[(seq.indexOf(state.settings.theme)+1)%seq.length];save({entityChanges:[]});applyTheme();notify(`Theme: ${state.settings.theme}.`);}
@@ -1343,7 +1343,7 @@
     markDeleteDiagnosticPhase('history:lookup');
     const entry=state.history.find(item=>String(item.id)===String(id));
     if(!entry){notify('That review-history entry could not be found. Refresh the history and try again.');return;}
-    if(!confirm('DANGER ZONE — Delete this review record?\n\nThis review will disappear from rating analytics and future history exports. The topic schedule will not change. Undo is available for 15 seconds after deletion. Continue?'))return;
+    if(!confirm('DANGER ZONE - Delete this review record?\n\nThis review will disappear from rating analytics and future history exports. The topic schedule will not change. Undo is available for 15 seconds after deletion. Continue?'))return;
     markDeleteDiagnosticPhase('history:undo-snapshot');
     startUndoHistoryChange('History entry deleted.',{silent:true});
     markDeleteDiagnosticPhase('history:filter');
@@ -1519,13 +1519,13 @@
     // already exposed on window. Do not reassign arrow wrappers here: each wrapper
     // would overwrite its own global binding and recursively call itself.
     window.clearHistory=function(){
-      if(!confirm('Clear ALL history?\\n\\nThis will delete '+state.history.length+' records. Schedules stay but past reviews are retained.\\n\\nExport a backup first!'))return;
+      if(!confirm('Clear ALL history?\n\nThis will delete '+state.history.length+' records. Schedules stay but past reviews are retained.\n\nExport a backup first!'))return;
       if(!confirm('Are you absolutely sure?'))return;
       startUndoHistoryChange('All history cleared.');
       state.history=[];save({replaceEntities:true});renderAll();
     };
     window.resetAll=function(){
-      if(!confirm('Reset ALL data?\\n\\nThis deletes topics, subjects, streams, exams, history and settings. Export a backup first.'))return;
+      if(!confirm('Reset ALL data?\n\nThis deletes topics, subjects, streams, exams, history and settings. Export a backup first.'))return;
       const typed=prompt('To confirm, type RESET in capital letters:');
       if(typed!=='RESET'){alert('Cancelled');return;}
       startUndoWorkspaceReplace('All data reset.');

@@ -232,6 +232,30 @@ assert.ok(completeResetSection.includes('await storage.flush()') && completeRese
 assert.ok(appCore.includes("$('resetBtn').addEventListener('click',()=>{refreshDeletionChoiceUi();$('workspaceDeletionDialog').showModal();});") && appCore.includes("$('workspaceResetOnlyBtn').addEventListener('click',()=>{$('workspaceDeletionDialog').close();resetAll();});"), 'the existing Danger Zone button must open the deletion choice and preserve its separate workspace-only reset action');
 assert.ok(index.includes('the empty workspace syncs to your cloud account') && index.includes('Restore lets you choose REPLACE') && index.includes('durable local copy on this device'), 'storage, restore, and workspace-only deletion UI help must reflect actual workspace behavior');
 assert.ok(!index.includes('does not automatically sync between devices') && !index.includes('This is a simple scheduler, not FSRS.'), 'the setup copy must not retain contradictory sync or legacy scheduler claims');
+const diagnosticsUiStart = cloudSync.indexOf('function installSyncDiagnosticsButton(){');
+const diagnosticsUiEnd = cloudSync.indexOf('function isUnsafeCloudOrigin(){', diagnosticsUiStart);
+assert.ok(diagnosticsUiStart >= 0 && diagnosticsUiEnd > diagnosticsUiStart, 'sync diagnostics UI installer must be present');
+const diagnosticsUi = cloudSync.slice(diagnosticsUiStart, diagnosticsUiEnd);
+assert.ok(diagnosticsUi.includes('if(!isPreviewDeploymentOrigin())') &&
+  diagnosticsUi.includes("el('nexusSyncDiagnosticsToggle')") &&
+  diagnosticsUi.includes("el('nexusSyncDiagnosticsDownload')") &&
+  diagnosticsUi.includes('button.remove()'), 'sync diagnostic controls must be removed in production and retained on previews');
+const conflictUi = section(cloudSync, 'function updateConflictRecoveryButton(){', 'function downloadConflictRecovery(){', 'conflict recovery UI');
+assert.ok(conflictUi.includes('if(!isPreviewDeploymentOrigin())') && conflictUi.includes('existingButton.remove()'),
+  'the conflict recovery control must be hidden in production without removing its backend function');
+assert.ok(cloudSync.includes('function normalizeSyncUiText(value)') && cloudSync.includes('aria-busy'),
+  'cloud status text must be normalized and expose its loading state');
+assert.ok(index.includes('id="workspaceIsolationProgress"') &&
+  index.includes('#cloudStatus[aria-busy="true"]::before') &&
+  index.includes('@keyframes nexus-sync-spin'), 'workspace and sync loading states must render lightweight CSS spinners');
+assert.ok(guard.includes("const progress=doc.getElementById('workspaceIsolationProgress')") &&
+  guard.includes("progress.hidden=['error','offline-mismatch','offline-unassigned'].includes(decision.phase)") &&
+  guard.includes('verification delayed'), 'workspace spinner must be hidden during retry delay and ownership errors');
+assert.ok(appCore.includes("Reset ALL data?\\n\\nThis deletes") &&
+  !appCore.includes("Reset ALL data?\\\\n\\\\nThis deletes"),
+  'workspace reset confirmation must use real line breaks, not visible slash-n markers');
+assert.ok(!appCore.includes('History cleared; schedules remain unchanged.') &&
+  !appCore.includes('DANGER ZONE —'), 'delete confirmations must avoid semicolons and unusual dash characters');
 const dangerScreen = section(index, '<div id="dangerZoneStandalone"', '<dialog id="reviewDialog">', 'Danger Zone screen');
 const setupView = section(index, '<section class="view" id="view-setup">', '<!-- RECALL STUDY HUB ADDON START -->', 'settings view');
 assert.ok(index.includes('Danger Zone: Review History / Data Deletion'), 'the Danger Zone entry must identify review-history, workspace, and account deletion actions');
