@@ -2042,7 +2042,7 @@ async function upload(){
    const writeResult=await uploadScope.race(writeRemoteSnapshot(uploadUserId,payload,priorStamp,stamp,uploadScope.signal),'cloud snapshot upload');
    const verify=await fetchRemote(uploadUserId,writeResult,uploadScope.signal);
    await assertUploadOwner();
-   if(!verify||!verify.payload||!(await sameWorkspace(verify.payload,payload))){const conflict=new Error('The remote cloud snapshot changed during write verification.');conflict.code='NEXUS_CLOUD_CONFLICT';throw conflict;}
+   if(!verify||!verify.payload||!(await sameWorkspace(verify.payload,payload,uploadScope.signal))){const conflict=new Error('The remote cloud snapshot changed during write verification.');conflict.code='NEXUS_CLOUD_CONFLICT';throw conflict;}
    lastRemoteStamp=verify.updated_at||stamp;
    if(queue){
     queue.rememberBase(localStorage,uploadUserId,verify.payload,lastRemoteStamp);
