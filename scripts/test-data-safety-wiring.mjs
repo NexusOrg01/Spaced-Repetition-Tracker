@@ -96,6 +96,12 @@ const hydratedWorkspace = section(cloudSync, 'async function applyWorkspaceSnaps
 const workspaceCommit = hydratedWorkspace.indexOf("await applyScope.race(window.NexusBackupRestoreUtils.commitLocalStorageAtomically(localStorage,entries),'atomic workspace replacement');");
 const workspacePublish = hydratedWorkspace.indexOf('state=safeState;');
 assert.ok(workspaceCommit >= 0 && workspacePublish > workspaceCommit, 'cloud/local workspace hydration must wait for the atomic durable commit before publishing the new in-memory state');
+const localRender = hydratedWorkspace.indexOf('renderAll();');
+const projectionRebuild = hydratedWorkspace.indexOf('window.NexusRebuildEntityProjection({signal:projectionScope.signal})');
+assert.ok(localRender > workspacePublish && projectionRebuild > localRender,
+  'a verified durable compatibility workspace must render before a large projection rebuild completes');
+assert.ok(cloudSync.includes('await storage.waitForWorkspaceEntitySync(ownerId)'),
+  'Delta publication and pull must wait for the owner-bound projection to become current after local-first rendering');
 assert.ok(cloudSync.includes('async function applyRemote(payload,ownerId,serverVersion)') && cloudSync.includes('await applyWorkspaceSnapshot('), 'remote restore and account switching must await durable workspace hydration before reporting the account ready');
 assert.ok(cloudSync.includes('async function applyLocalMerged(localPayload,remotePayload)') && cloudSync.includes('await initScope.race(applyLocalMerged('), 'manual merge must wait for its local durable commit before proceeding to upload or claiming success');
 assert.ok(bootstrap.includes('await window.NexusStorage.bootstrap({ hydrateEntities: true })') && bootstrap.includes('for (const asset of RUNTIME_ASSETS) await loadScript(asset)'), 'app modules must wait for entity-first storage initialization and load sequentially');
