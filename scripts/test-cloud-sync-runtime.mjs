@@ -23,6 +23,113 @@ const commercePack = commerceCatalogue.packs.find(pack => pack.id === 'sl-al-com
 const workspaceMerge = require('../workspace-sync-merge.js');
 const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
 
+// An unchanged outgoing account checkpoint must preserve its valid IndexedDB
+// entity projection. The pending outbox snapshot is still committed under its
+// original owner; only the unnecessary workspace-mutation marker is omitted.
+{
+  const checkpointStart = source.indexOf('async function checkpointPreviousAccountWorkspace(');
+  const checkpointEnd = source.indexOf(
+    'async function recoverCachedWorkspaceForOfflineAccount(', checkpointStart
+  );
+  assert.ok(checkpointStart >= 0 && checkpointEnd > checkpointStart,
+    'the real outgoing-account checkpoint helper must remain available for regression testing');
+
+  let projectionMatches = true;
+  let pending = null;
+  let sequence = 0;
+  const commits = [];
+  const markerKey = 'nexus.workspace.entity-revision:account-A';
+  const sandbox = {
+    OWNER_KEY: 'nexus.cloud.last-user-id',
+    localStorage: {
+      getItem(key) {
+        return key === 'nexus.cloud.last-user-id' ? 'account-A' : null;
+      }
+    },
+    window: {
+      NexusStorageKey: 'recall.study.tracker.v1',
+      NexusFeatureStorageKey: 'recall.study.features.v1',
+      NexusStorage: {
+        async isWorkspaceSnapshotCurrent(ownerId, trackerJson, featureJson) {
+          assert.equal(ownerId, 'account-A');
+          assert.equal(typeof trackerJson, 'string');
+          assert.equal(typeof featureJson, 'string');
+          return projectionMatches;
+        }
+      },
+      NexusWorkspaceEntityRevisionEntry(ownerId) {
+        return { key: 'nexus.workspace.entity-revision:' + ownerId, value: 'changed' };
+      },
+      NexusOfflineSyncQueue: {
+        getPending() { return pending; },
+        getBase() { return null; },
+        getStamp() { return null; },
+        commitWorkspace(storage, entries, checkpoint, options) {
+          sequence++;
+          const operation = { operationId: 'handoff-' + sequence, localSequence: sequence };
+          commits.push({
+            entries: entries.map(entry => ({ key: entry.key, value: entry.value })),
+            checkpoint: JSON.parse(JSON.stringify(checkpoint)),
+            options
+          });
+          pending = {
+            status: 'pending',
+            ownerUserId: 'account-A',
+            payload: JSON.parse(JSON.stringify(checkpoint)),
+            operationId: operation.operationId,
+            localSequence: operation.localSequence
+          };
+          return { operation };
+        }
+      }
+    }
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(
+    source.slice(checkpointStart, checkpointEnd) +
+      '\\nglobalThis.runCheckpoint = checkpointPreviousAccountWorkspace;',
+    sandbox,
+    { filename: 'unchanged-account-checkpoint.js' }
+  );
+
+  const unchangedPayload = {
+    state: { topics: [{ id: 'account-A-topic', name: 'Saved A topic' }] },
+    featureState: { journal: [{ id: 'account-A-journal', text: 'Saved A note' }] }
+  };
+  assert.equal(await sandbox.runCheckpoint('account-A', 'account-B', unchangedPayload), true);
+  assert.equal(commits.length, 1,
+    'an unchanged account must still commit its outgoing pending checkpoint');
+  assert.equal(commits[0].entries.some(entry => entry.key === markerKey), false,
+    'an exact durable snapshot match must not advance the entity workspace revision');
+  assert.equal(pending.ownerUserId, 'account-A',
+    'the pending checkpoint must remain bound to the outgoing account');
+  assert.equal(pending.payload.state.topics[0].id, 'account-A-topic',
+    'the outgoing account tracker records must remain in its pending checkpoint');
+  assert.equal(pending.payload.featureState.journal[0].id, 'account-A-journal',
+    'the outgoing account Study Hub records must remain in its pending checkpoint');
+
+  projectionMatches = false;
+  pending = null;
+  const changedPayload = {
+    state: { topics: [{ id: 'account-A-topic', name: 'Actually changed A topic' }] },
+    featureState: { journal: [] }
+  };
+  assert.equal(await sandbox.runCheckpoint('account-A', 'account-B', changedPayload), true);
+  assert.equal(commits.length, 2);
+  assert.equal(commits[1].entries.some(entry => entry.key === markerKey), true,
+    'a changed durable snapshot must retain the conservative projection-invalidation marker');
+
+  sandbox.window.NexusStorage.isWorkspaceSnapshotCurrent = async () => {
+    throw new Error('simulated IndexedDB verification failure');
+  };
+  pending = null;
+  assert.equal(await sandbox.runCheckpoint('account-A', 'account-B', unchangedPayload), true);
+  assert.equal(commits.length, 3);
+  assert.equal(commits[2].entries.some(entry => entry.key === markerKey), true,
+    'an unavailable durable comparison must fail closed and retain the projection-invalidation marker');
+}
+
+
 // The UI normalizer rewrites the Unicode ellipsis before putting status text
 // into the DOM. Recovery and the 30-second watchdog must match the displayed
 // normalized string, not the pre-normalized source value.
