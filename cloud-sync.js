@@ -25,17 +25,19 @@ function syncCancelledError(message){
  const error=new Error(message||'The active account changed. The previous operation was cancelled safely.');
  error.code='NEXUS_SYNC_CANCELLED';return error;
 }
-function syncTimeoutError(operation){
- const error=new Error(operation
-  ?'Nexus stopped waiting for '+operation+' because its safety deadline expired. Your local workspace and pending changes remain preserved; reconnect to retry.'
-  :'Cloud sync exceeded its 180-second safety deadline. Your local workspace and pending changes remain preserved; Nexus will retry.');
+function syncTimeoutError(operation,timeoutMs=SYNC_REQUEST_TIMEOUT_MS){
+ const seconds=Math.max(1,Math.ceil(Number(timeoutMs)/1000)||Math.ceil(SYNC_REQUEST_TIMEOUT_MS/1000));
+ const detail=operation
+  ?'Nexus stopped waiting for '+operation+' after '+seconds+' seconds.'
+  :'Cloud sync exceeded its '+seconds+'-second safety deadline.';
+ const error=new Error(detail+' Your local workspace and pending changes remain preserved; Nexus will retry safely.');
  error.code='NEXUS_CLOUD_TIMEOUT';return error;
 }
 function createSyncAbortScope(parentSignal,timeoutMs=SYNC_REQUEST_TIMEOUT_MS){
  const inheritedSignal=parentSignal||(activeInitializationScope&&activeInitializationScope.signal)||
   (sessionAbortController&&sessionAbortController.signal)||null;
  const controller=typeof AbortController==='function'?new AbortController():null;
- let expired=false,aborted=false,timer=null,abortReject=null;
+ let expired=false,aborted=false,timer=null,abortReject=null,activeOperation='';
  const abortPromise=new Promise((_,reject)=>{abortReject=reject;});abortPromise.catch(()=>{});
  function abort(reason){
   if(aborted)return;aborted=true;
@@ -50,11 +52,11 @@ function createSyncAbortScope(parentSignal,timeoutMs=SYNC_REQUEST_TIMEOUT_MS){
   if(inheritedSignal.aborted)onParentAbort();
   else inheritedSignal.addEventListener('abort',onParentAbort,{once:true});
  }
- if(timeoutMs>0)timer=setTimeout(()=>{expired=true;abort(syncTimeoutError());},timeoutMs);
+ if(timeoutMs>0)timer=setTimeout(()=>{expired=true;abort(syncTimeoutError(activeOperation,timeoutMs));},timeoutMs);
  return {
   signal:controller?controller.signal:inheritedSignal,timedOut:()=>expired,aborted:()=>aborted,
   abort:()=>abort(syncCancelledError()),
-  race:promise=>Promise.race([Promise.resolve(promise),abortPromise]),
+  race:(promise,operation)=>{if(typeof operation==='string'&&operation.trim())activeOperation=operation;return Promise.race([Promise.resolve(promise),abortPromise]);},
   clear:()=>{if(timer)clearTimeout(timer);if(inheritedSignal)inheritedSignal.removeEventListener('abort',onParentAbort);}
  };
 }
@@ -472,7 +474,8 @@ async function fetchRemote(userId,knownWrite,signal){
   syncDiag('cloud-read',remote&&remote.payload,{hasPayload:!!(remote&&remote.payload),hasUpdatedAt:!!(remote&&remote.updated_at),durationMs,storageMode:remote&&remote.storageMode||'empty',chunkCount:remote&&remote.chunkManifest&&remote.chunkManifest.chunkCount||null,payloadUtf8Bytes:remote&&remote.chunkManifest&&remote.chunkManifest.totalBytes||null});
   return remote;
  }catch(error){
-  if(scope&&scope.timedOut())throw syncTimeoutError();
+  // Preserve the timeout error emitted by this scope: its duration and operation
+  // identify the actual deadline instead of rewriting every failure as 180 seconds.
   throw error;
  }finally{if(scope)scope.clear();}
 }
@@ -1888,7 +1891,8 @@ async function upload(){
   await uploadScope.race(flushDurableLocalWrites(uploadScope.signal),'local sync persistence');status('Synced');uploaded=true;
  }catch(e){
   if(e&&e.code==='NEXUS_SYNC_CANCELLED')return false;
-  if(uploadScope.timedOut())e=syncTimeoutError('cloud synchronization');
+  if(uploadScope.timedOut()&&(!e||e.code!=='NEXUS_CLOUD_TIMEOUT'))
+   e=syncTimeoutError('cloud synchronization',SYNC_REQUEST_TIMEOUT_MS);
   syncDiag('upload-error',attemptedPayload,{errorCategory:syncDiagErrorCategory(e)});
   if(e&&e.code==='NEXUS_CLOUD_CONFLICT'){
    let alreadyCommitted=false;
@@ -2040,9 +2044,25 @@ async function ensureClient(){
  return client;
 }
 let connectPromise=null,offlineReconnectRequired=false;
+function lockWorkspaceBeforeAccountChange(){
+ // Lock synchronously in the auth callback, before a browser paint can expose the
+ // previous account's DOM while the MutationObserver updates the guard overlay.
+ if(typeof document==='undefined')return;
+ const root=document.documentElement;
+ if(root&&root.dataset)root.dataset.workspaceAuth='pending';
+ const app=typeof document.querySelector==='function'?document.querySelector('.app'):null;
+ if(app)app.inert=true;
+ const overlay=typeof document.getElementById==='function'
+  ?document.getElementById('workspaceIsolationLock'):null;
+ if(overlay){
+  overlay.hidden=false;
+  if(typeof overlay.setAttribute==='function')overlay.setAttribute('aria-hidden','false');
+ }
+}
 function rotateSessionContext(nextSession){
  const nextUserId=nextSession&&nextSession.user&&nextSession.user.id||null;
  if(nextUserId===sessionOwnerId&&!(sessionAbortController&&sessionAbortController.signal.aborted))return sessionEpoch;
+ lockWorkspaceBeforeAccountChange();
  sessionEpoch++;sessionOwnerId=nextUserId;
  if(sessionAbortController&&!sessionAbortController.signal.aborted)sessionAbortController.abort();
  sessionAbortController=typeof AbortController==='function'?new AbortController():null;
