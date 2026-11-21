@@ -1088,6 +1088,15 @@ try {
     typeof event.at === 'string' && event.at >= accountAReturnStartedIso &&
     event.ownerVerified === true
   ) || null;
+  const returnProjectionReuse = afterDeadline.slice().reverse().find(event =>
+    event.stage === 'projection-reuse' &&
+    typeof event.at === 'string' && event.at >= accountAReturnStartedIso &&
+    event.ownerVerified === true
+  ) || null;
+  const returnWorkspaceSnapshotCurrent = afterDeadline.slice().reverse().find(event =>
+    event.stage === 'workspace-snapshot-current' &&
+    typeof event.at === 'string' && event.at >= accountAReturnStartedIso
+  ) || null;
   const phaseStages = new Set([
     'account-handoff-outgoing-checkpoint',
     'cloud-chunk-read',
@@ -1163,13 +1172,16 @@ try {
     returnSyncWallMs,
     projectionCheckStarted: phaseTimings.some(event => event.stage === 'projection-check-start'),
     projectionCompletedByDeadline: !!returnProjectionCompletion,
+    projectionReusedByDeadline: !!returnProjectionReuse,
     projectionReadinessReason: phaseTimings.find(event => event.stage === 'projection-readiness')?.reason || null,
-    workspaceSnapshotCurrent: phaseTimings.find(event => event.stage === 'workspace-snapshot-current')?.same ?? null,
+    workspaceSnapshotCurrent: returnWorkspaceSnapshotCurrent?.same ?? null,
     phasesNotObservedByDeadline,
     phaseTimings
   };
-  assert.ok(returnProjectionCompletion,
-    'The returning owner’s IndexedDB projection must be reused or safely rebuilt before the 60-second deadline.');
+  assert.ok(returnWorkspaceSnapshotCurrent && returnWorkspaceSnapshotCurrent.same === true,
+    'A semantically unchanged IndexedDB-cached workspace must preserve its existing workspace revision.');
+  assert.ok(returnProjectionReuse,
+    'The returning owner’s valid IndexedDB entity projection must be reused, not rebuilt, before the 60-second deadline.');
   assert.ok(returnCloudChunkRead && returnCloudRead,
     'The returning account must continue into a fresh, complete 26.9 MB cloud read after cached workspace reveal.');
   assert.equal(pageErrors.length, 0,
@@ -1177,8 +1189,8 @@ try {
   console.log('DLA-08E_APP_LEVEL_TIMING=' + JSON.stringify(appLevelTimingEvidence));
   check('DLA-08E real Nexus Web app renders the returning 26.9 MB owner-verified workspace within 30 seconds',
     cachedRevealWallMs <= 30000 && cachedRevealDurationMs <= 30000);
-  check('DLA-08E real Nexus Web app verifies cloud sync or records a truthful delayed/error outcome within 60 seconds',
-    verifiedWithinDeadline || delayedWithinDeadline);
+  check('DLA-08E real Nexus Web app completes A→B→A cloud verification within 60 seconds on the healthy online fixture',
+    verifiedWithinDeadline);
 } catch (error) {
   try {
     const diagnostics = await page.evaluate(() => ({
