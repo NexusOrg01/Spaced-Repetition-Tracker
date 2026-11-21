@@ -113,7 +113,7 @@ function syncDiagSummary(payload){
 const SYNC_DIAG_STAGES=new Set([
  'auth-event','baseline-restored-from-remote','cloud-chunk-read-error','cloud-read','cloud-read-error','cloud-write-complete','cloud-write-error',
  'curriculum-install-save-requested','delta-auto-downgrade-result','delta-snapshot-downgrade-result','delta-sync-result','delta-recovery-verification','diagnostics-enabled','entity-projection-rebuild','entity-sync-result','initialize-after-cloud-read',
- 'initialize-error','initialize-finished','initialize-local-fallback','initialize-settled','initialize-start','local-save-queue-error',
+ 'initialize-error','initialize-finished','initialize-local-fallback','initialize-settled','initialize-start','initialize-status-watchdog','initialize-stale-status-recovered','local-save-queue-error',
  'local-save-queued','local-storage-flush','offline-account-base-unavailable','offline-account-pending-unavailable',
  'offline-account-queue-rebuilt','offline-account-recovery-error','offline-account-workspace-restored',
  'offline-account-workspace-unavailable','offline-queue-rebuilt-after-size-limit','snapshot-recovery-complete',
@@ -951,6 +951,24 @@ function restoreMissingQueueBaseFromVerifiedRemote(queue,userId,pending,remote){
  },remote.updated_at);
  return true;
 }
+function recoverStaleInitializationStatus(userId,expectedEpoch){
+ if(!userId||sessionEpoch!==expectedEpoch||!session||!session.user||session.user.id!==userId)return false;
+ const currentStatus=el('cloudStatus')?el('cloudStatus').textContent:'';
+ if(!/^(Loading account…|Checking local and cloud data…|Comparing local and cloud data…|Restoring account workspace…)$/.test(currentStatus))return false;
+ const ownerMatches=localStorage.getItem(OWNER_KEY)===userId;
+ if(ready&&ownerMatches){
+  status('Sync pending');
+  say('This account’s workspace is loaded, but final cloud synchronization has not yet been confirmed. Nexus will retry automatically. Keep this browser’s data until the status changes to Synced.');
+  syncDiag('initialize-stale-status-recovered',diagnosticWorkspace(),{previousStatus:currentStatus,ready:true,ownerMatches:true});
+  scheduleRetry();
+ }else{
+  status('Account verification delayed');
+  say('Account verification did not finish. Local data and account separation are protected; Nexus will retry verification automatically. Do not clear this browser’s data.');
+  syncDiag('initialize-stale-status-recovered',diagnosticWorkspace(),{previousStatus:currentStatus,ready:!!ready,ownerMatches});
+  scheduleRetry();
+ }
+ return true;
+}
 async function initializeSession(s){
  const requestedSession=s||null,requestedUserId=requestedSession&&requestedSession.user?requestedSession.user.id:null;
  session=requestedSession;const requestedEpoch=rotateSessionContext(requestedSession);
@@ -964,6 +982,21 @@ async function initializeSession(s){
 }initializing=true;initializingUserId=requestedUserId;
  const initScope=createSyncAbortScope(sessionAbortController&&sessionAbortController.signal,SESSION_INITIALIZATION_TIMEOUT_MS);
  activeInitializationScope=initScope;
+ const statusWatchdog=setTimeout(()=>{
+  if(activeInitializationScope!==initScope||sessionEpoch!==requestedEpoch||
+     !session||!session.user||session.user.id!==requestedUserId)return;
+  const currentStatus=el('cloudStatus')?el('cloudStatus').textContent:'';
+  if(!/^(Loading account…|Checking local and cloud data…|Comparing local and cloud data…|Restoring account workspace…)$/.test(currentStatus))return;
+  if(ready&&localStorage.getItem(OWNER_KEY)===requestedUserId){
+   status('Sync pending');
+   say('The workspace is available, but account synchronization is taking longer than expected. Nexus is continuing verification. Keep this browser’s data.');
+  }else{
+   status('Account verification delayed');
+   say('Account verification is taking longer than expected. The previous account remains isolated; Nexus will continue retrying safely.');
+  }
+  syncDiag('initialize-status-watchdog',diagnosticWorkspace(),{previousStatus:currentStatus,ready:!!ready,ownerMatches:localStorage.getItem(OWNER_KEY)===requestedUserId});
+  scheduleRetry();
+ },30000);
  if(requestedUserId!==lastUserId){hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();}
  try{
   const newSession=requestedSession,newUserId=requestedUserId;
@@ -1131,9 +1164,13 @@ if(ready){await flushDurableLocalWrites();status('Synced');}syncDiag('initialize
  }
  console.error('Nexus account initialization failed',e);scheduleRetry();
 }finally{
- initScope.clear();if(activeInitializationScope===initScope)activeInitializationScope=null;
+ clearTimeout(statusWatchdog);initScope.clear();if(activeInitializationScope===initScope)activeInitializationScope=null;
  syncDiag('initialize-settled',diagnosticWorkspace(),{hasSession:!!(session&&session.user),ready,ownerPresent:!!localStorage.getItem(OWNER_KEY)});
- initializing=false;initializingUserId=null;setControls();scheduleDeltaRemotePoll();if(hasQueuedSession){
+ initializing=false;initializingUserId=null;
+ // Never leave a completed initialization displaying a transient loading status.
+ // Recovery is owner/epoch guarded and never labels unverified cloud state as Synced.
+ recoverStaleInitializationStatus(requestedUserId,requestedEpoch);
+ setControls();scheduleDeltaRemotePoll();if(hasQueuedSession){
  const nextSession=queuedSession||session||null;queuedSession=null;hasQueuedSession=false;
  if(nextSession&&nextSession.user&&nextSession.user.id===lastUserId&&ready){session=nextSession;setControls();}
  else setTimeout(()=>initializeSession(nextSession),0);
