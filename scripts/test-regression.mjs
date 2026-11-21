@@ -235,7 +235,7 @@ assert.ok(studyHub.includes('for(const record of history){') && studyHub.include
   !studyHub.includes('const reviews=history.map(') && !studyHub.includes('const sessions=studyLogs.map('),
   'activity analytics must aggregate source records directly instead of allocating full-size wrapper arrays');
 const ordinarySaveStart=appCore.indexOf('function save(options={}){');
-const ordinarySaveEnd=appCore.indexOf('window.NexusRebuildEntityProjection=()=>{',ordinarySaveStart);
+const ordinarySaveEnd=appCore.indexOf('window.NexusRebuildEntityProjection=',ordinarySaveStart);
 const ordinarySaveBody=ordinarySaveStart>=0&&ordinarySaveEnd>ordinarySaveStart
   ?appCore.slice(ordinarySaveStart,ordinarySaveEnd):'';
 const catalogueRepairStart=appCore.indexOf('onCatalogLoaded:()=>{');
