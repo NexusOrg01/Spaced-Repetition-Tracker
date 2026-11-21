@@ -498,8 +498,33 @@ assert.equal(getElement('cloudStatus').textContent, 'Synced', 'a safe account sw
 assert.ok(queue.hasPending(storage, accountA.id), 'account A pending work must remain parked during the account B session');
 assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'offline-A', 'account B login must not overwrite account A cloud data');
 activeSession = { user: accountA };
+const accountReturnSameAsync=window.NexusWorkspaceSyncMerge.sameAsync;
+const accountReturnSetTimeout=context.setTimeout;
+window.NexusWorkspaceSyncMerge.sameAsync=()=>new Promise(()=>{});
+context.setTimeout=(callback,delay,...args)=>
+  accountReturnSetTimeout(callback,delay===60000?25:delay,...args);
+try{
+ await window.NexusCloudSync.reconnect();
+ assert.equal(window.NexusCloudSync.getAccountState().signedIn,true,
+   'returning to account A during a stalled large-workspace comparison must keep A signed in');
+ assert.equal(window.NexusCloudSync.getAccountState().ready,true,
+   'returning to account A must recover its owner-bound workspace instead of remaining in account loading');
+ assert.equal(storage.getItem(OWNER),accountA.id,
+   'account A local recovery must establish A ownership before it becomes ready');
+ assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id,'second-offline-A',
+   'account A fallback must restore A’s queued data, not account B data');
+ assert.equal(queue.hasPending(storage,accountA.id),true,
+   'account A’s cloud-pending snapshot must remain queued until a later verified retry');
+ assert.equal(getElement('cloudStatus').textContent,'Sync delayed · local data ready',
+   'account A return must leave indefinite loading and show an honest delayed-sync status');
+ assert.notEqual(getElement('cloudStatus').textContent,'Synced',
+   'local-ready fallback must not falsely claim account A cloud verification completed');
+}finally{
+ window.NexusWorkspaceSyncMerge.sameAsync=accountReturnSameAsync;
+ context.setTimeout=accountReturnSetTimeout;
+}
 await window.NexusCloudSync.reconnect();
-for (let i = 0; i < 100 && queue.hasPending(storage, accountA.id); i++) {
+for (let i = 0; i < 200 && queue.hasPending(storage, accountA.id); i++) {
   await new Promise(resolve => setTimeout(resolve, 10));
 }
 assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'second-offline-A', 'returning to account A must upload its own pending snapshot');
