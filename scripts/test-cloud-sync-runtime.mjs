@@ -355,6 +355,9 @@ assert.match(source,
   /authSessionVerificationPending=true;[\s\S]*?verifyCurrentAuthSessionAfterMismatch\(\);/,
   'a mismatched refresh must request authoritative getSession verification rather than silently switching owners');
 assert.match(source,
+  /authSessionVerificationPending=true;\s*if\(activeUploadScope\)activeUploadScope\.abort\(\);/,
+  'an already running cloud upload must be aborted while the auth owner is uncertain');
+assert.match(source,
   /function schedule\(\)\{if\(authSessionVerificationPending\|\|/,
   'normal upload scheduling must pause until a mismatched auth session has been verified');
 assert.match(source,
