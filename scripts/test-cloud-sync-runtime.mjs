@@ -132,6 +132,53 @@ globalThis.runCheckpoint = checkpointPreviousAccountWorkspace;
 }
 
 
+// A verified-clean outgoing account does not need another full workspace
+// checkpoint. Pending edits remain recognized, and missing/invalid bases fail closed.
+{
+  const helperStart=source.indexOf('function inspectOutgoingAccountCheckpoint(');
+  const helperEnd=source.indexOf('async function initializeSession(',helperStart);
+  assert.ok(helperStart>=0&&helperEnd>helperStart,
+    'the real outgoing-account checkpoint classifier must remain available');
+  let pending=null,base=null,baseReads=0;
+  const queueMock={
+    getPending(){return pending;},
+    getBase(){baseReads++;return base;}
+  };
+  const sandbox={queueMock,storage:{},ownerId:'account-A'};
+  vm.createContext(sandbox);
+  vm.runInContext(source.slice(helperStart,helperEnd)+
+    '\nglobalThis.inspect=inspectOutgoingAccountCheckpoint;',sandbox,
+    {filename:'outgoing-account-checkpoint-classifier.js'});
+  const pendingEntry={status:'pending',ownerUserId:'account-A',
+    payload:{state:{topics:[{id:'pending-edit'}]},featureState:{journal:[]}}};
+  pending=pendingEntry;
+  assert.equal(sandbox.inspect(sandbox.queueMock,sandbox.storage,'account-A').mode,'pending',
+    'an owner-bound pending outbox must remain the authoritative outgoing checkpoint');
+  assert.equal(baseReads,0,
+    'a valid pending outbox should not trigger an unnecessary verified-base read');
+  assert.equal(sandbox.inspect(sandbox.queueMock,sandbox.storage,'account-A').pending,pendingEntry,
+    'the classifier must preserve the exact pending owner record');
+  pending=null;
+  base={state:{topics:[{id:'base-topic'}]},featureState:{journal:[]},serverVersion:'server-v1'};
+  assert.equal(sandbox.inspect(sandbox.queueMock,sandbox.storage,'account-A').mode,'verified-clean',
+    'a complete verified base with no pending outbox should allow cache reuse');
+  base={state:{topics:[]},featureState:{journal:[]},serverVersion:null};
+  assert.equal(sandbox.inspect(sandbox.queueMock,sandbox.storage,'account-A').mode,'checkpoint',
+    'a base without a verified server revision must retain conservative checkpointing');
+  base={state:null,featureState:{journal:[]},serverVersion:'server-v2'};
+  assert.equal(sandbox.inspect(sandbox.queueMock,sandbox.storage,'account-A').mode,'checkpoint',
+    'an incomplete base must retain conservative checkpointing');
+  pending={status:'pending',ownerUserId:'different-account',
+    payload:{state:{},featureState:{}}};
+  assert.throws(()=>sandbox.inspect(sandbox.queueMock,sandbox.storage,'account-A'),
+    /pending snapshot is invalid/,
+    'an outbox owned by another account must never be treated as a valid handoff checkpoint');
+  assert.match(source,/previousAccountCheckpointSkipped=true/,
+    'the verified-clean path must explicitly skip the redundant checkpoint');
+  assert.match(source,/checkpointSkipReason:previousAccountCheckpointSkipped\?/,
+    'the skipped checkpoint must remain observable in diagnostics');
+}
+
 // The UI normalizer rewrites the Unicode ellipsis before putting status text
 // into the DOM. Recovery and the 30-second watchdog must match the displayed
 // normalized string, not the pre-normalized source value.
