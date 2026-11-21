@@ -247,7 +247,8 @@ async function downloadSyncDiagnostics(){
  const operational=await collectSyncOperationalDiagnostics();
  const report={app:'Nexus sync diagnostic',schema:4,generatedAt:new Date().toISOString(),
   note:'Privacy-preserving local export. Includes aggregate counts and sync state only; excludes account IDs, email, credentials, topic names, study content, operation IDs, recovery digests and conflict values. Delta server head is the last locally observed value, not a live remote query.',
-  workspace:syncDiagSummary(diagnosticWorkspace()),operational,events:events.slice(-80).map(sanitizeSyncDiagEvent).filter(Boolean)}; const blob=new Blob([JSON.stringify(report,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');
+  workspace:syncDiagSummary(diagnosticWorkspace()),operational,events:events.slice(-80).map(sanitizeSyncDiagEvent).filter(Boolean)};
+ const blob=new Blob([JSON.stringify(report,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');
  link.href=url;link.download='nexus-sync-diagnostics.json';document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
 }
 function installSyncDiagnosticsButton(){
@@ -496,7 +497,8 @@ async function writeRemoteSnapshot(userId,payload,expectedStamp,stamp,signal){
     const result=await chunks.writeSnapshot(client,userId,payload,expectedStamp,stamp,window.NexusBackupRestoreUtils,serialized,signal);
     syncDiag('cloud-write-complete',payload,{durationMs:Date.now()-startedAt,storageMode:'chunked',chunkCount:result.manifest.chunkCount,payloadUtf8Bytes:result.manifest.totalBytes,cleanupDeletedCount:result.cleanupDeletedCount,cleanupBacklogMayRemain:result.cleanupBacklogMayRemain===true,cleanupFailed:result.cleanupFailed===true});
     return result;
-   }catch(error){    // Production can receive the Web build before OPS-01 installs the chunk table.
+   }catch(error){
+    // Production can receive the Web build before OPS-01 installs the chunk table.
     // Keep ordinary legacy JSONB workspaces writable during that interval. Never
     // downgrade a known chunked workspace, and never silently push a payload too
     // large for the conservative legacy compatibility ceiling.
@@ -745,7 +747,8 @@ async function reconcileConcurrentSnapshot(userId,initialRemote,expectedEpoch=se
   const commitStartedAt=Date.now();
   syncDiag('workspace-merge-commit-start',null,{topicCount:nextState.topics?.length||0,conflictCount:result.conflicts.length});
   let rebased;
-  try{   rebased=queue.rebaseWithBase(localStorage,userId,mergedSnapshot,remoteStamp,'automatic-three-way-merge',
+  try{
+   rebased=queue.rebaseWithBase(localStorage,userId,mergedSnapshot,remoteStamp,'automatic-three-way-merge',
     {state:normalizedRemote.state,featureState:normalizedRemote.featureState},
     {workspaceEntries:[
       {key:window.NexusStorageKey,value:JSON.stringify(nextState)},
@@ -994,7 +997,8 @@ async function initializeSession(s){
    status('Account verification delayed');
    say('Account verification is taking longer than expected. The previous account remains isolated; Nexus will continue retrying safely.');
   }
-  syncDiag('initialize-status-watchdog',diagnosticWorkspace(),{previousStatus:currentStatus,ready:!!ready,ownerMatches:localStorage.getItem(OWNER_KEY)===requestedUserId});  scheduleRetry();
+  syncDiag('initialize-status-watchdog',diagnosticWorkspace(),{previousStatus:currentStatus,ready:!!ready,ownerMatches:localStorage.getItem(OWNER_KEY)===requestedUserId});
+  scheduleRetry();
  },30000);
  if(requestedUserId!==lastUserId){hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();}
  try{
@@ -1243,7 +1247,8 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   hostedQaGate=window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA===true&&
    window.NEXUS_ENTITY_DELTA_SYNC_QA_REF==='fix/dla04-entity-projection-guard'&&
    config().url==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&
-   qaProject.origin==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&   exactQaOriginMatches;
+   qaProject.origin==='https://xuwfzibxhxzxxupprxsq.supabase.co'&&
+   exactQaOriginMatches;
  }catch(_){hostedQaGate=false;}
  // DLA-07 removes the per-build owner UUID list. The global Production
  // build opt-in only permits the authenticated owner to ask the private server
@@ -1492,7 +1497,8 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    Number.isSafeInteger(Number(cursor.acknowledgedSequence))&&
    Number.isSafeInteger(Number(cursor.remoteHeadRevision))&&
    Number(cursor.publishRevision)===Number(cursor.remoteHeadRevision)&&
-   cursor.requiresPull===false);  const outbox=cursorCurrent?await storage.readWorkspaceEntityOutboxGroups(
+   cursor.requiresPull===false);
+  const outbox=cursorCurrent?await storage.readWorkspaceEntityOutboxGroups(
    ownerId,Number(cursor.acknowledgedSequence),1000,1048576):null;
   await assertActiveUser(ownerId,operationEpoch);
   const outboxCurrent=!!(localStorage.getItem(OWNER_KEY)===ownerId&&outbox&&!outbox.unavailable&&!outbox.snapshotRequired&&
@@ -1741,7 +1747,8 @@ async function upload(){
   }catch(deltaError){
    if(deltaError&&deltaError.code==='NEXUS_SYNC_CANCELLED')throw deltaError;
    const fallback=await uploadScope.race(tryAutomaticProductionDeltaDowngrade(
-    uploadUserId,uploadScope.signal,deltaError&&deltaError.code||'delta_sync_exception'),'verified Delta downgrade');   if(!fallback||fallback.ok!==true||fallback.mode!=='snapshot')throw deltaError;
+    uploadUserId,uploadScope.signal,deltaError&&deltaError.code||'delta_sync_exception'),'verified Delta downgrade');
+   if(!fallback||fallback.ok!==true||fallback.mode!=='snapshot')throw deltaError;
    deltaResult={skipped:true,mode:'snapshot',reason:'verified_automatic_downgrade'};
   }
   if(deltaResult&&deltaResult.skipped===true){hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();}
@@ -1990,7 +1997,8 @@ function createSafeAuthStorage(storage){
   // A literal "undefined" or other invalid value in Supabase's persisted
   // session key can make auth initialization throw before account sync starts.
   // Repair only the session-token key; never touch Nexus workspace data.
-  const isSessionKey=key=>/^sb-.+-auth-token$/.test(String(key||''));  return {
+  const isSessionKey=key=>/^sb-.+-auth-token$/.test(String(key||''));
+  return {
    getItem(key){
     const raw=storage.getItem(key);
     if(raw===null||!isSessionKey(key))return raw;
@@ -2239,7 +2247,8 @@ async function runHostedQaReplayChecks(){
  if(stateResult.error)return {ok:false,reason:'sync_state_read_failed'};
  const state=stateResult.data;
  if(!state||state.mode!=='delta')return {ok:false,reason:'owner_not_in_delta_mode'};
- const head=Number(state.head_revision),snapshot=Number(state.snapshot_revision),  floor=Number(state.compacted_through_revision);
+ const head=Number(state.head_revision),snapshot=Number(state.snapshot_revision),
+  floor=Number(state.compacted_through_revision);
  if(!Number.isSafeInteger(head)||!Number.isSafeInteger(snapshot)||
     !Number.isSafeInteger(floor)||floor>snapshot||snapshot>head)
   return {ok:false,reason:'invalid_remote_revision_bounds'};
@@ -2489,3 +2498,45 @@ function installHostedQaReplayPanel(){
   ownerBOutput.textContent='Verifying Owner-B identity, row-level isolation, and rejected cross-owner RPC requests…';
   try{ownerBOutput.textContent=JSON.stringify(await runHostedQaOwnerIsolationChecks(),null,2);}
   catch(_){ownerBOutput.textContent=JSON.stringify({ok:false,reason:'owner_b_isolation_check_failed_safely'},null,2);}
+  finally{ownerBButton.disabled=false;ownerBButton.textContent='Run Owner-B isolation checks';}
+ });
+ body.append(replayNote,replayButton,replayOutput,ownerBNote,ownerBButton,ownerBOutput);
+ panel.append(header,body);accountView.append(panel);
+}
+
+async function signOut(){
+ const authClient=client;session=null;rotateSessionContext(null);ready=false;clearTimeout(timer);clearRetry();
+ status('Not signed in · offline ready');say('You are signed out. Continue using this device offline; data remains local.');setControls();
+ if(authClient&&authClient.auth&&typeof authClient.auth.signOut==='function'){
+  const signOutScope=createSyncAbortScope(sessionAbortController&&sessionAbortController.signal,10000);
+  try{await signOutScope.race(authClient.auth.signOut(),'Supabase sign out');}
+  catch(error){if(error&&error.code!=='NEXUS_SYNC_CANCELLED')console.warn('Supabase sign out was interrupted; local account access is already locked.',error);}
+  finally{signOutScope.clear();}
+ }
+}
+window.NexusCloudSync={schedule,upload,reconnect:connect,getAccountState,deleteAccount:deleteCurrentAccount,downgradeEntityDelta,
+ noteCommittedLocalSave:(payload)=>{
+  if(deletingAccount)return;
+  // app-core has already committed this exact snapshot to the account-bound queue.
+  // Do not deep-clone or enqueue it again; only update sync bookkeeping/diagnostics.
+  localMutationRevision++;localQueueHealthy=true;
+  const p=payload&&payload.state?payload:diagnosticWorkspace();
+  syncDiag('workspace-saved-locally',p);
+ },
+ runHostedQaReplayChecks,runHostedQaOwnerIsolationChecks,
+ noteEntitySyncResult:(result,error)=>{
+  if(deletingAccount)return;
+  const mode=result&&typeof result.mode==='string'?result.mode:
+    (error?'error':result&&result.skipped===true?'skipped':'other');
+  syncDiag('entity-sync-result',null,{
+   ok:!error&&!!result&&result.ok!==false&&result.skipped!==true&&
+    ['snapshot-backfill','incremental','unchanged'].includes(mode),
+   skipped:!!(result&&result.skipped===true),
+   entitySyncMode:mode,
+   appliedCount:Number.isSafeInteger(result&&result.applied)?result.applied:null,
+   batchCount:Number.isSafeInteger(result&&result.batches)?result.batches:null,
+   reason:result&&typeof result.reason==='string'?result.reason:null,
+   errorCategory:error?syncDiagErrorCategory(error):null
+  });
+ },
+ recordLocalSave:(payload)=>{const p=payload&&payload.state?payload:snapshot();syncDiag('workspace-saved-locally',p);recordWorkspaceSave(p,'local-save');},recordInstall:(payload)=>{const p=payload&&payload.state?payload:{state:payload||state,featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}};syncDiag('curriculum-install-save-requested',p);recordWorkspaceSave(p,'curriculum-install');}};window.addEventListener('online',resumeAfterConnectivity);window.addEventListener('focus',resumeAfterConnectivity);window.addEventListener('offline',()=>{clearDeltaRemotePoll();if(session){status('Offline · changes saved locally');say('You can continue studying. Local changes are queued for this account and will sync when the connection returns.');}});document.addEventListener('visibilitychange',()=>{if(!document.hidden)resumeAfterConnectivity();});window.addEventListener('pageshow',resumeAfterConnectivity);function startCloudSyncUi(){installSyncDiagnosticsButton();installHostedQaReplayPanel();if(SYNC_DIAG_ENABLED&&document.body&&typeof MutationObserver!=='undefined'){const diagObserver=new MutationObserver(()=>{if(!el('nexusSyncDiagnosticsDownload'))installSyncDiagnosticsButton();});diagObserver.observe(document.body,{childList:true,subtree:true});}el('cloudGoogleSignInBtn')?.addEventListener('click',googleSignIn);el('cloudEmailSignInBtn')?.addEventListener('click',emailSignIn);el('cloudSignOutBtn')?.addEventListener('click',signOut);connect();}if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',startCloudSyncUi,{once:true});else startCloudSyncUi();
