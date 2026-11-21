@@ -262,11 +262,12 @@ assert.ok(cloudSync.includes('function normalizeSyncUiText(value)') &&
   'cloud status text must be normalized and expose both its loading and exact verified state');
 assert.ok(index.includes('id="workspaceIsolationProgress"') &&
   index.includes('#cloudStatus::before') &&
+  index.includes('#cloudStatus[aria-busy="true"]::before') &&
   index.includes('#cloudStatus[data-sync-state="synced"]') &&
-  index.includes('rgba(255,55,92,.28)') &&
-  index.includes('rgba(34,197,94,.27)') &&
+  index.includes('box-shadow:none') &&
+  index.includes('animation:none') &&
   index.includes('@keyframes nexus-sync-spin'),
-  'sync status must keep a rotating indicator visible, glow red for non-Synced states and green only for Synced');
+  'idle sync statuses must use a calm static indicator with no glow; only active sync may spin');
 assert.ok(guard.includes("const progress=doc.getElementById('workspaceIsolationProgress')") &&
   guard.includes("progress.hidden=['error','offline-mismatch','offline-unassigned'].includes(decision.phase)") &&
   guard.includes('verification delayed'), 'workspace spinner must be hidden during retry delay and ownership errors');

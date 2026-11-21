@@ -34,8 +34,8 @@ const TARGET_BYTES = 26900000;
 const INITIAL_TOPICS = 77144;
 const INITIAL_HISTORY = 72001;
 const LARGE_DELETE_COUNT = 12032;
-const SUBJECT_THREE_TOPICS = 240;
-const SUBJECT_THREE_HISTORY = 240;
+const SUBJECT_THREE_TOPICS = 12032;
+const SUBJECT_THREE_HISTORY = 12541;
 const checks = [];
 const check = (name, condition) => {
   assert.ok(condition, name);
@@ -260,7 +260,7 @@ function buildLargeWorkspace() {
   for (let i = 0; i < INITIAL_HISTORY; i++) {
     const isSubjectThree = i < SUBJECT_THREE_HISTORY;
     const topicIndex = isSubjectThree
-      ? INITIAL_TOPICS - SUBJECT_THREE_TOPICS + i
+      ? INITIAL_TOPICS - SUBJECT_THREE_TOPICS + (i % SUBJECT_THREE_TOPICS)
       : (20000 + (i % 40000));
     history.push({
       id: 'history-' + String(i).padStart(6, '0'),
@@ -327,8 +327,8 @@ async function verifyFinalWorkspace(payload) {
     assert.ok(!topicIds.has('topic-' + String(i).padStart(6, '0')),
       'Deleted topic must not be resurrected: ' + i);
   }
-  assert.ok(history.some(row => row.id === 'history-000240'),
-    'Unrelated history must survive the complete subject deletion');
+  assert.ok(history.some(row => row.id === 'history-012541'),
+    'Unrelated history immediately after the large subject cascade must survive');
   assert.ok(topics.some(row => row.id === 'topic-050000'),
     'Unrelated topic must survive large deletion and subject cascade');
 }
@@ -455,6 +455,13 @@ for (let offset = 0; offset < deletionIds.length; offset += 1000) {
   deletionGroups++;
 }
 assert.equal(deletionGroups, 13);
+const subjectThreeTopicCount = initialPayload.state.topics
+  .filter(row => row.subjectId === 'subject-3').length;
+const subjectThreeHistoryCount = initialPayload.state.history
+  .filter(row => row.subjectId === 'subject-3').length;
+check('The large subject fixture reproduces exactly 24,573 topic and review-history records',
+  subjectThreeTopicCount === 12032 && subjectThreeHistoryCount === 12541 &&
+  subjectThreeTopicCount + subjectThreeHistoryCount === 24573);
 const subjectThreeChanges = [];
 for (let i = INITIAL_TOPICS - SUBJECT_THREE_TOPICS; i < INITIAL_TOPICS; i++) {
   subjectThreeChanges.push({
@@ -471,15 +478,25 @@ for (let i = 0; i < SUBJECT_THREE_HISTORY; i++) {
   });
 }
 subjectThreeChanges.push({ collection: 'subjects', id: 'subject-3', operation: 'delete' });
-const subjectDelete = await publishOperation(
-  clientA1, 'phase34-large-subject-delete-' + crypto.randomUUID(), revision, subjectThreeChanges
-);
-assert.equal(subjectDelete.ok, true);
-revision = subjectDelete.revision;
+let subjectDelete = null;
+let subjectDeleteGroups = 0;
+for (let offset = 0; offset < subjectThreeChanges.length; offset += 1000) {
+  subjectDelete = await publishOperation(
+    clientA1,
+    'phase34-large-subject-delete-' + String(subjectDeleteGroups).padStart(2, '0') + '-' + crypto.randomUUID(),
+    revision,
+    subjectThreeChanges.slice(offset, offset + 1000)
+  );
+  assert.equal(subjectDelete.ok, true,
+    'Large subject-deletion group must publish at revision ' + (revision + 1));
+  revision = subjectDelete.revision;
+  subjectDeleteGroups++;
+}
 check('More than 12,000 topic deletions publish as 13 bounded complete groups',
   LARGE_DELETE_COUNT === 12032 && deletionGroups === 13);
-check('Complete subject deletion covers all 240 owned topics, 240 reviews and the subject row',
-  subjectDelete.ok === true && subjectThreeChanges.length === 481);
+check('Complete subject deletion removes 12,032 topics and 12,541 reviews in 25 bounded groups',
+  !!(subjectDelete && subjectDelete.ok === true) &&
+  subjectThreeChanges.length === 24574 && subjectDeleteGroups === 25);
 
 const beforeCompaction = await readAllGroups(clientA1, 0, revision);
 const compactedWorkspace = delta.reconstructRemoteSnapshot(
@@ -487,9 +504,9 @@ const compactedWorkspace = delta.reconstructRemoteSnapshot(
 );
 assert.equal(compactedWorkspace.ok, true);
 await verifyFinalWorkspace(compactedWorkspace.payload);
-check('Remote reconstruction preserves 64,872 topics and 71,761 unrelated history records',
-  compactedWorkspace.payload.state.topics.length === 64872 &&
-  compactedWorkspace.payload.state.history.length === 71761);
+check('Remote reconstruction preserves exactly 53,080 topics and 59,460 unrelated history records',
+  compactedWorkspace.payload.state.topics.length === 53080 &&
+  compactedWorkspace.payload.state.history.length === 59460);
 check('No deleted topic or deleted subject-owned review is resurrected',
   !compactedWorkspace.payload.state.topics.some(row => row.subjectId === 'subject-3') &&
   !compactedWorkspace.payload.state.history.some(row => row.subjectId === 'subject-3'));
@@ -519,6 +536,22 @@ assert.equal(remainingReceiptsAfterCompaction.data.length, 0);
 check('A1 publishes a verified replacement snapshot and compacts the old operation history through revision ' + revision,
   compactedPublication.verified === true && compactionCleanup.complete === true &&
   remainingOpsAfterCompaction.data.length === 0 && remainingReceiptsAfterCompaction.data.length === 0);
+const compactedSnapshotReadBack = await readSnapshotRow(clientA1, ownerA);
+await verifyFinalWorkspace(compactedSnapshotReadBack.payload);
+assert.deepEqual(
+  compactedSnapshotReadBack.payload.state.topics.map(row => row.id).sort(),
+  compactedWorkspace.payload.state.topics.map(row => row.id).sort(),
+  'The verified replacement snapshot must contain the exact surviving topic IDs after subject deletion.'
+);
+assert.deepEqual(
+  compactedSnapshotReadBack.payload.state.history.map(row => row.id).sort(),
+  compactedWorkspace.payload.state.history.map(row => row.id).sort(),
+  'The verified replacement snapshot must contain the exact surviving history IDs after subject deletion.'
+);
+check('Compacted cloud snapshot read-back matches exact topic/history IDs after the 24,573-record subject deletion',
+  compactedSnapshotReadBack.payload.state.topics.length === 53080 &&
+  compactedSnapshotReadBack.payload.state.history.length === 59460 &&
+  !compactedSnapshotReadBack.payload.state.subjects.some(row => row.id === 'subject-3'));
 
 const remoteTailTopic = compactedWorkspace.payload.state.topics.find(row => row.id === 'topic-050001');
 assert.ok(remoteTailTopic, 'The independent topic edited by both devices must remain after the large deletion');
@@ -921,8 +954,10 @@ try {
     restoreConfirmationPromise,
     restoreClickPromise
   ]);
+  const initialRestoreConfirmedAt = Date.now();
   await waitForAccountAndStatus(appEmailA, ownerA, 'Synced', 180000);
-  const initialAccountRestoreWallMs = Date.now() - initialAccountStartedAt;
+  const initialRestoreToVerifiedMs = Date.now() - initialRestoreConfirmedAt;
+  const initialSignInToVerifiedMs = Date.now() - initialAccountStartedAt;
   const initialEvents = await readAppDiagnostics();
   const initialCloudRead = initialEvents.slice().reverse().find(event =>
     event.stage === 'cloud-read' &&
@@ -932,10 +967,36 @@ try {
   const initialVerification = initialEvents.slice().reverse().find(event =>
     event.stage === 'initial-sync-verification' && event.ok === true
   );
+  const initialInitializationStarted = initialEvents.slice().reverse().find(event =>
+    event.stage === 'initialize-start' &&
+    (!initialVerification || Date.parse(event.at) <= Date.parse(initialVerification.at))
+  ) || null;
+  const initialWatchdog = initialEvents.slice().reverse().find(event =>
+    event.stage === 'initialize-status-watchdog' &&
+    initialInitializationStarted &&
+    Date.parse(event.at) >= Date.parse(initialInitializationStarted.at) &&
+    (!initialVerification || Date.parse(event.at) <= Date.parse(initialVerification.at))
+  ) || null;
   assert.ok(initialCloudRead,
     'The real Nexus app must read the exact 26.9 MB / 103-chunk account-A fixture.');
   assert.ok(initialVerification && Number.isSafeInteger(initialVerification.durationMs),
     'The real Nexus app must record initial verified sync timing for account A.');
+  let initialWatchdogDelayMs = null;
+  let initialWatchdogOutcome = 'not-needed';
+  if (initialVerification.durationMs >= 30000) {
+    assert.ok(initialInitializationStarted && initialWatchdog,
+      'A first-time restore exceeding 30 seconds must record the watchdog decision, even when the status already left loading.');
+    initialWatchdogDelayMs = Date.parse(initialWatchdog.at) - Date.parse(initialInitializationStarted.at);
+    assert.ok(Number.isFinite(initialWatchdogDelayMs) && initialWatchdogDelayMs <= 40000,
+      'The initial restore must leave or confirm its loading state by the 30-second watchdog deadline.');
+    assert.ok([
+      'local-ready-unverified',
+      'account-verification-delayed',
+      'already-terminal'
+    ].includes(initialWatchdog.watchdogOutcome),
+    'The 30-second watchdog must record a truthful non-Synced or already-terminal status outcome.');
+    initialWatchdogOutcome = initialWatchdog.watchdogOutcome;
+  }
 
   const signedInB = await signInAppTestAccount(appEmailB, appPasswordB);
   assert.equal(signedInB.userId, ownerB);
@@ -1152,8 +1213,11 @@ try {
     historyRows: INITIAL_HISTORY,
     networkMode: 'online Chromium against disposable local Supabase',
     browserOnline: onlineAtAccountReturn,
-    initialAccountRestoreWallMs,
+    initialSignInToVerifiedMs,
+    initialRestoreToVerifiedMs,
     initialAccountSyncMs: initialVerification.durationMs,
+    initialWatchdogDelayMs,
+    initialWatchdogOutcome,
     initialRemoteReadMs: initialCloudRead.durationMs,
     accountBReadyMs,
     returningAccountOwnerVerified: cachedRenderEvent.ownerVerified === true,

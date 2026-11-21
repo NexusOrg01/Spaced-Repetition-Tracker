@@ -165,13 +165,16 @@ const statusRecoverySandbox = {
   },
   get statusValue() { return this.statusNode.textContent; },
   retryCalls: 0,
+  watchdogEvents: [],
   watchdogDelay: null,
   watchdogCallback: null,
   localStorage: { getItem: key => key === 'nexus.cloud.last-user-id' ? 'account-A' : null },
   el: id => id === 'cloudStatus' ? statusRecoverySandbox.statusNode : null,
   status: value => statusRecoverySandbox.setCloudStatus(value),
   say: () => {},
-  syncDiag: () => {},
+  syncDiag: (stage, payload, extra) => {
+    if (stage === 'initialize-status-watchdog') statusRecoverySandbox.watchdogEvents.push(extra || {});
+  },
   diagnosticWorkspace: () => ({}),
   scheduleRetry: () => { statusRecoverySandbox.retryCalls++; },
   setTimeout: (callback, delay) => {
@@ -210,11 +213,53 @@ for (const label of [
 statusRecoverySandbox.setCloudStatus('Sync pending');
 assert.equal(statusRecoverySandbox.statusNode.attributes['data-sync-state'], 'attention',
   'pending verification must remain in the red attention treatment');
+assert.equal(statusRecoverySandbox.statusNode.attributes['aria-busy'], 'false',
+  'idle pending verification must not display an active spinner');
+for (const label of [
+  'Offline · local workspace',
+  'Offline · local workspace loaded',
+  'Offline · changes saved locally',
+  'Not signed in · offline ready',
+  'Snapshot mode · synced'
+]) {
+  statusRecoverySandbox.setCloudStatus(label);
+  assert.equal(statusRecoverySandbox.statusNode.attributes['aria-busy'], 'false',
+    'idle status must not animate its indicator: ' + label);
+}
+for (const label of [
+  'Loading account…',
+  'Checking local and cloud data…',
+  'Reconciling cloud changes…',
+  'Syncing…'
+]) {
+  statusRecoverySandbox.setCloudStatus(label);
+  assert.equal(statusRecoverySandbox.statusNode.attributes['aria-busy'], 'true',
+    'active work must keep the animated indicator: ' + label);
+}
 statusRecoverySandbox.setCloudStatus('Synced');
 assert.equal(statusRecoverySandbox.statusNode.attributes['data-sync-state'], 'synced',
   'only the exact Synced state may use the green treatment');
 assert.equal(statusRecoverySandbox.statusNode.attributes['aria-busy'], 'false',
   'verified Synced state must not be marked busy');
+
+const indexHtml = readFileSync(resolve(root, 'index.html'), 'utf8');
+const statusStyleStart = indexHtml.indexOf('<style id="nexus-sync-progress-indicators">');
+const statusStyleEnd = indexHtml.indexOf('</style>', statusStyleStart);
+assert.ok(statusStyleStart >= 0 && statusStyleEnd > statusStyleStart,
+  'the real sync status CSS must remain available for regression testing');
+const statusStyle = indexHtml.slice(statusStyleStart, statusStyleEnd);
+const idleStatusRule = statusStyle.match(/#cloudStatus\{([^}]+)\}/);
+const syncedStatusRule = statusStyle.match(/#cloudStatus\[data-sync-state="synced"\]\{([^}]+)\}/);
+assert.ok(idleStatusRule && /box-shadow:none/.test(idleStatusRule[1]),
+  'the default sync indicator must not glow');
+assert.ok(syncedStatusRule && /box-shadow:none/.test(syncedStatusRule[1]),
+  'the Synced indicator must not glow');
+assert.match(statusStyle, /#cloudStatus::before\{[^}]*animation:none/,
+  'idle status must use a static dot');
+assert.match(statusStyle, /#cloudStatus\[aria-busy="true"\]::before\{[^}]*animation:nexus-sync-spin/,
+  'only active status may animate the spinner');
+assert.match(statusStyle, /@media\(prefers-reduced-motion:reduce\)\{[^}]*#cloudStatus\[aria-busy="true"\]::before\{animation:none\}/,
+  'reduced-motion preference must disable active spinner animation');
 
 statusRecoverySandbox.setCloudStatus('Loading account…');
 assert.equal(statusRecoverySandbox.recoverStatus('account-A', 12), true);
@@ -243,6 +288,8 @@ assert.equal(statusRecoverySandbox.watchdogDelay, 30000,
 statusRecoverySandbox.watchdogCallback();
 assert.equal(statusRecoverySandbox.statusValue, 'Sync pending',
   'the 30-second watchdog must recognize the normalized loading label and leave it pending');
+assert.equal(statusRecoverySandbox.watchdogEvents[0].watchdogOutcome, 'local-ready-unverified',
+  'the watchdog diagnostic must record a verified local workspace that still needs cloud verification');
 assert.equal(statusRecoverySandbox.retryCalls, 3,
   'the watchdog must schedule retry after the pending status transition');
 
@@ -251,6 +298,8 @@ statusRecoverySandbox.setCloudStatus('Restoring account workspace…');
 statusRecoverySandbox.watchdogCallback();
 assert.equal(statusRecoverySandbox.statusValue, 'Account verification delayed',
   'the 30-second watchdog must show a verification delay when no verified local workspace is ready');
+assert.equal(statusRecoverySandbox.watchdogEvents[1].watchdogOutcome, 'account-verification-delayed',
+  'the watchdog diagnostic must record the owner-safe delayed state');
 assert.equal(statusRecoverySandbox.retryCalls, 4,
   'the delayed watchdog branch must schedule retry');
 
@@ -258,6 +307,8 @@ statusRecoverySandbox.setCloudStatus('Synced');
 statusRecoverySandbox.watchdogCallback();
 assert.equal(statusRecoverySandbox.statusValue, 'Synced',
   'the watchdog must leave an already terminal verified status unchanged');
+assert.equal(statusRecoverySandbox.watchdogEvents[2].watchdogOutcome, 'already-terminal',
+  'the watchdog diagnostic must distinguish an already-terminal state from a timeout transition');
 assert.equal(statusRecoverySandbox.retryCalls, 4,
   'the watchdog must not schedule another retry after the status is already terminal');
 

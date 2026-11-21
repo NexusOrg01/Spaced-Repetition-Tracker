@@ -151,6 +151,7 @@ function sanitizeSyncDiagEvent(event){
  const booleanFields=['hasPayload','hasUpdatedAt','chunkStorageUnavailable','cleanupBacklogMayRemain','cleanupFailed','priorQueueRetainedForRecovery','storageEnabled','cooperative','queueRebuilt','ready','remoteHadPayload','remoteHasPayload','hasSession','ownerPresent','ownerVerified','ok','resumed','hasQueue','skipped','fromPending','hasPending','matchesAttempted','readbackHasPayload','hadPending','compactionPending','cleanupPending','projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches','baselineRestored','recovered','triggerConflict','triggerSnapshotRequired','triggerRequiresSnapshotReconciliation','cursorRequiresPull','timedOut','same'];
  for(const key of booleanFields){if(typeof event[key]==='boolean')safe[key]=event[key];}
  const enums={
+  watchdogOutcome:['local-ready-unverified','account-verification-delayed','already-terminal'],
   storageMode:['chunked','legacy-schema-compatibility','legacy','empty'],
   reason:['local-save','curriculum-install','sync','resume-existing-journal','conflict-or-snapshot-required','local-outbox-changed-during-merge','compatibility_snapshot_not_represented_by_delta_projection','entity_projection_unavailable','stale_entity_projection','entity_projection_owner_unavailable','entity_projection_rebuild_failed','staging_delta_gate_closed','staging_recovery_journal_pending','server_snapshot_mode','server_sync_state_missing','post_recovery_delta_sync_failed','local_snapshot_baseline_mismatch','compatibility_snapshot_still_pending','local_workspace_differs_from_verified_snapshot','remote_delta_history_precedes_local_baseline','local_delta_cursor_unavailable','local_delta_cursor_generation_mismatch','local_delta_cursor_outside_retention','remote_changes_must_be_applied_first','local_outbox_requires_snapshot','local_outbox_pending','local_outbox_unavailable','local_and_remote_changes_overlap','local_and_remote_changes_overlap_after_partial_publish','invalid_remote_sync_state','unsupported_remote_sync_state','remote_state_changed_during_reconciliation','remote_pull_made_no_progress','local_publish_made_no_progress','delta_sync_round_limit','remote_snapshot_baseline_unverified','remote_read_failed','remote_reconciliation_page_unavailable','remote_reconciliation_made_no_progress','remote_reconciliation_incomplete','remote_reconciliation_group_limit','remote_reconciliation_byte_limit','remote_snapshot_reconstruction_failed','workspace_three_way_merge_unavailable','workspace_three_way_merge_failed','account_or_snapshot_reconciliation_verification_failed','conflict_recovery_commit_failed','delta_snapshot_publication_unverified','local_recovery_revision_unavailable','local_recovery_generation_not_staged','staged_recovery_generation_unavailable','staged_recovery_candidate_digest_mismatch','verified_snapshot_waiting_for_local_recovery_commit','local_recovery_post_commit_verification_failed','queued-base-version-matches-remote-snapshot','local_entity_outbox_unavailable','local_outbox_sequence_gap','invalid_local_outbox_row','local_outbox_generation_mismatch','local_outbox_reader_unavailable','local_outbox_changed_before_acknowledgement','local_outbox_group_mismatch','invalid_local_outbox_high_watermark','local_publish_unavailable','remote_pull_unavailable','operation_publish_failed','snapshot_compaction_local_outbox_not_empty','workspace-removal-locked','indexeddb-unavailable','owner-mismatch','recovery-locked','manifest-not-ready','stale-workspace-revision','active-generation-roots-invalid','projection-changed-during-readiness-check','other'],
   recoveryReason:['local_snapshot_baseline_mismatch','remote_snapshot_baseline_unverified','remote_read_failed','remote_reconciliation_page_unavailable','remote_reconciliation_made_no_progress','remote_reconciliation_incomplete','remote_reconciliation_group_limit','remote_reconciliation_byte_limit','remote_snapshot_reconstruction_failed','workspace_three_way_merge_unavailable','workspace_three_way_merge_failed','account_or_snapshot_reconciliation_verification_failed','conflict_recovery_commit_failed','delta_snapshot_publication_unverified','local_recovery_revision_unavailable','local_recovery_generation_not_staged','staged_recovery_generation_unavailable','staged_recovery_candidate_digest_mismatch','verified_snapshot_waiting_for_local_recovery_commit','local_recovery_post_commit_verification_failed','remote_state_changed_during_reconciliation','local_workspace_changed_during_reconciliation','recovery_intent_create_failed','other'],
@@ -1141,15 +1142,24 @@ async function initializeSession(s){
   if(activeInitializationScope!==initScope||sessionEpoch!==requestedEpoch||
      !session||!session.user||session.user.id!==requestedUserId)return;
   const currentStatus=el('cloudStatus')?el('cloudStatus').textContent:'';
-  if(!isTransientInitializationStatus(currentStatus))return;
-  if(ready&&localStorage.getItem(OWNER_KEY)===requestedUserId){
+  const ownerMatches=localStorage.getItem(OWNER_KEY)===requestedUserId;
+  if(!isTransientInitializationStatus(currentStatus)){
+   syncDiag('initialize-status-watchdog',diagnosticWorkspace(),{
+    ready:!!ready,ownerMatches,watchdogOutcome:'already-terminal'
+   });
+   return;
+  }
+  if(ready&&ownerMatches){
    status('Sync pending');
    say('The workspace is available, but account synchronization is taking longer than expected. Nexus is continuing verification. Keep this browser’s data.');
   }else{
    status('Account verification delayed');
    say('Account verification is taking longer than expected. The previous account remains isolated; Nexus will continue retrying safely.');
   }
-  syncDiag('initialize-status-watchdog',diagnosticWorkspace(),{previousStatus:currentStatus,ready:!!ready,ownerMatches:localStorage.getItem(OWNER_KEY)===requestedUserId});
+  syncDiag('initialize-status-watchdog',diagnosticWorkspace(),{
+   previousStatus:currentStatus,ready:!!ready,ownerMatches,
+   watchdogOutcome:ready&&ownerMatches?'local-ready-unverified':'account-verification-delayed'
+  });
   scheduleRetry();
  },30000);
  if(requestedUserId!==lastUserId){hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();}

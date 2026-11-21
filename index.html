@@ -925,12 +925,13 @@ body :not(dialog):not(.standalone-screen):not(.menu-pop){overscroll-behavior-y:a
 <style id="nexus-sync-progress-indicators">
 .workspace-progress-spinner{width:32px;height:32px;margin:0 auto 16px;border:3px solid rgba(137,120,248,.25);border-top-color:#8978f8;border-radius:50%;animation:nexus-sync-spin .8s linear infinite}
 .workspace-progress-spinner[hidden]{display:none!important}
-#cloudStatus{display:inline-flex!important;align-items:center;justify-content:flex-start;gap:8px;max-width:min(58vw,340px);min-height:34px;padding:7px 11px;border:1px solid rgba(255,91,119,.82);border-radius:11px;background:rgba(255,57,91,.13);color:#ff647f;box-shadow:0 0 0 1px rgba(255,67,103,.12),0 0 13px rgba(255,55,92,.28),inset 0 0 10px rgba(255,55,92,.09);font-size:12px;font-weight:780;line-height:1.25;text-align:left;white-space:normal;overflow-wrap:anywhere;flex:0 1 auto;transition:color .2s ease,border-color .2s ease,background-color .2s ease,box-shadow .2s ease}
-#cloudStatus[data-sync-state="synced"]{border-color:rgba(52,211,123,.82);background:rgba(34,197,94,.13);color:#35d982;box-shadow:0 0 0 1px rgba(52,211,123,.12),0 0 13px rgba(34,197,94,.27),inset 0 0 10px rgba(34,197,94,.09)}
-#cloudStatus::before{content:"";width:12px;height:12px;flex:none;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:nexus-sync-spin .8s linear infinite}
+#cloudStatus{display:inline-flex!important;align-items:center;justify-content:flex-start;gap:8px;max-width:min(58vw,340px);min-height:34px;padding:7px 11px;border:1px solid rgba(190,83,105,.46);border-radius:11px;background:rgba(190,83,105,.07);color:#bc5f75;box-shadow:none;font-size:12px;font-weight:780;line-height:1.25;text-align:left;white-space:normal;overflow-wrap:anywhere;flex:0 1 auto;transition:color .2s ease,border-color .2s ease,background-color .2s ease}
+#cloudStatus[data-sync-state="synced"]{border-color:rgba(65,145,102,.45);background:rgba(65,145,102,.08);color:#398e63;box-shadow:none}
+#cloudStatus::before{content:"";width:8px;height:8px;flex:none;border:0;border-radius:50%;background:currentColor;opacity:.9;animation:none}
+#cloudStatus[aria-busy="true"]::before{width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent;background:transparent;animation:nexus-sync-spin .8s linear infinite}
 @keyframes nexus-sync-spin{to{transform:rotate(360deg)}}
 @media(max-width:540px){#cloudStatus{max-width:54%;gap:6px;padding:6px 8px;font-size:11px}}
-@media(prefers-reduced-motion:reduce){.workspace-progress-spinner,#cloudStatus::before{animation:none}}
+@media(prefers-reduced-motion:reduce){.workspace-progress-spinner,#cloudStatus[aria-busy="true"]::before{animation:none}}
 </style>
 <style id="nexus-action-icon-polish">.nexus-action-icon{width:1.05em;height:1.05em;display:inline-block;vertical-align:-.18em;flex:none;margin-right:.38em}</style>
 
