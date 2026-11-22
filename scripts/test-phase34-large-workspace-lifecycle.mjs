@@ -1108,6 +1108,62 @@ try {
     initialWatchdogOutcome = initialWatchdog.watchdogOutcome;
   }
 
+  // Reproduce a real browser hard refresh while the 26.9 MB workspace is
+  // already owned by Account A. The owner-bound local copy must be revealed
+  // promptly, and a matching verified cloud manifest must not trigger a second
+  // 103-chunk download or a redundant local snapshot replacement.
+  const sameAccountRefreshStartedAt = Date.now();
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(({ email, userId }) => {
+    const account = document.querySelector('#cloudAccount');
+    const app = document.querySelector('.app');
+    const lock = document.getElementById('workspaceIsolationLock');
+    return !!account && account.textContent.trim() === email &&
+      localStorage.getItem('nexus.cloud.last-user-id') === userId &&
+      document.documentElement.dataset.workspaceAuth === 'ready' &&
+      !!app && app.inert === false && !!lock && lock.hidden === true;
+  }, { email: appEmailA, userId: ownerA }, { timeout: 20000 });
+  const sameAccountRefreshWorkspaceRevealMs = Date.now() - sameAccountRefreshStartedAt;
+  const sameAccountRefreshRevealStatus = String(
+    await page.locator('#cloudStatus').textContent() || ''
+  ).trim();
+  assert.ok(sameAccountRefreshWorkspaceRevealMs <= 10000,
+    'A same-account hard refresh must reveal the owner-bound local workspace within 10 seconds.');
+  assert.notEqual(sameAccountRefreshRevealStatus, 'Account verification delayed',
+    'A verified same-account cache must not fall behind the 30-second account-verification watchdog.');
+  await waitForAccountAndStatus(appEmailA, ownerA, 'Synced', 60000);
+  const sameAccountRefreshEvents = await readAppDiagnostics();
+  const sameAccountRefreshEventsAfterStart = sameAccountRefreshEvents.filter(event =>
+    Date.parse(event.at || '') >= sameAccountRefreshStartedAt
+  );
+  const sameAccountCacheRestore = sameAccountRefreshEventsAfterStart.find(event =>
+    event.stage === 'same-account-workspace-restored' && event.ownerVerified === true
+  ) || null;
+  const sameAccountChunkReuse = sameAccountRefreshEventsAfterStart.find(event =>
+    event.stage === 'cloud-chunk-read-skipped' &&
+    event.reason === 'verified_local_baseline_matches_remote_manifest'
+  ) || null;
+  const sameAccountFullChunkRead = sameAccountRefreshEventsAfterStart.find(event =>
+    event.stage === 'cloud-chunk-read'
+  ) || null;
+  const sameAccountVerification = sameAccountRefreshEventsAfterStart.find(event =>
+    event.stage === 'initial-sync-verification' && event.ok === true && event.ready === true
+  ) || null;
+  assert.ok(sameAccountCacheRestore,
+    'A same-account hard refresh must expose the existing owner-verified local workspace before remote snapshot reconstruction.');
+  assert.ok(sameAccountChunkReuse,
+    'A matching verified cloud manifest must reuse the saved baseline instead of downloading all immutable chunks.');
+  assert.equal(sameAccountFullChunkRead, null,
+    'A matching same-account snapshot baseline must not be downloaded again on hard refresh.');
+  assert.ok(sameAccountVerification,
+    'The same-account hard refresh must finish authenticated Delta verification and return to Synced.');
+  console.log('DLA-08E_SAME_ACCOUNT_HARD_REFRESH=' + JSON.stringify({
+    workspaceRevealMs: sameAccountRefreshWorkspaceRevealMs,
+    revealStatus: sameAccountRefreshRevealStatus,
+    verified: true,
+    fullChunkDownloadRepeated: false
+  }));
+
   // Start a same-owner A verification while its large cached workspace is
   // already visible, then deliberately hold the remote read. Switching to B
   // must cancel A's work without dropping A's pending snapshot or blocking B.
