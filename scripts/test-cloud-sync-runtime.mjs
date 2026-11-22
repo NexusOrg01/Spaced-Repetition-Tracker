@@ -1192,6 +1192,16 @@ assert.equal(getElement('cloudStatus').textContent, 'Synced', 'verified recovery
     'the shared operation may be considered complete only after the queue is acknowledged');
   assert.equal(getElement('cloudStatus').textContent,'Synced',
     'both callers must observe a terminal verified sync state');
+  // Restore the deterministic offline-A fixture so the following A→B isolation
+  // tests continue from their original remote/base state.
+  rows.set(accountA.id,currentA);
+  queue.rememberStamp(storage,accountA.id,currentA.updated_at);
+  queue.rememberBase(storage,accountA.id,{
+    state:currentA.payload.state,featureState:currentA.payload.featureState
+  },currentA.updated_at);
+  context.state=currentA.payload.state;
+  storage.setItem(STATE_KEY,JSON.stringify(currentA.payload.state));
+  storage.setItem(FEATURE_KEY,JSON.stringify(currentA.payload.featureState));
 }
  
 const revisionA = rows.get(accountA.id).updated_at;
