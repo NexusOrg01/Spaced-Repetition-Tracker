@@ -796,11 +796,11 @@ assert.equal(authGuardSandbox.sandbox.authInitializationCallbackIsCurrent('accou
   'a queued initialization callback from before the most recent account rotation must be inert');
 
 assert.match(source,
-  /client\.auth\.onAuthStateChange\(\(event,newSession\)=>\{\s*if\(!authStateEventBelongsToCurrentOwner\(event,newSession\)\)\{/,
+  /client\.auth\.onAuthStateChange\(\(event,newSession\)=>\{\s*if\(authSessionVerificationPending\)\{[\s\S]*?return;\}\s*if\(!authStateEventBelongsToCurrentOwner\(event,newSession\)\)\{/,
   'the actual Supabase listener must reject stale refreshes before assigning session or rotating the workspace lock');
 assert.match(source,
-  /if\(authSessionVerificationPending\)clearAuthSessionVerification\(\);\s*session=newSession\|\|null;rotateSessionContext\(session\);/,
-  'a matching current-owner auth event must settle a pending cross-tab verification before controls and sync resume');
+  /if\(authSessionVerificationPending\)clearAuthSessionVerification\(\)/,
+  'no auth event may clear an unresolved verification gate without an authoritative getSession result');
 assert.match(source,
   /authSessionVerificationPending=true;[\s\S]*?verifyCurrentAuthSessionAfterMismatch\(\);/,
   'a mismatched refresh must request authoritative getSession verification rather than silently switching owners');
