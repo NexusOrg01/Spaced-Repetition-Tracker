@@ -458,8 +458,8 @@ function nextCloudStamp(previous){
  return new Date(Number.isFinite(prior)?Math.max(now,prior+1):now).toISOString();
 }
 async function assertActiveUser(userId,expectedEpoch=sessionEpoch){
- if(expectedEpoch!==sessionEpoch||sessionOwnerId!==userId||!session||!session.user||session.user.id!==userId)
-  throw syncCancelledError('The active account changed during sync. No cloud data was applied or written.');
+ if(authSessionVerificationPending||expectedEpoch!==sessionEpoch||sessionOwnerId!==userId||!session||!session.user||session.user.id!==userId)
+  throw syncCancelledError('The active auth session is unverified or the account changed. No cloud data was applied or written.');
 }
 async function fetchRemote(userId,knownWrite,signal,localBaselineReuse){
  const scope=createSyncAbortScope(signal),activeSignal=scope.signal,readEpoch=sessionEpoch;
