@@ -4,6 +4,22 @@ on:
   push:
     branches:
       - "android/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/android-build.yml"
+      - "android/**"
+      - "capacitor.config.*"
+      - "cloud-sync.js"
+      - "nexus-storage.js"
+      - "offline-sync-queue.js"
+      - "cloud-chunk-storage.js"
+      - "entity-delta-sync.js"
+      - "workspace-sync-merge.js"
+      - "scripts/build-android-assets.mjs"
+      - "scripts/test-android-build.mjs"
+      - "scripts/test-phase34-large-workspace-lifecycle.mjs"
+      - "package.json"
   workflow_dispatch:
 
 permissions:
@@ -16,7 +32,7 @@ concurrency:
 jobs:
   android-build:
     name: Build F-Droid debug and unsigned release APKs
-    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[web-only]') }}
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[web-only]') }}
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -91,6 +107,39 @@ jobs:
           ./gradlew --no-daemon --stacktrace --dependency-verification strict assembleFdroidDebug assembleFdroidRelease
           git diff --exit-code -- gradle/verification-metadata.xml
 
+      - name: Launch F-Droid WebView on an Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-audio -no-boot-anim
+          script: |
+            set -euo pipefail
+            apk="android/app/build/outputs/apk/fdroid/debug/app-fdroid-debug.apk"
+            package="org.nexus.tracker.preview.fdroidpreview.debug"
+            test -f "$apk"
+            mkdir -p android/build/reports/emulator-smoke
+            adb install -r "$apk"
+            adb shell monkey -p "$package" 1 >/dev/null
+            for attempt in $(seq 1 30); do
+              adb shell pidof "$package" >/dev/null
+              adb shell uiautomator dump /sdcard/nexus-window.xml >/dev/null 2>&1 || true
+              adb pull /sdcard/nexus-window.xml android/build/reports/emulator-smoke/window.xml >/dev/null 2>&1 || true
+              if grep -q 'android.webkit.WebView' android/build/reports/emulator-smoke/window.xml; then
+                adb shell screencap -p /sdcard/nexus-webview.png
+                adb pull /sdcard/nexus-webview.png android/build/reports/emulator-smoke/webview.png >/dev/null
+                echo "PASS — the packaged F-Droid app launched its Android WebView."
+                exit 0
+              fi
+              sleep 2
+            done
+            adb logcat -d -s AndroidRuntime:E chromium:E Capacitor/Console:E
+            cat android/build/reports/emulator-smoke/window.xml || true
+            exit 1
+
       - name: Generate Gradle/Maven dependency licence inventory
         run: node scripts/write-android-gradle-license-inventory.mjs
 
@@ -108,3 +157,4 @@ jobs:
             android/build/reports/fdroid-dependencies/*.txt
             android/build/reports/third-party/*
             android/build/reports/dependency-verification/**/*.html
+            android/build/reports/emulator-smoke/**
