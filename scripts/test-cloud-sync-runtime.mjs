@@ -717,10 +717,13 @@ const initializationStart=source.indexOf('async function initializeSession(s){')
 const initializationEnd=source.indexOf('async function sameWorkspace(',initializationStart);
 assert.ok(initializationStart>=0&&initializationEnd>initializationStart,'cloud initialization source must be inspectable');
 const initializationSource=source.slice(initializationStart,initializationEnd);
-const initializationRemoteRead=initializationSource.indexOf('fetchRemote(newUserId,null,initScope.signal)');
+const initializationRemoteRead=initializationSource.indexOf('fetchRemote(newUserId,null,initScope.signal,reusableLocalBaseline)');
 const initializationLocalSnapshot=initializationSource.indexOf('let localPayload=snapshot();');
 assert.ok(initializationRemoteRead>=0&&initializationLocalSnapshot>initializationRemoteRead,
   'large local state must be snapshotted after the asynchronous cloud read so an offline edit during the request is included');
+assert.ok(initializationSource.includes('localBaselineReused')&&
+  initializationSource.includes('same-account-workspace-restored'),
+  'same-account refresh may reuse only an owner-verified local baseline while still snapshotting live local state after the cloud request');
 assert.ok(!initializationSource.includes("localPayload=snapshot();const remote=await fetchRemote(newUserId);")&&
   !initializationSource.includes('sameWorkspace(localPayload,latestLocalPayload)'),
   'account initialization must not deep-clone and compare the entire local workspace twice before any account decision');
