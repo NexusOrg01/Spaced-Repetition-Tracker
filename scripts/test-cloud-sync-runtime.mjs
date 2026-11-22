@@ -13,6 +13,7 @@ const backup = require('../backup-restore-utils.js');
 const cloudChunks = require('../cloud-chunk-storage.js');
 const queue = require('../offline-sync-queue.js');
 const recovery = require('../cloud-sync-recovery.js');
+const workspaceIsolationGuard = require('../workspace-isolation-guard.js');
 const curriculumIntegrity = require('../curriculum-integrity.js');
 // workspace-sync-merge.js captures the browser global at module load. Mirror the
 // browser's window.NexusCurriculumIntegrity on Node's globalThis for runtime tests.
@@ -630,6 +631,16 @@ assert.equal(repeatedRecovery.metrics.schedules, 0,
   'a failed auth read must not resume the cloud coordinator');
 assert.equal(repeatedRecovery.statusValues.at(-1), 'Account verification delayed',
   'a failed auth read must leave a truthful non-spinner verification status');
+assert.deepEqual(workspaceIsolationGuard.resolveWorkspaceLock(
+  'account-A', 'account-A', 'Account verification delayed', 'account-A', false),
+  { locked: true, phase: 'error' },
+  'a mismatched auth event must hide the previous workspace even while its old owner marker still matches');
+assert.deepEqual(workspaceIsolationGuard.resolveWorkspaceLock(
+  'account-A', 'account-A', 'Sync pending', 'account-A', false),
+  { locked: false, phase: 'owned' },
+  'authoritative same-owner recovery may reveal that owner’s cached workspace while cloud sync resumes');
+assert.match(repeatedRecovery.messages.at(-1), /stored but hidden/i,
+  'the pending auth state must explain that local data is preserved but not exposed');
 assert.match(repeatedRecovery.messages.at(-1), /cloud writes are paused/,
   'the delayed state must explain that cloud writes remain paused');
 await repeatedRecovery.runTimer(15000);
@@ -648,6 +659,8 @@ assert.equal(repeatedRecovery.sandbox.authSessionVerificationPending, false,
   'eventual same-owner success must clear the pending verification gate');
 assert.equal(repeatedRecovery.metrics.schedules, 1,
   'eventual same-owner success must resume the existing sync coordinator exactly once');
+assert.equal(repeatedRecovery.statusValues.at(-1), 'Sync pending',
+  'same-owner session recovery must leave a truthful pending state until cloud verification completes');
 assert.equal(repeatedRecovery.metrics.rotations, 0,
   'same-owner recovery must not rotate or rebuild the workspace');
 assert.equal(repeatedRecovery.sandbox.session.user.id, 'account-A',
@@ -794,6 +807,9 @@ assert.match(source,
 assert.match(source,
   /authSessionVerificationPending=true;\s*if\(activeUploadScope\)activeUploadScope\.abort\(\);/,
   'an already running cloud upload must be aborted while the auth owner is uncertain');
+assert.match(source,
+  /status\('Account verification delayed'\);\s*say\('Checking the current account session before resuming cloud sync\. Your local workspace is hidden until session ownership is verified\.'\);/,
+  'the mismatched auth event must hide the prior workspace while session ownership is uncertain');
 assert.match(source,
   /function schedule\(\)\{if\(authSessionVerificationPending\|\|/,
   'normal upload scheduling must pause until a mismatched auth session has been verified');
