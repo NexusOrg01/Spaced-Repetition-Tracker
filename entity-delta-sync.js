@@ -325,6 +325,8 @@
     const getPendingSnapshot=options.getPendingSnapshot,sameWorkspace=options.sameWorkspace;
     const acknowledgePendingSnapshot=typeof options.acknowledgePendingSnapshot==='function'
       ?options.acknowledgePendingSnapshot:null;
+    const rebasePendingSnapshot=typeof options.rebasePendingSnapshot==='function'
+      ?options.rebasePendingSnapshot:null;
     const applyWorkspace=options.applyWorkspace;
     const mergeWorkspace=options.mergeWorkspace||null;
     const readRemoteSnapshot=typeof options.readRemoteSnapshot==='function'?options.readRemoteSnapshot:null;
@@ -577,6 +579,7 @@
         const localWorkspace=await getLocalWorkspace(owner);
         const pendingCheck=await validatePendingCompatibilitySnapshot(owner,state.snapshot_updated_at,localWorkspace);
         if(!pendingCheck.ok)return {ok:false,snapshotRequired:true,reason:pendingCheck.reason};
+        let pendingOutboxHasChanges=false;
         const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
         if(!cursorResult||cursorResult.ok!==true){
           return {ok:false,snapshotRequired:!!(cursorResult&&cursorResult.snapshotRequired),
@@ -633,6 +636,7 @@
           // acknowledged, so the outbox workspace revision may legitimately be
           // newer than the remote cursor. Keep that work for publishPending();
           // only an empty outbox must match the cursor revision exactly.
+          pendingOutboxHasChanges=outbox.groups.length>0||outbox.hasMore===true;
           if(outbox.groups.length===0&&outbox.hasMore!==true){
             const cleared=await acknowledgeShadowCompatibilitySnapshot(
               owner,pendingCheck.pending,state.snapshot_updated_at);
@@ -681,6 +685,19 @@
             await assertOwner(owner);
           }
           if(cursor.requiresPull!==true&&Number(cursor.publishRevision)===page.headRevision)break;
+        }
+        if(appliedCount>0&&pendingCheck.pending&&pendingOutboxHasChanges){
+          if(!rebasePendingSnapshot){
+            return {ok:false,retryable:true,snapshotRequired:true,appliedCount,cursor,
+              reason:'compatibility_snapshot_rebase_unavailable'};
+          }
+          await assertOwner(owner);
+          const rebased=await rebasePendingSnapshot(owner,pendingCheck.pending,state.snapshot_updated_at);
+          await assertOwner(owner);
+          if(rebased!==true&&!(rebased&&rebased.ok===true)){
+            return {ok:false,retryable:true,snapshotRequired:true,appliedCount,cursor,
+              reason:'compatibility_snapshot_rebase_failed'};
+          }
         }
         return {ok:true,appliedCount,cursor,workspace:lastWorkspace,
           headRevision:page.headRevision,requiresPull:cursor.requiresPull===true,
@@ -873,7 +890,7 @@
           await storage.migrateWorkspaceEntities(owner,nextCandidate.state,nextCandidate.featureState,{
             expectedRevision:Number(status.revision),deferActivation:true,
             recoveryIntentId:intent.intentId,recoveryCandidateDigest:digest,
-            recoveryRestage:restage===true
+            recoveryRestage:restage===true,signal:recoveryOptions.signal||null
           });
           recovery=await storage.readWorkspaceEntityRecovery(owner);
           intent=recovery&&recovery.intent||null;
