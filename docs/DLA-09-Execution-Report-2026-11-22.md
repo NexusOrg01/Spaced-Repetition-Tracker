@@ -1,6 +1,6 @@
 # DLA-09 Execution Report — 22 November 2026
 
-**Latest update (23 November 2026):** DLA-09C is now completed against the explicit acceptance criteria in the execution request. The 22 November status table and ledger entry below are historical snapshots; the current DLA-09 status is recorded in Section 8.
+**Latest update (23 November 2026):** DLA-09C and DLA-09D are now complete on PR #147. Section 8 records DLA-09C; Section 9 records DLA-09D. The original 22 November status table and the earlier DLA-09D NOT STARTED statement in Section 8.5 are historical snapshots and are superseded by Section 9.
 
 **Repository:** `NexusOrg01/Spaced-Repetition-Tracker`  
 **PR:** [#147](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/pull/147)  
@@ -295,3 +295,86 @@ The first run on starting head 1fe009 (catalogue run #2048 and local integration
 | DLA-09E | **NOT STARTED** | Explicitly out of scope for this execution |
 
 **Merge / production / live changes remain NOT AUTHORIZED and NOT PERFORMED.**
+
+
+## 9. DLA-09D — Large-Workspace Comparison Optimization (23 November 2026)
+
+**Status: COMPLETED — profiled warm-refresh path optimized, revision/ownership/cancellation regressions passed, and same-fixture before/after evidence captured.** No duplicate application implementation was added during this execution; the implementation and regression commits were already present on the existing PR branch and were reconciled against the current head.
+
+### 9.1 Prerequisites and current branch
+
+- DLA-09A remains complete.
+- DLA-09B profiling was complete before DLA-09D began. Run #522 captured the 26.9 MB cold/warm fixture and three warm comparison passes.
+- DLA-09C was already complete in Section 8. The current-head cloud-sync runtime and authenticated integration suites were rerun successfully on the DLA-09D head.
+- Repository: `NexusOrg01/Spaced-Repetition-Tracker`
+- PR: [#147](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/pull/147)
+- Branch: `fix/sync-account-handoff-reliability`
+- DLA-09D code-validation head: `ec8da38ff0d0d9e48b7f1fbe67c89a423acb784b`
+
+### 9.2 Implementation and exact changed files
+
+The optimization is recorded in these existing commits:
+
+- `3bac3a85e680b3df75ad25028ed1039f973fc696` — reuse a revision-fenced workspace comparison.
+- `230a5d235c2575f614faadae3b6a37be556220c6` — exercise managed account-cleanup handling for the comparison marker.
+- `ec8da38ff0d0d9e48b7f1fbe67c89a423acb784b` — assert the comparison revision commits atomically with verified recovery state.
+
+DLA-09D implementation/test files:
+
+- `cloud-sync.js`
+- `offline-sync-queue.js`
+- `scripts/test-cloud-sync-runtime.mjs`
+- `scripts/test-offline-sync-queue.mjs`
+- `scripts/test-phase34-large-workspace-lifecycle.mjs`
+
+The code adds an owner-scoped local comparison-revision token. Normal workspace commits, rebases, verified recovery commits and account cleanup update/remove that token through the appropriate atomic storage path. A comparison result is reusable only while the owner, session epoch, local revision token, remote timestamp and manifest, active projection generation, workspace revision, and exact local/remote snapshot objects still match. The comparison wrapper checks the active session before and after the asynchronous deep comparison.
+
+If a local edit changes the revision during comparison, the current local snapshot and pending outbox are refreshed and the comparison is retried once. Repeated instability is rejected and sync is deferred with local work preserved. Account rotation/cancellation rejects the in-flight comparison; it cannot produce a reusable proof for the next session. A subsequent reconciliation reuses the prior equality result only when every proof fence still matches.
+
+### 9.3 Regression coverage
+
+- `scripts/test-cloud-sync-runtime.mjs`: proof reuse is rejected for changed owner, session epoch, local revision, remote timestamp, manifest, generation, workspace revision, or local/remote snapshot identity. A local edit during comparison forces a fresh snapshot/outbox comparison. Repeated edits remain unstable. The account-rotation/cancellation path rejects without creating a reusable result. Existing runtime coverage also verifies that session rotation aborts old initialization/upload scopes and that a stalled large comparison recovers to a truthful local-ready state rather than false `Synced`.
+- `scripts/test-offline-sync-queue.mjs`: owner-scoped revision markers advance on workspace saves and rebases, commit atomically with verified recovery state, and are removed through the managed account-cleanup path.
+- `scripts/test-phase34-large-workspace-lifecycle.mjs`: the real 26.9 MB same-owner warm-refresh profile requires two deep comparison events and a verified `workspace-comparison-reuse` event saving one pass.
+- Current-head CI also reruns the broader cloud-sync, storage, account-isolation, large-workspace lifecycle, and build checks.
+
+### 9.4 Before/after measurements
+
+The task-specified baseline was three deep comparisons: **4.402 s + 4.356 s + 4.336 s = 13.094 s**.
+
+Current post-optimization authenticated local Supabase/Chromium run #539 measured:
+
+- Deep comparison 1: **4.393 s**
+- Deep comparison 2: **4.265 s**
+- Third decision: **reused, 0 ms**, with `comparisonPassesSaved=1`
+- Total deep-comparison time: **8.658 s**
+- Reduction against the task-specified baseline: **4.436 s / 33.9%**
+
+The accessible DLA-09B run #522 log contains a separate three-pass sample of 4.458 s, 4.419 s and 4.318 s (13.195 s). Against that recorded sample, the current 8.658 s result is a 4.537 s / 34.4% reduction. The small difference between the two baseline triplets is retained rather than silently normalizing one to the other.
+
+Both run #522 and run #539 use the same controlled fixture and reported environment: `nexus-large-workspace-synthetic-v1`, 26,900,000 bytes, 103 chunks, 77,144 topics, 72,001 history rows, online Linux x64, Chromium 141.0.7390.37, four hardware threads, 8 GB reported device memory, and disposable local Supabase. Run #539 reports `sameFixtureAndEnvironment=true`.
+
+### 9.5 Current-head validation evidence
+
+- [Authenticated local Supabase + Chromium run #539](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45080469213) — **PASS**. The 26.9 MB lifecycle and A1/A2/B isolation checks completed; the disposable local Supabase fixtures, Delta rows and grants were cleaned up and the local stack was destroyed.
+- [Validation run #2053](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45080469293) — **PASS**. Includes `npm run test:sync-safety`, `node scripts/test-cloud-sync-runtime.mjs`, `node scripts/test-offline-sync-queue.mjs`, the large-workspace lifecycle script, preview-configuration checks, `npm run build`, and the broader regression/security suite.
+- Current code head `ec8da38ff0d0d9e48b7f1fbe67c89a423acb784b` had successful Vercel and Netlify preview statuses. Netlify preview: https://deploy-preview-147--nexussrt.netlify.app
+
+### 9.6 Scope qualifications and remaining work
+
+- The same-owner warm-refresh comparison target is complete. A separate app-level A→B→offline-B→online-B→A lifecycle sample in run #539 still records three deep comparisons totaling 12.943 s. That distinct cross-account handoff path nevertheless revealed the returning workspace in 1.927 s and reached verified `Synced` in 21.595 s (21.638 s wall time). It was not the same-owner warm-refresh profile optimized and measured above. If the DLA-09D source roadmap intended to include that separate handoff comparison chain as well, it needs a separately scoped follow-up.
+- First-time cold restore in run #539 took 84.494 s to verified sync, including a 76.620 s projection rebuild. The watchdog exposed the owner-verified local workspace and did not claim premature `Synced`; cold projection construction is a separate performance qualification, not evidence that the warm comparison optimization failed.
+- The uploaded Project roadmap file could not be read because the Project file had no authorized raw-byte materialization path, as recorded in Section 8.5. This addendum therefore records the explicit DLA-09D criteria in the execution request and the available PR code/CI evidence; no additional source-only requirement is assumed.
+- DLA-09E remains **NOT STARTED**.
+
+### 9.7 Updated DLA-09 ledger
+
+| Codename | Current status | Evidence |
+|---|---|---|
+| DLA-09A | **COMPLETED** | Prior evidence retained; current authenticated lifecycle validation remains green |
+| DLA-09B | **COMPLETED** | Three-pass profiling run #522; same-fixture current profile rerun in #539 |
+| DLA-09C | **COMPLETED** | Section 8 acceptance record; current-head cloud-sync runtime and authenticated integration revalidation passed |
+| DLA-09D | **COMPLETED** | Revision-fenced comparison reuse, concurrent-edit and rotation/cancellation regressions, atomic marker tests, and 33.9% reduction against the task-specified baseline |
+| DLA-09E | **NOT STARTED** | Not requested or opened by this execution |
+
+**No merge, production deployment/promotion, production Supabase operation, production schema/policy/configuration change, or live Nexus action was performed.**
