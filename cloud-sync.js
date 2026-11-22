@@ -169,6 +169,13 @@ function sanitizeSyncDiagEvent(event){
  };
  for(const key of Object.keys(enums)){
   if(typeof event[key]!=='string')continue;
+  // Diagnostic reason fields are fixed internal snake_case codes. Preserve
+  // previously unseen codes without allowing arbitrary messages or user data.
+  if((key==='triggerReason'||key==='recoveryTriggerReason')&&
+     /^[a-z][a-z0-9_]{0,79}$/.test(event[key])){
+    safe[key]=event[key];
+    continue;
+  }
   safe[key]=enums[key].includes(event[key])?event[key]:(key==='event'?'OTHER':'other');
  }
  return safe;
