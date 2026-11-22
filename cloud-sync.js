@@ -1518,6 +1518,26 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   return !!(acknowledgement&&acknowledgement.acknowledged===true)&&
     localStorage.getItem(OWNER_KEY)===userId;
  }
+ async function rebaseDeltaShadowSnapshot(queue,userId,pending,serverVersion){
+  if(!queue||typeof queue.getPending!=='function'||typeof queue.rebase!=='function'||
+     !pending||pending.ownerUserId!==userId||pending.status!=='pending'||
+     pending.baseServerVersion!==serverVersion||localStorage.getItem(OWNER_KEY)!==userId)return false;
+  await assertActiveUser(userId);
+  const current=queue.getPending(localStorage,userId);
+  if(!current||current.status!=='pending'||current.ownerUserId!==userId||
+     current.operationId!==pending.operationId||current.localSequence!==pending.localSequence||
+     current.baseServerVersion!==serverVersion)return false;
+  // The inbound Delta transaction has merged only non-overlapping IDs. Rebase the
+  // legacy recovery copy to that merged projection while leaving the Delta outbox intact.
+  const rebased=queue.rebase(localStorage,userId,snapshot(),serverVersion,
+    'remote-delta-applied-with-local-outbox');
+  await assertActiveUser(userId);
+  const verified=queue.getPending(localStorage,userId);
+  return !!(rebased&&verified&&verified.status==='pending'&&
+    verified.ownerUserId===userId&&verified.operationId===rebased.operationId&&
+    verified.baseServerVersion===serverVersion&&
+    localStorage.getItem(OWNER_KEY)===userId);
+ }
  const recovery=storage&&typeof storage.readWorkspaceEntityRecovery==='function'
   ?await storage.readWorkspaceEntityRecovery(ownerId):null;
  const recoveryPending=!!(recovery&&recovery.intent);
@@ -1744,6 +1764,8 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   getPendingSnapshot:userId=>queue.getPending(localStorage,userId),
   acknowledgePendingSnapshot:(userId,pending,serverVersion)=>
    acknowledgeDeltaShadowSnapshot(queue,userId,pending,serverVersion),
+  rebasePendingSnapshot:(userId,pending,serverVersion)=>
+   rebaseDeltaShadowSnapshot(queue,userId,pending,serverVersion),
   readRemoteSnapshot:async(userId,requestSignal)=>{
    const remote=await fetchRemote(userId,null,requestSignal||signal||null);
    if(!remote||!remote.payload)return null;
