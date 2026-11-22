@@ -1123,6 +1123,11 @@ try {
   const remoteReadTopic = appFixtureReadback.state.topics[50000];
   assert.ok(remoteReadTopic && remoteReadTopic.id,
     'The remote-read trigger must use an existing Account A topic.');
+  const remoteReadTopicNotes = String(remoteReadTopic.notes || '');
+  assert.equal(remoteReadTopicNotes, 'n'.repeat(100),
+    'The remote-read trigger must use a normal fixed-size fixture topic.');
+  const changedRemoteReadTopicNotes = (remoteReadTopicNotes[0] === 'x' ? 'y' : 'x') +
+    remoteReadTopicNotes.slice(1);
   const remoteReadOperation = await publishOperation(
     clientA1Restart,
     'phase34-app-read-trigger-' + crypto.randomUUID(),
@@ -1132,7 +1137,7 @@ try {
       id: remoteReadTopic.id,
       operation: 'put',
       position: 50000,
-      value: { ...remoteReadTopic, notes: String(remoteReadTopic.notes || '') + ' remote Delta read trigger' }
+      value: { ...remoteReadTopic, notes: changedRemoteReadTopicNotes }
     }]
   );
   assert.equal(remoteReadOperation.ok, true,
@@ -1175,7 +1180,12 @@ try {
     const notesInput = document.getElementById('topicNotesInput');
     const form = document.getElementById('topicForm');
     if (!nameInput || !notesInput || !form) throw new Error('The normal topic save form is unavailable.');
-    notesInput.value = (notesInput.value ? notesInput.value + '\n' : '') + 'DLA-08E local pending handoff edit';
+    const originalLocalNotes = String(notesInput.value || '');
+    if (originalLocalNotes !== 'n'.repeat(100)) {
+      throw new Error('The local handoff edit must target a normal fixed-size fixture topic.');
+    }
+    // Change one ASCII byte only so the 26,900,000-byte return fixture remains exact.
+    notesInput.value = (originalLocalNotes[0] === 'x' ? 'y' : 'x') + originalLocalNotes.slice(1);
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
 
     const projection = await window.NexusStorage.waitForWorkspaceEntitySync(ownerA);
