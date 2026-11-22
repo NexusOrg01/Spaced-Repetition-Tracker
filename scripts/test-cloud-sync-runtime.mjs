@@ -438,6 +438,11 @@ assert.equal(rotationSandbox.rotateForTest({ user: { id: 'account-B' } }), 5,
 assert.equal(accountLockRoot.dataset.workspaceAuth, 'ready',
   'a same-owner auth refresh must not unnecessarily re-lock the active workspace');
 
+const downgradeStart = source.indexOf('async function downgradeEntityDelta(){');
+const downgradeEnd = source.indexOf('function hostedQaReplayGateOpen()',downgradeStart);
+assert.ok(downgradeStart>=0&&downgradeEnd>downgradeStart,
+  'the snapshot downgrade must remain independently testable for session-epoch cancellation');
+
 // A cancelled snapshot downgrade from the previous account must not clear a
 // newer account's coordinator slot when its asynchronous finally block runs.
 {
@@ -492,10 +497,6 @@ assert.equal(accountLockRoot.dataset.workspaceAuth, 'ready',
 // session after A→B→A. It must not be treated as an identity transition: the old
 // listener rotated the session epoch and synchronously displayed the isolation
 // lock even though the returning owner's verified cache and sync were active.
-const downgradeStart = source.indexOf('async function downgradeEntityDelta(){');
-const downgradeEnd = source.indexOf('function hostedQaReplayGateOpen()',downgradeStart);
-assert.ok(downgradeStart>=0&&downgradeEnd>downgradeStart,
-  'the snapshot downgrade must remain independently testable for session-epoch cancellation');
 const authGuardStart = source.indexOf('function clearAuthSessionVerification(');
 const authGuardEnd = source.indexOf('async function ensureClient()', authGuardStart);
 assert.ok(authGuardStart >= 0 && authGuardEnd > authGuardStart,
