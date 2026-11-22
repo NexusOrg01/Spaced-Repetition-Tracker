@@ -282,4 +282,35 @@ assert.ok(source.includes('events:events.slice(-80).map(sanitizeSyncDiagEvent).f
 assert.ok(!source.includes('errorMessage'),'free-form exception messages must not be written into diagnostics');
 assert.ok(!source.includes('errorCode'),'raw server/runtime error codes must not be written into diagnostics');
 assert.ok(source.includes("r.stage==='cloud-write-error'&&r.errorCategory==='conflict'"),'conflict counters must use the safe aggregate category');
+const restoreTimingEvent={
+ at:'2026-11-22T15:00:00.000Z',stage:'cloud-chunk-pages-read',
+ durationMs:91234,pageCount:7,completedPageCount:7,rowsRead:103,chunkCount:103,
+ payloadUtf8Bytes:26900000,maxPageDurationMs:21000,minPageDurationMs:800,
+ chunkDataIncluded:true,ok:true,ownerId:'PRIVATE_OWNER',revisionId:'PRIVATE_REVISION',
+ topicName:'PRIVATE_TOPIC',chunkData:'PRIVATE_CHUNK',accessToken:'PRIVATE_TOKEN',
+ workspacePayload:{secret:'PRIVATE_WORKSPACE'}
+};
+vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(restoreTimingEvent)+')',sanitizerSandbox,
+ {filename:'sync-diagnostic-cold-restore-timing-test.js'});
+const safeRestoreTiming=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.deepEqual(safeRestoreTiming,{
+ at:restoreTimingEvent.at,stage:'cloud-chunk-pages-read',durationMs:91234,
+ pageCount:7,completedPageCount:7,rowsRead:103,chunkCount:103,
+ payloadUtf8Bytes:26900000,maxPageDurationMs:21000,minPageDurationMs:800,
+ chunkDataIncluded:true,ok:true
+},'cold restore page timings must retain aggregate measurements and strip all workspace/account identifiers');
+for(const forbidden of ['PRIVATE','ownerId','revisionId','topicName','chunkData','accessToken','workspacePayload'])
+ assert.equal(JSON.stringify(safeRestoreTiming).includes(forbidden),false,
+  'cold restore timing diagnostics must exclude '+forbidden);
+for(const stage of [
+ 'cloud-manifest-read','cloud-chunk-pages-read','cloud-chunk-validation',
+ 'cloud-snapshot-assembly','cloud-snapshot-hash','cloud-snapshot-parse','cloud-sync-mode-read'
+]){
+ const event={at:'2026-11-22T15:00:01.000Z',stage,durationMs:12,ok:true,
+  storageMode:'chunked',syncMode:'delta',chunkCount:103,payloadUtf8Bytes:26900000};
+ vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(event)+')',sanitizerSandbox,
+  {filename:'sync-diagnostic-stage-allowlist-test.js'});
+ assert.equal(sanitizerSandbox.result.stage,stage,
+  'the safe event allowlist must accept '+stage);
+}
 console.log('Phase 3.5 diagnostics tests passed: bounded metrics, last-known cursor, recovery journal/outbox/cleanup data, strict event allowlist, legacy export sanitization and privacy exclusions.');
