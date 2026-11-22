@@ -309,7 +309,7 @@ assert.ok(cloudSync.includes('applyWorkspaceSnapshot(normalizeState(localPayload
 assert.ok(cloudSync.includes('function enqueueInitialSnapshot(ownerId)') && (cloudSync.match(/enqueueInitialSnapshot\(newUserId\)/g)||[]).length>=3, 'new-account initial state must be queued before cloud insert for lost-response recovery');
 assert.ok(cloudSync.includes('The cloud backup was not rewritten.'), 'loading an existing cloud copy must not needlessly update its remote revision');
 assert.ok(cloudSync.includes('applyRemote(remote.payload,newUserId,remote.updated_at||null)'), 'account switch passes the active user and matching cloud revision into atomic hydration');
-const upload = section(cloudSync, 'async function upload(){', 'function schedule(){', 'account-bound upload');
+const upload = section(cloudSync, 'function upload(){', 'function schedule(){', 'account-bound upload');
 assert.ok(upload.includes('queue.getPending(localStorage,uploadUserId)'), 'cloud upload must drain only the pending snapshot for the active account');
 assert.ok(upload.includes('localStorage.getItem(OWNER_KEY)!==uploadUserId'), 'cloud writes must stop if the persisted workspace owner differs from the active account');
 assert.ok(upload.includes('pending.baseServerVersion'), 'queued writes must compare against their captured base revision');
