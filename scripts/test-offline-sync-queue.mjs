@@ -383,7 +383,8 @@ function withFacadeAtomic(storage,callback){
   assert.equal(result.generation,'generation-recovered');
   assert.equal(calls.length,1,'queue and base state should use one durable storage transaction');
   assert.equal(calls[0].owner,'account-A');
-  assert.equal(calls[0].entries.length,6,'workspace, queue, base, stamp and conflict history belong in one transaction');
+  assert.equal(calls[0].entries.length,7,'workspace, queue, base, stamp, conflict history and comparison revision belong in one transaction');
+   assert.ok(calls[0].entries.some(entry=>entry.key===queue.getWorkspaceComparisonRevisionKey('account-A')),'the recovery snapshot revision fence must commit atomically with the new generation and recovery cursor');
   assert.equal(queue.getPending(s,'account-A'),null,
    'the pre-recovery outbox snapshot must be archived, not left pending against the new base');
   const storedQueue=JSON.parse(s.getItem(queue.KEY));
