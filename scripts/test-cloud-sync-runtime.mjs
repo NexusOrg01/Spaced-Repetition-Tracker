@@ -462,7 +462,7 @@ assert.equal(accountLockRoot.dataset.workspaceAuth, 'ready',
   };
   vm.createContext(sandbox);
   vm.runInContext(source.slice(downgradeStart,downgradeEnd)+
-    '\\nglobalThis.runDowngrade=downgradeEntityDelta;',sandbox,
+    '\nglobalThis.runDowngrade=downgradeEntityDelta;',sandbox,
     {filename:'epoch-fenced-snapshot-downgrade.js'});
   const oldDowngrade=sandbox.runDowngrade();
   assert.equal(sandbox.syncing,true);
