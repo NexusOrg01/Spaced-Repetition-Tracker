@@ -496,6 +496,9 @@
   const ENTITY_META_COLLECTIONS=['trackerMeta','featureMeta'];
   const ALL_ENTITY_COLLECTIONS=new Set([...TRACKER_ENTITY_COLLECTIONS,...FEATURE_ENTITY_COLLECTIONS,...ENTITY_META_COLLECTIONS]);
   const ENTITY_BATCH_SIZE=400;
+  // Permit inbound work beside local changes only after verifying every pending
+  // sequence row atomically and proving that the entity IDs are disjoint.
+  const ENTITY_REMOTE_APPLY_MAX_PENDING_CHANGES=10000;
   // Snapshot backfill writes many immutable entity rows. Use a larger bounded
   // transaction page than ordinary outbox/cleanup scans to amortize IndexedDB
   // commit overhead, while yielding between pages so the UI remains responsive.
@@ -1985,8 +1988,8 @@
       const committed=await transaction([WORKSPACES,'migrationMeta','outbox'],'readwrite',(tx,set)=>{
         const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta'),
           outbox=tx.objectStore('outbox');
-        const values={manifest:null,workspace:null,cursor:null};
-        let coreRemaining=3,started=false;
+        const values={manifest:null,workspace:null,cursor:null,sequence:null};
+        let coreRemaining=4,started=false;
         const fail=(reason)=>set({ok:false,snapshotRequired:true,reason});
         const applyRows=existingRows=>{
           const manifest=values.manifest,row=values.workspace,cursor=values.cursor;
@@ -2107,11 +2110,44 @@
              Number(cursor.acknowledgedSequence)<0){
             fail('entity_projection_or_cursor_unavailable');return;
           }
-          const pendingRange=entityOutboxSequenceRange(owner,Number(cursor.acknowledgedSequence));
-          if(!pendingRange){fail('local_outbox_cursor_unavailable');return;}
-          const pendingRequest=outbox.getAll(pendingRange,1);
-          pendingRequest.onsuccess=()=>{
-            if((pendingRequest.result||[]).length){
+          const acknowledgedSequence=Number(cursor.acknowledgedSequence);
+          const highWatermark=values.sequence?Number(values.sequence.value):acknowledgedSequence;
+          if((values.sequence&&values.sequence.ownerId!==owner)||
+             (!values.sequence&&acknowledgedSequence!==0)||
+             !Number.isSafeInteger(highWatermark)||highWatermark<acknowledgedSequence){
+            fail('local_outbox_cursor_unavailable');return;
+          }
+          const expectedPendingCount=highWatermark-acknowledgedSequence;
+          if(expectedPendingCount>ENTITY_REMOTE_APPLY_MAX_PENDING_CHANGES){
+            fail('local_outbox_pending_limit');return;
+          }
+          const pendingRange=entityOutboxSequenceRange(owner,acknowledgedSequence);
+          if(!pendingRange&&expectedPendingCount>0){fail('local_outbox_cursor_unavailable');return;}
+          const pendingRequest=pendingRange?outbox.getAll(
+            pendingRange,ENTITY_REMOTE_APPLY_MAX_PENDING_CHANGES+1
+          ):null;
+          const continueWithPendingRows=pendingRows=>{
+            if(!Array.isArray(pendingRows)||pendingRows.length!==expectedPendingCount||
+               pendingRows.length>ENTITY_REMOTE_APPLY_MAX_PENDING_CHANGES){
+              fail('local_outbox_unverified');return;
+            }
+            const pendingIdentities=new Set();
+            for(let index=0;index<pendingRows.length;index++){
+              const pending=pendingRows[index],sequence=acknowledgedSequence+index+1;
+              if(!pending||pending.ownerId!==owner||
+                 pending.generation!==manifest.activeGeneration||pending.kind!=='change'||
+                 Number(pending.sequence)!==sequence||
+                 pending.key!==entityOutboxKey(owner,sequence)||
+                 !ALL_ENTITY_COLLECTIONS.has(pending.collection)||
+                 typeof pending.entityId!=='string'||!pending.entityId||
+                 !['put','delete'].includes(pending.operation)){
+                fail('local_outbox_unverified');return;
+              }
+              pendingIdentities.add(pending.collection+'\u0000'+pending.entityId);
+            }
+            // Applying over a locally edited entity would discard its local value.
+            // True identity overlaps still stop for three-way conflict recovery.
+            if(normalized.some(change=>pendingIdentities.has(change.collection+'\u0000'+change.id))){
               fail('local_outbox_pending');return;
             }
             const existingRows=new Array(normalized.length);let remaining=normalized.length;
@@ -2126,13 +2162,20 @@
               };
             });
           };
+          if(pendingRequest){
+            pendingRequest.onsuccess=()=>continueWithPendingRows(pendingRequest.result||[]);
+          }else{
+            continueWithPendingRows([]);
+          }
         };
         const manifestRequest=meta.get(entityManifestKey(owner));
         const workspaceRequest=entities.get(workspaceKey(owner));
         const cursorRequest=meta.get(cursorKey);
+        const sequenceRequest=meta.get(entitySequenceKey(owner));
         manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;coreRemaining--;start();};
         workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;coreRemaining--;start();};
         cursorRequest.onsuccess=()=>{values.cursor=cursorRequest.result||null;coreRemaining--;start();};
+        sequenceRequest.onsuccess=()=>{values.sequence=sequenceRequest.result||null;coreRemaining--;start();};
       });
       if(!committed||committed.ok!==true)return committed||{ok:false,snapshotRequired:true,reason:'remote_apply_commit_failed'};
       if(entityRemovalOwners.has(owner)||!enabled||committedOwnerId!==owner){
