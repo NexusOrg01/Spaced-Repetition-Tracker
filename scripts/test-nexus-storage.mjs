@@ -2104,6 +2104,98 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'successful owner cleanup must release the in-memory recovery lock');
 }
 
+// A recovery candidate identical to the durable workspace must reuse its
+// already-verified active entity generation instead of staging a duplicate
+// 149k-row replacement generation.
+{
+  const owner='entity-recovery-active-generation-reuse-owner';
+  const state={
+    schema:3,
+    streams:[{id:'reuse-stream',name:'Commerce'}],
+    subjects:[{id:'reuse-subject',streamId:'reuse-stream',name:'Accounting'}],
+    topics:[{id:'reuse-topic',subjectId:'reuse-subject',name:'Verified topic'}],
+    history:[{id:'reuse-review',topicId:'reuse-topic',rating:4}],
+    exams:[],settings:{theme:'dark'}
+  };
+  const features={version:1,journal:[{id:'reuse-journal',text:'Verified note'}],
+    papers:[],goals:[],studyLogs:[],selectedTopicIds:[]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true);
+  const migration=await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+  const originalGeneration=migration.generation;
+  await loaded.api.initializeWorkspaceEntityDeltaCursor(owner,0,'reuse-baseline-stamp',true);
+  const intentId='nexus-recovery-active-generation-reuse';
+  const digest='c'.repeat(64);
+  const begun=await loaded.api.beginWorkspaceEntityRecovery(owner,{
+    intentId,candidateDigest:digest,baseUpdatedAt:'reuse-baseline-stamp',
+    expectedHeadRevision:2,snapshotRevision:2,conflicts:[],payloadMetadata:{schema:4}
+  });
+  assert.equal(begun.ok,true);
+
+  const changedState={...state,topics:[{...state.topics[0],name:'Not the durable candidate'}]};
+  const rejected=await loaded.api.stageWorkspaceEntityRecoveryFromActive(
+    owner,intentId,digest,JSON.stringify(changedState),JSON.stringify(features)
+  );
+  assert.equal(rejected.ok,false,
+    'active-generation reuse must reject a candidate that differs from the exact durable compatibility snapshot');
+  assert.equal((await loaded.api.readWorkspaceEntityRecovery(owner)).intent.phase,'prepared',
+    'a rejected reuse attempt must leave the recovery intent prepared and retryable');
+
+  const workspaceRows=idb.databases.get('nexus-workspace-v1').stores.get('workspaces');
+  const rowCountBefore=workspaceRows.size;
+  const reused=await loaded.api.stageWorkspaceEntityRecoveryFromActive(
+    owner,intentId,digest,JSON.stringify(state),JSON.stringify(features)
+  );
+  assert.equal(reused.ok,true,
+    'an exact owner/revision/root-matched active generation should be staged for recovery reuse');
+  assert.equal(reused.reusedActiveGeneration,true);
+  assert.equal(reused.generation,originalGeneration,
+    'recovery reuse must keep the previously published generation ID');
+  assert.equal(workspaceRows.size,rowCountBefore,
+    'recovery reuse must not write a duplicate set of entity rows');
+  const manifest=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta')
+    .get('workspace-entities:'+encodeURIComponent(owner));
+  assert.equal(manifest.activeGeneration,originalGeneration);
+  assert.equal(manifest.pendingGeneration,originalGeneration,
+    'the pending recovery pointer may reference the active generation only after exact snapshot and root checks');
+  const pending=await loaded.api.readWorkspaceEntities(owner,{pending:true,recoveryIntentId:intentId});
+  assert.equal(pending.pending,true);
+  assert.equal(pending.generation,originalGeneration);
+  assert.equal(pending.state.topics[0].name,'Verified topic');
+
+  const publication={verified:true,updated_at:'reuse-verified-snapshot',
+    snapshotRevision:2,headRevision:2,compactedThroughRevision:2,storageMode:'jsonb'};
+  const marked=await loaded.api.markWorkspaceEntityRecoveryPublished(owner,intentId,publication);
+  assert.equal(marked.ok,true);
+  const entries=[
+    {key:'recall.study.tracker.v1',value:JSON.stringify(state)},
+    {key:'recall.study.features.v1',value:JSON.stringify(features)},
+    {key:'nexus.test.recovery.queue',value:JSON.stringify({pending:{}})},
+    {key:'nexus.test.recovery.base',value:JSON.stringify({[owner]:{state,featureState:features,serverVersion:publication.updated_at}})},
+    {key:'nexus.test.recovery.stamp',value:JSON.stringify({[owner]:publication.updated_at})},
+    {key:'nexus.test.recovery.conflicts',value:JSON.stringify({[owner]:[]})}
+  ];
+  const committed=await loaded.api.commitWorkspaceEntityRecovery(owner,intentId,entries,digest);
+  assert.equal(committed.ok,true,
+    'a verified recovery may atomically commit against the reused active generation');
+  assert.equal(committed.generation,originalGeneration);
+  const active=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(active.generation,originalGeneration);
+  assert.equal(active.state.topics[0].name,'Verified topic');
+  const cursor=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(cursor.ok,true);
+  assert.equal(cursor.cursor.generation,originalGeneration);
+  assert.equal(cursor.cursor.publishRevision,2);
+  assert.equal(cursor.cursor.requiresPull,false);
+  assert.equal(await loaded.api.readWorkspaceEntityRecovery(owner),null);
+}
+
 // Waiting for entity synchronization must drain tasks appended while the
 // caller is suspended on an earlier task. Otherwise Delta startup can observe a
 // transient projection state and incorrectly rebuild it before the incremental
