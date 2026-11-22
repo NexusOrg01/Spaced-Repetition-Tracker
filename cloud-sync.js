@@ -1795,7 +1795,20 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    return {ok:false,snapshotRequired:true,reason:'entity_projection_owner_unavailable',
     phase:'local-publish'};
   }
-  let projection=await storage.waitForWorkspaceEntitySync(ownerId);
+  const projectionReadinessStartedAt=Date.now();
+  let projection,projectionReadinessDurationMs=0;
+  try{
+   projection=await storage.waitForWorkspaceEntitySync(ownerId);
+  }finally{
+   projectionReadinessDurationMs=Math.max(0,Date.now()-projectionReadinessStartedAt);
+   if(typeof syncDiag==='function')syncDiag('projection-readiness',null,{
+    durationMs:projectionReadinessDurationMs,
+    ready:!!(projection&&projection.ok===true),
+    reason:projection&&typeof projection.reason==='string'?projection.reason:'other',
+    workspaceRevision:projection&&projection.workspaceRevision,
+    projectionWorkspaceRevision:projection&&projection.projectionWorkspaceRevision
+   });
+  }
   await assertActiveUser(ownerId,operationEpoch);
   if(localStorage.getItem(OWNER_KEY)!==ownerId){
    return {ok:false,snapshotRequired:true,reason:'entity_projection_owner_unavailable',
@@ -1803,8 +1816,16 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   }
   let projectionRebuildAttempted=false,projectionRebuildOk=false,
       projectionRebuildMode='other',projectionRebuildErrorCategory='other',
-      projectionRebuildFailureStage='other',projectionRebuildFailureReason='other';
-  if(projection&&projection.ok!==true&&
+      projectionRebuildFailureStage='other',projectionRebuildFailureReason='other',
+      projectionRebuildStartedAt=null,projectionRebuildDurationMs=null;
+  if(projection&&projection.ok===true&&typeof syncDiag==='function'){
+    syncDiag('projection-reuse',diagnosticWorkspace(),{
+     durationMs:projectionReadinessDurationMs,ready:true,
+     projectionRebuildMode:'reused',
+     ownerVerified:localStorage.getItem(OWNER_KEY)===ownerId
+    });
+   }
+   if(projection&&projection.ok!==true&&
      (projection.reason==='entity_projection_unavailable'||projection.reason==='stale_entity_projection')){
    projectionRebuildAttempted=true;
    try{
@@ -1812,7 +1833,8 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
     if(localStorage.getItem(OWNER_KEY)!==ownerId){
      throw new Error('The active owner-bound local projection rebuild is unavailable.');
     }
-    const rebuilt=await storage.syncWorkspaceEntities(ownerId,null,{replace:true});
+    projectionRebuildStartedAt=Date.now();
+     const rebuilt=await storage.syncWorkspaceEntities(ownerId,null,{replace:true});
     await assertActiveUser(ownerId,operationEpoch);
     if(localStorage.getItem(OWNER_KEY)!==ownerId||!rebuilt||
        rebuilt.skipped===true||rebuilt.ok===false){
@@ -1826,6 +1848,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
      projectionRebuildMode=rebuilt.mode;
     }
     projection=await storage.waitForWorkspaceEntitySync(ownerId);
+     projectionRebuildDurationMs=Math.max(0,Date.now()-projectionRebuildStartedAt);
     projectionRebuildOk=!!(projection&&projection.ok===true);
     if(!projectionRebuildOk){
      const error=new Error('The rebuilt local entity projection is not current.');
@@ -1834,7 +1857,10 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
      throw error;
     }
    }catch(error){
-    projectionRebuildErrorCategory=syncDiagErrorCategory(error);
+    if(projectionRebuildStartedAt!==null&&projectionRebuildDurationMs===null){
+      projectionRebuildDurationMs=Math.max(0,Date.now()-projectionRebuildStartedAt);
+     }
+     projectionRebuildErrorCategory=syncDiagErrorCategory(error);
     const allowedFailureStages=new Set(['preflight','stage-manifest','generate-rows','write-row-batch',
      'publish-manifest','verify-publication','read-compatibility-workspace',
      'sync-workspace-entities','post-rebuild-readiness']);
@@ -1850,6 +1876,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
      ok:false,snapshotRequired:true,reason:'entity_projection_rebuild_failed'};
    }
    if(typeof syncDiag==='function')syncDiag('entity-projection-rebuild',null,{
+    durationMs:projectionRebuildDurationMs,
     projectionRebuildAttempted,projectionRebuildOk,
     projectionRebuildMode,projectionRebuildErrorCategory,
     projectionRebuildFailureStage,projectionRebuildFailureReason,
@@ -2203,6 +2230,8 @@ async function performUpload(){
   if(authError)throw new Error('Supabase could not verify the active login before cloud write: '+authError.message);
   if(!authData.user||authData.user.id!==uploadUserId||!session||session.user.id!==uploadUserId)throw new Error('The active Google/account session changed or could not be verified. Cloud write paused to protect the other account. Sign in again and retry.');
   let deltaResult;
+  const deltaSyncStartedAt=Date.now();
+  let deltaSyncDurationMs=0;
   try{
    deltaResult=await uploadScope.race(runStagingEntityDeltaSync(uploadUserId,uploadScope.signal),'Entity Delta synchronization');
   }catch(deltaError){
@@ -2212,6 +2241,7 @@ async function performUpload(){
    if(!fallback||fallback.ok!==true||fallback.mode!=='snapshot')throw deltaError;
    deltaResult={skipped:true,mode:'snapshot',reason:'verified_automatic_downgrade'};
   }
+  deltaSyncDurationMs=Math.max(0,Date.now()-deltaSyncStartedAt);
   if(deltaResult&&deltaResult.skipped===true){hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();}
   else if(deltaResult&&deltaResult.ok===true){hostedDeltaPollingEnabled=true;}
   else if(deltaResult&&deltaResult.ok!==true&&deltaResult.blockedRecovery!==true&&
@@ -2231,7 +2261,8 @@ async function performUpload(){
     const cleanupPending=typeof deltaResult.cleanupPending==='boolean'?deltaResult.cleanupPending:
      (compaction&&typeof compaction.cleanupPending==='boolean'?compaction.cleanupPending:
       (compaction&&compaction.cleanup&&typeof compaction.cleanup.pending==='boolean'?compaction.cleanup.pending:null));
-    syncDiag('delta-sync-result',null,{skipped:deltaResult.skipped===true,ok:deltaResult.ok===true,
+    syncDiag('delta-sync-result',null,{durationMs:deltaSyncDurationMs,
+      skipped:deltaResult.skipped===true,ok:deltaResult.ok===true,
      appliedCount:Number.isSafeInteger(deltaResult.appliedCount)?deltaResult.appliedCount:null,
      publishedCount:Number.isSafeInteger(deltaResult.publishedCount)?deltaResult.publishedCount:null,
      acknowledgedCount:Number.isSafeInteger(deltaResult.acknowledgedCount)?deltaResult.acknowledgedCount:null,

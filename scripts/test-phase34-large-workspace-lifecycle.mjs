@@ -994,7 +994,7 @@ try {
       'local-storage-flush','workspace-snapshot-current','workspace-comparison',
       'workspace-merge-complete','workspace-local-commit','workspace-render',
       'same-account-workspace-restored','projection-check-start','projection-readiness',
-      'projection-reuse','projection-rebuild','projection-deferred-to-upload',
+      'projection-reuse','projection-rebuild','entity-projection-rebuild','projection-deferred-to-upload',
       'delta-sync-result','initialize-status-watchdog','initial-sync-verification'
     ]);
     const numericFields = [
@@ -1002,7 +1002,8 @@ try {
       'payloadUtf8Bytes','maxPageDurationMs','minPageDurationMs'
     ];
     const booleanFields = [
-      'ok','ready','ownerVerified','timedOut','same','chunkDataIncluded','hasPayload'
+      'ok','ready','ownerVerified','timedOut','same','chunkDataIncluded','hasPayload',
+      'projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches'
     ];
     return events.filter(event =>
       event && typeof event.at === 'string' && Date.parse(event.at) >= startedAt &&
@@ -1014,6 +1015,9 @@ try {
       };
       for (const key of numericFields) {
         if (Number.isSafeInteger(event[key]) && event[key] >= 0) row[key] = event[key];
+      }
+      if (Number.isSafeInteger(event.durationMs)) {
+        row.startElapsedMs = Math.max(0,row.elapsedMs-event.durationMs);
       }
       for (const key of booleanFields) {
         if (typeof event[key] === 'boolean') row[key] = event[key];
@@ -1166,6 +1170,21 @@ try {
         event.skipped !== true
       ) || null
     : null;
+  const initialProjectionReadiness = initialEvents.slice().reverse().find(event =>
+    event.stage === 'projection-readiness' && Number.isSafeInteger(event.durationMs)
+  ) || null;
+  const initialProjectionReuse = initialEvents.slice().reverse().find(event =>
+    event.stage === 'projection-reuse' && Number.isSafeInteger(event.durationMs)
+  ) || null;
+  const initialProjectionRebuild = initialEvents.slice().reverse().find(event =>
+    event.stage === 'entity-projection-rebuild' && Number.isSafeInteger(event.durationMs)
+  ) || null;
+  const initialDeltaSyncResult = initialEvents.slice().reverse().find(event =>
+    event.stage === 'delta-sync-result' && event.ok === true &&
+    Number.isSafeInteger(event.durationMs) && initialInitializationStarted &&
+    Date.parse(event.at) >= Date.parse(initialInitializationStarted.at) &&
+    (!initialVerification || Date.parse(event.at) <= Date.parse(initialVerification.at))
+  ) || null;
   assert.ok(initialCloudRead,
     'The real Nexus app must read the exact 26.9 MB / 103-chunk account-A fixture.');
   assert.ok(initialManifestRead && Number.isSafeInteger(initialManifestRead.durationMs),
@@ -1190,6 +1209,12 @@ try {
     'The real Nexus app must record the authenticated Account A initialization start.');
   assert.ok(initialVerification && Number.isSafeInteger(initialVerification.durationMs),
     'The real Nexus app must record the terminal outcome and duration of Account A initial verification.');
+  assert.ok(initialProjectionReadiness,
+    'The cold restore must separately time the owner-scoped entity projection readiness check.');
+  assert.ok(initialProjectionReuse || initialProjectionRebuild,
+    'The cold restore must record whether the owner-scoped entity projection was reused or rebuilt.');
+  assert.ok(initialDeltaSyncResult,
+    'The cold restore must separately time its complete authenticated Delta synchronization.');
   assert.ok(
     initialVerification.ok === true ||
     (initialVerification.timedOut === true &&
@@ -1272,6 +1297,19 @@ try {
   const warmChunkPagesRead = sameAccountRefreshEventsAfterStart.find(event =>
     event.stage === 'cloud-chunk-pages-read'
   ) || null;
+  const warmProjectionReadiness = sameAccountRefreshEventsAfterStart.find(event =>
+    event.stage === 'projection-readiness' && Number.isSafeInteger(event.durationMs)
+  ) || null;
+  const warmProjectionReuse = sameAccountRefreshEventsAfterStart.find(event =>
+    event.stage === 'projection-reuse' && Number.isSafeInteger(event.durationMs)
+  ) || null;
+  const warmProjectionRebuild = sameAccountRefreshEventsAfterStart.find(event =>
+    event.stage === 'entity-projection-rebuild' && Number.isSafeInteger(event.durationMs)
+  ) || null;
+  const warmDeltaSyncResult = sameAccountRefreshEventsAfterStart.find(event =>
+    event.stage === 'delta-sync-result' && event.ok === true &&
+    Number.isSafeInteger(event.durationMs)
+  ) || null;
   const warmStageTimings = safeTimingEvents(sameAccountRefreshEventsAfterStart,sameAccountRefreshStartedAt);
   const coldStageTimings = safeTimingEvents(initialEvents,initialRestoreConfirmedAt);
   const browserEnvironment = await page.evaluate(() => ({
@@ -1294,6 +1332,10 @@ try {
     'the warm restore must revalidate the same cloud manifest');
   assert.equal(warmChunkPagesRead,null,
     'the warm restore must reuse the verified owner-bound baseline without downloading the 103 chunks again');
+  assert.ok(warmProjectionReadiness && (warmProjectionReuse || warmProjectionRebuild),
+    'The warm restore must record owner-scoped projection readiness and whether it was reused or rebuilt.');
+  assert.ok(warmDeltaSyncResult,
+    'The warm restore must separately time its complete authenticated Delta synchronization.');
   console.log('DLA-08E_SAME_ACCOUNT_HARD_REFRESH=' + JSON.stringify({
     workspaceRevealMs: sameAccountRefreshWorkspaceRevealMs,
     revealStatus: sameAccountRefreshRevealStatus,
@@ -1338,6 +1380,10 @@ try {
       snapshotAssemblyMs: initialSnapshotAssembly.durationMs,
       sha256Ms: initialSnapshotHash.durationMs,
       jsonParseMs: initialSnapshotParse.durationMs,
+      projectionReadinessMs: initialProjectionReadiness.durationMs,
+      projectionOutcome: initialProjectionReuse ? 'reused' : 'rebuilt',
+      projectionRebuildMs: initialProjectionRebuild ? initialProjectionRebuild.durationMs : null,
+      deltaSyncMs: initialDeltaSyncResult.durationMs,
       finalVerificationMs: initialVerification.durationMs,
       watchdogDelayMs: initialWatchdogDelayMs,
       memory: {
@@ -1354,6 +1400,10 @@ try {
       totalToVerifiedMs: sameAccountRefreshToVerifiedMs,
       workspaceRevealMs: sameAccountRefreshWorkspaceRevealMs,
       manifestReadMs: warmManifestRead.durationMs,
+      projectionReadinessMs: warmProjectionReadiness.durationMs,
+      projectionOutcome: warmProjectionReuse ? 'reused' : 'rebuilt',
+      projectionRebuildMs: warmProjectionRebuild ? warmProjectionRebuild.durationMs : null,
+      deltaSyncMs: warmDeltaSyncResult.durationMs,
       chunkDownloadSkipped: !!sameAccountChunkReuse,
       chunkPagesReadMs: warmChunkPagesRead && Number.isSafeInteger(warmChunkPagesRead.durationMs)
         ? warmChunkPagesRead.durationMs : null,
@@ -1768,6 +1818,7 @@ try {
     'workspace-snapshot-current',
     'projection-reuse',
     'projection-rebuild',
+    'entity-projection-rebuild',
     'projection-deferred-to-upload',
     'delta-sync-result',
     'workspace-render',
