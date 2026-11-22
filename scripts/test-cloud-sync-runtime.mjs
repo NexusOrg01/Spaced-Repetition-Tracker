@@ -798,7 +798,7 @@ assert.equal(authGuardSandbox.sandbox.authInitializationCallbackIsCurrent('accou
 assert.match(source,
   /client\.auth\.onAuthStateChange\(\(event,newSession\)=>\{\s*if\(authSessionVerificationPending\)\{[\s\S]*?return;\}\s*if\(!authStateEventBelongsToCurrentOwner\(event,newSession\)\)\{/,
   'the actual Supabase listener must reject stale refreshes before assigning session or rotating the workspace lock');
-assert.match(source,
+assert.doesNotMatch(source,
   /if\(authSessionVerificationPending\)clearAuthSessionVerification\(\)/,
   'no auth event may clear an unresolved verification gate without an authoritative getSession result');
 assert.match(source,
