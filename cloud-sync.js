@@ -2624,9 +2624,9 @@ async function ensureClient(){
     verifyCurrentAuthSessionAfterMismatch();
     return;
    }
-   // The owner predicate above has already confirmed this event belongs to
-   // the active workspace. It can therefore settle any pending cross-tab
-   // verification without waiting for the fallback getSession timer.
+   // No verification is pending here, so this event can safely update the
+   // active owner's session state. A previously detected mismatch is never
+   // settled by an auth event; only the authoritative getSession read can clear it.
    session=newSession||null;rotateSessionContext(session);
    syncDiag('auth-event',diagnosticWorkspace(),{event,hasSession:!!(newSession&&newSession.user),ownerPresent:!!localStorage.getItem(OWNER_KEY)});
    if(event==='TOKEN_REFRESHED'||event==='USER_UPDATED'){
