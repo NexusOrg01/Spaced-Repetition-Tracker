@@ -1468,8 +1468,8 @@ try {
     accountBSyncStateAfterReturn.mode === 'snapshot' &&
     !accountAPayloadAfterReturn.state.topics.some(topic => topic.id === accountBOfflineEditId) &&
     !!accountBPayloadAfterAReturn?.state?.topics?.some(topic => topic.id === accountBOfflineEditId));
-  assert.ok(returnCloudChunkRead && returnCloudRead,
-    'The returning account must continue into a fresh, complete 26.9 MB cloud read after cached workspace reveal.');
+  assert.ok(returnDeltaSyncVerified && returnDeltaSyncVerified.ok === true,
+    'The returning account must complete authenticated Delta operation reconciliation after cached workspace reveal.');
   assert.equal(pageErrors.length, 0,
     'The app-level A→B→A browser run must not raise uncaught JavaScript exceptions.');
   console.log('DLA-08E_APP_LEVEL_TIMING=' + JSON.stringify(appLevelTimingEvidence));
