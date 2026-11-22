@@ -2285,3 +2285,106 @@ console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth is
     'a cancelled readiness probe must not schedule an IndexedDB projection write');
   console.log('DLA-08D projection-readiness cancellation regression passed.');
 }
+
+
+// DLA-08E: a verified remote update may be applied over a newer local workspace
+// revision only when every local mutation is represented by a valid, non-overlapping
+// outbox. Position-changing remote mutations in a locally edited collection fail closed.
+{
+  const owner='delta-remote-apply-with-pending-local-outbox-owner';
+  const state={
+    schema:3,
+    streams:[{id:'delta-stream',name:'Commerce'}],
+    subjects:[{id:'delta-subject',streamId:'delta-stream',name:'Accounting'}],
+    topics:[
+      {id:'topic-local',subjectId:'delta-subject',name:'Original local topic'},
+      {id:'topic-remote',subjectId:'delta-subject',name:'Original remote topic'}
+    ],
+    history:[],exams:[],settings:{theme:'dark'}
+  };
+  const features={version:1,journal:[],papers:[],goals:[],studyLogs:[],selectedTopicIds:[]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true);
+  await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+  const initialCursor=await loaded.api.initializeWorkspaceEntityDeltaCursor(
+    owner,0,'delta-local-snapshot-stamp',true);
+  assert.equal(initialCursor.ok,true);
+
+  const localState=clone(state);
+  localState.topics[0].name='Local edit that must remain queued';
+  const markerKey=loaded.api.getWorkspaceEntityRevisionKey(owner);
+  await loaded.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(localState)},
+    {key:'recall.study.features.v1',value:JSON.stringify(features)},
+    {key:markerKey,value:'1'}
+  ]);
+  const localProjection=await loaded.api.syncWorkspaceEntities(owner,[
+    {collection:'topics',id:'topic-local',operation:'put',position:0,value:localState.topics[0]}
+  ],{
+    trackerSnapshotJson:JSON.stringify(localState),
+    featureSnapshotJson:JSON.stringify(features)
+  });
+  assert.equal(localProjection.mode,'incremental',
+    'a single durable local workspace revision must create an incremental outbox rather than rebuild the projection');
+
+  const beforeApply=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(beforeApply.ok,true);
+  assert.ok(beforeApply.cursor.workspaceRevision<beforeApply.workspaceRevision,
+    'the local edit must advance the durable workspace revision while leaving the remote cursor behind');
+  const outboxBefore=await loaded.api.readWorkspaceEntityOutboxGroups(
+    owner,beforeApply.cursor.acknowledgedSequence,1000,1048576);
+  assert.equal(outboxBefore.snapshotRequired,false);
+  assert.equal(outboxBefore.groups.length,1);
+  assert.equal(outboxBefore.groups[0].changeCount,1);
+
+  const remoteUpdate={
+    revision:1,operation_id:'remote-topic-in-place-update',
+    changes:[{collection:'topics',id:'topic-remote',operation:'put',position:1,
+      value:{...state.topics[1],name:'Remote update at stable position'}}]
+  };
+  const applied=await loaded.api.applyWorkspaceEntityDeltaGroup(owner,remoteUpdate,0,1);
+  assert.equal(applied.ok,true,
+    'a remote in-place update to a different entity must apply over a fully verified pending local outbox: '+JSON.stringify(applied));
+  assert.equal(applied.applied,1);
+  const afterApply=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(afterApply.state.topics.find(topic=>topic.id==='topic-local').name,
+    'Local edit that must remain queued');
+  assert.equal(afterApply.state.topics.find(topic=>topic.id==='topic-remote').name,
+    'Remote update at stable position');
+  const afterCursor=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(afterCursor.ok,true);
+  assert.equal(afterCursor.cursor.workspaceRevision,afterCursor.workspaceRevision,
+    'successful remote application must align the cursor to the current durable workspace revision');
+  assert.equal(afterCursor.cursor.publishRevision,1);
+  assert.equal(afterCursor.cursor.acknowledgedSequence,0,
+    'applying a remote group must not acknowledge the pending local outbox');
+  const outboxAfter=await loaded.api.readWorkspaceEntityOutboxGroups(
+    owner,afterCursor.cursor.acknowledgedSequence,1000,1048576);
+  assert.equal(outboxAfter.groups.length,1,
+    'the independent local edit must remain queued for the outbound publisher');
+  assert.equal(outboxAfter.groups[0].changes[0].id,'topic-local');
+
+  const unsafeDelete=await loaded.api.applyWorkspaceEntityDeltaGroup(owner,{
+    revision:2,operation_id:'remote-topic-delete-requires-rebase',
+    changes:[{collection:'topics',id:'topic-remote',operation:'delete'}]
+  },1,2);
+  assert.equal(unsafeDelete.ok,false);
+  assert.equal(unsafeDelete.snapshotRequired,true);
+  assert.equal(unsafeDelete.reason,'local_outbox_position_rebase_required',
+    'a delete in a collection with pending local positions must use recovery rather than silently shift queued positions');
+  const afterRejectedDelete=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(afterRejectedDelete.state.topics.some(topic=>topic.id==='topic-remote'),true,
+    'a rejected position-changing remote mutation must not partially alter the active generation');
+  const cursorAfterRejectedDelete=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(cursorAfterRejectedDelete.cursor.publishRevision,1);
+  assert.equal((await loaded.api.readWorkspaceEntityOutboxGroups(
+    owner,cursorAfterRejectedDelete.cursor.acknowledgedSequence,1000,1048576)).groups.length,1,
+    'the local outbox must remain intact after a rejected remote position change');
+  console.log('DLA-08E pending-local-outbox remote-apply regression passed.');
+}
