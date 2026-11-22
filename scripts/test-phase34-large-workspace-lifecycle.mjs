@@ -1120,12 +1120,18 @@ try {
   assert.equal(appInitialCursor.remoteHeadRevision, Number(stateBeforeRemoteRead.head_revision));
   assert.equal(appInitialCursor.requiresPull, false);
 
-  const remoteReadTopic = appFixtureReadback.state.topics[50000];
-  assert.ok(remoteReadTopic && remoteReadTopic.id,
-    'The remote-read trigger must use an existing Account A topic.');
+  // Locate the topic by its generated ID, not by array position: the
+  // snapshot decoder is free to reconstruct topic arrays in a different order,
+  // and the exact-size padding is attached to one special topic.
+  const remoteReadTopic = appFixtureReadback.state.topics.find(topic =>
+    topic && topic.id === 'topic-050000'
+  );
+  assert.ok(remoteReadTopic,
+    'The remote-read trigger must use the generated Account A topic-050000.');
   const remoteReadTopicNotes = String(remoteReadTopic.notes || '');
   assert.equal(remoteReadTopicNotes, 'n'.repeat(100),
     'The remote-read trigger must use a normal fixed-size fixture topic.');
+  const remoteReadTopicPosition = appFixtureReadback.state.topics.indexOf(remoteReadTopic);
   const changedRemoteReadTopicNotes = (remoteReadTopicNotes[0] === 'x' ? 'y' : 'x') +
     remoteReadTopicNotes.slice(1);
   const remoteReadOperation = await publishOperation(
@@ -1136,7 +1142,7 @@ try {
       collection: 'topics',
       id: remoteReadTopic.id,
       operation: 'put',
-      position: 50000,
+      position: remoteReadTopicPosition,
       value: { ...remoteReadTopic, notes: changedRemoteReadTopicNotes }
     }]
   );
@@ -1169,7 +1175,8 @@ try {
       const topic = Array.isArray(state.topics)
         ? state.topics.find(row => String(row.id) === button.dataset.id)
         : null;
-      return !!topic && String(topic.notes || '').length < 900;
+      return !!topic && String(topic.notes || '') === 'n'.repeat(100) &&
+        String(topic.id) !== remoteReadTopic.id;
     });
     if (!editButton) throw new Error('A normal-sized existing Account A topic is not available for the local handoff edit.');
 
