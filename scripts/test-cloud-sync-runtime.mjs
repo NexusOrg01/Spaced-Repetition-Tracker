@@ -795,9 +795,17 @@ assert.equal(authGuardSandbox.sandbox.authInitializationCallbackIsCurrent('accou
 assert.equal(authGuardSandbox.sandbox.authInitializationCallbackIsCurrent('account-A', 11), false,
   'a queued initialization callback from before the most recent account rotation must be inert');
 
-assert.match(source,
-  /client\.auth\.onAuthStateChange\(\(event,newSession\)=>\{\s*if\(authSessionVerificationPending\)\{[\s\S]*?return;\s*\}\s*if\(!authStateEventBelongsToCurrentOwner\(event,newSession\)\)\{/,
-  'the actual Supabase listener must reject stale refreshes before assigning session or rotating the workspace lock');
+const authListenerStart = source.indexOf('client.auth.onAuthStateChange((event,newSession)=>{');
+const authListenerEnd = source.indexOf('\n  });', authListenerStart);
+assert.ok(authListenerStart >= 0 && authListenerEnd > authListenerStart,
+  'the actual Supabase auth-state listener must be available for the pending-gate regression');
+const authListenerSource = source.slice(authListenerStart, authListenerEnd);
+assert.match(authListenerSource,
+  /if\(authSessionVerificationPending\)\{[\s\S]*?return;\s*\}/,
+  'all auth events must be ignored while an authoritative session verification is pending');
+assert.ok(authListenerSource.indexOf('if(authSessionVerificationPending){') <
+  authListenerSource.indexOf('if(!authStateEventBelongsToCurrentOwner(event,newSession)){'),
+  'the pending verification gate must run before the event-owner predicate');
 assert.doesNotMatch(source,
   /if\(authSessionVerificationPending\)clearAuthSessionVerification\(\)/,
   'no auth event may clear an unresolved verification gate without an authoritative getSession result');
