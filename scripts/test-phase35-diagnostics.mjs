@@ -165,6 +165,23 @@ assert.deepEqual(safeRestoredBaseline,{
 assert.equal(JSON.stringify(safeRestoredBaseline).includes('PRIVATE'),false,
  'baseline-recovery diagnostics must not expose account identifiers or private values');
 
+vm.runInContext('result=sanitizeSyncDiagEvent({at:"2026-11-22T08:00:00.000Z",stage:"cloud-chunk-read-skipped",reason:"verified_local_baseline_matches_remote_manifest",chunkCount:103,payloadUtf8Bytes:26974531,ownerId:"PRIVATE",errorMessage:"PRIVATE"})',sanitizerSandbox);
+const safeChunkReuse=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.deepEqual(safeChunkReuse,{
+ at:'2026-11-22T08:00:00.000Z',stage:'cloud-chunk-read-skipped',
+ reason:'verified_local_baseline_matches_remote_manifest',chunkCount:103,payloadUtf8Bytes:26974531
+},'same-account chunk reuse diagnostics must retain only the safe manifest-match reason and aggregate size metrics');
+
+vm.runInContext('result=sanitizeSyncDiagEvent({at:"2026-11-22T08:00:01.000Z",stage:"same-account-workspace-restored",source:"active-local-workspace",durationMs:14,ownerVerified:true,cloudVerificationPending:true,workspace:{topicCount:77144},ownerId:"PRIVATE",email:"PRIVATE"})',sanitizerSandbox);
+const safeSameAccountRestore=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.deepEqual(safeSameAccountRestore,{
+ at:'2026-11-22T08:00:01.000Z',stage:'same-account-workspace-restored',
+ workspace:{topicCount:77144},durationMs:14,ownerVerified:true,
+ cloudVerificationPending:true,source:'active-local-workspace'
+},'same-account cached reveal diagnostics must retain safe readiness facts without account identity');
+assert.equal(JSON.stringify(safeSameAccountRestore).includes('PRIVATE'),false,
+ 'same-account refresh diagnostics must not expose identifiers or raw values');
+
 const recoveryVerificationEvent={
  at:'2026-11-18T08:37:34.000Z',stage:'delta-recovery-verification',
  ok:true,recoveryTriggerReason:'local_snapshot_baseline_mismatch',
