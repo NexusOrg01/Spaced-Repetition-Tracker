@@ -1256,6 +1256,10 @@ try {
         ? returnVerificationAny.durationMs : null;
   assert.ok(verifiedWithinDeadline,
     'After Account B offline edits have synced, a rapid return to the large Account A workspace must reach verified Synced within 60 seconds; a delayed/pending status is a regression.');
+  const accountAPendingAfterReturn = await page.evaluate(ownerA =>
+    !!window.NexusOfflineSyncQueue?.hasPending(localStorage, ownerA), ownerA);
+  assert.equal(accountAPendingAfterReturn, false,
+    'Account A pending verification must be acknowledged only after its returning cloud snapshot is verified');
   assert.ok(returnStatusText !== 'Synced' || verifiedWithinDeadline,
     'The app must never show Synced without successful initial cloud verification.');
 
@@ -1374,6 +1378,7 @@ try {
     returnSyncVerificationMs: returnVerificationAny && Number.isSafeInteger(returnVerificationAny.durationMs)
       ? returnVerificationAny.durationMs : null,
     returnSyncVerified: verifiedWithinDeadline,
+    accountAPendingClearedAfterReturn: !accountAPendingAfterReturn,
     returnVerificationEventPendingAtDeadline: !returnVerificationAny,
     returnTerminalStatus: returnStatusText,
     returnTerminalOutcomeMs,
