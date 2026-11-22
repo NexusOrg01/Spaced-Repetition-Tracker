@@ -1176,7 +1176,7 @@ try {
         ? state.topics.find(row => String(row.id) === button.dataset.id)
         : null;
       return !!topic && String(topic.notes || '') === 'n'.repeat(100) &&
-        String(topic.id) !== remoteReadTopic.id;
+        String(topic.id) !== remoteReadTopicId;
     });
     if (!editButton) throw new Error('A normal-sized existing Account A topic is not available for the local handoff edit.');
 
