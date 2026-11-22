@@ -520,7 +520,10 @@ function coordinatorHarness(options={}){
     },
     async applyWorkspaceEntityDeltaGroup(requestedOwner,group,expectedRevision,remoteHead){
       if(requestedOwner!==owner)return {ok:false,snapshotRequired:true,reason:'wrong_owner'};
-      if(outbox.some(item=>item.lastSequence>cursor.acknowledgedSequence)){
+      const pendingChanges=outbox.filter(item=>item.lastSequence>cursor.acknowledgedSequence)
+        .flatMap(item=>item.changes||[]);
+      const pendingIdentities=new Set(pendingChanges.map(change=>change.collection+'\u0000'+change.id));
+      if(group.changes.some(change=>pendingIdentities.has(change.collection+'\u0000'+change.id))){
         return {ok:false,reason:'local_outbox_pending'};
       }
       if(cursor.publishRevision!==expectedRevision||group.revision!==expectedRevision+1){
@@ -562,6 +565,7 @@ function coordinatorHarness(options={}){
   const api=factory({enabled:true,client,storage,getActiveOwner:()=>activeOwner.value,
     getLocalOwner:()=>owner,getLocalBase:async()=>base,getLocalWorkspace:async()=>payload,
     getPendingSnapshot:async()=>options.pendingSnapshot||null,sameWorkspace:async()=>true,
+    rebasePendingSnapshot:options.rebasePendingSnapshot,
     compactSnapshot:options.compactSnapshot,compactOperations:options.compactOperations});
   return {api,state,cursor:()=>({...cursor}),published,applied,acknowledgements,calls};
 }
@@ -588,17 +592,58 @@ function coordinatorHarness(options={}){
 {
   const h=coordinatorHarness({
     remoteGroups:[remoteOperation(1,'remote-concurrent')],
-    localGroups:[makeGroup('local-concurrent',1,[putChange('topics','local-concurrent-topic')])]
+    localGroups:[makeGroup('local-concurrent',1,[putChange('topics','remote-concurrent')])]
   });
   const result=await h.api.synchronize('account-A',{maxRounds:5});
   assert.equal(result.ok,false);
   assert.equal(result.conflict,true);
   assert.equal(result.requiresSnapshotReconciliation,true,
-    'simultaneous local and remote work must stop for three-way reconciliation instead of overwriting either side');
+    'overlapping local and remote edits to the same entity must stop for three-way reconciliation');
   assert.equal(result.reason,'local_and_remote_changes_overlap');
   assert.equal(h.published.length,0,'the coordinator must not publish local edits before resolving the remote conflict');
   assert.equal(h.acknowledgements.length,0,'the coordinator must preserve unacknowledged local changes');
   assert.equal(h.cursor().publishRevision,0,'the inbound cursor must not advance when local work blocks remote apply');
+}
+{
+  const h=coordinatorHarness({
+    remoteGroups:[remoteOperation(1,'remote-concurrent-disjoint')],
+    localGroups:[makeGroup('local-concurrent-disjoint',1,[putChange('topics','local-concurrent-topic')])]
+  });
+  const result=await h.api.synchronize('account-A',{maxRounds:5});
+  assert.equal(result.ok,true,
+    'non-overlapping local and remote entities must reconcile without rebuilding the full workspace snapshot');
+  assert.equal(result.appliedCount,1);
+  assert.equal(result.publishedCount,1);
+  assert.equal(result.acknowledgedCount,1);
+  assert.deepEqual(h.applied,['remote-remote-concurrent-disjoint']);
+  assert.deepEqual(h.published,['local-concurrent-disjoint']);
+  assert.deepEqual(h.acknowledgements,['local-concurrent-disjoint']);
+  assert.equal(h.cursor().publishRevision,2);
+  assert.equal(h.cursor().acknowledgedSequence,1);
+}
+{
+  const pendingSnapshot={status:'pending',ownerUserId:'account-A',
+    operationId:'compatibility-shadow-before-remote-apply',localSequence:5,
+    baseServerVersion:'snapshot-stamp',payload};
+  const rebases=[];
+  const h=coordinatorHarness({
+    remoteGroups:[remoteOperation(1,'remote-with-shadow')],
+    localGroups:[makeGroup('local-with-shadow',1,[putChange('topics','local-with-shadow')])],
+    pendingSnapshot,
+    rebasePendingSnapshot:async(owner,pending,version)=>{
+      rebases.push({owner,operationId:pending.operationId,version});
+      return owner==='account-A'&&pending.operationId===pendingSnapshot.operationId&&
+        version==='snapshot-stamp';
+    }
+  });
+  const result=await h.api.synchronize('account-A',{maxRounds:5});
+  assert.equal(result.ok,true,
+    'the compatibility recovery snapshot must be rebased after a disjoint remote apply before local outbox publication');
+  assert.equal(rebases.length,1);
+  assert.equal(rebases[0].owner,'account-A');
+  assert.equal(rebases[0].version,'snapshot-stamp');
+  assert.equal(result.publishedCount,1);
+  assert.equal(result.acknowledgedCount,1);
 }
 {
   const h=coordinatorHarness({mode:'snapshot'});
