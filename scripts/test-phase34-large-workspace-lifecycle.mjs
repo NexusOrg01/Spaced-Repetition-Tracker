@@ -310,12 +310,14 @@ function buildLargeWorkspace() {
   assert.ok(currentBytes < TARGET_BYTES, 'Fixture seed must remain below the 26.9 MB target before padding: ' + currentBytes);
   const padding = TARGET_BYTES - currentBytes;
   const each = Math.floor(padding / topics.length);
-  let remainder = padding % topics.length;
-  for (const topic of topics) {
-    const amount = each + (remainder > 0 ? 1 : 0);
-    if (remainder > 0) remainder--;
-    if (amount) topic.notes += 'x'.repeat(amount);
-  }
+  const paddingTopic = topics.find(topic => topic.id === 'topic-000000');
+  assert.ok(paddingTopic, 'The dedicated fixture padding topic must exist.');
+  if (padding) paddingTopic.notes += 'x'.repeat(padding);
+  assert.equal(
+    topics.find(topic => topic.id === 'topic-050000')?.notes,
+    'n'.repeat(100),
+    'Ordinary fixture topics must remain fixed-size for the account-handoff UI edit.'
+  );
   serialized = JSON.stringify(payload);
   assert.equal(Buffer.byteLength(serialized, 'utf8'), TARGET_BYTES,
     'The fixture must be exactly 26,900,000 UTF-8 bytes');
