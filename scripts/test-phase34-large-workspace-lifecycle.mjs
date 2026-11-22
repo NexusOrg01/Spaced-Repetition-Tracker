@@ -1071,8 +1071,14 @@ try {
       'A durably restored and owner-verified workspace must be reported as locally ready while cloud verification continues.');
     assert.equal(initialWatchdog.ready, true,
       'The first-restore watchdog must distinguish local workspace readiness from cloud verification completion.');
-    assert.equal(initialWatchdog.ownerMatches, true,
-      'The first-restore watchdog must only reveal the workspace after owner verification.');
+    const ownerVerifiedReveal = initialEvents.slice().reverse().find(event =>
+      event.stage === 'workspace-render' &&
+      event.ownerVerified === true &&
+      event.durationMs >= 0 &&
+      Date.parse(event.at) <= Date.parse(initialWatchdog.at)
+    );
+    assert.ok(ownerVerifiedReveal,
+      'The first-restore watchdog may report local readiness only after an owner-verified workspace render.');
     initialWatchdogOutcome = initialWatchdog.watchdogOutcome;
   }
 
