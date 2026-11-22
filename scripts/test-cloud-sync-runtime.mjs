@@ -382,13 +382,18 @@ const accountLockDocument = {
   querySelector(selector) { return selector === '.app' ? accountLockApp : null; },
   getElementById(id) { return id === 'workspaceIsolationLock' ? accountLockOverlay : null; }
 };
+let oldUploadAborted=false;
+const oldUploadScope={abort(){oldUploadAborted=true;}};
 const rotationSandbox = {
   document: accountLockDocument,
   sessionEpoch: 4,
   sessionOwnerId: 'account-A',
   sessionAbortController: null,
   activeInitializationScope: null,
-  activeUploadScope: null,
+  activeUploadScope: oldUploadScope,
+  activeUploadPromises: new Map([[4,Promise.resolve(true)]]),
+  syncing: true,
+  syncingEpoch: 4,
   connectAttemptId: 8,
   connectPromise: null,
   timer: null,
@@ -407,6 +412,16 @@ vm.runInContext(source.slice(workspaceLockStart, workspaceLockEnd) +
   { filename: 'account-handoff-lock-test.js' });
 const switchedEpoch = rotationSandbox.rotateForTest({ user: { id: 'account-B' } });
 assert.equal(switchedEpoch, 5, 'the account switch must rotate its session epoch');
+assert.equal(oldUploadAborted,true,
+  'account rotation must abort the outgoing account upload scope');
+assert.equal(rotationSandbox.syncing,false,
+  'an outgoing account must not retain the global syncing lock after its epoch is revoked');
+assert.equal(rotationSandbox.syncingEpoch,null,
+  'the old session epoch must no longer own the global sync coordinator');
+assert.equal(rotationSandbox.activeUploadScope,null,
+  'the outgoing upload scope must be detached before the next account starts');
+assert.equal(rotationSandbox.activeUploadPromises.size,0,
+  'the old epoch upload promise must be removed from the active coordinator map');
 assert.equal(accountLockRoot.dataset.workspaceAuth, 'pending',
   'the document must enter the hidden state synchronously on account change');
 assert.equal(accountLockApp.inert, true,
@@ -423,10 +438,64 @@ assert.equal(rotationSandbox.rotateForTest({ user: { id: 'account-B' } }), 5,
 assert.equal(accountLockRoot.dataset.workspaceAuth, 'ready',
   'a same-owner auth refresh must not unnecessarily re-lock the active workspace');
 
+// A cancelled snapshot downgrade from the previous account must not clear a
+// newer account's coordinator slot when its asynchronous finally block runs.
+{
+  let resolveDowngrade;
+  let downgradeScopeCleared=false;
+  const deferredDowngrade=new Promise(resolve=>{resolveDowngrade=resolve;});
+  const downgradeScope={signal:{},clear(){downgradeScopeCleared=true;},race(promise){return Promise.resolve(promise);}};
+  const newerScope={};
+  const sandbox={
+    deletingAccount:false,localQueueHealthy:true,client:{},session:{user:{id:'account-A'}},ready:true,
+    syncing:false,syncingEpoch:null,sessionEpoch:3,activeUploadScope:null,
+    OWNER_KEY:'nexus.cloud.last-user-id',localStorage:{getItem:()=> 'account-A'},
+    status(){},say(){},createSyncAbortScope:()=>downgradeScope,
+    runStagingEntityDeltaSync:()=>deferredDowngrade,
+    assertActiveUser:async(owner,epoch)=>{
+      if(sandbox.sessionEpoch!==epoch)throw sandbox.syncCancelledError();
+    },
+    syncCancelledError:()=>{const error=new Error('The account changed.');error.code='NEXUS_SYNC_CANCELLED';return error;},
+    productionDeltaClientGateOpen:()=>false,productionDeltaIneligibleOwners:new Set(),
+    lastRemoteStamp:null,pendingSync:false,schedule(){},scheduleRetry(){},
+    flushDurableLocalWrites:async()=>{}
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(source.slice(downgradeStart,downgradeEnd)+
+    '\\nglobalThis.runDowngrade=downgradeEntityDelta;',sandbox,
+    {filename:'epoch-fenced-snapshot-downgrade.js'});
+  const oldDowngrade=sandbox.runDowngrade();
+  assert.equal(sandbox.syncing,true);
+  assert.equal(sandbox.syncingEpoch,3,
+    'the snapshot downgrade must claim the current account epoch');
+  assert.equal(sandbox.activeUploadScope,downgradeScope,
+    'the snapshot downgrade must be cancellable by account rotation');
+  sandbox.sessionEpoch=4;
+  sandbox.syncing=true;
+  sandbox.syncingEpoch=4;
+  sandbox.activeUploadScope=newerScope;
+  resolveDowngrade({ok:true,mode:'snapshot',updated_at:'old-account-stamp'});
+  const outcome=await oldDowngrade;
+  assert.equal(outcome.reason,'account_changed',
+    'the outgoing account downgrade must stop when its owner epoch is revoked');
+  assert.equal(downgradeScopeCleared,true,
+    'the cancelled downgrade must release its own abort scope');
+  assert.equal(sandbox.syncing,true,
+    'the outgoing downgrade must not clear the new account syncing state');
+  assert.equal(sandbox.syncingEpoch,4,
+    'the outgoing downgrade must not overwrite the new account sync epoch');
+  assert.equal(sandbox.activeUploadScope,newerScope,
+    'the outgoing downgrade must not detach the new account upload scope');
+}
+
 // A late token-refresh/profile event can still arrive for the outgoing auth
 // session after A→B→A. It must not be treated as an identity transition: the old
 // listener rotated the session epoch and synchronously displayed the isolation
 // lock even though the returning owner's verified cache and sync were active.
+const downgradeStart = source.indexOf('async function downgradeEntityDelta(){');
+const downgradeEnd = source.indexOf('function hostedQaReplayGateOpen()',downgradeStart);
+assert.ok(downgradeStart>=0&&downgradeEnd>downgradeStart,
+  'the snapshot downgrade must remain independently testable for session-epoch cancellation');
 const authGuardStart = source.indexOf('function clearAuthSessionVerification(');
 const authGuardEnd = source.indexOf('async function ensureClient()', authGuardStart);
 assert.ok(authGuardStart >= 0 && authGuardEnd > authGuardStart,
