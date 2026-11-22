@@ -1139,6 +1139,14 @@ try {
     'The isolated remote Delta operation must publish successfully before the browser handoff race.');
   assert.equal(Number(remoteReadOperation.revision), Number(stateBeforeRemoteRead.head_revision) + 1);
 
+  // Topic cards are rendered lazily only while Library is the active view.
+  // Open it explicitly and wait for the normal edit controls before driving
+  // the real UI save path below.
+  await page.locator('button.tab[data-view="topics"]').click();
+  await page.waitForFunction(() =>
+    !!document.querySelector('#topicGrid button[data-action="edit-topic"]'),
+  null, { timeout: 30000 });
+
   const initialAPendingResult = await page.evaluate(async ownerA => {
     const owner = localStorage.getItem('nexus.cloud.last-user-id');
     if (owner !== ownerA) throw new Error('Account A no longer owns the local workspace before the interrupted verification test.');
