@@ -148,7 +148,7 @@ function sanitizeSyncDiagEvent(event){
   if(value===null)safe[key]=null;
   else if(Number.isSafeInteger(value)&&value>=0)safe[key]=Math.min(value,100000000);
  }
- const booleanFields=['hasPayload','hasUpdatedAt','chunkStorageUnavailable','cleanupBacklogMayRemain','cleanupFailed','priorQueueRetainedForRecovery','storageEnabled','cooperative','queueRebuilt','ready','remoteHadPayload','remoteHasPayload','hasSession','ownerPresent','ownerVerified','ok','resumed','hasQueue','skipped','fromPending','hasPending','matchesAttempted','readbackHasPayload','hadPending','compactionPending','cleanupPending','projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches','baselineRestored','recovered','triggerConflict','triggerSnapshotRequired','triggerRequiresSnapshotReconciliation','cursorRequiresPull','timedOut','same'];
+ const booleanFields=['hasPayload','hasUpdatedAt','chunkStorageUnavailable','cleanupBacklogMayRemain','cleanupFailed','priorQueueRetainedForRecovery','storageEnabled','cooperative','queueRebuilt','ready','remoteHadPayload','remoteHasPayload','hasSession','ownerPresent','ownerVerified','ok','resumed','hasQueue','skipped','fromPending','hasPending','matchesAttempted','readbackHasPayload','hadPending','compactionPending','cleanupPending','projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches','baselineRestored','recovered','triggerConflict','triggerSnapshotRequired','triggerRequiresSnapshotReconciliation','cursorRequiresPull','projectionReused','timedOut','same'];
  for(const key of booleanFields){if(typeof event[key]==='boolean')safe[key]=event[key];}
  const enums={
   watchdogOutcome:['local-ready-unverified','account-verification-delayed','already-terminal'],
@@ -1874,6 +1874,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    });
    if(typeof syncDiag==='function')syncDiag('snapshot-recovery-complete',null,{
     ok:!!(resumed&&resumed.ok===true),resumed:true,
+    projectionReused:!!(resumed&&resumed.projectionReused===true),
     recoveryReason:resumed&&resumed.reason||'other',
     snapshotRevision:Number.isSafeInteger(Number(resumed&&resumed.snapshotRevision))?Number(resumed.snapshotRevision):null,
     headRevision:Number.isSafeInteger(Number(resumed&&resumed.headRevision))?Number(resumed.headRevision):null
@@ -1950,6 +1951,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   });
   if(typeof syncDiag==='function')syncDiag('snapshot-recovery-complete',null,{
    ok:!!(recovered&&recovered.ok===true),resumed:false,
+   projectionReused:!!(recovered&&recovered.projectionReused===true),
    recoveryReason:recovered&&recovered.reason||'other',
    snapshotRevision:Number.isSafeInteger(Number(recovered&&recovered.snapshotRevision))?Number(recovered.snapshotRevision):null,
    headRevision:Number.isSafeInteger(Number(recovered&&recovered.headRevision))?Number(recovered.headRevision):null
