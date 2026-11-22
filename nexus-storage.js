@@ -2608,7 +2608,11 @@
         const countsMatch=!!(counts&&typeof counts==='object'&&!Array.isArray(counts)&&
           collections.every(key=>{
             const source=TRACKER_ENTITY_COLLECTIONS.includes(key)?tracker:features;
-            return Number(counts[key])===(Array.isArray(source[key])?source[key].length:0);
+            const expected=Array.isArray(source[key])?source[key].length:0;
+            const recorded=counts[key];
+            return expected===0
+              ?(recorded===undefined||recorded===0)
+              :(Number.isSafeInteger(Number(recorded))&&Number(recorded)===expected);
           }));
         const rootsMatch=!!(values.trackerRoot&&values.featureRoot&&
           values.trackerRoot.ownerId===owner&&values.featureRoot.ownerId===owner&&
