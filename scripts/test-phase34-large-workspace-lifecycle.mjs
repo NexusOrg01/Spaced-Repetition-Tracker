@@ -854,10 +854,18 @@ SET enabled = true,
     reason = EXCLUDED.reason,
     updated_at = clock_timestamp();
 `;
+const localPsqlEnv = {
+  ...process.env,
+  PGHOST: databaseUrl.hostname,
+  PGPORT: databaseUrl.port || '5432',
+  PGUSER: decodeURIComponent(databaseUrl.username),
+  PGPASSWORD: decodeURIComponent(databaseUrl.password),
+  PGDATABASE: databaseUrl.pathname.replace(/^\\//, '')
+};
 execFileSync('psql', ['-X', '-v', 'ON_ERROR_STOP=1'], {
   input: localEligibilitySql,
   encoding: 'utf8',
-  env: { ...process.env, PGDATABASE: process.env.PHASE34_DB_URL },
+  env: localPsqlEnv,
   stdio: ['pipe', 'pipe', 'pipe']
 });
 const appDeltaEnable = await rpc(clientA1Restart, 'nexus_enable_entity_delta', {
