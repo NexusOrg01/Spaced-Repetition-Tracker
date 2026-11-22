@@ -2627,6 +2627,7 @@
           validWorkspaceRow(workspace,owner)&&
           workspace.tracker===trackerSnapshotJson&&workspace.featureState===featureSnapshotJson&&
           Number.isSafeInteger(workspaceRevision)&&workspaceRevision>=0&&
+          Number.isSafeInteger(Number(manifest.sourceWorkspaceRevision))&&
           Number(manifest.sourceWorkspaceRevision)===workspaceRevision&&
           Number.isSafeInteger(Number(manifest.sourceRevision))&&rootsMatch&&
           intent&&intent.ownerId===owner&&intent.intentId===id&&intent.phase==='prepared'&&
@@ -2654,7 +2655,7 @@
       manifestRequest.onsuccess=()=>{
         values.manifest=manifestRequest.result||null;
         const generation=values.manifest&&values.manifest.activeGeneration;
-        if(!generation){finish();finish();finish();return;}
+        if(!generation){finish();return;}
         remaining+=2;
         const trackerRequest=workspaces.get(entityRecordKey(owner,generation,'_meta','tracker'));
         const featureRequest=workspaces.get(entityRecordKey(owner,generation,'_meta','features'));
