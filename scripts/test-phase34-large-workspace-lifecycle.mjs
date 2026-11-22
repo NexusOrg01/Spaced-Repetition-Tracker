@@ -991,7 +991,7 @@ try {
       'cloud-manifest-read','cloud-chunk-pages-read','cloud-chunk-validation',
       'cloud-snapshot-assembly','cloud-snapshot-hash','cloud-snapshot-parse',
       'cloud-chunk-read','cloud-chunk-read-skipped','cloud-sync-mode-read',
-      'local-storage-flush','workspace-snapshot-current','workspace-comparison',
+      'local-storage-flush','workspace-snapshot-current','workspace-comparison','workspace-comparison-reuse',
       'workspace-merge-complete','workspace-local-commit','workspace-render',
       'same-account-workspace-restored','projection-check-start','projection-readiness',
       'projection-reuse','projection-rebuild','entity-projection-rebuild','projection-deferred-to-upload',
@@ -999,11 +999,11 @@ try {
     ]);
     const numericFields = [
       'durationMs','pageCount','completedPageCount','rowsRead','chunkCount',
-      'payloadUtf8Bytes','maxPageDurationMs','minPageDurationMs'
+      'payloadUtf8Bytes','maxPageDurationMs','minPageDurationMs','comparisonPassesSaved'
     ];
     const booleanFields = [
       'ok','ready','ownerVerified','timedOut','same','chunkDataIncluded','hasPayload',
-      'projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches'
+      'projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches','reused'
     ];
     return events.filter(event =>
       event && typeof event.at === 'string' && Date.parse(event.at) >= startedAt &&
@@ -1314,6 +1314,13 @@ try {
     event.stage === 'delta-sync-result' && event.ok === true &&
     Number.isSafeInteger(event.durationMs)
   ) || null;
+  const warmWorkspaceComparisonEvents = sameAccountRefreshEventsAfterStart.filter(event =>
+    event.stage === 'workspace-comparison' && Number.isSafeInteger(event.durationMs)
+  );
+  const warmWorkspaceComparisonReuseEvents = sameAccountRefreshEventsAfterStart.filter(event =>
+    event.stage === 'workspace-comparison-reuse' && event.reused === true &&
+    event.comparisonPassesSaved === 1 && event.ownerVerified === true
+  );
   const warmStageTimings = safeTimingEvents(sameAccountRefreshEventsAfterStart,sameAccountRefreshEventStartAt);
   const coldStageTimings = safeTimingEvents(initialEvents,initialRestoreConfirmedAt);
   const browserEnvironment = await page.evaluate(() => ({
@@ -1340,6 +1347,10 @@ try {
     'The warm restore must record owner-scoped projection readiness and whether it was reused or rebuilt.');
   assert.ok(warmDeltaSyncResult,
     'The warm restore must separately time its complete authenticated Delta synchronization.');
+  assert.equal(warmWorkspaceComparisonEvents.length,2,
+    'The warm return must retain its independent pending/cloud comparison and perform the local/cloud comparison only once.');
+  assert.ok(warmWorkspaceComparisonReuseEvents.length>=1,
+    'The same-account reconciliation decision must reuse the revision-fenced comparison result instead of repeating a 26.9 MB deep comparison.');
   console.log('DLA-08E_SAME_ACCOUNT_HARD_REFRESH=' + JSON.stringify({
     workspaceRevealMs: sameAccountRefreshWorkspaceRevealMs,
     revealStatus: sameAccountRefreshRevealStatus,
@@ -1412,6 +1423,9 @@ try {
       chunkPagesReadMs: warmChunkPagesRead && Number.isSafeInteger(warmChunkPagesRead.durationMs)
         ? warmChunkPagesRead.durationMs : null,
       finalVerificationMs: sameAccountVerification.durationMs,
+      workspaceComparisonPasses: warmWorkspaceComparisonEvents.length,
+      workspaceComparisonDurationMs: warmWorkspaceComparisonEvents.reduce((total,event)=>total+event.durationMs,0),
+      workspaceComparisonPassesSaved: warmWorkspaceComparisonReuseEvents.reduce((total,event)=>total+event.comparisonPassesSaved,0),
       memory: {
         available: Number.isSafeInteger(warmHeapBeforeBytes) && Number.isSafeInteger(warmHeapAfterBytes),
         beforeBytes: warmHeapBeforeBytes,
@@ -1816,6 +1830,7 @@ try {
     'cloud-chunk-read',
     'cloud-read',
     'workspace-comparison',
+    'workspace-comparison-reuse',
     'workspace-local-commit',
     'projection-check-start',
     'projection-readiness',
@@ -1847,6 +1862,8 @@ try {
     historyRows: Number.isSafeInteger(event.workspace?.reviewHistoryCount) ? event.workspace.reviewHistoryCount : null,
     projectionRebuildMode: typeof event.projectionRebuildMode === 'string' ? event.projectionRebuildMode : null,
     same: typeof event.same === 'boolean' ? event.same : null,
+    reused: typeof event.reused === 'boolean' ? event.reused : null,
+    comparisonPassesSaved: Number.isSafeInteger(event.comparisonPassesSaved) ? event.comparisonPassesSaved : null,
     reason: typeof event.reason === 'string' ? event.reason : null
   }));
   const expectedReturnPhases = [

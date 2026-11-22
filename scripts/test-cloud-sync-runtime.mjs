@@ -24,6 +24,101 @@ const commercePack = commerceCatalogue.packs.find(pack => pack.id === 'sl-al-com
 const workspaceMerge = require('../workspace-sync-merge.js');
 const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
 
+const comparisonHelpersStart = source.indexOf('function workspaceComparisonProofMatches(');
+const comparisonHelpersEnd = source.indexOf('async function sameWorkspace(', comparisonHelpersStart);
+assert.ok(comparisonHelpersStart >= 0 && comparisonHelpersEnd > comparisonHelpersStart,
+  'the large-workspace comparison proof and revision-fence helpers must remain testable');
+const comparisonSandbox = {};
+vm.createContext(comparisonSandbox);
+vm.runInContext(
+  source.slice(comparisonHelpersStart, comparisonHelpersEnd) +
+    '\nglobalThis.workspaceComparisonProofMatches = workspaceComparisonProofMatches;' +
+    '\nglobalThis.compareWorkspaceWithRevisionFence = compareWorkspaceWithRevisionFence;',
+  comparisonSandbox,
+  { filename: 'workspace-comparison-reuse.js' }
+);
+{
+  const localData = { state: { topics: [{ id: 'topic-A' }] }, featureState: {} };
+  const remoteData = { state: { topics: [{ id: 'topic-A' }] }, featureState: {} };
+  const remoteManifest = { chunkCount: 103, totalBytes: 26900000 };
+  const proof = {
+    ownerId: 'account-A', sessionEpoch: 12, revisionToken: 'workspace-revision-1',
+    remoteUpdatedAt: '2026-11-22T20:00:00.000Z', remoteManifest,
+    generation: 'generation-A', workspaceRevision: 44, localData, remoteData, same: true
+  };
+  assert.equal(comparisonSandbox.workspaceComparisonProofMatches(proof, { ...proof }), true,
+    'a verified comparison may be reused only for the exact same owner, session, local revision, manifest, generation, workspace revision and snapshot objects');
+  const invalidContexts = [
+    { ownerId: 'account-B' }, { sessionEpoch: 13 }, { revisionToken: 'workspace-revision-2' },
+    { remoteUpdatedAt: '2026-11-22T20:01:00.000Z' }, { remoteManifest: { ...remoteManifest } },
+    { generation: 'generation-B' }, { workspaceRevision: 45 },
+    { localData: { state: {}, featureState: {} } }, { remoteData: { state: {}, featureState: {} } }
+  ];
+  for (const change of invalidContexts) {
+    assert.equal(comparisonSandbox.workspaceComparisonProofMatches(proof, { ...proof, ...change }), false,
+      'comparison reuse must be rejected when any owner, epoch, revision, manifest, generation or snapshot identity fence changes');
+  }
+}
+{
+  let revision = 'revision-1';
+  let snapshotVersion = 'before-edit';
+  let comparisonCalls = 0;
+  let refreshCalls = 0;
+  const result = await comparisonSandbox.compareWorkspaceWithRevisionFence({
+    readRevision: () => revision,
+    compare: async () => {
+      comparisonCalls++;
+      if (comparisonCalls === 1) {
+        revision = 'revision-2';
+        return true;
+      }
+      return snapshotVersion === 'before-edit';
+    },
+    refresh: async () => {
+      refreshCalls++;
+      snapshotVersion = 'after-edit';
+    },
+    maxAttempts: 2
+  });
+  assert.equal(comparisonCalls, 2, 'an edit arriving during a large comparison must trigger one fresh comparison');
+  assert.equal(refreshCalls, 1, 'the local snapshot and pending outbox must be refreshed before retrying');
+  assert.equal(result.same, false, 'the post-edit comparison result must replace the stale pre-edit equality result');
+  assert.equal(result.stable, true, 'a stable second revision may be used after a concurrent edit');
+  assert.equal(result.revision, 'revision-2');
+  assert.equal(result.refreshed, true);
+}
+{
+  let revision = 'revision-1';
+  let comparisonCalls = 0;
+  const unstable = await comparisonSandbox.compareWorkspaceWithRevisionFence({
+    readRevision: () => revision,
+    compare: async () => {
+      comparisonCalls++;
+      revision = 'revision-' + (comparisonCalls + 1);
+      return true;
+    },
+    refresh: async () => {},
+    maxAttempts: 2
+  });
+  assert.equal(comparisonCalls, 2);
+  assert.equal(unstable.changed, true);
+  assert.equal(unstable.stable, false,
+    'repeated local edits must prevent a comparison result from being accepted or reused');
+}
+{
+  await assert.rejects(
+    comparisonSandbox.compareWorkspaceWithRevisionFence({
+      readRevision: () => 'revision-1',
+      compare: async () => { throw new Error('account changed during comparison'); },
+      refresh: async () => {},
+      maxAttempts: 2
+    }),
+    /account changed during comparison/,
+    'account rotation/cancellation during comparison must abort without producing a reusable result'
+  );
+}
+
+
 // An unchanged outgoing account checkpoint must preserve its valid IndexedDB
 // entity projection. The pending outbox snapshot is still committed under its
 // original owner; only the unnecessary workspace-mutation marker is omitted.
