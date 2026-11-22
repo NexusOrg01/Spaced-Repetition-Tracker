@@ -941,26 +941,57 @@
          typeof storage.readWorkspaceEntities!=='function'||
          typeof publisher!=='function'||typeof localCommit!=='function')
         return unavailable('local_recovery_commit_dependencies_unavailable');
+      let intent=null;
+      const reportProgress=(step,phase,details={})=>{
+        if(typeof recoveryOptions.onProgress!=='function')return;
+        const journalPhase=intent&&['prepared','staged','published'].includes(intent.phase)
+          ?intent.phase:'none';
+        try{
+          recoveryOptions.onProgress({
+            recoveryStep:step,progressPhase:phase,journalPhase,...details
+          });
+        }catch(_){}
+      };
+      const runRecoveryStep=async(step,work)=>{
+        const startedAt=Date.now();
+        reportProgress(step,'started');
+        try{
+          const result=await work();
+          const ok=!(result&&typeof result==='object'&&result.ok===false);
+          reportProgress(step,ok?'completed':'failed',{
+            durationMs:Math.max(0,Date.now()-startedAt),ok
+          });
+          return result;
+        }catch(error){
+          reportProgress(step,'failed',{
+            durationMs:Math.max(0,Date.now()-startedAt),ok:false
+          });
+          throw error;
+        }
+      };
       try{
         await assertOwner(owner);
-        let recovery=await storage.readWorkspaceEntityRecovery(owner);
-        let intent=recovery&&recovery.intent||null,prepared=null,candidate=null,staged=null;
+        let recovery=await runRecoveryStep('read-journal',()=>storage.readWorkspaceEntityRecovery(owner));
+        intent=recovery&&recovery.intent||null;
+        let prepared=null,candidate=null,staged=null;
         let projectionReused=!!(intent&&intent.reusedActiveGeneration===true);
         const stageRecoveryCandidate=async(nextCandidate,digest,restage)=>{
-          const status=typeof storage.getStatus==='function'?storage.getStatus():null;
-          if(!status||!Number.isSafeInteger(Number(status.revision)))
-            return unavailable('local_recovery_revision_unavailable');
-          await storage.migrateWorkspaceEntities(owner,nextCandidate.state,nextCandidate.featureState,{
-            expectedRevision:Number(status.revision),deferActivation:true,
-            recoveryIntentId:intent.intentId,recoveryCandidateDigest:digest,
-            recoveryRestage:restage===true,signal:recoveryOptions.signal||null
+          return runRecoveryStep(restage?'restage-generation':'stage-generation',async()=>{
+            const status=typeof storage.getStatus==='function'?storage.getStatus():null;
+            if(!status||!Number.isSafeInteger(Number(status.revision)))
+              return unavailable('local_recovery_revision_unavailable');
+            await storage.migrateWorkspaceEntities(owner,nextCandidate.state,nextCandidate.featureState,{
+              expectedRevision:Number(status.revision),deferActivation:true,
+              recoveryIntentId:intent.intentId,recoveryCandidateDigest:digest,
+              recoveryRestage:restage===true,signal:recoveryOptions.signal||null
+            });
+            recovery=await storage.readWorkspaceEntityRecovery(owner);
+            intent=recovery&&recovery.intent||null;
+            return {ok:true};
           });
-          recovery=await storage.readWorkspaceEntityRecovery(owner);
-          intent=recovery&&recovery.intent||null;
-          return {ok:true};
         };
         if(!intent||intent.phase==='prepared'){
-          prepared=await prepareConflictRecovery(owner,recoveryOptions);
+          prepared=await runRecoveryStep('prepare-candidate',()=>prepareConflictRecovery(owner,recoveryOptions));
           if(!prepared||prepared.ok!==true)return prepared||unavailable('recovery_preparation_unavailable');
           // Three-way merge normalizes export metadata (including exportedAt) on
           // every reconstruction. A prepared journal already owns the canonical
@@ -975,7 +1006,7 @@
               __nexusDeltaSync:'entity-delta-v1',
               state:prepared.payload.state,featureState:prepared.payload.featureState}
             :prepared.payload;
-          const digest=await workspaceDigest(candidate);
+          const digest=await runRecoveryStep('verify-candidate-digest',()=>workspaceDigest(candidate));
           if(intent){
             if(intent.candidateDigest!==digest||
                intent.expectedHeadRevision!==prepared.expectedHeadRevision||
@@ -989,12 +1020,16 @@
             for(const [key,value] of Object.entries(candidate)){
               if(key!=='state'&&key!=='featureState'&&key!=='__nexusDeltaSync')metadata[key]=value;
             }
-            const begun=await storage.beginWorkspaceEntityRecovery(owner,{
+            const begun=await runRecoveryStep('write-prepared-intent',async()=>{
+              const result=await storage.beginWorkspaceEntityRecovery(owner,{
               intentId:recoveryIntentId(),candidateDigest:digest,
               baseUpdatedAt:prepared.snapshotUpdatedAt,
               expectedHeadRevision:prepared.expectedHeadRevision,
               snapshotRevision:prepared.snapshotRevision,
               conflicts:prepared.conflicts,payloadMetadata:metadata
+              });
+              if(result&&result.ok===true&&result.intent)intent=result.intent;
+              return result;
             });
             if(!begun||begun.ok!==true)
               return {ok:false,retryable:true,reason:begun&&begun.reason||'recovery_intent_create_failed'};
@@ -1004,9 +1039,10 @@
           // and its owner/revision-bound entity generation is already ready, stage
           // that generation as the recovery target instead of rewriting every row.
           if(typeof storage.stageWorkspaceEntityRecoveryFromActive==='function'){
-            const reused=await storage.stageWorkspaceEntityRecoveryFromActive(
-              owner,intent.intentId,digest,JSON.stringify(candidate.state),JSON.stringify(candidate.featureState)
-            );
+            const reused=await runRecoveryStep('reuse-active-generation',()=>
+              storage.stageWorkspaceEntityRecoveryFromActive(
+                owner,intent.intentId,digest,JSON.stringify(candidate.state),JSON.stringify(candidate.featureState)
+              ));
             if(reused&&reused.ok===true){
               recovery=await storage.readWorkspaceEntityRecovery(owner);
               intent=recovery&&recovery.intent||null;
@@ -1023,13 +1059,14 @@
         }
         if(!intent||!['staged','published'].includes(intent.phase))
           return {ok:false,retryable:true,reason:'local_recovery_generation_not_staged'};
-        if(!staged)staged=await storage.readWorkspaceEntities(owner,{pending:true,recoveryIntentId:intent.intentId});
+        if(!staged)staged=await runRecoveryStep('read-staged-generation',()=>
+          storage.readWorkspaceEntities(owner,{pending:true,recoveryIntentId:intent.intentId}));
         if(!staged||staged.ownerId!==owner||staged.pending!==true){
           // A prior attempt can leave a durable staged journal after its pending
           // generation was interrupted or made unreadable. Rebuild from the same
           // owner-bound base/local/remote inputs, then require the original digest
           // and revision tuple to match before replacing the pending generation.
-          prepared=await prepareConflictRecovery(owner,recoveryOptions);
+          prepared=await runRecoveryStep('reconstruct-candidate',()=>prepareConflictRecovery(owner,recoveryOptions));
           if(!prepared||prepared.ok!==true)return prepared||{
             ok:false,retryable:true,snapshotRequired:true,reason:'staged_recovery_reconstruction_unavailable'
           };
@@ -1039,7 +1076,7 @@
             __nexusDeltaSync:'entity-delta-v1',
             state:prepared.payload.state,featureState:prepared.payload.featureState
           };
-          const digest=await workspaceDigest(candidate);
+          const digest=await runRecoveryStep('verify-candidate-digest',()=>workspaceDigest(candidate));
           if(intent.candidateDigest!==digest||
              intent.expectedHeadRevision!==prepared.expectedHeadRevision||
              intent.snapshotRevision!==prepared.snapshotRevision||
@@ -1051,7 +1088,8 @@
           if(!intent||!['staged','published'].includes(intent.phase))
             return {ok:false,retryable:true,snapshotRequired:true,
               reason:'recovery_generation_restage_not_verified',intentId:intent&&intent.intentId||null};
-          staged=await storage.readWorkspaceEntities(owner,{pending:true,recoveryIntentId:intent.intentId});
+          staged=await runRecoveryStep('read-staged-generation',()=>
+            storage.readWorkspaceEntities(owner,{pending:true,recoveryIntentId:intent.intentId}));
         }
         if(!staged||staged.ownerId!==owner||staged.pending!==true)
           return {ok:false,retryable:true,snapshotRequired:true,reason:'staged_recovery_generation_unavailable'};
@@ -1067,10 +1105,13 @@
         // current snapshot instead of publishing an identical snapshot with a new
         // timestamp. Repeated identical publications would make the other device
         // stale again and could create an endless recovery/checkpoint loop.
-        if(prepared&&prepared.snapshotRevision===prepared.expectedHeadRevision&&
-           prepared.compactedThroughRevision>=prepared.snapshotRevision&&
-           prepared.remotePayload&&typeof sameWorkspace==='function'&&
-           await sameWorkspace(candidate,prepared.remotePayload)){
+        const canCheckExistingSnapshot=!!(prepared&&prepared.snapshotRevision===prepared.expectedHeadRevision&&
+          prepared.compactedThroughRevision>=prepared.snapshotRevision&&prepared.remotePayload&&
+          typeof sameWorkspace==='function');
+        const sameExistingSnapshot=canCheckExistingSnapshot
+          ?await runRecoveryStep('verify-existing-snapshot',()=>sameWorkspace(candidate,prepared.remotePayload))
+          :false;
+        if(sameExistingSnapshot){
           const latestStateResult=await client.rpc('nexus_get_entity_sync_state');
           if(latestStateResult.error)return unavailable('remote_state_recheck_before_snapshot_reuse_failed',{
             retryable:true,errorCode:String(latestStateResult.error.code||'unknown')
@@ -1099,8 +1140,9 @@
         }else{
           // A lost publication response is retried against the exact same expected
           // head/stamp. The snapshot writer must verify the active payload idempotently.
-          publication=await publisher(owner,candidate,intent.expectedHeadRevision,intent.baseUpdatedAt,
-            recoveryOptions.signal||null);
+          publication=await runRecoveryStep('publish-snapshot',()=>
+            publisher(owner,candidate,intent.expectedHeadRevision,intent.baseUpdatedAt,
+              recoveryOptions.signal||null));
         }
         if(!publication||publication.verified!==true||
            Number(publication.snapshotRevision)!==Number(intent.expectedHeadRevision)||
@@ -1108,19 +1150,24 @@
           return {ok:false,retryable:true,snapshotRequired:true,
             reason:'delta_snapshot_publication_unverified',intentId:intent.intentId};
         await assertOwner(owner);
-        const marked=await storage.markWorkspaceEntityRecoveryPublished(owner,intent.intentId,publication);
+        const marked=await runRecoveryStep('mark-journal-published',()=>
+          storage.markWorkspaceEntityRecoveryPublished(owner,intent.intentId,publication));
         if(!marked||marked.ok!==true)
           return {ok:false,retryable:true,snapshotRequired:true,
             reason:marked&&marked.reason||'recovery_publication_journal_failed',intentId:intent.intentId};
-        const committed=await localCommit(owner,candidate,publication,intent.conflicts||[],{
-          intentId:intent.intentId,candidateDigest:intent.candidateDigest,
-          baseServerVersion:intent.baseUpdatedAt,expectedHeadRevision:intent.expectedHeadRevision
-        });
+        const committed=await runRecoveryStep('commit-local-recovery',()=>
+          localCommit(owner,candidate,publication,intent.conflicts||[],{
+            intentId:intent.intentId,candidateDigest:intent.candidateDigest,
+            baseServerVersion:intent.baseUpdatedAt,expectedHeadRevision:intent.expectedHeadRevision
+          }));
         if(!committed||committed.ok!==true)
           return {ok:false,retryable:true,snapshotRequired:true,
             reason:'verified_snapshot_waiting_for_local_recovery_commit',intentId:intent.intentId};
-        const active=await storage.readWorkspaceEntities(owner);
-        const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
+        const verification=await runRecoveryStep('verify-active-generation',async()=>({
+          active:await storage.readWorkspaceEntities(owner),
+          cursorResult:await storage.readWorkspaceEntityDeltaCursor(owner)
+        }));
+        const active=verification.active,cursorResult=verification.cursorResult;
         if(!active||active.generation!==committed.generation||
            !cursorResult||cursorResult.ok!==true||
            cursorResult.cursor.publishRevision!==publication.snapshotRevision||
@@ -1129,7 +1176,9 @@
           return {ok:false,retryable:true,snapshotRequired:true,recoveryCommitted:true,
             reason:'local_recovery_post_commit_verification_failed',intentId:intent.intentId};
         if(typeof applyWorkspace==='function'){
-          try{await applyWorkspace(active);await assertOwner(owner);}
+          try{await runRecoveryStep('apply-recovered-workspace',async()=>{
+            await applyWorkspace(active);await assertOwner(owner);return {ok:true};
+          });}
           catch(error){return {ok:false,retryable:true,recoveryCommitted:true,
             reason:'recovered_workspace_in_memory_apply_failed',
             errorCode:String(error&&error.code||'unknown')};}
