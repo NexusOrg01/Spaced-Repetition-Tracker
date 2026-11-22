@@ -2560,6 +2560,112 @@
     return result;
   }
 
+  // A recovery candidate that is byte-for-byte the durable workspace may reuse
+  // its already-published owner/revision-bound generation. This avoids writing a
+  // second 100k+ row generation merely to reset a verified Delta cursor.
+  async function stageWorkspaceEntityRecoveryFromActive(ownerId,intentId,candidateDigest,
+      trackerSnapshotJson,featureSnapshotJson){
+    const owner=entityOwnerKey(ownerId),id=String(intentId||''),
+      digest=String(candidateDigest||'');
+    if(!id||id.length>160||!/^[a-f0-9]{64}$/i.test(digest)||
+       typeof trackerSnapshotJson!=='string'||typeof featureSnapshotJson!=='string'){
+      return {ok:false,reason:'active_projection_reuse_preconditions_failed'};
+    }
+    let tracker,features;
+    try{tracker=JSON.parse(trackerSnapshotJson);features=JSON.parse(featureSnapshotJson);}
+    catch(_){return {ok:false,reason:'active_projection_reuse_preconditions_failed'};}
+    if(!tracker||typeof tracker!=='object'||Array.isArray(tracker)||
+       !features||typeof features!=='object'||Array.isArray(features)){
+      return {ok:false,reason:'active_projection_reuse_preconditions_failed'};
+    }
+    if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner||
+       !entityRecoveryLockedOwners.has(owner)){
+      return {ok:false,reason:'active_projection_reuse_preconditions_failed'};
+    }
+    await entitySyncSerial.catch(()=>undefined);
+    await serial.catch(()=>undefined);
+    await persistPending();
+    if(!enabled||committedOwnerId!==owner||entityRemovalOwners.has(owner)||pending.size){
+      return {ok:false,reason:'active_projection_reuse_preconditions_failed'};
+    }
+    return transaction(['migrationMeta',WORKSPACES],'readwrite',(tx,set)=>{
+      const migration=tx.objectStore('migrationMeta'),workspaces=tx.objectStore(WORKSPACES);
+      const values={manifest:null,intent:null,workspace:null,trackerRoot:null,featureRoot:null};
+      let remaining=3,finished=false;
+      const finish=()=>{
+        remaining--;
+        if(remaining!==0||finished)return;
+        finished=true;
+        const manifest=values.manifest,intent=values.intent,workspace=values.workspace;
+        const workspaceRevision=workspace&&Number(workspace.workspaceRevision);
+        const rowCount=manifest&&Number(manifest.rowCount);
+        const counts=manifest&&manifest.counts;
+        const collections=TRACKER_ENTITY_COLLECTIONS.concat(FEATURE_ENTITY_COLLECTIONS);
+        const expectedRowCount=collections.reduce((sum,key)=>{
+          const source=TRACKER_ENTITY_COLLECTIONS.includes(key)?tracker:features;
+          return sum+(Array.isArray(source[key])?source[key].length:0);
+        },2);
+        const countsMatch=!!(counts&&typeof counts==='object'&&!Array.isArray(counts)&&
+          collections.every(key=>{
+            const source=TRACKER_ENTITY_COLLECTIONS.includes(key)?tracker:features;
+            return Number(counts[key])===(Array.isArray(source[key])?source[key].length:0);
+          }));
+        const rootsMatch=!!(values.trackerRoot&&values.featureRoot&&
+          values.trackerRoot.ownerId===owner&&values.featureRoot.ownerId===owner&&
+          values.trackerRoot.generation===manifest?.activeGeneration&&
+          values.featureRoot.generation===manifest?.activeGeneration&&
+          values.trackerRoot.collection==='_meta'&&values.trackerRoot.entityId==='tracker'&&
+          values.featureRoot.collection==='_meta'&&values.featureRoot.entityId==='features'&&
+          JSON.stringify(values.trackerRoot.value)===JSON.stringify(entityRootValue(tracker,TRACKER_ENTITY_COLLECTIONS))&&
+          JSON.stringify(values.featureRoot.value)===JSON.stringify(entityRootValue(features,FEATURE_ENTITY_COLLECTIONS)));
+        const valid=enabled&&committedOwnerId===owner&&!entityRemovalOwners.has(owner)&&
+          entityRecoveryLockedOwners.has(owner)&&pending.size===0&&
+          manifest&&manifest.ownerId===owner&&manifest.status==='ready'&&
+          manifest.formatVersion===1&&typeof manifest.activeGeneration==='string'&&manifest.activeGeneration&&
+          !manifest.pendingGeneration&&!manifest.pendingRecoveryIntentId&&
+          Number.isSafeInteger(rowCount)&&rowCount===expectedRowCount&&countsMatch&&
+          validWorkspaceRow(workspace,owner)&&
+          workspace.tracker===trackerSnapshotJson&&workspace.featureState===featureSnapshotJson&&
+          Number.isSafeInteger(workspaceRevision)&&workspaceRevision>=0&&
+          Number(manifest.sourceWorkspaceRevision)===workspaceRevision&&
+          Number.isSafeInteger(Number(manifest.sourceRevision))&&rootsMatch&&
+          intent&&intent.ownerId===owner&&intent.intentId===id&&intent.phase==='prepared'&&
+          intent.candidateDigest===digest&&intent.activeGeneration===manifest.activeGeneration;
+        if(!valid){
+          set({ok:false,reason:'active_projection_reuse_preconditions_failed'});
+          return;
+        }
+        const generation=manifest.activeGeneration;
+        migration.put({...manifest,pendingGeneration:generation,pendingRecoveryIntentId:id,
+          pendingRowCount:rowCount,pendingCounts:manifest.counts||{},
+          pendingPositionBounds:manifest.positionBounds||{},
+          pendingSourceRevision:manifest.sourceRevision,
+          pendingSourceWorkspaceRevision:workspaceRevision,
+          migrationStatus:'recovery-staged',updatedAt:timestamp()});
+        migration.put({...intent,phase:'staged',pendingGeneration:generation,
+          reusedActiveGeneration:true,updatedAt:timestamp()});
+        set({ok:true,reusedActiveGeneration:true,generation,rowCount,
+          counts:manifest.counts||{},sourceRevision:manifest.sourceRevision,
+          sourceWorkspaceRevision:workspaceRevision});
+      };
+      const manifestRequest=migration.get(entityManifestKey(owner));
+      const intentRequest=migration.get(entityDeltaRecoveryKey(owner));
+      const workspaceRequest=workspaces.get(workspaceKey(owner));
+      manifestRequest.onsuccess=()=>{
+        values.manifest=manifestRequest.result||null;
+        const generation=values.manifest&&values.manifest.activeGeneration;
+        if(!generation){finish();finish();finish();return;}
+        remaining+=2;
+        const trackerRequest=workspaces.get(entityRecordKey(owner,generation,'_meta','tracker'));
+        const featureRequest=workspaces.get(entityRecordKey(owner,generation,'_meta','features'));
+        trackerRequest.onsuccess=()=>{values.trackerRoot=trackerRequest.result||null;finish();};
+        featureRequest.onsuccess=()=>{values.featureRoot=featureRequest.result||null;finish();};
+      };
+      intentRequest.onsuccess=()=>{values.intent=intentRequest.result||null;finish();};
+      workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;finish();};
+    });
+  }
+
   async function readWorkspaceEntityRecovery(ownerId){
     const owner=entityOwnerKey(ownerId);
     if(!enabled||!database||committedOwnerId!==owner||entityRemovalOwners.has(owner))return null;
@@ -3356,6 +3462,7 @@
     isWorkspaceSnapshotCurrent,
     getWorkspaceEntityProjectionReadiness,
     beginWorkspaceEntityRecovery,
+    stageWorkspaceEntityRecoveryFromActive,
     readWorkspaceEntityRecovery,
     markWorkspaceEntityRecoveryPublished,
     commitWorkspaceEntityRecovery,
