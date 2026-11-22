@@ -534,8 +534,14 @@ assert.match(source,
   /function schedule\(\)\{if\(authSessionVerificationPending\|\|/,
   'normal upload scheduling must pause until a mismatched auth session has been verified');
 assert.match(source,
-  /async function upload\(\)\{\s*if\(authSessionVerificationPending\|\|/,
-  'the cloud writer must not run while active auth identity is uncertain');
+  /function upload\(\)\{\s*if\(authSessionVerificationPending\|\|/,
+  'the public upload coordinator must stop while active auth identity is uncertain');
+assert.match(source,
+  /async function performUpload\(\)\{\s*if\(authSessionVerificationPending\|\|/,
+  'the underlying account upload must re-check auth identity before doing work');
+assert.match(source,
+  /const active=activeUploadPromises\.get\(epoch\);[\s\S]*?if\(active\)return active;/,
+  'concurrent callers for one session epoch must join the in-flight verified upload instead of receiving a false failure');
 assert.match(source,
   /const callbackEpoch=sessionEpoch;[\s\S]*?if\(!authInitializationCallbackIsCurrent\(uid,callbackEpoch\)\)return;/,
   'the actual deferred sign-in initialization callback must be fenced by the epoch that scheduled it');
@@ -649,7 +655,7 @@ assert.ok(!initializationSource.includes("localPayload=snapshot();const remote=a
   !initializationSource.includes('sameWorkspace(localPayload,latestLocalPayload)'),
   'account initialization must not deep-clone and compare the entire local workspace twice before any account decision');
 
-const uploadStart=source.indexOf('async function upload(){');
+const uploadStart=source.indexOf('function upload(){');
 const uploadEnd=source.indexOf('let localQueueHealthy=',uploadStart);
 assert.ok(uploadStart>=0&&uploadEnd>uploadStart,'the cloud upload coordinator must be available for restore-path checks');
 const uploadSource=source.slice(uploadStart,uploadEnd);
@@ -703,7 +709,7 @@ assert.ok(uploadSource.includes('ready=ownerStillMatches')&&
   'blocked or failed sync must retry while preserving a matching owner workspace');
 
 const deltaSyncStart=source.indexOf('async function runStagingEntityDeltaSync');
-const deltaSyncEnd=source.indexOf('async function upload(){',deltaSyncStart);
+const deltaSyncEnd=source.indexOf('function upload(){',deltaSyncStart);
 const deltaSyncSource=source.slice(deltaSyncStart,deltaSyncEnd);
 assert.ok(deltaSyncSource.includes('cursor.requiresPull===false')&&
   deltaSyncSource.includes('Number(cursor.publishRevision)===Number(cursor.remoteHeadRevision)')&&
@@ -1078,6 +1084,46 @@ assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'offline-A', 'the
 assert.equal(queue.hasPending(storage, accountA.id), false, 'the queue must be cleared only after verified cloud read-back');
 assert.equal(getElement('cloudStatus').textContent, 'Synced', 'verified recovery must report synced');
 
+// Concurrent callers for the same account epoch must share the actual upload
+// result. Returning false merely because another upload is active makes an
+// initializer misclassify a healthy in-flight verification as a failed sync.
+{
+  const currentA=rows.get(accountA.id);
+  const coalescedState=stateFor('coalesced-upload-A');
+  const coalescedPayload=payloadFor('coalesced-upload-A');
+  queue.rememberStamp(storage,accountA.id,currentA.updated_at);
+  queue.rememberBase(storage,accountA.id,{
+    state:currentA.payload.state,featureState:currentA.payload.featureState
+  },currentA.updated_at);
+  context.state=coalescedState;
+  storage.setItem(STATE_KEY,JSON.stringify(coalescedState));
+  storage.setItem(FEATURE_KEY,JSON.stringify(coalescedPayload.featureState));
+  queue.commitWorkspace(storage,[
+    {key:STATE_KEY,value:JSON.stringify(coalescedState)},
+    {key:FEATURE_KEY,value:JSON.stringify(coalescedPayload.featureState)}
+  ],coalescedPayload,{baseServerVersion:currentA.updated_at});
+  deferNextRemoteRead=true;
+  const firstUpload=window.NexusCloudSync.upload();
+  for(let i=0;i<200&&!releaseDeferredRemoteRead;i++)await new Promise(resolve=>setTimeout(resolve,5));
+  assert.equal(typeof releaseDeferredRemoteRead,'function',
+    'the first same-account upload must reach its deliberately deferred remote verification read');
+  const secondUpload=window.NexusCloudSync.upload();
+  assert.equal(secondUpload,firstUpload,
+    'a second same-epoch upload request must join the first upload promise');
+  const releaseCoalescedRead=releaseDeferredRemoteRead;
+  releaseCoalescedRead();
+  releaseDeferredRemoteRead=null;
+  const [firstResult,secondResult]=await Promise.all([firstUpload,secondUpload]);
+  assert.equal(firstResult,true,'the shared upload must report its verified result to the first caller');
+  assert.equal(secondResult,true,'the shared upload must report the same verified result to the concurrent caller');
+  assert.equal(rows.get(accountA.id).payload.state.topics[0].id,'coalesced-upload-A',
+    'the coalesced upload must publish the exact owner-bound pending snapshot');
+  assert.equal(queue.hasPending(storage,accountA.id),false,
+    'the shared operation may be considered complete only after the queue is acknowledged');
+  assert.equal(getElement('cloudStatus').textContent,'Synced',
+    'both callers must observe a terminal verified sync state');
+}
+ 
 const revisionA = rows.get(accountA.id).updated_at;
 queue.rememberStamp(storage, accountA.id, revisionA);
 queue.commitWorkspace(storage, [
