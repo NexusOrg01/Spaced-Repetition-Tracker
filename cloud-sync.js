@@ -18,7 +18,8 @@ const SYNC_DIAG_KEY='nexus.syncdiag.session.v1';
 const SYNC_REQUEST_TIMEOUT_MS=180000,SESSION_INITIALIZATION_TIMEOUT_MS=120000,
  SUPABASE_AUTH_REQUEST_TIMEOUT_MS=15000,SUPABASE_DATA_REQUEST_TIMEOUT_MS=60000,
  WORKSPACE_COMPARE_TIMEOUT_MS=60000,LOCAL_RECOVERY_TIMEOUT_MS=45000,
- REMOTE_DELTA_POLL_INTERVAL_MS=15000;
+ REMOTE_DELTA_POLL_INTERVAL_MS=15000,
+ AUTH_SESSION_VERIFICATION_TIMEOUT_MS=15000,AUTH_SESSION_VERIFICATION_RETRY_MS=15000;
 let hostedDeltaPollingEnabled=false,remoteDeltaPollTimer=null;
 const productionDeltaIneligibleOwners=new Set();
 function syncCancelledError(message){
@@ -2510,20 +2511,45 @@ function clearAuthSessionVerification(){
  authSessionVerificationPending=false;authSessionVerificationAttempt++;
  if(authSessionVerificationTimer){clearTimeout(authSessionVerificationTimer);authSessionVerificationTimer=null;}
 }
+function scheduleAuthSessionVerificationRetry(attempt,expectedEpoch,error){
+ if(attempt!==authSessionVerificationAttempt||expectedEpoch!==sessionEpoch||!authSessionVerificationPending)return;
+ status('Account verification delayed');
+ say('Nexus received an account-session change it could not yet verify. Your current local workspace remains available and cloud writes are paused until account verification succeeds.');
+ authSessionVerificationTimer=setTimeout(()=>{
+  authSessionVerificationTimer=null;
+  if(attempt!==authSessionVerificationAttempt||expectedEpoch!==sessionEpoch||!authSessionVerificationPending)return;
+  verifyCurrentAuthSessionAfterMismatch();
+ },AUTH_SESSION_VERIFICATION_RETRY_MS);
+ if(error)console.warn('Nexus could not immediately reconcile an auth-session notification.',error);
+}
 function verifyCurrentAuthSessionAfterMismatch(){
- if(!authSessionVerificationPending||!client||!client.auth||typeof client.auth.getSession!=='function')return;
+ if(!authSessionVerificationPending)return;
  if(authSessionVerificationTimer){clearTimeout(authSessionVerificationTimer);authSessionVerificationTimer=null;}
  const attempt=++authSessionVerificationAttempt,expectedEpoch=sessionEpoch;
+ if(!client||!client.auth||typeof client.auth.getSession!=='function'){
+  scheduleAuthSessionVerificationRetry(attempt,expectedEpoch,new Error('Supabase session verification is unavailable.'));
+  return;
+ }
  authSessionVerificationTimer=setTimeout(async()=>{
   authSessionVerificationTimer=null;
   if(attempt!==authSessionVerificationAttempt||expectedEpoch!==sessionEpoch||!authSessionVerificationPending)return;
+  const verificationScope=createSyncAbortScope(
+   sessionAbortController&&sessionAbortController.signal,
+   AUTH_SESSION_VERIFICATION_TIMEOUT_MS
+  );
   try{
    // Run after the Supabase auth callback has returned; awaiting getSession inside
-   // onAuthStateChange can deadlock the client's auth-state lock.
-   const result=await client.auth.getSession();
+   // onAuthStateChange can deadlock the client's auth-state lock. Bound the read as
+   // well as the underlying Auth fetch so a hung local lock cannot suppress retries.
+   const result=await verificationScope.race(client.auth.getSession(),'account session verification');
    if(attempt!==authSessionVerificationAttempt||expectedEpoch!==sessionEpoch||!authSessionVerificationPending)return;
    if(result&&result.error)throw result.error;
-   const verifiedSession=result&&result.data&&result.data.session||null;
+   if(!result||!result.data||!Object.prototype.hasOwnProperty.call(result.data,'session'))
+    throw new Error('Supabase returned an incomplete auth-session verification result.');
+   const verifiedSession=result.data.session;
+   if(verifiedSession!==null&&(!verifiedSession||typeof verifiedSession!=='object'||
+      !verifiedSession.user||!verifiedSession.user.id))
+    throw new Error('Supabase returned an invalid authenticated session.');
    const verifiedUserId=verifiedSession&&verifiedSession.user&&verifiedSession.user.id||null;
    if(verifiedUserId===sessionOwnerId){
     clearAuthSessionVerification();
@@ -2541,14 +2567,11 @@ function verifyCurrentAuthSessionAfterMismatch(){
   }catch(error){
    if(attempt!==authSessionVerificationAttempt||expectedEpoch!==sessionEpoch||!authSessionVerificationPending)return;
    // Keep the cached account workspace available, but freeze every cloud write
-   // until an authoritative session read succeeds. Retry on reconnect/focus and
-   // at a slow bounded interval; never launch a full workspace initialization here.
-   status('Account verification delayed');
-   say('Nexus received an account-session change it could not yet verify. Your current local workspace remains available and cloud writes are paused until account verification succeeds.');
-   authSessionVerificationTimer=setTimeout(()=>{
-    authSessionVerificationTimer=null;verifyCurrentAuthSessionAfterMismatch();
-   },15000);
-   console.warn('Nexus could not immediately reconcile an auth-session notification.',error);
+   // until an authoritative session read succeeds. Errors, rejected promises and
+   // timed-out getSession calls all use the same fixed, bounded retry cadence.
+   scheduleAuthSessionVerificationRetry(attempt,expectedEpoch,error);
+  }finally{
+   verificationScope.clear();
   }
  },0);
 }
