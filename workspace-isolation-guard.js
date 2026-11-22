@@ -33,11 +33,33 @@
     const progress=doc.getElementById('workspaceIsolationProgress');
     const heading=doc.getElementById('workspaceIsolationTitle'),message=doc.getElementById('workspaceIsolationMessage');
     const signOut=doc.getElementById('workspaceIsolationSignOut');
+    const diagnostics=doc.getElementById('workspaceIsolationDiagnostics');
     const signInGoogle=doc.getElementById('workspaceIsolationSignInGoogle');
     const signInEmail=doc.getElementById('workspaceIsolationSignInEmail');
     const details=doc.getElementById('workspaceIsolationDetails'),help=doc.getElementById('cloudHelpText');
     const app=doc.querySelector('.app');
     if(!account||!overlay||!heading||!message||!signOut||!signInGoogle||!signInEmail)return false;
+    let lastDiagnosticState='';
+    function isPreviewOrigin(){
+      const host=String(root.location&&root.location.hostname||'').toLowerCase();
+      return host.endsWith('.vercel.app')||host.endsWith('.netlify.app')||host.endsWith('.pages.dev');
+    }
+    if(diagnostics){
+      diagnostics.hidden=!isPreviewOrigin();
+      diagnostics.addEventListener('click',()=>{
+        const sync=root.NexusCloudSync;
+        try{
+          if(sync&&typeof sync.isDiagnosticsEnabled==='function'&&sync.isDiagnosticsEnabled()){
+            if(typeof sync.downloadDiagnostics==='function')sync.downloadDiagnostics();
+          }else if(sync&&typeof sync.enableDiagnostics==='function')sync.enableDiagnostics();
+          else{
+            root.localStorage.setItem('nexus.syncdiag.enabled','1');
+            root.sessionStorage.setItem('nexus.syncdiag.enabled','1');
+            root.location.reload();
+          }
+        }catch(error){console.warn('Nexus sync diagnostics could not be started from the workspace lock.',error);}
+      });
+    }
     function refresh(){
       const activeId=accountIdFromTitle(account.title);
       let ownerId='',lastAuthenticatedId='';
@@ -51,6 +73,18 @@
         (/preview\/local copy.*cloud sync disabled/i.test(accountText)&&/separate Supabase test project/i.test(accountTitle));
       const statusText=status?String(status.textContent||''):'';
       const decision=resolveWorkspaceLock(activeId,ownerId,statusText,lastAuthenticatedId,explicitlyOffline);
+      const diagnosticState=[decision.phase,!!activeId,!!ownerId,!!activeId&&activeId===ownerId].join('|');
+      if(diagnosticState!==lastDiagnosticState&&root.NexusCloudSync&&
+         typeof root.NexusCloudSync.noteWorkspaceGuardState==='function'){
+        lastDiagnosticState=diagnosticState;
+        root.NexusCloudSync.noteWorkspaceGuardState({phase:decision.phase,
+          activeAccountPresent:!!activeId,ownerPresent:!!ownerId,ownerMatches:!!activeId&&activeId===ownerId});
+      }
+      if(diagnostics){
+        diagnostics.hidden=!isPreviewOrigin();
+        const enabled=!!(root.NexusCloudSync&&typeof root.NexusCloudSync.isDiagnosticsEnabled==='function'&&root.NexusCloudSync.isDiagnosticsEnabled());
+        diagnostics.textContent=enabled?'Download safe sync diagnostics':'Enable safe diagnostics and reload';
+      }
       if(details){
         const helpText=help?String(help.textContent||'').trim():'';
         details.textContent=decision.locked&&decision.phase==='error'?('Status: '+statusText+(helpText?' - '+helpText:'')):'';
