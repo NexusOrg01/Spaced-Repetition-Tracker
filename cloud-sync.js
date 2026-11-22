@@ -2608,8 +2608,10 @@ async function downgradeEntityDelta(){
   if(localStorage.getItem(OWNER_KEY)!==ownerId)throw syncCancelledError();
   if(result&&result.ok===true&&result.mode==='snapshot'){
    if(productionDeltaClientGateOpen())productionDeltaIneligibleOwners.add(ownerId);
+   await scope.race(flushDurableLocalWrites(scope.signal),'snapshot downgrade local persistence');
+   await assertActiveUser(ownerId,operationEpoch);
+   if(localStorage.getItem(OWNER_KEY)!==ownerId)throw syncCancelledError();
    lastRemoteStamp=result.updated_at||lastRemoteStamp;
-   await flushDurableLocalWrites();
    status('Snapshot mode · synced');
    say('This account has a verified full snapshot and is back in snapshot sync mode. Other offline devices will be required to download and reconcile the current snapshot before their next snapshot write.');
    return result;
