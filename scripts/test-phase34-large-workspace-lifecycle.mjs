@@ -1046,6 +1046,7 @@ try {
       throw new Error('The account-bound save coordinator is unavailable.');
     }
     window.NexusCloudSync.recordLocalSave({ state, featureState });
+    window.NexusCloudSync.schedule();
     return { owner, pending: !!window.NexusOfflineSyncQueue?.hasPending(localStorage, ownerA) };
   }, ownerA);
   assert.equal(initialAPendingResult.owner, ownerA);
