@@ -962,7 +962,19 @@
         if(!intent||intent.phase==='prepared'){
           prepared=await prepareConflictRecovery(owner,recoveryOptions);
           if(!prepared||prepared.ok!==true)return prepared||unavailable('recovery_preparation_unavailable');
-          candidate=prepared.payload;
+          // Three-way merge normalizes export metadata (including exportedAt) on
+          // every reconstruction. A prepared journal already owns the canonical
+          // metadata for its candidate, so reuse that metadata while always taking
+          // freshly reconstructed state/featureState. This keeps the candidate
+          // digest stable across a restart without weakening the workspace check.
+          const priorMetadata=intent&&intent.payloadMetadata&&
+            typeof intent.payloadMetadata==='object'&&!Array.isArray(intent.payloadMetadata)
+              ?intent.payloadMetadata:{};
+          candidate=intent
+            ?{...prepared.payload,...priorMetadata,
+              __nexusDeltaSync:'entity-delta-v1',
+              state:prepared.payload.state,featureState:prepared.payload.featureState}
+            :prepared.payload;
           const digest=await workspaceDigest(candidate);
           if(intent){
             if(intent.candidateDigest!==digest||
