@@ -883,6 +883,7 @@
         await assertOwner(owner);
         let recovery=await storage.readWorkspaceEntityRecovery(owner);
         let intent=recovery&&recovery.intent||null,prepared=null,candidate=null,staged=null;
+        let projectionReused=!!(intent&&intent.reusedActiveGeneration===true);
         const stageRecoveryCandidate=async(nextCandidate,digest,restage)=>{
           const status=typeof storage.getStatus==='function'?storage.getStatus():null;
           if(!status||!Number.isSafeInteger(Number(status.revision)))
@@ -925,11 +926,30 @@
               return {ok:false,retryable:true,reason:begun&&begun.reason||'recovery_intent_create_failed'};
             intent=begun.intent;
           }
-          await stageRecoveryCandidate(candidate,digest,false);
+          // If the prepared candidate is the exact durable compatibility snapshot
+          // and its owner/revision-bound entity generation is already ready, stage
+          // that generation as the recovery target instead of rewriting every row.
+          if(typeof storage.stageWorkspaceEntityRecoveryFromActive==='function'){
+            const reused=await storage.stageWorkspaceEntityRecoveryFromActive(
+              owner,intent.intentId,digest,JSON.stringify(candidate.state),JSON.stringify(candidate.featureState)
+            );
+            if(reused&&reused.ok===true){
+              recovery=await storage.readWorkspaceEntityRecovery(owner);
+              intent=recovery&&recovery.intent||null;
+              projectionReused=!!(intent&&intent.reusedActiveGeneration===true&&
+                intent.pendingGeneration===reused.generation);
+              if(projectionReused){
+                staged={ownerId:owner,generation:reused.generation,state:candidate.state,
+                  featureState:candidate.featureState,rowCount:reused.rowCount,
+                  counts:reused.counts,pending:true};
+              }
+            }
+          }
+          if(!projectionReused)await stageRecoveryCandidate(candidate,digest,false);
         }
         if(!intent||!['staged','published'].includes(intent.phase))
           return {ok:false,retryable:true,reason:'local_recovery_generation_not_staged'};
-        staged=await storage.readWorkspaceEntities(owner,{pending:true,recoveryIntentId:intent.intentId});
+        if(!staged)staged=await storage.readWorkspaceEntities(owner,{pending:true,recoveryIntentId:intent.intentId});
         if(!staged||staged.ownerId!==owner||staged.pending!==true){
           // A prior attempt can leave a durable staged journal after its pending
           // generation was interrupted or made unreadable. Rebuild from the same
@@ -1041,7 +1061,7 @@
             errorCode:String(error&&error.code||'unknown')};}
         }
         return {ok:true,recovered:true,alreadyCommitted:!!committed.alreadyCommitted,
-          snapshotReused,snapshotPublished:!snapshotReused,
+          snapshotReused,snapshotPublished:!snapshotReused,projectionReused,
           generation:active.generation,snapshotRevision:publication.snapshotRevision,
           headRevision:publication.headRevision,cursor:cursorResult.cursor,
           compaction:publication.compaction||null,
