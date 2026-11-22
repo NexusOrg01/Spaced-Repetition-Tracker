@@ -1170,7 +1170,10 @@
       const storageCollection=change.collection==='trackerMeta'||change.collection==='featureMeta'?'_meta':change.collection;
       const storageId=change.collection==='trackerMeta'?'tracker':change.collection==='featureMeta'?'features':change.id;
       return {collection:change.collection,id:change.id,storageCollection,storageId,operation:change.operation,
-        value:change.value,position:isMeta?0:(change.operation==='put'?(change.position==='prepend'?'prepend':(change.position??null)):null)};
+        value:change.value,position:isMeta?0:(change.operation==='put'?(change.position==='prepend'?'prepend':(change.position??null)):null),
+        positionMode:isMeta?'meta':(change.operation==='put'?
+          (change.position===null||change.position===undefined?'append':
+            (change.position==='prepend'?'prepend':'absolute')):'none')};
     });
     const operationId=String(options.operationId||(
       root&&root.crypto&&typeof root.crypto.randomUUID==='function'?root.crypto.randomUUID():
@@ -1217,7 +1220,8 @@
           outbox.put({key:entityOutboxKey(owner,next),ownerId:owner,generation:manifest.activeGeneration,
             kind:'change',sequence:next,operationId,collection:change.collection,
             entityId:change.id,operation:change.operation,
-            value:change.operation==='put'?change.value:undefined,position,createdAt:timestamp()});
+            value:change.operation==='put'?change.value:undefined,position,
+            positionMode:change.positionMode,createdAt:timestamp()});
         }
         const counts={...(manifest.counts||{})};
         for(const [collection,delta] of Object.entries(countDeltas)){
@@ -2051,7 +2055,7 @@
             // the end after a remote insert/delete. Other pending positions are
             // absolute, so same-collection inserts/deletes/moves require recovery.
             const appendOnly=pendingInCollection.every(item=>
-              item.operation==='put'&&(item.position===null||item.position===undefined)
+              item.operation==='put'&&item.positionMode==='append'
             );
             if(appendOnly)continue;
             if(change.operation==='delete'||!existing||Number(existing.position)!==change.position){
