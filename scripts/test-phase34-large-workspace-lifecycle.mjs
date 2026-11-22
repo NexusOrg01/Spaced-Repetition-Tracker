@@ -986,6 +986,57 @@ try {
     });
   }
 
+  function safeTimingEvents(events, startedAt) {
+    const stages = new Set([
+      'cloud-manifest-read','cloud-chunk-pages-read','cloud-chunk-validation',
+      'cloud-snapshot-assembly','cloud-snapshot-hash','cloud-snapshot-parse',
+      'cloud-chunk-read','cloud-chunk-read-skipped','cloud-sync-mode-read',
+      'local-storage-flush','workspace-snapshot-current','workspace-comparison',
+      'workspace-merge-complete','workspace-local-commit','workspace-render',
+      'same-account-workspace-restored','projection-check-start','projection-readiness',
+      'projection-reuse','projection-rebuild','projection-deferred-to-upload',
+      'delta-sync-result','initialize-status-watchdog','initial-sync-verification'
+    ]);
+    const numericFields = [
+      'durationMs','pageCount','completedPageCount','rowsRead','chunkCount',
+      'payloadUtf8Bytes','maxPageDurationMs','minPageDurationMs'
+    ];
+    const booleanFields = [
+      'ok','ready','ownerVerified','timedOut','same','chunkDataIncluded','hasPayload'
+    ];
+    return events.filter(event =>
+      event && typeof event.at === 'string' && Date.parse(event.at) >= startedAt &&
+      stages.has(event.stage)
+    ).map(event => {
+      const row = {
+        stage: event.stage,
+        elapsedMs: Math.max(0,Date.parse(event.at)-startedAt)
+      };
+      for (const key of numericFields) {
+        if (Number.isSafeInteger(event[key]) && event[key] >= 0) row[key] = event[key];
+      }
+      for (const key of booleanFields) {
+        if (typeof event[key] === 'boolean') row[key] = event[key];
+      }
+      for (const key of ['storageMode','syncMode','projectionRebuildMode','errorCategory']) {
+        if (typeof event[key] === 'string') row[key] = event[key];
+      }
+      const topicCount = event.workspace && event.workspace.topicCount;
+      const historyRows = event.workspace && event.workspace.reviewHistoryCount;
+      if (Number.isSafeInteger(topicCount) && topicCount >= 0) row.topicCount = topicCount;
+      if (Number.isSafeInteger(historyRows) && historyRows >= 0) row.historyRows = historyRows;
+      return row;
+    });
+  }
+
+  async function readHeapUsageBytes() {
+    return page.evaluate(() => {
+      const memory = performance && performance.memory;
+      return memory && Number.isSafeInteger(memory.usedJSHeapSize)
+        ? memory.usedJSHeapSize : null;
+    });
+  }
+
   const appEmailA = process.env.PHASE34_EMAIL_C;
   const appPasswordA = process.env.PHASE34_PASSWORD_C;
   const appEmailB = process.env.PHASE34_EMAIL_B;
@@ -1025,6 +1076,7 @@ try {
     }
     return details;
   });
+  const coldHeapBeforeBytes = await readHeapUsageBytes();
   const restoreClickPromise = page.locator('#accountChoiceDialog [data-account-choice="replace"]').click();
   const [restoreConfirmationDetails] = await Promise.all([
     restoreConfirmationPromise,
@@ -1053,11 +1105,39 @@ try {
   const initialRestoreToVerifiedMs = Date.now() - initialRestoreConfirmedAt;
   const initialSignInToVerifiedMs = Date.now() - initialAccountStartedAt;
   const initialEvents = await readAppDiagnostics();
+  const coldHeapAfterBytes = await readHeapUsageBytes();
   const initialCloudRead = initialEvents.slice().reverse().find(event =>
     event.stage === 'cloud-read' &&
     event.payloadUtf8Bytes === TARGET_BYTES &&
     event.chunkCount === 103
   );
+  const initialManifestRead = initialEvents.slice().reverse().find(event =>
+    event.stage === 'cloud-manifest-read' &&
+    event.chunkCount === 103 &&
+    event.payloadUtf8Bytes === TARGET_BYTES
+  ) || null;
+  const initialCloudChunkRead = initialEvents.slice().reverse().find(event =>
+    event.stage === 'cloud-chunk-read' &&
+    event.chunkCount === 103 &&
+    event.payloadUtf8Bytes === TARGET_BYTES
+  ) || null;
+  const initialChunkPagesRead = initialEvents.slice().reverse().find(event =>
+    event.stage === 'cloud-chunk-pages-read' &&
+    event.chunkCount === 103 &&
+    event.payloadUtf8Bytes === TARGET_BYTES
+  ) || null;
+  const initialChunkValidation = initialEvents.slice().reverse().find(event =>
+    event.stage === 'cloud-chunk-validation' && event.chunkCount === 103
+  ) || null;
+  const initialSnapshotAssembly = initialEvents.slice().reverse().find(event =>
+    event.stage === 'cloud-snapshot-assembly' && event.chunkCount === 103
+  ) || null;
+  const initialSnapshotHash = initialEvents.slice().reverse().find(event =>
+    event.stage === 'cloud-snapshot-hash'
+  ) || null;
+  const initialSnapshotParse = initialEvents.slice().reverse().find(event =>
+    event.stage === 'cloud-snapshot-parse'
+  ) || null;
   // Bind the terminal verification event to the authenticated initialization
   // started by this sign-in. A first-time large restore may hit the bounded
   // initialization deadline, leave a truthful local-ready/unverified state, and
@@ -1088,6 +1168,24 @@ try {
     : null;
   assert.ok(initialCloudRead,
     'The real Nexus app must read the exact 26.9 MB / 103-chunk account-A fixture.');
+  assert.ok(initialManifestRead && Number.isSafeInteger(initialManifestRead.durationMs),
+    'the cold restore must record manifest retrieval separately from chunk reconstruction');
+  assert.ok(initialCloudChunkRead && Number.isSafeInteger(initialCloudChunkRead.durationMs),
+    'the cold restore must record the complete chunk reconstruction duration');
+  assert.ok(initialChunkPagesRead && initialChunkPagesRead.ok === true &&
+    initialChunkPagesRead.pageCount > 0 &&
+    initialChunkPagesRead.completedPageCount === initialChunkPagesRead.pageCount &&
+    initialChunkPagesRead.rowsRead === 103 &&
+    initialChunkPagesRead.chunkDataIncluded === true,
+    'the cold restore must measure every chunk page request and confirm all 103 data-bearing rows were retrieved');
+  assert.ok(initialChunkValidation && initialChunkValidation.ok === true,
+    'the cold restore must record successful structural, byte-length and manifest-size validation');
+  assert.ok(initialSnapshotAssembly && initialSnapshotAssembly.ok === true,
+    'the cold restore must record successful chunk-string assembly');
+  assert.ok(initialSnapshotHash && initialSnapshotHash.ok === true,
+    'the cold restore must record successful SHA-256 verification');
+  assert.ok(initialSnapshotParse && initialSnapshotParse.ok === true,
+    'the cold restore must record successful JSON reconstruction and shape validation');
   assert.ok(initialInitializationStarted,
     'The real Nexus app must record the authenticated Account A initialization start.');
   assert.ok(initialVerification && Number.isSafeInteger(initialVerification.durationMs),
@@ -1130,6 +1228,7 @@ try {
   // 103-chunk download or a redundant local snapshot replacement.
   const sameAccountRefreshStartedAt = Date.now();
   await page.reload({ waitUntil: 'domcontentloaded' });
+  const warmHeapBeforeBytes = await readHeapUsageBytes();
   await page.waitForFunction(({ email, userId }) => {
     const account = document.querySelector('#cloudAccount');
     const app = document.querySelector('.app');
@@ -1148,6 +1247,8 @@ try {
   assert.notEqual(sameAccountRefreshRevealStatus, 'Account verification delayed',
     'A verified same-account cache must not fall behind the 30-second account-verification watchdog.');
   await waitForAccountAndStatus(appEmailA, ownerA, 'Synced', 60000);
+  const sameAccountRefreshToVerifiedMs = Date.now() - sameAccountRefreshStartedAt;
+  const warmHeapAfterBytes = await readHeapUsageBytes();
   const sameAccountRefreshEvents = await readAppDiagnostics();
   const sameAccountRefreshEventsAfterStart = sameAccountRefreshEvents.filter(event =>
     Date.parse(event.at || '') >= sameAccountRefreshStartedAt
@@ -1165,6 +1266,22 @@ try {
   const sameAccountVerification = sameAccountRefreshEventsAfterStart.find(event =>
     event.stage === 'initial-sync-verification' && event.ok === true && event.ready === true
   ) || null;
+  const warmManifestRead = sameAccountRefreshEventsAfterStart.find(event =>
+    event.stage === 'cloud-manifest-read' && event.ok === true
+  ) || null;
+  const warmChunkPagesRead = sameAccountRefreshEventsAfterStart.find(event =>
+    event.stage === 'cloud-chunk-pages-read'
+  ) || null;
+  const warmStageTimings = safeTimingEvents(sameAccountRefreshEventsAfterStart,sameAccountRefreshStartedAt);
+  const coldStageTimings = safeTimingEvents(initialEvents,initialRestoreConfirmedAt);
+  const browserEnvironment = await page.evaluate(() => ({
+    online: navigator.onLine,
+    platform: navigator.platform || null,
+    hardwareConcurrency: Number.isSafeInteger(navigator.hardwareConcurrency)
+      ? navigator.hardwareConcurrency : null,
+    deviceMemoryGb: Number.isFinite(navigator.deviceMemory)
+      ? navigator.deviceMemory : null
+  }));
   assert.ok(sameAccountCacheRestore,
     'A same-account hard refresh must expose the existing owner-verified local workspace before remote snapshot reconstruction.');
   assert.ok(sameAccountChunkReuse,
@@ -1173,11 +1290,83 @@ try {
     'A matching same-account snapshot baseline must not be downloaded again on hard refresh.');
   assert.ok(sameAccountVerification,
     'The same-account hard refresh must finish authenticated Delta verification and return to Synced.');
+  assert.ok(warmManifestRead && Number.isSafeInteger(warmManifestRead.durationMs),
+    'the warm restore must revalidate the same cloud manifest');
+  assert.equal(warmChunkPagesRead,null,
+    'the warm restore must reuse the verified owner-bound baseline without downloading the 103 chunks again');
   console.log('DLA-08E_SAME_ACCOUNT_HARD_REFRESH=' + JSON.stringify({
     workspaceRevealMs: sameAccountRefreshWorkspaceRevealMs,
     revealStatus: sameAccountRefreshRevealStatus,
     verified: true,
     fullChunkDownloadRepeated: false
+  }));
+  console.log('DLA-09B_COLD_WARM_RESTORE_TIMING=' + JSON.stringify({
+    run: {
+      id: process.env.GITHUB_RUN_ID || null,
+      number: process.env.GITHUB_RUN_NUMBER || null,
+      branch: process.env.GITHUB_HEAD_REF || null,
+      workflowSha: process.env.GITHUB_SHA || null
+    },
+    environment: {
+      runnerOS: process.env.RUNNER_OS || null,
+      runnerArch: process.env.RUNNER_ARCH || null,
+      browser: 'Chromium',
+      browserVersion: browser.version(),
+      online: browserEnvironment.online,
+      platform: browserEnvironment.platform,
+      hardwareConcurrency: browserEnvironment.hardwareConcurrency,
+      deviceMemoryGb: browserEnvironment.deviceMemoryGb
+    },
+    fixture: {
+      id: 'nexus-large-workspace-synthetic-v1',
+      bytes: TARGET_BYTES,
+      chunks: 103,
+      topics: INITIAL_TOPICS,
+      historyRows: INITIAL_HISTORY
+    },
+    sameFixtureAndEnvironment: true,
+    cold: {
+      mode: 'first-time restore into a new browser profile',
+      totalToVerifiedMs: initialRestoreToVerifiedMs,
+      signInToVerifiedMs: initialSignInToVerifiedMs,
+      workspaceRevealMs: initialWorkspaceRevealMs,
+      manifestReadMs: initialManifestRead.durationMs,
+      chunkPagesReadMs: initialChunkPagesRead.durationMs,
+      chunkPageCount: initialChunkPagesRead.pageCount,
+      chunkReadTotalMs: initialCloudChunkRead.durationMs,
+      chunkValidationMs: initialChunkValidation.durationMs,
+      snapshotAssemblyMs: initialSnapshotAssembly.durationMs,
+      sha256Ms: initialSnapshotHash.durationMs,
+      jsonParseMs: initialSnapshotParse.durationMs,
+      finalVerificationMs: initialVerification.durationMs,
+      watchdogDelayMs: initialWatchdogDelayMs,
+      memory: {
+        available: Number.isSafeInteger(coldHeapBeforeBytes) && Number.isSafeInteger(coldHeapAfterBytes),
+        beforeBytes: coldHeapBeforeBytes,
+        afterBytes: coldHeapAfterBytes,
+        deltaBytes: Number.isSafeInteger(coldHeapBeforeBytes) && Number.isSafeInteger(coldHeapAfterBytes)
+          ? coldHeapAfterBytes-coldHeapBeforeBytes : null
+      },
+      stageTimings: coldStageTimings
+    },
+    warm: {
+      mode: 'same-owner hard refresh with verified local baseline reuse',
+      totalToVerifiedMs: sameAccountRefreshToVerifiedMs,
+      workspaceRevealMs: sameAccountRefreshWorkspaceRevealMs,
+      manifestReadMs: warmManifestRead.durationMs,
+      chunkDownloadSkipped: !!sameAccountChunkReuse,
+      chunkPagesReadMs: warmChunkPagesRead && Number.isSafeInteger(warmChunkPagesRead.durationMs)
+        ? warmChunkPagesRead.durationMs : null,
+      finalVerificationMs: sameAccountVerification.durationMs,
+      memory: {
+        available: Number.isSafeInteger(warmHeapBeforeBytes) && Number.isSafeInteger(warmHeapAfterBytes),
+        beforeBytes: warmHeapBeforeBytes,
+        afterBytes: warmHeapAfterBytes,
+        deltaBytes: Number.isSafeInteger(warmHeapBeforeBytes) && Number.isSafeInteger(warmHeapAfterBytes)
+          ? warmHeapAfterBytes-warmHeapBeforeBytes : null
+      },
+      stageTimings: warmStageTimings
+    }
   }));
 
   // Start a same-owner A verification while its large cached workspace is
@@ -1634,7 +1823,6 @@ try {
     initialWatchdogOutcome,
     initialRemoteReadMs: initialCloudRead.durationMs,
     accountBReadyMs,
-    accountBOfflineEditId,
     accountBOfflineSyncMs,
     accountBOfflineEditVerified: !!accountBOfflineVerified?.state?.topics?.some(topic => topic.id === accountBOfflineEditId),
     returningAccountOwnerVerified: cachedRenderEvent.ownerVerified === true,
@@ -1706,21 +1894,38 @@ try {
     verifiedWithinDeadline);
 } catch (error) {
   try {
-    const diagnostics = await page.evaluate(() => ({
-      account: document.querySelector('#cloudAccount')?.textContent || '',
-      status: document.querySelector('#cloudStatus')?.textContent || '',
-      ownerPresent: !!localStorage.getItem('nexus.cloud.last-user-id'),
-      events: (() => {
-        try { return JSON.parse(localStorage.getItem('nexus.syncdiag.session.v1') || '[]'); }
-        catch (_) { return []; }
-      })()
-    }));
-    console.log('DLA-08E_APP_LEVEL_FAILURE=' + JSON.stringify({
-      message: String(error && error.message || error),
+    const diagnostics = await page.evaluate(() => {
+      let events = [];
+      try {
+        const parsed = JSON.parse(localStorage.getItem('nexus.syncdiag.session.v1') || '[]');
+        events = Array.isArray(parsed) ? parsed : [];
+      } catch (_) {}
+      const recentStages = events.slice(-40).map(event => {
+        const row = { stage: typeof event.stage === 'string' ? event.stage : 'unknown' };
+        for (const key of ['durationMs','pageCount','completedPageCount','rowsRead',
+          'chunkCount','payloadUtf8Bytes','maxPageDurationMs','minPageDurationMs']) {
+          if (Number.isSafeInteger(event[key]) && event[key] >= 0) row[key] = event[key];
+        }
+        for (const key of ['ok','ready','ownerVerified','timedOut','chunkDataIncluded']) {
+          if (typeof event[key] === 'boolean') row[key] = event[key];
+        }
+        return row;
+      });
+      return {
+        accountPresent: !!document.querySelector('#cloudAccount')?.textContent?.trim(),
+        status: document.querySelector('#cloudStatus')?.textContent || '',
+        ownerPresent: !!localStorage.getItem('nexus.cloud.last-user-id'),
+        eventCount: events.length,
+        recentStages
+      };
+    });
+    console.log('DLA-09B_APP_LEVEL_FAILURE=' + JSON.stringify({
+      errorName: error && typeof error.name === 'string' ? error.name : 'Error',
       diagnostics
     }));
   } catch (_) {
-    console.log('DLA-08E_APP_LEVEL_FAILURE=' + String(error && error.message || error));
+    console.log('DLA-09B_APP_LEVEL_FAILURE=' +
+      (error && typeof error.name === 'string' ? error.name : 'Error'));
   }
   throw error;
 } finally {
@@ -1729,7 +1934,6 @@ try {
 
 console.log('PASS — ' + checks.length + ' large-workspace two-device lifecycle assertions completed.');
 console.log('Evidence: ' + JSON.stringify({
-  ownerA,
   initialBytes: TARGET_BYTES,
   initialChunks: initialPublication.manifest.chunkCount,
   initialTopics: INITIAL_TOPICS,
