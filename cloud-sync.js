@@ -2469,6 +2469,10 @@ function rotateSessionContext(nextSession){
  sessionAbortController=typeof AbortController==='function'?new AbortController():null;
  if(activeInitializationScope)activeInitializationScope.abort();
  if(activeUploadScope)activeUploadScope.abort();
+ // The old epoch no longer owns the global coordinator. Release its slot now;
+ // its abort-scoped promise remains fenced by the captured owner/epoch and cannot
+ // clear or overwrite a newer account's slot when its finally block runs.
+ activeUploadScope=null;syncing=false;syncingEpoch=null;activeUploadPromises.clear();
  connectAttemptId++;connectPromise=null;clearTimeout(timer);clearRetry();pendingSync=false;
  hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();ready=false;
  return sessionEpoch;
@@ -2592,14 +2596,16 @@ async function downgradeEntityDelta(){
  if(deletingAccount||!localQueueHealthy||!client||!session||!ready)
   return {ok:false,reason:'account_sync_not_ready'};
  if(syncing)return {ok:false,retryable:true,reason:'sync_already_in_progress'};
- const ownerId=session.user.id;
+ const ownerId=session.user.id,operationEpoch=sessionEpoch;
  if(localStorage.getItem(OWNER_KEY)!==ownerId)
   return {ok:false,reason:'active_account_does_not_own_local_workspace'};
- syncing=true;
+ syncing=true;syncingEpoch=operationEpoch;
  status('Preparing snapshot downgrade…');
- const scope=createSyncAbortScope();
+ const scope=createSyncAbortScope();activeUploadScope=scope;
  try{
   const result=await runStagingEntityDeltaSync(ownerId,scope.signal,{downgrade:true});
+  await assertActiveUser(ownerId,operationEpoch);
+  if(localStorage.getItem(OWNER_KEY)!==ownerId)throw syncCancelledError();
   if(result&&result.ok===true&&result.mode==='snapshot'){
    if(productionDeltaClientGateOpen())productionDeltaIneligibleOwners.add(ownerId);
    lastRemoteStamp=result.updated_at||lastRemoteStamp;
@@ -2612,13 +2618,24 @@ async function downgradeEntityDelta(){
   say('Snapshot downgrade did not complete. No unverified mode change was accepted. '+String(result&&result.reason||'Review the staging diagnostics and retry when local recovery is clear.'));
   return result||{ok:false,retryable:true,reason:'snapshot_downgrade_unavailable'};
  }catch(error){
-  status('Snapshot downgrade paused');
-  say('Snapshot downgrade failed safely. Local workspace and recovery data were preserved. No unverified mode change was accepted.');
+  if(error&&error.code==='NEXUS_SYNC_CANCELLED')
+   return {ok:false,reason:'account_changed'};
+  if(session&&session.user&&session.user.id===ownerId&&sessionEpoch===operationEpoch){
+   status('Snapshot downgrade paused');
+   say('Snapshot downgrade failed safely. Local workspace and recovery data were preserved. No unverified mode change was accepted.');
+  }
   return {ok:false,retryable:true,reason:'snapshot_downgrade_failed'};
  }finally{
   scope.clear();
-  syncing=false;
-  if(pendingSync){pendingSync=false;schedule();}
+  if(activeUploadScope===scope)activeUploadScope=null;
+  if(syncingEpoch===operationEpoch){
+   syncing=false;syncingEpoch=null;
+   if(pendingSync){
+    pendingSync=false;
+    if(ready&&session&&session.user&&session.user.id===ownerId&&localStorage.getItem(OWNER_KEY)===ownerId)schedule();
+    else scheduleRetry();
+   }
+  }
  }
 }
 
