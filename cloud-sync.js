@@ -2514,7 +2514,7 @@ function clearAuthSessionVerification(){
 function scheduleAuthSessionVerificationRetry(attempt,expectedEpoch,error){
  if(attempt!==authSessionVerificationAttempt||expectedEpoch!==sessionEpoch||!authSessionVerificationPending)return;
  status('Account verification delayed');
- say('Nexus received an account-session change it could not yet verify. Your current local workspace remains available and cloud writes are paused until account verification succeeds.');
+ say('Nexus received an account-session change it could not yet verify. Your local workspace remains stored but hidden until account verification succeeds; cloud writes are paused.');
  authSessionVerificationTimer=setTimeout(()=>{
   authSessionVerificationTimer=null;
   if(attempt!==authSessionVerificationAttempt||expectedEpoch!==sessionEpoch||!authSessionVerificationPending)return;
@@ -2554,7 +2554,16 @@ function verifyCurrentAuthSessionAfterMismatch(){
    if(verifiedUserId===sessionOwnerId){
     clearAuthSessionVerification();
     session=verifiedSession;setControls();
-    if(ready&&localStorage.getItem(OWNER_KEY)===verifiedUserId)schedule();
+    if(verifiedSession&&ready&&localStorage.getItem(OWNER_KEY)===verifiedUserId){
+     status('Sync pending');
+     say('The current account session is verified. Cloud synchronization is resuming; local changes remain preserved until cloud verification completes.');
+     schedule();
+    }else if(verifiedSession){
+     await initializeSession(verifiedSession);
+    }else{
+     ready=false;status('Not signed in · offline ready');
+     say('No active cloud account is signed in. Your local workspace remains on this device and can be used offline.');
+    }
     return;
    }
    clearAuthSessionVerification();
@@ -2566,7 +2575,7 @@ function verifyCurrentAuthSessionAfterMismatch(){
    setControls();
   }catch(error){
    if(attempt!==authSessionVerificationAttempt||expectedEpoch!==sessionEpoch||!authSessionVerificationPending)return;
-   // Keep the cached account workspace available, but freeze every cloud write
+   // Keep the cached account workspace stored but hidden, and freeze every cloud write
    // until an authoritative session read succeeds. Errors, rejected promises and
    // timed-out getSession calls all use the same fixed, bounded retry cadence.
    scheduleAuthSessionVerificationRetry(attempt,expectedEpoch,error);
@@ -2605,7 +2614,7 @@ async function ensureClient(){
     authSessionVerificationPending=true;
     if(activeUploadScope)activeUploadScope.abort();
     status('Account verification delayed');
-    say('Checking the current account session before resuming cloud sync. Your verified local workspace remains available.');
+    say('Checking the current account session before resuming cloud sync. Your local workspace is hidden until session ownership is verified.');
     verifyCurrentAuthSessionAfterMismatch();
     return;
    }
