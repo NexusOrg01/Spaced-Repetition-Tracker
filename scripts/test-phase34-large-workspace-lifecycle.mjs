@@ -28,6 +28,10 @@ const databaseUrl = new URL(process.env.PHASE34_DB_URL);
 assert.ok(['postgres:', 'postgresql:'].includes(databaseUrl.protocol));
 assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(databaseUrl.hostname),
   'The privileged fixture connection must be loopback-only.');
+assert.equal(databaseUrl.port || '5432', '54322',
+  'The privileged fixture connection must use the disposable local Supabase Postgres port.');
+assert.equal(databaseUrl.pathname, '/postgres',
+  'The privileged fixture connection must target the disposable local Supabase postgres database.');
 assert.equal(apiUrl.username, '');
 assert.equal(apiUrl.password, '');
 assert.equal(apiUrl.search, '');
@@ -860,7 +864,7 @@ const localPsqlEnv = {
   PGPORT: databaseUrl.port || '5432',
   PGUSER: decodeURIComponent(databaseUrl.username),
   PGPASSWORD: decodeURIComponent(databaseUrl.password),
-  PGDATABASE: databaseUrl.pathname.replace(/^\\//, '')
+  PGDATABASE: databaseUrl.pathname.slice(1)
 };
 execFileSync('psql', ['-X', '-v', 'ON_ERROR_STOP=1'], {
   input: localEligibilitySql,
