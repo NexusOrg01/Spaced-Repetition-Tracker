@@ -494,54 +494,31 @@ assert.ok(downgradeStart>=0&&downgradeEnd>downgradeStart,
 }
 
 // A late token-refresh/profile event can still arrive for the outgoing auth
-// session after A→B→A. It must not be treated as an identity transition: the old
-// listener rotated the session epoch and synchronously displayed the isolation
-// lock even though the returning owner's verified cache and sync were active.
+// session after A→B→A. Verify the event owner before allowing any transition.
+const authScopeStart = source.indexOf('function syncCancelledError(');
+const authScopeEnd = source.indexOf('function attachAbortSignal(', authScopeStart);
+assert.ok(authScopeStart >= 0 && authScopeEnd > authScopeStart,
+  'the bounded sync-abort scope must be available to authentication verification tests');
+const authScopeSource = source.slice(authScopeStart, authScopeEnd);
 const authGuardStart = source.indexOf('function clearAuthSessionVerification(');
 const authGuardEnd = source.indexOf('async function ensureClient()', authGuardStart);
 assert.ok(authGuardStart >= 0 && authGuardEnd > authGuardStart,
   'auth refresh ownership and queued initialization epoch guards must be available');
-const authGuardSandbox = {
-  sessionOwnerId: 'account-A',
-  sessionEpoch: 12,
-  session: { user: { id: 'account-A' } }
-};
-vm.createContext(authGuardSandbox);
-vm.runInContext(source.slice(authGuardStart, authGuardEnd) +
-  '\nglobalThis.authStateEventBelongsToCurrentOwner = authStateEventBelongsToCurrentOwner;' +
-  '\nglobalThis.authInitializationCallbackIsCurrent = authInitializationCallbackIsCurrent;',
-  authGuardSandbox, { filename: 'stale-account-auth-event-guard.js' });
-assert.equal(authGuardSandbox.authStateEventBelongsToCurrentOwner(
-  'TOKEN_REFRESHED', { user: { id: 'account-B' } }), false,
-  'a late refresh for outgoing Account B must be rejected while Account A owns the active session');
-assert.equal(authGuardSandbox.authStateEventBelongsToCurrentOwner(
-  'USER_UPDATED', { user: { id: 'account-B' } }), false,
-  'a late profile update for outgoing Account B must not rotate Account A');
-assert.equal(authGuardSandbox.authStateEventBelongsToCurrentOwner(
-  'TOKEN_REFRESHED', { user: { id: 'account-A' } }), true,
-  'a token refresh for the active owner must still be accepted');
-assert.equal(authGuardSandbox.authStateEventBelongsToCurrentOwner(
-  'SIGNED_IN', { user: { id: 'account-B' } }), false,
-  'even a delayed sign-in for another owner must be verified against the current auth session');
-assert.equal(authGuardSandbox.authStateEventBelongsToCurrentOwner(
-  'INITIAL_SESSION', { user: { id: 'account-B' } }), false,
-  'a delayed initial-session event for another owner must not rotate the active workspace');
-assert.equal(authGuardSandbox.authStateEventBelongsToCurrentOwner(
-  'SIGNED_OUT', null), false,
-  'a sign-out notification must be reconciled when it conflicts with the active owner');
-assert.equal(authGuardSandbox.authStateEventBelongsToCurrentOwner(
-  'SIGNED_IN', { user: { id: 'account-A' } }), true,
-  'a sign-in notification for the already active owner may proceed without relocking');
-assert.equal(authGuardSandbox.authInitializationCallbackIsCurrent('account-A', 12), true,
-  'a queued initialization callback for the still-active session may proceed');
-assert.equal(authGuardSandbox.authInitializationCallbackIsCurrent('account-A', 11), false,
-  'a queued initialization callback from before the most recent account rotation must be inert');
-// A mismatched refresh is not blindly accepted or discarded. It pauses cloud writes,
-// then checks the auth client's current session outside the auth callback. A stale
-// B notification must keep A open; a confirmed B session must still rotate and lock.
-async function runAuthSessionRecheck(verifiedUserId) {
-  let timerCallback = null, controlRefreshes = 0, schedules = 0,
-      rotations = 0, initializations = 0;
+
+function makeAuthVerificationSandbox(getSession) {
+  let nextTimerId = 0;
+  const timers = new Map();
+  const timerHistory = [];
+  const statusValues = [];
+  const messages = [];
+  const warnings = [];
+  const metrics = {
+    getSessionCalls: 0,
+    controlRefreshes: 0,
+    schedules: 0,
+    rotations: 0,
+    initializations: 0
+  };
   const sandbox = {
     authSessionVerificationPending: true,
     authSessionVerificationAttempt: 0,
@@ -550,44 +527,261 @@ async function runAuthSessionRecheck(verifiedUserId) {
     sessionOwnerId: 'account-A',
     OWNER_KEY: 'nexus.cloud.last-user-id',
     session: { user: { id: 'account-A' } },
-    client: { auth: { async getSession() {
-      return { data: { session: verifiedUserId ? { user: { id: verifiedUserId } } : null } };
+    client: { auth: { getSession() {
+      metrics.getSessionCalls++;
+      return getSession();
     } } },
     ready: true,
+    activeInitializationScope: null,
+    sessionAbortController: new AbortController(),
+    AbortController,
+    AUTH_SESSION_VERIFICATION_TIMEOUT_MS: 15000,
+    AUTH_SESSION_VERIFICATION_RETRY_MS: 15000,
     localStorage: { getItem: () => 'account-A' },
-    setTimeout(callback) { timerCallback = callback; return 9; },
-    clearTimeout() {},
-    setControls() { controlRefreshes++; },
-    schedule() { schedules++; },
-    status() {},
-    say() {},
-    rotateSessionContext(next) { rotations++; sandbox.sessionOwnerId = next && next.user ? next.user.id : null; sandbox.sessionEpoch++; },
-    async initializeSession(next) { initializations++; sandbox.session = next; }
+    setTimeout(callback, delay = 0) {
+      const id = ++nextTimerId;
+      timers.set(id, { callback, delay });
+      timerHistory.push(delay);
+      return id;
+    },
+    clearTimeout(id) { timers.delete(id); },
+    setControls() { metrics.controlRefreshes++; },
+    schedule() { metrics.schedules++; },
+    status(value) { statusValues.push(value); },
+    say(value) { messages.push(value); },
+    rotateSessionContext(next) {
+      metrics.rotations++;
+      sandbox.sessionOwnerId = next && next.user ? next.user.id : null;
+      sandbox.sessionEpoch++;
+    },
+    async initializeSession(next) {
+      metrics.initializations++;
+      sandbox.session = next;
+    },
+    console: { warn(...args) { warnings.push(args); }, error() {}, log() {} }
   };
   vm.createContext(sandbox);
-  vm.runInContext(source.slice(authGuardStart, authGuardEnd) +
-    '\nglobalThis.runAuthSessionRecheck = verifyCurrentAuthSessionAfterMismatch;',
+  vm.runInContext(authScopeSource + source.slice(authGuardStart, authGuardEnd) +
+    '\nglobalThis.runAuthSessionRecheck = verifyCurrentAuthSessionAfterMismatch;' +
+    '\nglobalThis.clearAuthSessionVerificationForTest = clearAuthSessionVerification;' +
+    '\nglobalThis.authStateEventBelongsToCurrentOwner = authStateEventBelongsToCurrentOwner;' +
+    '\nglobalThis.authInitializationCallbackIsCurrent = authInitializationCallbackIsCurrent;',
     sandbox, { filename: 'auth-session-reconciliation.js' });
-  sandbox.runAuthSessionRecheck();
-  assert.equal(typeof timerCallback, 'function',
-    'a mismatched auth refresh must defer session verification until after its callback returns');
-  await timerCallback();
-  return { sandbox, controlRefreshes, schedules, rotations, initializations };
+  function takeTimer(delay) {
+    const found = [...timers.entries()].find(([, timer]) => timer.delay === delay);
+    assert.ok(found, 'expected an active ' + delay + 'ms timer');
+    timers.delete(found[0]);
+    return found[1];
+  }
+  async function runTimer(delay) {
+    const timer = takeTimer(delay);
+    return timer.callback();
+  }
+  return { sandbox, timers, timerHistory, statusValues, messages, warnings, metrics, takeTimer, runTimer };
 }
-const staleRefresh = await runAuthSessionRecheck('account-A');
-assert.equal(staleRefresh.rotations, 0,
+
+async function runAuthSessionRecheck(getSession) {
+  const test = makeAuthVerificationSandbox(getSession);
+  test.sandbox.runAuthSessionRecheck();
+  await test.runTimer(0);
+  return test;
+}
+const staleRefresh = await runAuthSessionRecheck(async () => ({
+  data: { session: { user: { id: 'account-A' } } }, error: null
+}));
+assert.equal(staleRefresh.metrics.rotations, 0,
   'a delayed B refresh followed by authoritative A session must not rotate the workspace epoch');
-assert.equal(staleRefresh.initializations, 0,
+assert.equal(staleRefresh.metrics.initializations, 0,
   'a stale B refresh must not restart Account A workspace initialization');
 assert.equal(staleRefresh.sandbox.authSessionVerificationPending, false,
   'successful same-owner verification must release the temporary sync pause');
-assert.equal(staleRefresh.schedules, 1,
+assert.equal(staleRefresh.metrics.schedules, 1,
   'successful same-owner verification must resume the existing sync coordinator');
-const confirmedAccountChange = await runAuthSessionRecheck('account-B');
-assert.equal(confirmedAccountChange.rotations, 1,
+const confirmedAccountChange = await runAuthSessionRecheck(async () => ({
+  data: { session: { user: { id: 'account-B' } } }, error: null
+}));
+assert.equal(confirmedAccountChange.metrics.rotations, 1,
   'a mismatched refresh confirmed by getSession as Account B must perform the real identity rotation');
-assert.equal(confirmedAccountChange.initializations, 1,
+assert.equal(confirmedAccountChange.metrics.initializations, 1,
   'a verified new owner must enter the normal owner-scoped initialization path');
+
+// Repeated getSession failures (both { error } and rejected promises) must retain
+// the pending state, expose a truthful delayed status, and schedule fixed 15s retries.
+// A later successful authoritative read for the same owner must resume the coordinator.
+const recoveryResponses = [
+  () => Promise.resolve({
+    data: { session: { user: { id: 'account-A' } } },
+    error: new Error('temporary Supabase auth error')
+  }),
+  () => Promise.reject(new Error('temporary getSession rejection')),
+  () => Promise.resolve({
+    data: { session: { user: { id: 'account-A' } } },
+    error: null
+  })
+];
+const repeatedRecovery = makeAuthVerificationSandbox(() => recoveryResponses.shift()());
+repeatedRecovery.sandbox.runAuthSessionRecheck();
+await repeatedRecovery.runTimer(0);
+assert.deepEqual([...repeatedRecovery.timers.values()].map(timer => timer.delay), [15000],
+  'a getSession error response must schedule the documented 15-second retry');
+assert.equal(repeatedRecovery.sandbox.authSessionVerificationPending, true,
+  'a failed auth read must keep cloud writes paused');
+assert.equal(repeatedRecovery.metrics.schedules, 0,
+  'a failed auth read must not resume the cloud coordinator');
+assert.equal(repeatedRecovery.statusValues.at(-1), 'Account verification delayed',
+  'a failed auth read must leave a truthful non-spinner verification status');
+assert.match(repeatedRecovery.messages.at(-1), /cloud writes are paused/,
+  'the delayed state must explain that cloud writes remain paused');
+await repeatedRecovery.runTimer(15000);
+await repeatedRecovery.runTimer(0);
+assert.deepEqual([...repeatedRecovery.timers.values()].map(timer => timer.delay), [15000],
+  'a second rejected getSession call must schedule another 15-second retry');
+assert.equal(repeatedRecovery.sandbox.authSessionVerificationPending, true,
+  'repeated auth failures must not release the ownership gate');
+assert.equal(repeatedRecovery.metrics.rotations, 0,
+  'transient auth errors must not be misread as sign-out or account change');
+await repeatedRecovery.runTimer(15000);
+await repeatedRecovery.runTimer(0);
+assert.equal(repeatedRecovery.metrics.getSessionCalls, 3,
+  'the recovery sequence must exercise two failures followed by an authoritative success');
+assert.equal(repeatedRecovery.sandbox.authSessionVerificationPending, false,
+  'eventual same-owner success must clear the pending verification gate');
+assert.equal(repeatedRecovery.metrics.schedules, 1,
+  'eventual same-owner success must resume the existing sync coordinator exactly once');
+assert.equal(repeatedRecovery.metrics.rotations, 0,
+  'same-owner recovery must not rotate or rebuild the workspace');
+assert.equal(repeatedRecovery.sandbox.session.user.id, 'account-A',
+  'same-owner recovery must preserve the active account');
+assert.equal(repeatedRecovery.timers.size, 0,
+  'successful recovery must clear all verification and retry timers');
+assert.equal(repeatedRecovery.statusValues.includes('Synced'), false,
+  'session verification alone must never claim cloud sync is complete');
+
+// A getSession promise that never settles must time out, retain the local workspace,
+// and enter the same 15-second retry path. A late result after timeout is ignored.
+let resolveLateSession;
+const timedOutVerification = makeAuthVerificationSandbox(() =>
+  new Promise(resolve => { resolveLateSession = resolve; }));
+timedOutVerification.sandbox.runAuthSessionRecheck();
+const timeoutAttempt = timedOutVerification.takeTimer(0).callback();
+assert.equal([...timedOutVerification.timers.values()].filter(timer => timer.delay === 15000).length, 1,
+  'an in-flight getSession call must have a finite 15-second verification deadline');
+timedOutVerification.takeTimer(15000).callback();
+await timeoutAttempt;
+assert.equal(timedOutVerification.sandbox.authSessionVerificationPending, true,
+  'a getSession timeout must keep the ownership gate closed');
+assert.equal(timedOutVerification.statusValues.at(-1), 'Account verification delayed',
+  'a getSession timeout must leave the truthful delayed state rather than a spinner');
+assert.deepEqual([...timedOutVerification.timers.values()].map(timer => timer.delay), [15000],
+  'a getSession timeout must schedule a fresh 15-second retry');
+resolveLateSession({
+  data: { session: { user: { id: 'account-B' } } }, error: null
+});
+await Promise.resolve();
+assert.equal(timedOutVerification.metrics.rotations, 0,
+  'a late result from a timed-out auth read must not rotate the active account');
+assert.equal(timedOutVerification.sandbox.sessionOwnerId, 'account-A',
+  'a late timed-out response must not replace the verified workspace owner');
+
+// A getSession result from a revoked epoch must be inert even if it resolves after
+// another account has already become the active owner.
+let resolveStaleSession;
+const staleInFlightVerification = makeAuthVerificationSandbox(() =>
+  new Promise(resolve => { resolveStaleSession = resolve; }));
+staleInFlightVerification.sandbox.runAuthSessionRecheck();
+const staleVerificationAttempt = staleInFlightVerification.takeTimer(0).callback();
+staleInFlightVerification.sandbox.clearAuthSessionVerificationForTest();
+staleInFlightVerification.sandbox.sessionEpoch = 13;
+staleInFlightVerification.sandbox.sessionOwnerId = 'account-B';
+staleInFlightVerification.sandbox.session = { user: { id: 'account-B' } };
+resolveStaleSession({
+  data: { session: { user: { id: 'account-A' } } }, error: null
+});
+await staleVerificationAttempt;
+assert.equal(staleInFlightVerification.sandbox.sessionOwnerId, 'account-B',
+  'a stale Account A getSession completion must not replace Account B after rotation');
+assert.equal(staleInFlightVerification.sandbox.session.user.id, 'account-B',
+  'the new owner's active session must survive an old verification completion');
+assert.equal(staleInFlightVerification.metrics.rotations, 0,
+  'a revoked verification attempt must not initiate another account rotation');
+assert.equal(staleInFlightVerification.metrics.initializations, 0,
+  'a revoked verification attempt must not initialize the outgoing account');
+
+// While ownership is uncertain, the actual public upload and local-save scheduler
+// must remain closed; the cached workspace is usable, but no cloud write can start.
+const uploadStart = source.indexOf('function upload(){');
+const uploadEnd = source.indexOf('async function performUpload()', uploadStart);
+assert.ok(uploadStart >= 0 && uploadEnd > uploadStart,
+  'the public upload coordinator must remain available for the ownership-pause regression');
+const uploadSandbox = {
+  authSessionVerificationPending: true,
+  deletingAccount: false,
+  localQueueHealthy: true,
+  client: {},
+  session: { user: { id: 'account-A' } },
+  ready: true
+};
+vm.createContext(uploadSandbox);
+vm.runInContext(source.slice(uploadStart, uploadEnd) +
+  '\nglobalThis.runUploadWhileUnverified = upload;', uploadSandbox,
+  { filename: 'auth-verification-upload-pause.js' });
+assert.equal(await uploadSandbox.runUploadWhileUnverified(), false,
+  'cloud upload must return without starting while session ownership is unverified');
+
+const scheduleStart = source.indexOf('function schedule(){');
+const scheduleEnd = source.indexOf('function createSafeAuthStorage(', scheduleStart);
+assert.ok(scheduleStart >= 0 && scheduleEnd > scheduleStart,
+  'the local-save scheduler must remain available for the ownership-pause regression');
+let scheduledLocalWrites = 0;
+const scheduleSandbox = {
+  authSessionVerificationPending: true,
+  deletingAccount: false,
+  localQueueHealthy: true,
+  client: {},
+  session: { user: { id: 'account-A' } },
+  ready: true,
+  navigator: { onLine: true },
+  timer: null,
+  setTimeout() { scheduledLocalWrites++; return 1; },
+  clearTimeout() {}
+};
+vm.createContext(scheduleSandbox);
+vm.runInContext(source.slice(scheduleStart, scheduleEnd) +
+  '\nglobalThis.runScheduleWhileUnverified = schedule;', scheduleSandbox,
+  { filename: 'auth-verification-scheduler-pause.js' });
+scheduleSandbox.runScheduleWhileUnverified();
+assert.equal(scheduledLocalWrites, 0,
+  'the local-save scheduler must not start a cloud upload while auth ownership is uncertain');
+
+const authGuardSandbox = makeAuthVerificationSandbox(async () => ({
+  data: { session: { user: { id: 'account-A' } } }, error: null
+}));
+assert.equal(authGuardSandbox.sandbox.authStateEventBelongsToCurrentOwner(
+  'TOKEN_REFRESHED', { user: { id: 'account-B' } }), false,
+  'a late refresh for outgoing Account B must be rejected while Account A owns the active session');
+assert.equal(authGuardSandbox.sandbox.authStateEventBelongsToCurrentOwner(
+  'USER_UPDATED', { user: { id: 'account-B' } }), false,
+  'a late profile update for outgoing Account B must not rotate Account A');
+assert.equal(authGuardSandbox.sandbox.authStateEventBelongsToCurrentOwner(
+  'TOKEN_REFRESHED', { user: { id: 'account-A' } }), true,
+  'a token refresh for the active owner must still be accepted');
+assert.equal(authGuardSandbox.sandbox.authStateEventBelongsToCurrentOwner(
+  'SIGNED_IN', { user: { id: 'account-B' } }), false,
+  'even a delayed sign-in for another owner must be verified against the current auth session');
+assert.equal(authGuardSandbox.sandbox.authStateEventBelongsToCurrentOwner(
+  'INITIAL_SESSION', { user: { id: 'account-B' } }), false,
+  'a delayed initial-session event for another owner must not rotate the active workspace');
+assert.equal(authGuardSandbox.sandbox.authStateEventBelongsToCurrentOwner(
+  'SIGNED_OUT', null), false,
+  'a sign-out notification must be reconciled when it conflicts with the active owner');
+assert.equal(authGuardSandbox.sandbox.authStateEventBelongsToCurrentOwner(
+  'SIGNED_IN', { user: { id: 'account-A' } }), true,
+  'a sign-in notification for the already active owner may proceed without relocking');
+assert.equal(authGuardSandbox.sandbox.authInitializationCallbackIsCurrent('account-A', 12), true,
+  'a queued initialization callback for the still-active session may proceed');
+assert.equal(authGuardSandbox.sandbox.authInitializationCallbackIsCurrent('account-A', 11), false,
+  'a queued initialization callback from before the most recent account rotation must be inert');
+
 assert.match(source,
   /client\.auth\.onAuthStateChange\(\(event,newSession\)=>\{\s*if\(!authStateEventBelongsToCurrentOwner\(event,newSession\)\)\{/,
   'the actual Supabase listener must reject stale refreshes before assigning session or rotating the workspace lock');
@@ -615,7 +809,6 @@ assert.match(source,
 assert.match(source,
   /const callbackEpoch=sessionEpoch;[\s\S]*?if\(!authInitializationCallbackIsCurrent\(uid,callbackEpoch\)\)return;/,
   'the actual deferred sign-in initialization callback must be fenced by the epoch that scheduled it');
-
 assert.match(indexHtml,
   /html\[data-workspace-auth="pending"\] \.app\s*\{\s*visibility:\s*hidden\s*!important;/,
   'the first-paint pending state must hide the full app before account verification');
