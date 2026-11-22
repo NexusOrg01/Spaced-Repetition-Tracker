@@ -29,16 +29,19 @@ function harness(options={}){
   const state={mode:'delta',protocol_version:1,head_revision:0,snapshot_revision:0,
     compacted_through_revision:0,snapshot_updated_at:'snapshot-stamp',...(options.state||{})};
   const groups=(options.groups||[makeGroup('op-one',11,[putChange('topics','topic-one')])]).map(group=>({...group,changes:group.changes.map(change=>({...change}))}));
-  let cursor=options.initialCursor?{...options.initialCursor}:null,ambiguousOnce=!!options.ambiguousOnce,changeOwnerOnPublish=!!options.changeOwnerOnPublish;
+  let cursor=options.initialCursor?{...options.initialCursor}:null,
+    cursorGeneration=options.initialCursor?.generation||'generation-A',
+    ambiguousOnce=!!options.ambiguousOnce,changeOwnerOnPublish=!!options.changeOwnerOnPublish;
   const receipts=new Map(),calls=[],acknowledgements=[];
   const storage={
     async readWorkspaceEntityDeltaCursor(){
       return cursor?{ok:true,exists:true,cursor:{...cursor},generation:cursor.generation,workspaceRevision:cursor.workspaceRevision}:
-        {ok:true,exists:false,generation:'generation-A',workspaceRevision:1};
+        {ok:true,exists:false,generation:cursorGeneration,workspaceRevision:1};
     },
     async initializeWorkspaceEntityDeltaCursor(owner,revision,stamp,verified){
       if(!verified)return {ok:false,snapshotRequired:true,reason:'baseline'};
-      cursor={ownerId:owner,generation:'generation-A',workspaceRevision:1,
+      cursorGeneration=options.generationAfterInitialization||cursorGeneration;
+      cursor={ownerId:owner,generation:cursorGeneration,workspaceRevision:1,
         publishRevision:revision,acknowledgedSequence:10,remoteHeadRevision:revision,
         snapshotUpdatedAt:stamp,requiresPull:false};
       return {ok:true,created:true,cursor:{...cursor}};
@@ -46,7 +49,7 @@ function harness(options={}){
     async readWorkspaceEntityOutboxGroups(owner,afterSequence){
       if(options.batchSnapshotRequired)return {ownerId:owner,snapshotRequired:true,reason:'fixture_snapshot_required'};
       const pending=groups.filter(group=>group.lastSequence>afterSequence);
-      return {ownerId:owner,generation:'generation-A',workspaceRevision:2,
+      return {ownerId:owner,generation:cursor?cursor.generation:cursorGeneration,workspaceRevision:2,
         groups:pending,throughSequence:pending.length?pending[pending.length-1].lastSequence:afterSequence,
         hasMore:false,snapshotRequired:false};
     },
@@ -136,6 +139,24 @@ function harness(options={}){
   const result=await h.client.publishPending('account-A');
   assert.equal(result.skipped,true);
   assert.equal(h.calls.length,0,'the client must make no RPC calls while disabled');
+}
+{
+  const h=harness({generationAfterInitialization:'generation-B'});
+  const result=await h.client.publishPending('account-A');
+  assert.equal(result.ok,true,
+    'cursor initialization must refresh the active projection generation before validation instead of forcing snapshot recovery: '+JSON.stringify(result));
+  assert.equal(h.cursor().generation,'generation-B');
+  assert.equal(h.acknowledgements.length,1);
+}
+{
+  const h=harness({generationAfterInitialization:'generation-B',groups:[],
+    readPage:{mode:'delta',snapshot_required:false,head_revision:0,snapshot_revision:0,
+      compacted_through_revision:0,next_revision:0,bytes:0,groups:[]}});
+  const result=await h.client.applyRemotePage('account-A');
+  assert.equal(result.ok,true,
+    'remote pull must refresh a cursor initialized during a concurrent projection-generation change: '+JSON.stringify(result));
+  assert.equal(result.appliedCount,0);
+  assert.equal(h.cursor().generation,'generation-B');
 }
 {
   const h=harness({state:{mode:'snapshot'}});
