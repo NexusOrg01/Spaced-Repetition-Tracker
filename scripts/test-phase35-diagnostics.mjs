@@ -103,6 +103,31 @@ assert.deepEqual(safeRecoveryTrigger,{
  appliedCount:0,publishedCount:0,acknowledgedCount:0,rounds:1
 },'recovery trigger diagnostics must expose only the allowlisted failure cause and aggregate counters');
 
+const recoveryProgressEvent={
+ at:'2026-11-22T12:00:00.000Z',stage:'snapshot-recovery-progress',
+ recoveryStep:'stage-generation',progressPhase:'started',journalPhase:'prepared',
+ projectionReused:false,ownerId:'PRIVATE-OWNER',operationId:'PRIVATE-OPERATION',
+ candidateDigest:'PRIVATE-DIGEST',errorMessage:'PRIVATE ERROR',rawPayload:{secret:'PRIVATE'}
+};
+vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(recoveryProgressEvent)+')',sanitizerSandbox,
+ {filename:'sync-diagnostic-recovery-progress-test.js'});
+const safeRecoveryProgress=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.deepEqual(safeRecoveryProgress,{
+ at:recoveryProgressEvent.at,stage:'snapshot-recovery-progress',
+ recoveryStep:'stage-generation',progressPhase:'started',journalPhase:'prepared',
+ projectionReused:false
+},'recovery progress must preserve only allowlisted stage, phase, and reuse metadata');
+for(const forbidden of ['PRIVATE','ownerId','operationId','candidateDigest','errorMessage','rawPayload'])
+ assert.equal(JSON.stringify(safeRecoveryProgress).includes(forbidden),false,
+  'recovery progress diagnostics must exclude '+forbidden);
+vm.runInContext('result=sanitizeSyncDiagEvent({at:"2026-11-22T12:00:01.000Z",stage:"snapshot-recovery-progress",recoveryStep:"untrusted-step",progressPhase:"untrusted",journalPhase:"untrusted",durationMs:125,ok:true})',sanitizerSandbox);
+const safeUnknownRecoveryProgress=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.equal(safeUnknownRecoveryProgress.recoveryStep,'other');
+assert.equal(safeUnknownRecoveryProgress.progressPhase,'other');
+assert.equal(safeUnknownRecoveryProgress.journalPhase,'other');
+assert.equal(safeUnknownRecoveryProgress.durationMs,125);
+assert.equal(safeUnknownRecoveryProgress.ok,true);
+
 const recoveryFailureEvent={
  at:'2026-11-18T12:00:29.058Z',stage:'snapshot-recovery-complete',ok:false,resumed:false,
  recoveryReason:'remote_snapshot_baseline_unverified',snapshotRevision:null,headRevision:null,
