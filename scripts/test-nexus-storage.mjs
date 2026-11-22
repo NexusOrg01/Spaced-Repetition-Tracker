@@ -2150,6 +2150,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const workspaceRows=idb.databases.get('nexus-workspace-v1').stores.get('workspaces');
   const rowCountBefore=workspaceRows.size;
   const reorderedState={
+    schema:3,
     settings:{theme:'dark'},
     history:[{rating:4,id:'reuse-review',topicId:'reuse-topic'}],
     topics:[{name:'Verified topic',subjectId:'reuse-subject',id:'reuse-topic'}],
