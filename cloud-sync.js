@@ -2606,6 +2606,12 @@ async function ensureClient(){
   if(typeof window.fetch==='function')clientOptions.global={fetch:createBoundedSupabaseFetch(window.fetch.bind(window))};
   client=window.supabase.createClient(c.url,c.key,clientOptions);
   client.auth.onAuthStateChange((event,newSession)=>{
+   // Once a mismatch is detected, every subsequent auth event may itself be a
+   // delayed notification from another tab. Only getSession() may release the gate.
+   if(authSessionVerificationPending){
+    syncDiag('auth-event',diagnosticWorkspace(),{event,hasSession:!!(newSession&&newSession.user),ownerPresent:!!localStorage.getItem(OWNER_KEY)});
+    return;
+   }
    if(!authStateEventBelongsToCurrentOwner(event,newSession)){
     // This notification may be stale, or another tab may have changed the real
     // auth session. Pause writes and verify getSession after this callback returns;
@@ -2621,7 +2627,6 @@ async function ensureClient(){
    // The owner predicate above has already confirmed this event belongs to
    // the active workspace. It can therefore settle any pending cross-tab
    // verification without waiting for the fallback getSession timer.
-   if(authSessionVerificationPending)clearAuthSessionVerification();
    session=newSession||null;rotateSessionContext(session);
    syncDiag('auth-event',diagnosticWorkspace(),{event,hasSession:!!(newSession&&newSession.user),ownerPresent:!!localStorage.getItem(OWNER_KEY)});
    if(event==='TOKEN_REFRESHED'||event==='USER_UPDATED'){
