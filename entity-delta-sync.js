@@ -1177,6 +1177,14 @@
           return {ok:false,pending:true,reason:'snapshot_compaction_remote_state_invalid'};
         }
         const pendingRevisions=head-snapshot;
+        // A small uncompacted Delta tail is normal during day-to-day sync. Do not
+        // block the user's successful synchronization on cleanup-only cursor,
+        // compatibility-snapshot, and outbox reads; that maintenance is deferred
+        // until the tail reaches the configured snapshot-compaction threshold.
+        if(pendingRevisions>0&&pendingRevisions<threshold){
+          return {skipped:true,reason:'snapshot_compaction_waiting_for_operation_threshold',
+            pendingRevisions,threshold,compactionFloor:floor};
+        }
         const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
         if(!cursorResult||cursorResult.ok!==true||cursorResult.exists!==true||!cursorResult.cursor){
           return {ok:false,pending:true,reason:'snapshot_compaction_cursor_unavailable'};
