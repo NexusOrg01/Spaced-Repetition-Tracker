@@ -1919,7 +1919,7 @@ assert.equal(snapshotFallbackResult.skipped,true);
 assert.equal(snapshotFallbackResult.reason,'legacy_snapshot_server',
   'a snapshot-only server must return to the established compatibility snapshot path');
 
-const uploadStart=cloudSyncSource.indexOf('async function upload(){');
+const uploadStart=cloudSyncSource.indexOf('async function performUpload(){');
 const uploadDeltaCall=cloudSyncSource.indexOf(
   "deltaResult=await uploadScope.race(runStagingEntityDeltaSync(uploadUserId,uploadScope.signal),'Entity Delta synchronization');",uploadStart
 );
