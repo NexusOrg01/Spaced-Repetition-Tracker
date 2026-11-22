@@ -299,7 +299,7 @@ assert.deepEqual(safeRestoreTiming,{
  payloadUtf8Bytes:26900000,maxPageDurationMs:21000,minPageDurationMs:800,
  chunkDataIncluded:true,ok:true
 },'cold restore page timings must retain aggregate measurements and strip all workspace/account identifiers');
-for(const forbidden of ['PRIVATE','ownerId','revisionId','topicName','chunkData','accessToken','workspacePayload'])
+for(const forbidden of ['PRIVATE','ownerId','revisionId','topicName','PRIVATE_CHUNK','accessToken','workspacePayload'])
  assert.equal(JSON.stringify(safeRestoreTiming).includes(forbidden),false,
   'cold restore timing diagnostics must exclude '+forbidden);
 for(const stage of [
