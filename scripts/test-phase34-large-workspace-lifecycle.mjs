@@ -936,16 +936,32 @@ try {
   }, { api: API, anon: ANON });
 
   async function signInAppTestAccount(email, password) {
-    return page.evaluate(async ({ email, password }) => {
-      const authClient = window.__nexusDla08AuthClient;
-      if (!authClient) throw new Error('The isolated browser Auth client is unavailable.');
+    return page.evaluate(async ({ email, password, api, anon }) => {
+      // A hard refresh replaces the page's JavaScript realm, including this
+      // isolated test-only Auth client. Recreate it lazily on the current page
+      // before driving the next account handoff; keep the app's normal shared
+      // Supabase storage key so its own auth listener observes the sign-in.
+      let authClient = window.__nexusDla08AuthClient;
+      if (!authClient) {
+        if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+          throw new Error('The browser Supabase SDK is unavailable after navigation.');
+        }
+        authClient = window.supabase.createClient(api, anon, {
+          auth: {
+            persistSession: true,
+            autoRefreshToken: true,
+            detectSessionInUrl: false
+          }
+        });
+        window.__nexusDla08AuthClient = authClient;
+      }
       const result = await authClient.auth.signInWithPassword({ email, password });
       if (result.error) throw new Error('Disposable browser sign-in failed: ' + result.error.message);
       if (!result.data || !result.data.user || !result.data.session) {
         throw new Error('Disposable browser sign-in did not return an authenticated session.');
       }
       return { userId: result.data.user.id, email: result.data.user.email };
-    }, { email, password });
+    }, { email, password, api: API, anon: ANON });
   }
 
   async function waitForAccountAndStatus(email, userId, requiredStatus, timeoutMs) {
