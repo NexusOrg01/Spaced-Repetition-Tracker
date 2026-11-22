@@ -796,7 +796,7 @@ assert.equal(authGuardSandbox.sandbox.authInitializationCallbackIsCurrent('accou
   'a queued initialization callback from before the most recent account rotation must be inert');
 
 assert.match(source,
-  /client\.auth\.onAuthStateChange\(\(event,newSession\)=>\{\s*if\(authSessionVerificationPending\)\{[\s\S]*?return;\}\s*if\(!authStateEventBelongsToCurrentOwner\(event,newSession\)\)\{/,
+  /client\.auth\.onAuthStateChange\(\(event,newSession\)=>\{\s*if\(authSessionVerificationPending\)\{[\s\S]*?return;\s*\}\s*if\(!authStateEventBelongsToCurrentOwner\(event,newSession\)\)\{/,
   'the actual Supabase listener must reject stale refreshes before assigning session or rotating the workspace lock');
 assert.doesNotMatch(source,
   /if\(authSessionVerificationPending\)clearAuthSessionVerification\(\)/,
