@@ -454,7 +454,7 @@ async function assertActiveUser(userId,expectedEpoch=sessionEpoch){
  if(expectedEpoch!==sessionEpoch||sessionOwnerId!==userId||!session||!session.user||session.user.id!==userId)
   throw syncCancelledError('The active account changed during sync. No cloud data was applied or written.');
 }
-async function fetchRemote(userId,knownWrite,signal){
+async function fetchRemote(userId,knownWrite,signal,localBaselineReuse){
  const scope=createSyncAbortScope(signal),activeSignal=scope.signal,readEpoch=sessionEpoch;
  const uid=userId||(session&&session.user&&session.user.id),startedAt=Date.now();
  try{
@@ -476,6 +476,22 @@ async function fetchRemote(userId,knownWrite,signal){
    // before publishing this manifest. Confirming the active manifest here completes
    // the post-publication read-back without downloading the same large payload twice.
    remote={...remote,payload:knownWrite.payload,storageMode:'chunked',chunkManifest:remote.payload};
+  }else if(localBaselineReuse&&localBaselineReuse.serverVersion===remote.updated_at&&
+           localBaselineReuse.state&&localBaselineReuse.featureState){
+   // The owner-bound sync base was previously accepted only after verified cloud
+   // read-back. If its server timestamp still matches the immutable manifest, it is
+   // the exact cloud snapshot baseline; use it for reconciliation and let Delta pull
+   // any newer operations instead of downloading every immutable chunk on refresh.
+   const manifest=remote.payload;
+   remote={...remote,payload:{
+    app:'Nexus Spaced Repetition Tracker',schema:4,
+    state:localBaselineReuse.state,featureState:localBaselineReuse.featureState
+   },storageMode:'chunked',chunkManifest:manifest,localBaselineReused:true};
+   syncDiag('cloud-chunk-read-skipped',remote.payload,{
+    reason:'verified_local_baseline_matches_remote_manifest',
+    chunkCount:Number.isSafeInteger(manifest.chunkCount)?manifest.chunkCount:null,
+    payloadUtf8Bytes:Number.isSafeInteger(manifest.totalBytes)?manifest.totalBytes:null
+   });
   }else{
    try{
    const chunkReadStartedAt=Date.now();
@@ -1239,6 +1255,38 @@ if(typeof navigator!=='undefined'&&navigator.onLine===false){
   setControls();
   return;
 }
+if(owner===newUserId){
+  // A hard refresh of the already-active account must not hide its owner-bound
+  // workspace while a 26+ MB cloud snapshot is downloaded. The live auth session
+  // was checked above and the local owner marker is the same account, so verify the
+  // existing account queue before exposing the already-loaded local workspace.
+  const cacheStartedAt=Date.now();
+  let cachedSource=null;
+  try{
+   cachedSource=await initScope.race(
+    recoverCachedWorkspaceForOfflineAccount(newUserId,initScope.signal),
+    'same-account cached workspace verification');
+  }catch(cacheError){
+   if(cacheError&&cacheError.code==='NEXUS_SYNC_CANCELLED')throw cacheError;
+   syncDiag('same-account-workspace-check-error',null,{
+    durationMs:Date.now()-cacheStartedAt,
+    errorCategory:syncDiagErrorCategory(cacheError)
+   });
+  }
+  await assertActiveUser(newUserId,requestedEpoch);
+  if(cachedSource==='active'&&localStorage.getItem(OWNER_KEY)===newUserId){
+   ready=true;
+   cachedWorkspaceRevealed=true;
+   lastUserId=newUserId;
+   status('Sync pending');
+   say('This account’s saved workspace is available on this device. Cloud changes are being checked; keep this browser’s data until verification finishes.');
+   syncDiag('same-account-workspace-restored',diagnosticWorkspace(),{
+    source:'active-local-workspace',durationMs:Date.now()-cacheStartedAt,
+    ownerVerified:true,cloudVerificationPending:true
+   });
+   setControls();
+  }
+}
 if(owner&&owner!==newUserId){
   // Preserve the outgoing account before any network wait, then reveal only a
   // cache that is independently keyed to and verified for the incoming owner.
@@ -1325,7 +1373,20 @@ if(owner&&owner!==newUserId){
    setControls();
   }
 }
-const remote=await initScope.race(fetchRemote(newUserId,null,initScope.signal),'initial workspace verification');syncDiag('initialize-after-cloud-read',remote&&remote.payload,{remoteHasPayload:!!(remote&&remote.payload)});await assertActiveUser(newUserId,requestedEpoch);status(cachedWorkspaceRevealed?'Sync pending':'Checking local and cloud data…');
+let reusableLocalBaseline=null;
+if(owner===newUserId&&cachedWorkspaceRevealed&&window.NexusOfflineSyncQueue&&
+   typeof window.NexusOfflineSyncQueue.getBase==='function'){
+ try{
+  const candidate=window.NexusOfflineSyncQueue.getBase(localStorage,newUserId);
+  if(candidate&&typeof candidate.serverVersion==='string'&&candidate.serverVersion&&
+     candidate.state&&candidate.featureState)reusableLocalBaseline=candidate;
+ }catch(baseError){
+  syncDiag('same-account-baseline-unavailable',null,{
+   errorCategory:syncDiagErrorCategory(baseError)
+  });
+ }
+}
+const remote=await initScope.race(fetchRemote(newUserId,null,initScope.signal,reusableLocalBaseline),'initial workspace verification');syncDiag('initialize-after-cloud-read',remote&&remote.payload,{remoteHasPayload:!!(remote&&remote.payload),localBaselineReused:!!(remote&&remote.localBaselineReused)});await assertActiveUser(newUserId,requestedEpoch);status(cachedWorkspaceRevealed?'Sync pending':'Checking local and cloud data…');
 // Capture the local workspace once, after the asynchronous cloud read. This includes
 // any offline edits made while the request was in flight without retaining a stale
 // deep clone and then cloning/comparing the complete large workspace a second time.
@@ -1410,7 +1471,22 @@ status('Comparing local and cloud data…');const localData={state:localPayload.
 ready=true;const adoptedUpload=await upload();deltaSyncAttemptedDuringInitialization=true;if(!adoptedUpload){lastUserId=newUserId;localStorage.setItem(OWNER_KEY,newUserId);preserveLocalWorkspaceAfterSyncFailure(newUserId);return;}pendingForUser=null;localHasWork=false;pendingAutomaticallySynced=true;
 }if(!pendingForUser&&owner===newUserId&&remoteData&&(!(await sameWorkspace(localData,remoteData))||hasMissingBaselineCurriculumIntent(newUserId,localPayload,remote.payload))){const reconciliation=await initScope.race(reconcileOwnedWorkspace(newUserId,localPayload,remote,requestedEpoch),'same-account workspace reconciliation');if(!reconciliation.ok){localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;preserveLocalWorkspaceAfterSyncFailure(newUserId,(reconciliation.reason||'The same-account workspace could not be reconciled safely.')+' Local data remains preserved and queued. Nexus will retry cloud reconciliation; do not clear this browser’s data.');return;}localHasWork=false;pendingAutomaticallySynced=!reconciliation.cloudLoaded;cloudWorkspaceAutoLoaded=!!reconciliation.cloudLoaded;if(reconciliation.conflicts){say('This account’s offline and cloud changes were automatically merged. '+reconciliation.conflicts+' overlapping edit(s) were archived for recovery.');}else if(reconciliation.cloudLoaded){say('Loaded this account’s newer cloud workspace automatically. This device had no unsynced local changes.');}else{say('This account’s local and cloud changes were automatically merged and verified.');}}if(pendingForUser&&owner===newUserId&&remoteData&&(((pendingForUser.baseServerVersion||null)!==(remote.updated_at||null)&&!(await sameWorkspace(remoteData,pendingForUser.payload)))||hasMissingBaselineCurriculumIntent(newUserId,pendingForUser.payload,remote.payload))){const reconciliation=await initScope.race(reconcileConcurrentSnapshot(newUserId,remote,requestedEpoch),'concurrent snapshot reconciliation');if(!reconciliation.ok){localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;preserveLocalWorkspaceAfterSyncFailure(newUserId,(reconciliation.reason||'The merged cloud state is not verified.')+' Your offline work remains queued. Nexus will retry reconciliation; do not clear this browser’s data.');return;}pendingForUser=null;localHasWork=false;pendingAutomaticallySynced=true;if(reconciliation.conflicts){say('Offline and cloud changes were automatically merged. '+reconciliation.conflicts+' overlapping field edit(s) used local-device precedence. Alternate values were saved in this device’s conflict recovery archive.');}else{say('Offline and cloud changes were automatically merged and verified. Independent edits were combined without a workspace-choice dialog.');}}if(pendingForUser&&owner===newUserId&&window.NexusCloudSyncRecovery&&window.NexusCloudSyncRecovery.canAutoResumePending(pendingForUser,remote&&remote.updated_at||null)){lastRemoteStamp=remote&&remote.updated_at||null;ready=true;const autoUploaded=await upload();deltaSyncAttemptedDuringInitialization=true;if(!autoUploaded){preserveLocalWorkspaceAfterSyncFailure(newUserId,'Your offline changes remain saved locally for this account. Cloud verification did not complete; Nexus will retry automatically.');return;}pendingForUser=null;localHasWork=false;pendingAutomaticallySynced=true;say('Offline changes were automatically uploaded and verified for this account.');}if(localHasWork){
  if(unassignedPendingConflict)say('This browser has an unassigned offline workspace and a separate pending snapshot for this account. They have been combined in memory for this choice only; nothing has been uploaded. If you choose Merge, the current device workspace takes precedence for same-ID conflicts.');
- let choice=await initScope.race(chooseLocalData(initScope.signal),'workspace data choice');if(choice==='cancel'){ready=false;status('Data choice required');say('Your offline data is preserved. Choose one of the available data options before cloud sync can continue.');return;}while(choice==='replace-cloud'||choice==='replace'){const confirmed=choice==='replace-cloud'?confirm('FINAL CONFIRMATION: overwrite this account’s entire cloud backup with the offline data on this device? Download a backup first if needed.'):remote&&remote.payload?confirm('FINAL CONFIRMATION: replace this device’s offline workspace with this account’s cloud backup? Unsynced local changes that are not in the cloud will be lost. Download a backup first if needed.'):confirm('FINAL CONFIRMATION: start this account with a clean workspace? This will replace the offline data on this device, and no cloud backup is available to restore it. Download a backup first if needed.');if(confirmed)break;ready=false;status('Data choice required');say('Cancelled. Your offline data has not been changed. Choose an option below to continue.');choice=await initScope.race(chooseLocalData(initScope.signal),'workspace data choice');if(choice==='cancel'){ready=false;status('Data choice required');say('Your offline data is preserved. Choose one of the available data options before cloud sync can continue.');return;}}if(choice==='merge'&&owner&&owner!==newUserId&&!confirm('This device was previously associated with a different account. Merging will copy the entire local workspace, which may include data from that previous account, into the newly signed-in account. Continue only if that is what you intend.')){ready=false;status('Data choice required');say('Merge cancelled. The local workspace is preserved and has not been uploaded to this account.');return;}await applyWorkspaceSnapshot(normalizeState(localPayload.state),window.NexusNormalizeFeatureState(localPayload.featureState||{}),newUserId);owner=newUserId;localPayload=snapshot();if(choice==='merge'){lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;await initScope.race(applyLocalMerged(localPayload,remote&&remote.payload?remote.payload:null),'local workspace merge');if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rebase(localStorage,newUserId,snapshot(),lastRemoteStamp,'user-merge');ready=true;const uploaded=await upload();deltaSyncAttemptedDuringInitialization=true;if(uploaded){say(remote&&remote.payload?'Offline work was merged with this account’s cloud data.':'Offline work was kept and uploaded as this account’s first backup.');}else{preserveLocalWorkspaceAfterSyncFailure(newUserId,'The merge is saved locally, but cloud sync was not verified. Your local data remains available and queued. Nexus will retry before claiming it reached the cloud.');}}else if(choice==='replace-cloud'){lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rebase(localStorage,newUserId,snapshot(),lastRemoteStamp,'user-confirmed-cloud-replace');ready=true;const uploaded=await upload();deltaSyncAttemptedDuringInitialization=true;if(uploaded){say('Verified: the cloud backup now matches this device’s offline data.');}else{preserveLocalWorkspaceAfterSyncFailure(newUserId,'The cloud replacement was NOT confirmed. Your offline data remains available on this device and has not been discarded. Nexus will retry verification; do not assume the cloud was updated.');}}else{if(pendingForUser&&window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.archive(localStorage,newUserId,'user-selected-cloud-restore');if(remote&&remote.payload){await applyRemote(remote.payload,newUserId,remote.updated_at||null);lastRemoteStamp=remote.updated_at;if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,lastRemoteStamp);ready=true;say('This device now contains the verified cloud workspace. The cloud backup was not rewritten.');}else{await resetToEmpty(newUserId);if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,null);ready=true;enqueueInitialSnapshot(newUserId);const uploaded=await upload();deltaSyncAttemptedDuringInitialization=true;if(!uploaded)say('A clean workspace was saved locally, but its cloud state is not yet verified. Nexus will retry automatically.');else say('Started this account with a clean workspace. Offline work was not uploaded.');}}}else if(cloudWorkspaceAutoLoaded){say('Loaded this account’s newer cloud workspace automatically.');}else if(pendingAutomaticallySynced){say('Offline work was uploaded and verified for this account.');}else if(remote&&remote.payload){status('Restoring account workspace…');await applyRemote(remote.payload,newUserId,remote.updated_at||null);lastRemoteStamp=remote.updated_at;if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,lastRemoteStamp);say('Loaded this account’s cloud data. Future changes sync automatically.');}else{await resetToEmpty(newUserId);ready=true;enqueueInitialSnapshot(newUserId);const uploaded=await upload();deltaSyncAttemptedDuringInitialization=true;if(!uploaded)say('A clean workspace was saved locally, but its cloud state is not yet verified. Nexus will retry automatically.');else say('A clean workspace was created for this account.');}localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;
+ let choice=await initScope.race(chooseLocalData(initScope.signal),'workspace data choice');if(choice==='cancel'){ready=false;status('Data choice required');say('Your offline data is preserved. Choose one of the available data options before cloud sync can continue.');return;}while(choice==='replace-cloud'||choice==='replace'){const confirmed=choice==='replace-cloud'?confirm('FINAL CONFIRMATION: overwrite this account’s entire cloud backup with the offline data on this device? Download a backup first if needed.'):remote&&remote.payload?confirm('FINAL CONFIRMATION: replace this device’s offline workspace with this account’s cloud backup? Unsynced local changes that are not in the cloud will be lost. Download a backup first if needed.'):confirm('FINAL CONFIRMATION: start this account with a clean workspace? This will replace the offline data on this device, and no cloud backup is available to restore it. Download a backup first if needed.');if(confirmed)break;ready=false;status('Data choice required');say('Cancelled. Your offline data has not been changed. Choose an option below to continue.');choice=await initScope.race(chooseLocalData(initScope.signal),'workspace data choice');if(choice==='cancel'){ready=false;status('Data choice required');say('Your offline data is preserved. Choose one of the available data options before cloud sync can continue.');return;}}if(choice==='merge'&&owner&&owner!==newUserId&&!confirm('This device was previously associated with a different account. Merging will copy the entire local workspace, which may include data from that previous account, into the newly signed-in account. Continue only if that is what you intend.')){ready=false;status('Data choice required');say('Merge cancelled. The local workspace is preserved and has not been uploaded to this account.');return;}await applyWorkspaceSnapshot(normalizeState(localPayload.state),window.NexusNormalizeFeatureState(localPayload.featureState||{}),newUserId);owner=newUserId;localPayload=snapshot();if(choice==='merge'){lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;await initScope.race(applyLocalMerged(localPayload,remote&&remote.payload?remote.payload:null),'local workspace merge');if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rebase(localStorage,newUserId,snapshot(),lastRemoteStamp,'user-merge');ready=true;const uploaded=await upload();deltaSyncAttemptedDuringInitialization=true;if(uploaded){say(remote&&remote.payload?'Offline work was merged with this account’s cloud data.':'Offline work was kept and uploaded as this account’s first backup.');}else{preserveLocalWorkspaceAfterSyncFailure(newUserId,'The merge is saved locally, but cloud sync was not verified. Your local data remains available and queued. Nexus will retry before claiming it reached the cloud.');}}else if(choice==='replace-cloud'){lastRemoteStamp=remote&&remote.payload?remote.updated_at:null;if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rebase(localStorage,newUserId,snapshot(),lastRemoteStamp,'user-confirmed-cloud-replace');ready=true;const uploaded=await upload();deltaSyncAttemptedDuringInitialization=true;if(uploaded){say('Verified: the cloud backup now matches this device’s offline data.');}else{preserveLocalWorkspaceAfterSyncFailure(newUserId,'The cloud replacement was NOT confirmed. Your offline data remains available on this device and has not been discarded. Nexus will retry verification; do not assume the cloud was updated.');}}else{if(pendingForUser&&window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.archive(localStorage,newUserId,'user-selected-cloud-restore');if(remote&&remote.payload){await applyRemote(remote.payload,newUserId,remote.updated_at||null);lastRemoteStamp=remote.updated_at;if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,lastRemoteStamp);ready=true;say('This device now contains the verified cloud workspace. The cloud backup was not rewritten.');}else{await resetToEmpty(newUserId);if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,null);ready=true;enqueueInitialSnapshot(newUserId);const uploaded=await upload();deltaSyncAttemptedDuringInitialization=true;if(!uploaded)say('A clean workspace was saved locally, but its cloud state is not yet verified. Nexus will retry automatically.');else say('Started this account with a clean workspace. Offline work was not uploaded.');}}}else if(cloudWorkspaceAutoLoaded){say('Loaded this account’s newer cloud workspace automatically.');}else if(pendingAutomaticallySynced){say('Offline work was uploaded and verified for this account.');}else if(remote&&remote.payload){
+ if(remote.localBaselineReused===true&&cachedWorkspaceRevealed&&owner===newUserId){
+  // The local workspace was already rendered and its verified base timestamp
+  // matched the cloud manifest. Applying it again would rewrite the 26 MB local
+  // snapshot without changing a byte; only the Delta tail needs reconciliation.
+  lastRemoteStamp=remote.updated_at||null;
+  if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,lastRemoteStamp);
+  say('Reused this account’s verified local snapshot. Only newer cloud changes are being reconciled.');
+ }else{
+  status('Restoring account workspace…');
+  await applyRemote(remote.payload,newUserId,remote.updated_at||null);
+  lastRemoteStamp=remote.updated_at;
+  if(window.NexusOfflineSyncQueue)window.NexusOfflineSyncQueue.rememberStamp(localStorage,newUserId,lastRemoteStamp);
+  say('Loaded this account’s cloud data. Future changes sync automatically.');
+ }
+}else{await resetToEmpty(newUserId);ready=true;enqueueInitialSnapshot(newUserId);const uploaded=await upload();deltaSyncAttemptedDuringInitialization=true;if(!uploaded)say('A clean workspace was saved locally, but its cloud state is not yet verified. Nexus will retry automatically.');else say('A clean workspace was created for this account.');}localStorage.setItem(OWNER_KEY,newUserId);lastUserId=newUserId;
 if(ready&&remote&&remote.payload&&!deltaSyncAttemptedDuringInitialization){
  // Cloud restore is read-only for the compatibility snapshot, but in Delta mode
  // this device must still establish/advance its own cursor and pull remote ops.
