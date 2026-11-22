@@ -1250,15 +1250,27 @@ function coordinatorHarness(options={}){
       assert.equal(workspace.generation,'generation-new');
     }
   });
-  const preparedAttempt=await api.publishConflictRecovery('account-A');
+  const recoveryProgress=[];
+  const collectRecoveryProgress=event=>recoveryProgress.push({...event});
+  const preparedAttempt=await api.publishConflictRecovery('account-A',{onProgress:collectRecoveryProgress});
   assert.equal(preparedAttempt.ok,false,
     'an interrupted initial staging attempt must leave the durable recovery journal prepared');
   assert.equal(intent.phase,'prepared',
     'the prepared recovery journal must remain available for a safe retry');
   assert.equal(migrations,1);
+  const firstStageStart=recoveryProgress.find(event=>
+    event.recoveryStep==='stage-generation'&&event.progressPhase==='started');
+  const firstStageFailure=recoveryProgress.find(event=>
+    event.recoveryStep==='stage-generation'&&event.progressPhase==='failed');
+  assert.ok(firstStageStart,'recovery diagnostics must mark the start of local generation staging');
+  assert.equal(firstStageStart.journalPhase,'prepared',
+    'generation staging must report that the durable journal is still prepared');
+  assert.ok(firstStageFailure,'a failed generation migration must emit a failed progress marker');
+  assert.equal(firstStageFailure.ok,false);
+  assert.ok(Number.isSafeInteger(firstStageFailure.durationMs));
   assert.equal(publishCalls,0,'snapshot publication must not start until a candidate generation is staged');
   assert.equal(localCommits,0,'an incomplete staging attempt must not advance the local merge base');
-  const first=await api.publishConflictRecovery('account-A');
+  const first=await api.publishConflictRecovery('account-A',{onProgress:collectRecoveryProgress});
   assert.equal(first.ok,false,'a lost publication response must leave the local candidate staged');
   assert.equal(intent.phase,'staged','the crash-recovery intent must survive a lost server response');
   assert.equal(migrations,2,'the prepared candidate should be staged once after retry');
@@ -1266,7 +1278,7 @@ function coordinatorHarness(options={}){
   // Simulate a tab/process interruption after the journal reached "staged" but
   // before its pending entity generation remained readable.
   staged=null;
-  const second=await api.publishConflictRecovery('account-A');
+  const second=await api.publishConflictRecovery('account-A',{onProgress:collectRecoveryProgress});
   assert.equal(second.ok,true,'a retry should verify the exact already-published snapshot and finish locally: '+JSON.stringify(second));
   assert.equal(second.recovered,true);
   assert.equal(second.snapshotRevision,1);
@@ -1274,6 +1286,9 @@ function coordinatorHarness(options={}){
     ok:false,complete:false,pending:true,reason:'entity_operation_compaction_unavailable'
   },'the committed recovery result must surface non-fatal server compaction backlog for a safe retry');
   assert.equal(migrations,3,'a missing staged generation must be reconstructed exactly once from the same digest-bound candidate');
+  assert.ok(recoveryProgress.some(event=>
+    event.recoveryStep==='restage-generation'&&event.progressPhase==='completed'&&event.journalPhase==='staged'),
+    'recovery progress must identify successful digest-bound restaging after the staged generation is lost');
   assert.equal(publishCalls,2,'the exact same candidate must be re-verified after the lost response');
   assert.equal(localCommits,1,'the verified publication should cause one atomic local recovery commit');
   assert.equal(applied,1,'the in-memory workspace must only switch after the local commit verifies');
