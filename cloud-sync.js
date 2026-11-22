@@ -289,7 +289,7 @@ function installSyncDiagnosticsButton(){
 
 function isUnsafeCloudOrigin(){const host=location.hostname.toLowerCase(),url=String(config().url||'').trim();let cloudHost='';try{cloudHost=new URL(url).hostname.toLowerCase();}catch(_){}return cloudHost===new URL(LIVE_SUPABASE_URL).hostname&&host!=='spaced-repetition-tracker-delta.vercel.app'&&host!=='kkmalithmalshan2000-png.github.io';}
 function previewCloudBlockedMessage(){status('Preview · cloud sync disabled');say('Cloud sync is disabled on this preview/local copy to protect real cloud data. Nexus still works offline. To test cloud sync, configure a separate Supabase test project on this device.');}
-let client=null,session=null,syncing=false,syncingEpoch=null,ready=false,deletingAccount=false,deletionServiceCheckedUser=null,deletionServiceAvailable=false,timer=null,retryTimer=null,retryAttempt=0,lastRemoteStamp=null,lastRemoteStorageMode='legacy',supabaseLoadPromise=null,pendingSync=false,lastUserId=null,initializing=false,initializingUserId=null,queuedSession=null,hasQueuedSession=false,sessionEpoch=0,sessionOwnerId=null,sessionAbortController=typeof AbortController==='function'?new AbortController():null,activeInitializationScope=null,activeUploadScope=null,connectAttemptId=0,authSessionVerificationPending=false,authSessionVerificationAttempt=0,authSessionVerificationTimer=null;
+let client=null,session=null,syncing=false,syncingEpoch=null,ready=false,deletingAccount=false,deletionServiceCheckedUser=null,deletionServiceAvailable=false,timer=null,retryTimer=null,retryAttempt=0,lastRemoteStamp=null,lastRemoteStorageMode='legacy',supabaseLoadPromise=null,pendingSync=false,lastUserId=null,initializing=false,initializingUserId=null,queuedSession=null,hasQueuedSession=false,sessionEpoch=0,sessionOwnerId=null,sessionAbortController=typeof AbortController==='function'?new AbortController():null,activeInitializationScope=null,activeUploadScope=null,activeUploadPromises=new Map(),connectAttemptId=0,authSessionVerificationPending=false,authSessionVerificationAttempt=0,authSessionVerificationTimer=null;
 function normalizeSyncUiText(value){
  return String(value==null?'':value)
   .replace(/\\n/g,'\n')
@@ -2023,10 +2023,24 @@ async function tryProductionDeltaAfterVerifiedSnapshot(ownerId,signal,triggerRea
  return {ok:false,retryable:true,reason:result&&result.reason||'post_snapshot_delta_sync_failed'};
 }
 
-async function upload(){
+function upload(){
+ if(authSessionVerificationPending||deletingAccount||!localQueueHealthy||!client||!session||!ready)return Promise.resolve(false);
+ const epoch=sessionEpoch;
+ const active=activeUploadPromises.get(epoch);
+ // Initialization, connectivity recovery and the local-save scheduler can all
+ // request the same account's upload in one event turn. Join the real in-flight
+ // operation instead of returning false and letting initialization misclassify
+ // "already syncing" as a failed verification.
+ if(active)return active;
+ const task=performUpload();
+ activeUploadPromises.set(epoch,task);
+ const release=()=>{if(activeUploadPromises.get(epoch)===task)activeUploadPromises.delete(epoch);};
+ task.then(release,release);
+ return task;
+}
+async function performUpload(){
  if(authSessionVerificationPending||deletingAccount||!localQueueHealthy||!client||!session||!ready)return false;
  const uploadUserId=session.user.id,uploadEpoch=sessionEpoch;
- if(syncing&&syncingEpoch===uploadEpoch){pendingSync=true;return false;}
  async function assertUploadOwner(){await assertActiveUser(uploadUserId,uploadEpoch);if(localStorage.getItem(OWNER_KEY)!==uploadUserId)throw syncCancelledError('The local workspace owner changed during sync.');}
  if(localStorage.getItem(OWNER_KEY)!==uploadUserId){ready=false;status('Account queue paused');say('The active account does not own this local workspace. No cloud write was attempted. Reconnect to the correct account.');return false;}
  syncing=true;syncingEpoch=uploadEpoch;status('Syncing…');syncDiag('upload-start',diagnosticWorkspace(),{hasQueue:!!window.NexusOfflineSyncQueue});
