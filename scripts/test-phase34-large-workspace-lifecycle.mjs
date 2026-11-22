@@ -1071,7 +1071,7 @@ try {
     'Account B offline edits must be durably queued before reconnect');
   await context.setOffline(false);
   await page.waitForFunction(() => navigator.onLine === true, null, { timeout: 10000 });
-  await waitForAccountAndStatus(appEmailB, ownerB, 'Synced', 90000);
+  await waitForAccountAndStatus(appEmailB, ownerB, 'Synced', 60000);
   await page.waitForFunction(owner => {
     try {
       return !window.NexusOfflineSyncQueue.hasPending(localStorage, owner);
@@ -1080,6 +1080,8 @@ try {
     }
   }, ownerB, { timeout: 90000 });
   const accountBOfflineSyncMs = Date.now() - accountBOfflineEditStartedAt;
+  assert.ok(accountBOfflineSyncMs <= 60000,
+    'Account B offline edits must reach verified Synced within the 60-second reconnect target');
   const accountBOfflineRow = await readSnapshotRow(clientB, ownerB);
   const accountBOfflineVerified = accountBOfflineRow?.payload?.__nexusStorage === 'chunked-v1'
     ? await chunkStorage.readSnapshot(clientB, ownerB, accountBOfflineRow.payload)
@@ -1210,8 +1212,8 @@ try {
       ? Date.parse(watchdogEvent.at) - accountAReturnStartedAt
       : returnVerificationAny && Number.isSafeInteger(returnVerificationAny.durationMs)
         ? returnVerificationAny.durationMs : null;
-  assert.ok(verifiedWithinDeadline || delayedWithinDeadline,
-    'Within 60 seconds the returning account must reach verified Synced or a truthful terminal delayed/error state with retry.');
+  assert.ok(verifiedWithinDeadline,
+    'After Account B offline edits have synced, a rapid return to the large Account A workspace must reach verified Synced within 60 seconds; a delayed/pending status is a regression.');
   assert.ok(returnStatusText !== 'Synced' || verifiedWithinDeadline,
     'The app must never show Synced without successful initial cloud verification.');
 
