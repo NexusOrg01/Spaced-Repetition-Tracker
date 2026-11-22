@@ -1819,7 +1819,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
       projectionRebuildFailureStage='other',projectionRebuildFailureReason='other',
       projectionRebuildStartedAt=null,projectionRebuildDurationMs=null;
   if(projection&&projection.ok===true&&typeof syncDiag==='function'){
-    syncDiag('projection-reuse',diagnosticWorkspace(),{
+    syncDiag('projection-reuse',null,{
      durationMs:projectionReadinessDurationMs,ready:true,
      projectionRebuildMode:'reused',
      ownerVerified:localStorage.getItem(OWNER_KEY)===ownerId

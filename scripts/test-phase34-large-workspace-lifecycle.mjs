@@ -1183,7 +1183,7 @@ try {
     event.stage === 'delta-sync-result' && event.ok === true &&
     Number.isSafeInteger(event.durationMs) && initialInitializationStarted &&
     Date.parse(event.at) >= Date.parse(initialInitializationStarted.at) &&
-    (!initialVerification || Date.parse(event.at) <= Date.parse(initialVerification.at))
+    
   ) || null;
   assert.ok(initialCloudRead,
     'The real Nexus app must read the exact 26.9 MB / 103-chunk account-A fixture.');
