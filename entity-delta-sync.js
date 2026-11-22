@@ -459,8 +459,13 @@
         }else{
           cursor=cursorResult.cursor;
         }
-        if(!cursor||cursor.snapshotUpdatedAt!==state.snapshot_updated_at||
-           cursor.generation!==cursorResult.generation&&cursorResult.generation){
+        if(!cursor){
+          return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_unavailable'};
+        }
+        if(cursor.snapshotUpdatedAt!==state.snapshot_updated_at){
+          return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_snapshot_baseline_mismatch'};
+        }
+        if(cursor.generation!==cursorResult.generation&&cursorResult.generation){
           return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_generation_mismatch'};
         }
         if(cursor.requiresPull===true||floor>Number(cursor.publishRevision)||
@@ -603,8 +608,13 @@
         }else{
           cursor=cursorResult.cursor;
         }
-        if(!cursor||cursor.snapshotUpdatedAt!==state.snapshot_updated_at||
-           cursor.generation!==cursorResult.generation&&cursorResult.generation){
+        if(!cursor){
+          return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_unavailable'};
+        }
+        if(cursor.snapshotUpdatedAt!==state.snapshot_updated_at){
+          return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_snapshot_baseline_mismatch'};
+        }
+        if(cursor.generation!==cursorResult.generation&&cursorResult.generation){
           return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_generation_mismatch'};
         }
         if(Number(cursor.publishRevision)<floor||Number(cursor.publishRevision)>head){

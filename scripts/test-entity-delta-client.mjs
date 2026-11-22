@@ -159,6 +159,15 @@ function harness(options={}){
   assert.equal(h.acknowledgements.length,1);
 }
 {
+  const h=harness({initialCursor:{ownerId:'account-A',generation:'generation-A',workspaceRevision:1,
+    publishRevision:0,acknowledgedSequence:10,remoteHeadRevision:0,
+    snapshotUpdatedAt:'old-cursor-snapshot-stamp',requiresPull:false}});
+  const result=await h.client.publishPending('account-A');
+  assert.equal(result.reason,'local_delta_cursor_snapshot_baseline_mismatch',
+    'a cursor pinned to an older remote snapshot must report a baseline mismatch, not a generation mismatch');
+  assert.equal(h.acknowledgements.length,0);
+}
+{
   const pending={status:'pending',ownerUserId:'account-A',baseServerVersion:'stale-stamp',payload};
   const h=harness({pendingSnapshot:pending});
   const result=await h.client.publishPending('account-A');
@@ -257,6 +266,14 @@ function harness(options={}){
   const h=harness({readPage:gapPage});
   const result=await h.client.readRemotePage('account-A',0);
   assert.equal(result.snapshotRequired,true,'a missing remote revision must fail closed before local application');
+}
+{
+  const h=harness({initialCursor:{ownerId:'account-A',generation:'generation-A',workspaceRevision:1,
+    publishRevision:0,acknowledgedSequence:10,remoteHeadRevision:0,
+    snapshotUpdatedAt:'old-cursor-snapshot-stamp',requiresPull:false}});
+  const result=await h.client.synchronize('account-A');
+  assert.equal(result.reason,'local_delta_cursor_snapshot_baseline_mismatch',
+    'inbound sync must distinguish a stale snapshot timestamp from a generation mismatch');
 }
 {
   const h=harness({state:{head_revision:1},groups:[],initialCursor:{ownerId:'account-A',generation:'generation-A',workspaceRevision:1,publishRevision:0,acknowledgedSequence:10,remoteHeadRevision:0,snapshotUpdatedAt:'snapshot-stamp',requiresPull:false}});

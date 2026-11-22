@@ -356,6 +356,36 @@
     return row && row.deleted !== true && typeof row.value === 'string' ? row.value : null;
   }
 
+  // Compare JSON values without treating object-key order as a data change.
+  // Arrays remain order-sensitive; this is used only after parsing durable snapshots.
+  function sameJsonValue(left,right) {
+    const pending=[[left,right]];
+    while(pending.length){
+      const pair=pending.pop(),a=pair[0],b=pair[1];
+      if(a===b)continue;
+      if(a===null||b===null||typeof a!=='object'||typeof b!=='object')return false;
+      const aArray=Array.isArray(a),bArray=Array.isArray(b);
+      if(aArray!==bArray)return false;
+      if(aArray){
+        if(a.length!==b.length)return false;
+        for(let index=0;index<a.length;index++)pending.push([a[index],b[index]]);
+        continue;
+      }
+      const keys=Object.keys(a);
+      if(keys.length!==Object.keys(b).length)return false;
+      for(const key of keys){
+        if(!Object.prototype.hasOwnProperty.call(b,key))return false;
+        pending.push([a[key],b[key]]);
+      }
+    }
+    return true;
+  }
+  function sameJsonText(text,value) {
+    if(typeof text!=='string')return false;
+    try{return sameJsonValue(JSON.parse(text),value);}
+    catch(_){return false;}
+  }
+
   function workspaceChecksum(tracker, featureState) {
     const text = tracker + '\n' + featureState;
     let hash = 2166136261;
@@ -2593,7 +2623,7 @@
     return result;
   }
 
-  // A recovery candidate that is byte-for-byte the durable workspace may reuse
+  // A recovery candidate that is semantically identical to the durable workspace may reuse
   // its already-published owner/revision-bound generation. This avoids writing a
   // second 100k+ row generation merely to reset a verified Delta cursor.
   async function stageWorkspaceEntityRecoveryFromActive(ownerId,intentId,candidateDigest,
@@ -2653,8 +2683,8 @@
           values.featureRoot.generation===manifest?.activeGeneration&&
           values.trackerRoot.collection==='_meta'&&values.trackerRoot.entityId==='tracker'&&
           values.featureRoot.collection==='_meta'&&values.featureRoot.entityId==='features'&&
-          JSON.stringify(values.trackerRoot.value)===JSON.stringify(entityRootValue(tracker,TRACKER_ENTITY_COLLECTIONS))&&
-          JSON.stringify(values.featureRoot.value)===JSON.stringify(entityRootValue(features,FEATURE_ENTITY_COLLECTIONS)));
+          sameJsonValue(values.trackerRoot.value,entityRootValue(tracker,TRACKER_ENTITY_COLLECTIONS))&&
+          sameJsonValue(values.featureRoot.value,entityRootValue(features,FEATURE_ENTITY_COLLECTIONS)));
         const valid=enabled&&committedOwnerId===owner&&!entityRemovalOwners.has(owner)&&
           entityRecoveryLockedOwners.has(owner)&&pending.size===0&&
           manifest&&manifest.ownerId===owner&&manifest.status==='ready'&&
@@ -2662,7 +2692,7 @@
           !manifest.pendingGeneration&&!manifest.pendingRecoveryIntentId&&
           Number.isSafeInteger(rowCount)&&rowCount===expectedRowCount&&countsMatch&&
           validWorkspaceRow(workspace,owner)&&
-          workspace.tracker===trackerSnapshotJson&&workspace.featureState===featureSnapshotJson&&
+          sameJsonText(workspace.tracker,tracker)&&sameJsonText(workspace.featureState,features)&&
           Number.isSafeInteger(workspaceRevision)&&workspaceRevision>=0&&
           Number.isSafeInteger(Number(manifest.sourceWorkspaceRevision))&&
           Number(manifest.sourceWorkspaceRevision)===workspaceRevision&&

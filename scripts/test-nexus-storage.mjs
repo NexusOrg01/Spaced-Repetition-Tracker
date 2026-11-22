@@ -2149,8 +2149,20 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
 
   const workspaceRows=idb.databases.get('nexus-workspace-v1').stores.get('workspaces');
   const rowCountBefore=workspaceRows.size;
+  const reorderedState={
+    settings:{theme:'dark'},
+    history:[{rating:4,id:'reuse-review',topicId:'reuse-topic'}],
+    topics:[{name:'Verified topic',subjectId:'reuse-subject',id:'reuse-topic'}],
+    subjects:[{name:'Accounting',id:'reuse-subject',streamId:'reuse-stream'}],
+    streams:[{name:'Commerce',id:'reuse-stream'}],
+    exams:[]
+  };
+  const reorderedFeatures={
+    selectedTopicIds:[],studyLogs:[],goals:[],papers:[],
+    journal:[{text:'Verified note',id:'reuse-journal'}],version:1
+  };
   const reused=await loaded.api.stageWorkspaceEntityRecoveryFromActive(
-    owner,intentId,digest,JSON.stringify(state),JSON.stringify(features)
+    owner,intentId,digest,JSON.stringify(reorderedState),JSON.stringify(reorderedFeatures)
   );
   assert.equal(reused.ok,true,
     'an exact owner/revision/root-matched active generation should be staged for recovery reuse');
