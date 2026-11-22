@@ -1021,7 +1021,50 @@ try {
     initialWatchdogOutcome = initialWatchdog.watchdogOutcome;
   }
 
+  // Start a same-owner A verification while its large cached workspace is
+  // already visible, then deliberately hold the remote read. Switching to B
+  // must cancel A's work without dropping A's pending snapshot or blocking B.
+  let initialAReadHeld = false;
+  let releaseInitialARead = null;
+  const initialAReadPattern = /\\/rest\\/v1\\/nexus_user_data\\?/;
+  const holdInitialAUploadRead = async route => {
+    const requestUrl = new URL(route.request().url());
+    if (!initialAReadHeld && requestUrl.pathname === '/rest/v1/nexus_user_data' &&
+        requestUrl.searchParams.get('user_id') === 'eq.' + ownerA) {
+      initialAReadHeld = true;
+      await new Promise(resolve => { releaseInitialARead = resolve; });
+    }
+    try { await route.continue(); } catch (_) {}
+  };
+  await page.route(initialAReadPattern, holdInitialAUploadRead);
+  const initialAPendingResult = await page.evaluate(ownerA => {
+    const owner = localStorage.getItem('nexus.cloud.last-user-id');
+    if (owner !== ownerA) throw new Error('Account A no longer owns the local workspace before the interrupted verification test.');
+    const state = JSON.parse(localStorage.getItem('recall.study.tracker.v1') || '{}');
+    const featureState = JSON.parse(localStorage.getItem('recall.study.features.v1') || '{}');
+    if (!window.NexusCloudSync || typeof window.NexusCloudSync.recordLocalSave !== 'function') {
+      throw new Error('The account-bound save coordinator is unavailable.');
+    }
+    window.NexusCloudSync.recordLocalSave({ state, featureState });
+    return { owner, pending: !!window.NexusOfflineSyncQueue?.hasPending(localStorage, ownerA) };
+  }, ownerA);
+  assert.equal(initialAPendingResult.owner, ownerA);
+  assert.equal(initialAPendingResult.pending, true,
+    'the interrupted A verification must have a durable owner-bound pending snapshot');
+  await page.waitForFunction(() =>
+    String(document.querySelector('#cloudStatus')?.textContent || '').trim() === 'Syncing...',
+  null, { timeout: 30000 });
+  for (let i = 0; i < 200 && !initialAReadHeld; i++) await page.waitForTimeout(25);
+  assert.equal(initialAReadHeld, true,
+    'the test must hold Account A at its actual remote snapshot verification read');
   const signedInB = await signInAppTestAccount(appEmailB, appPasswordB);
+  assert.equal(signedInB.userId, ownerB);
+  if (releaseInitialARead) releaseInitialARead();
+  await page.unroute(initialAReadPattern, holdInitialAUploadRead);
+  const parkedAPending = await page.evaluate(ownerA =>
+    !!window.NexusOfflineSyncQueue?.hasPending(localStorage, ownerA), ownerA);
+  assert.equal(parkedAPending, true,
+    'switching to Account B must park rather than discard Account A pending verification work');
   assert.equal(signedInB.userId, ownerB);
   const accountBStartedAt = Date.now();
   await waitForAccountAndStatus(appEmailB, ownerB, 'Synced', 90000);
@@ -1313,6 +1356,8 @@ try {
     initialWorkspaceRevealMs,
     initialWorkspaceRevealStatus,
     initialAccountSyncMs: initialVerification.durationMs,
+    initialAUploadVerificationInterrupted: initialAReadHeld,
+    initialAPendingParkedAcrossSwitch: parkedAPending,
     initialWatchdogDelayMs,
     initialWatchdogOutcome,
     initialRemoteReadMs: initialCloudRead.durationMs,
