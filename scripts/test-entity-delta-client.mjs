@@ -1187,7 +1187,7 @@ function coordinatorHarness(options={}){
 const stagingSupabaseUrl='http://127.0.0.1:54321';
 const hostedQaSupabaseUrl='https://xuwfzibxhxzxxupprxsq.supabase.co';
 const stagingFunctionStart=cloudSyncSource.indexOf('async function runStagingEntityDeltaSync(');
-const stagingFunctionEnd=cloudSyncSource.indexOf('\nasync function upload(){',stagingFunctionStart);
+const stagingFunctionEnd=cloudSyncSource.indexOf('\nfunction upload(){',stagingFunctionStart);
 assert.ok(stagingFunctionStart>=0&&stagingFunctionEnd>stagingFunctionStart,
   'cloud sync must expose an extractable staging-delta coordinator boundary for focused runtime tests');
 const stagingFunctionSource=cloudSyncSource.slice(stagingFunctionStart,stagingFunctionEnd);
