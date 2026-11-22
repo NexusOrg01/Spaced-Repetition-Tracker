@@ -53,9 +53,7 @@
             if(typeof sync.downloadDiagnostics==='function')sync.downloadDiagnostics();
           }else if(sync&&typeof sync.enableDiagnostics==='function')sync.enableDiagnostics();
           else{
-            root.localStorage.setItem('nexus.syncdiag.enabled','1');
-            root.sessionStorage.setItem('nexus.syncdiag.enabled','1');
-            root.location.reload();
+            console.warn('Nexus sync diagnostics are not ready yet. Keep the workspace screen open and try again shortly.');
           }
         }catch(error){console.warn('Nexus sync diagnostics could not be started from the workspace lock.',error);}
       });
