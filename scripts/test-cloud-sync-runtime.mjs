@@ -709,9 +709,9 @@ assert.equal(staleInFlightVerification.metrics.initializations, 0,
 
 // While ownership is uncertain, the actual public upload and local-save scheduler
 // must remain closed; the cached workspace is usable, but no cloud write can start.
-const uploadStart = source.indexOf('function upload(){');
-const uploadEnd = source.indexOf('async function performUpload()', uploadStart);
-assert.ok(uploadStart >= 0 && uploadEnd > uploadStart,
+const authPauseUploadStart = source.indexOf('function upload(){');
+const authPauseUploadEnd = source.indexOf('async function performUpload()', authPauseUploadStart);
+assert.ok(authPauseUploadStart >= 0 && authPauseUploadEnd > authPauseUploadStart,
   'the public upload coordinator must remain available for the ownership-pause regression');
 const uploadSandbox = {
   authSessionVerificationPending: true,
@@ -722,15 +722,15 @@ const uploadSandbox = {
   ready: true
 };
 vm.createContext(uploadSandbox);
-vm.runInContext(source.slice(uploadStart, uploadEnd) +
+vm.runInContext(source.slice(authPauseUploadStart, authPauseUploadEnd) +
   '\nglobalThis.runUploadWhileUnverified = upload;', uploadSandbox,
   { filename: 'auth-verification-upload-pause.js' });
 assert.equal(await uploadSandbox.runUploadWhileUnverified(), false,
   'cloud upload must return without starting while session ownership is unverified');
 
-const scheduleStart = source.indexOf('function schedule(){');
-const scheduleEnd = source.indexOf('function createSafeAuthStorage(', scheduleStart);
-assert.ok(scheduleStart >= 0 && scheduleEnd > scheduleStart,
+const authPauseScheduleStart = source.indexOf('function schedule(){');
+const authPauseScheduleEnd = source.indexOf('function createSafeAuthStorage(', authPauseScheduleStart);
+assert.ok(authPauseScheduleStart >= 0 && authPauseScheduleEnd > authPauseScheduleStart,
   'the local-save scheduler must remain available for the ownership-pause regression');
 let scheduledLocalWrites = 0;
 const scheduleSandbox = {
@@ -746,7 +746,7 @@ const scheduleSandbox = {
   clearTimeout() {}
 };
 vm.createContext(scheduleSandbox);
-vm.runInContext(source.slice(scheduleStart, scheduleEnd) +
+vm.runInContext(source.slice(authPauseScheduleStart, authPauseScheduleEnd) +
   '\nglobalThis.runScheduleWhileUnverified = schedule;', scheduleSandbox,
   { filename: 'auth-verification-scheduler-pause.js' });
 scheduleSandbox.runScheduleWhileUnverified();
