@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { webcrypto } from 'node:crypto';
 import { chromium } from 'playwright';
@@ -13,7 +14,7 @@ require('../entity-delta-sync.js');
 const delta = globalThis.NexusEntityDeltaSync;
 assert.ok(delta && typeof delta.createClient === 'function', 'entity-delta runtime must load');
 const required = [
-  'PHASE34_API_URL', 'PHASE34_ANON_KEY',
+  'PHASE34_API_URL', 'PHASE34_ANON_KEY', 'PHASE34_DB_URL',
   'PHASE34_EMAIL_B', 'PHASE34_PASSWORD_B',
   'PHASE34_EMAIL_C', 'PHASE34_PASSWORD_C'
 ];
@@ -23,6 +24,10 @@ const apiUrl = new URL(process.env.PHASE34_API_URL);
 assert.equal(apiUrl.protocol, 'http:');
 assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(apiUrl.hostname));
 assert.equal(apiUrl.port, '54321');
+const databaseUrl = new URL(process.env.PHASE34_DB_URL);
+assert.ok(['postgres:', 'postgresql:'].includes(databaseUrl.protocol));
+assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(databaseUrl.hostname),
+  'The privileged fixture connection must be loopback-only.');
 assert.equal(apiUrl.username, '');
 assert.equal(apiUrl.password, '');
 assert.equal(apiUrl.search, '');
@@ -834,11 +839,49 @@ const appFixtureState = await rpc(clientA1Restart, 'nexus_get_entity_sync_state'
 assert.equal(appFixtureState.mode, 'snapshot');
 assert.equal(appFixtureReadback.state.topics.length, INITIAL_TOPICS);
 assert.equal(appFixtureReadback.state.history.length, INITIAL_HISTORY);
-check('DLA-08E prepares an authenticated 26,900,000-byte snapshot-mode app fixture with 103 verified chunks',
+
+// The previous authenticated Delta lifecycle intentionally downgraded this
+// disposable owner and persisted an explicit opt-out. Re-enable only this
+// synthetic owner in the disposable local Supabase database so the real app
+// can exercise account handoff while Account A is actually in Delta mode.
+assert.match(ownerA, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+  'The local allowlist update must target a validated disposable UUID.');
+const localEligibilitySql = `
+INSERT INTO nexus_private.entity_delta_pilot_allowlist (user_id, enabled, reason)
+VALUES ('${ownerA}'::uuid, true, 'DLA-08E isolated app-level Delta handoff regression')
+ON CONFLICT (user_id) DO UPDATE
+SET enabled = true,
+    reason = EXCLUDED.reason,
+    updated_at = clock_timestamp();
+`;
+execFileSync('psql', ['-X', '-v', 'ON_ERROR_STOP=1'], {
+  input: localEligibilitySql,
+  encoding: 'utf8',
+  env: { ...process.env, PGDATABASE: process.env.PHASE34_DB_URL },
+  stdio: ['pipe', 'pipe', 'pipe']
+});
+const appDeltaEnable = await rpc(clientA1Restart, 'nexus_enable_entity_delta', {
+  p_expected_updated_at: appFixtureRow.updated_at
+});
+assert.equal(appDeltaEnable.ok, true);
+assert.equal(appDeltaEnable.mode, 'delta');
+const appFixtureDeltaState = await rpc(clientA1Restart, 'nexus_get_entity_sync_state');
+assert.equal(appFixtureDeltaState.mode, 'delta');
+const appFixtureDeltaRow = await readSnapshotRow(clientA1Restart, ownerA);
+assert.equal(appFixtureDeltaRow.payload.__nexusDeltaSync, 'entity-delta-v1');
+const appFixtureDeltaReadback = await chunkStorage.readSnapshot(
+  clientA1Restart, ownerA, appFixtureDeltaRow.payload
+);
+assert.equal(appFixtureDeltaReadback.state.topics.length, INITIAL_TOPICS);
+assert.equal(appFixtureDeltaReadback.state.history.length, INITIAL_HISTORY);
+check('DLA-08E prepares an authenticated 26,900,000-byte Delta-enabled app fixture with 103 verified chunks',
   appFixturePublication.verifiedChunks === true &&
   appFixturePublication.manifest.totalBytes === TARGET_BYTES &&
   appFixturePublication.manifest.chunkCount === 103 &&
-  appFixtureState.mode === 'snapshot');
+  appFixtureDeltaState.mode === 'delta' &&
+  appFixtureDeltaRow.payload.__nexusDeltaSync === 'entity-delta-v1' &&
+  appFixtureDeltaReadback.state.topics.length === INITIAL_TOPICS &&
+  appFixtureDeltaReadback.state.history.length === INITIAL_HISTORY);
 
 console.log('Launching the Nexus Web app in Chromium against disposable local Supabase…');
 const browser = await chromium.launch({
@@ -1026,11 +1069,10 @@ try {
   // must cancel A's work without dropping A's pending snapshot or blocking B.
   let initialAReadHeld = false;
   let releaseInitialARead = null;
-  const initialAReadPattern = /\/rest\/v1\/nexus_user_data\?/;
+  const initialAReadPattern = /\/rest\/v1\/rpc\/nexus_read_entity_operations(?:\?|$)/;
   const holdInitialAUploadRead = async route => {
     const requestUrl = new URL(route.request().url());
-    if (!initialAReadHeld && requestUrl.pathname === '/rest/v1/nexus_user_data' &&
-        requestUrl.searchParams.get('user_id') === 'eq.' + ownerA) {
+    if (!initialAReadHeld && requestUrl.pathname === '/rest/v1/rpc/nexus_read_entity_operations') {
       initialAReadHeld = true;
       await new Promise(resolve => { releaseInitialARead = resolve; });
     }
@@ -1057,7 +1099,7 @@ try {
   null, { timeout: 30000 });
   for (let i = 0; i < 200 && !initialAReadHeld; i++) await page.waitForTimeout(25);
   assert.equal(initialAReadHeld, true,
-    'the test must hold Account A at its actual remote snapshot verification read');
+    'the test must hold Account A at its actual authenticated Delta operation read');
   const signedInB = await signInAppTestAccount(appEmailB, appPasswordB);
   assert.equal(signedInB.userId, ownerB);
   const accountBStartedAt = Date.now();
@@ -1293,10 +1335,10 @@ try {
     event.stage === 'projection-rebuild' &&
     typeof event.at === 'string' && event.at >= accountAReturnStartedIso
   ) || null;
-  const returnDeltaSnapshotMode = afterDeadline.slice().reverse().find(event =>
+  const returnDeltaSyncVerified = afterDeadline.slice().reverse().find(event =>
     event.stage === 'delta-sync-result' &&
     typeof event.at === 'string' && event.at >= accountAReturnStartedIso &&
-    event.reason === 'server_snapshot_mode'
+    event.ok === true && event.skipped !== true
   ) || null;
   const returnWorkspaceSnapshotCurrent = afterDeadline.slice().reverse().find(event =>
     event.stage === 'workspace-snapshot-current' &&
@@ -1340,11 +1382,7 @@ try {
     reason: typeof event.reason === 'string' ? event.reason : null
   }));
   const expectedReturnPhases = [
-    'cloud-chunk-read',
-    'cloud-read',
-    'workspace-comparison',
-    'workspace-snapshot-current',
-    'projection-deferred-to-upload',
+    'workspace-render',
     'delta-sync-result',
     'initial-sync-verification'
   ];
@@ -1391,27 +1429,33 @@ try {
     projectionCompletedByDeadline: !!returnProjectionCompletion,
     projectionDeferredToUpload: !!returnProjectionDeferred,
     projectionRebuiltByDeadline: !!returnProjectionRebuild,
-    remoteSnapshotModeConfirmed: !!returnDeltaSnapshotMode,
+    returningDeltaSyncVerified: !!returnDeltaSyncVerified,
     projectionReadinessReason: phaseTimings.find(event => event.stage === 'projection-readiness')?.reason || null,
     workspaceSnapshotCurrent: returnWorkspaceSnapshotCurrent?.same ?? null,
     phasesNotObservedByDeadline,
     phaseTimings
   };
-  assert.ok(returnWorkspaceSnapshotCurrent && returnWorkspaceSnapshotCurrent.same === true,
-    'A semantically unchanged IndexedDB-cached workspace must preserve its existing workspace revision.');
-  assert.ok(returnProjectionDeferred,
-    'The snapshot-mode returning account must defer Delta-only projection work until the upload gate is checked.');
-  assert.ok(returnDeltaSnapshotMode,
-    'The returning account must confirm server snapshot mode before using the compatibility snapshot path.');
-  assert.equal(returnProjectionRebuild, null,
-    'A snapshot-mode account must not rebuild a Delta-only projection during A→B→A handoff.');
+  assert.ok(returnDeltaSyncVerified && returnDeltaSyncVerified.ok === true &&
+    returnDeltaSyncVerified.skipped !== true,
+    'The returning Account A must complete an authenticated Delta sync rather than take the snapshot-mode fallback.');
+  if (returnProjectionRebuild) {
+    assert.equal(returnProjectionRebuild.ownerVerified, true,
+      'Any returning Delta projection rebuild must remain owner-verified.');
+  }
   const accountBRowAfterAReturn = await readSnapshotRow(clientB, ownerB);
   const accountBPayloadAfterAReturn = accountBRowAfterAReturn?.payload?.__nexusStorage === 'chunked-v1'
     ? await chunkStorage.readSnapshot(clientB, ownerB, accountBRowAfterAReturn.payload)
     : accountBRowAfterAReturn?.payload;
   assert.ok(accountBPayloadAfterAReturn?.state?.topics?.some(topic => topic.id === accountBOfflineEditId),
     'returning to Account A must not remove Account B’s already verified offline edit');
+  const accountASyncStateAfterReturn = await rpc(clientA1Restart, 'nexus_get_entity_sync_state');
+  const accountBSyncStateAfterReturn = await rpc(clientB, 'nexus_get_entity_sync_state');
+  assert.equal(accountASyncStateAfterReturn.mode, 'delta',
+    'Account A must remain in Delta mode after the app-level handoff and verification.');
+  assert.equal(accountBSyncStateAfterReturn.mode, 'snapshot',
+    'Account B must remain outside Delta mode after its offline reconnect sync.');
   const accountARowAfterReturn = await readSnapshotRow(clientA1Restart, ownerA);
+  assert.equal(accountARowAfterReturn.payload.__nexusDeltaSync, 'entity-delta-v1');
   const accountAPayloadAfterReturn = await chunkStorage.readSnapshot(clientA1Restart, ownerA, accountARowAfterReturn.payload);
   assert.equal(accountAPayloadAfterReturn.state.topics.length, INITIAL_TOPICS,
     'Account A must retain its complete 77,144-topic cloud workspace after Account B’s offline sync');
@@ -1419,6 +1463,11 @@ try {
     'Account A must retain its complete 72,001-row review history after Account B’s offline sync');
   assert.equal(accountAPayloadAfterReturn.state.topics.some(topic => topic.id === accountBOfflineEditId), false,
     'Account B’s offline edit must never appear in Account A’s cloud workspace');
+  check('DLA-08E app-level Delta handoff leaves Account A in Delta and Account B snapshot-only with isolated workspaces',
+    accountASyncStateAfterReturn.mode === 'delta' &&
+    accountBSyncStateAfterReturn.mode === 'snapshot' &&
+    !accountAPayloadAfterReturn.state.topics.some(topic => topic.id === accountBOfflineEditId) &&
+    !!accountBPayloadAfterAReturn?.state?.topics?.some(topic => topic.id === accountBOfflineEditId));
   assert.ok(returnCloudChunkRead && returnCloudRead,
     'The returning account must continue into a fresh, complete 26.9 MB cloud read after cached workspace reveal.');
   assert.equal(pageErrors.length, 0,
