@@ -14,6 +14,10 @@
   function resolveWorkspaceLock(accountId,ownerId,statusText,lastAuthenticatedId,explicitOffline){
     const active=String(accountId||'').trim(),owner=String(ownerId||'').trim();
     const previous=String(lastAuthenticatedId||'').trim(),status=String(statusText||'');
+    // An auth notification can be stale or can represent a real account switch.
+    // Until getSession() authoritatively resolves it, hide the cached workspace even
+    // when its previous owner marker still matches the last known session.
+    if(/^account verification delayed$/i.test(status.trim()))return {locked:true,phase:'error'};
     if(active){
       if(active===owner&&owner)return {locked:false,phase:'owned'};
       return {locked:true,phase:ERROR_STATUS.test(status)?'error':'loading'};
