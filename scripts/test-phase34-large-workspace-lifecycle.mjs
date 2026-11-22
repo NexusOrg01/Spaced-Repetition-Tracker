@@ -1097,21 +1097,104 @@ try {
     try { await route.continue(); } catch (_) {}
   };
   await page.route(initialAReadPattern, holdInitialAUploadRead);
-  const initialAPendingResult = await page.evaluate(ownerA => {
+
+  // The initial page load has already verified Account A's current Delta head.
+  // Advance the disposable server by one independent operation so the next real
+  // upload must issue an authenticated nexus_read_entity_operations RPC.
+  const appInitialCursor = await page.evaluate(async ownerId => {
+    const result = await window.NexusStorage.readWorkspaceEntityDeltaCursor(ownerId);
+    if (!result || result.ok !== true || !result.cursor) {
+      throw new Error('The restored Account A Delta cursor is unavailable.');
+    }
+    return {
+      ownerId: result.cursor.ownerId,
+      publishRevision: Number(result.cursor.publishRevision),
+      remoteHeadRevision: Number(result.cursor.remoteHeadRevision),
+      requiresPull: result.cursor.requiresPull
+    };
+  }, ownerA);
+  assert.equal(appInitialCursor.ownerId, ownerA);
+  const stateBeforeRemoteRead = await rpc(clientA1Restart, 'nexus_get_entity_sync_state');
+  assert.equal(stateBeforeRemoteRead.mode, 'delta');
+  assert.equal(appInitialCursor.publishRevision, Number(stateBeforeRemoteRead.head_revision));
+  assert.equal(appInitialCursor.remoteHeadRevision, Number(stateBeforeRemoteRead.head_revision));
+  assert.equal(appInitialCursor.requiresPull, false);
+
+  const remoteReadTopic = appFixtureReadback.state.topics[50000];
+  assert.ok(remoteReadTopic && remoteReadTopic.id,
+    'The remote-read trigger must use an existing Account A topic.');
+  const remoteReadOperation = await publishOperation(
+    clientA1Restart,
+    'phase34-app-read-trigger-' + crypto.randomUUID(),
+    Number(stateBeforeRemoteRead.head_revision),
+    [{
+      collection: 'topics',
+      id: remoteReadTopic.id,
+      operation: 'put',
+      position: 50000,
+      value: { ...remoteReadTopic, notes: String(remoteReadTopic.notes || '') + ' remote Delta read trigger' }
+    }]
+  );
+  assert.equal(remoteReadOperation.ok, true,
+    'The isolated remote Delta operation must publish successfully before the browser handoff race.');
+  assert.equal(Number(remoteReadOperation.revision), Number(stateBeforeRemoteRead.head_revision) + 1);
+
+  const initialAPendingResult = await page.evaluate(async ownerA => {
     const owner = localStorage.getItem('nexus.cloud.last-user-id');
     if (owner !== ownerA) throw new Error('Account A no longer owns the local workspace before the interrupted verification test.');
+
+    // Exercise the real app save path. A durable, non-overlapping local topic edit
+    // creates both the compatibility pending snapshot and its IndexedDB Delta
+    // outbox group. This prevents the compatibility snapshot from being mistaken
+    // for an unchanged shadow while the remote operation read is deliberately held.
     const state = JSON.parse(localStorage.getItem('recall.study.tracker.v1') || '{}');
-    const featureState = JSON.parse(localStorage.getItem('recall.study.features.v1') || '{}');
-    if (!window.NexusCloudSync || typeof window.NexusCloudSync.recordLocalSave !== 'function') {
-      throw new Error('The account-bound save coordinator is unavailable.');
+    const candidates = Array.from(document.querySelectorAll(
+      '#topicGrid button[data-action="edit-topic"]'
+    ));
+    const editButton = candidates.find(button => {
+      if (!button.dataset.id || button.dataset.id === 'topic-000000') return false;
+      const topic = Array.isArray(state.topics)
+        ? state.topics.find(row => String(row.id) === button.dataset.id)
+        : null;
+      return !!topic && String(topic.notes || '').length < 900;
+    });
+    if (!editButton) throw new Error('A normal-sized existing Account A topic is not available for the local handoff edit.');
+
+    editButton.click();
+    const dialog = document.getElementById('topicDialog');
+    if (!dialog || !dialog.open) throw new Error('The existing topic edit dialog did not open.');
+    const nameInput = document.getElementById('topicNameInput');
+    const notesInput = document.getElementById('topicNotesInput');
+    const form = document.getElementById('topicForm');
+    if (!nameInput || !notesInput || !form) throw new Error('The normal topic save form is unavailable.');
+    notesInput.value = (notesInput.value ? notesInput.value + '\n' : '') + 'DLA-08E local pending handoff edit';
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+
+    const projection = await window.NexusStorage.waitForWorkspaceEntitySync(ownerA);
+    if (!projection || projection.ok !== true) {
+      throw new Error('The local handoff edit did not reach the owner-bound IndexedDB projection: ' +
+        String(projection && projection.reason || 'unknown projection state'));
     }
-    window.NexusCloudSync.recordLocalSave({ state, featureState });
-    window.NexusCloudSync.schedule();
-    return { owner, pending: !!window.NexusOfflineSyncQueue?.hasPending(localStorage, ownerA) };
+    const cursorResult = await window.NexusStorage.readWorkspaceEntityDeltaCursor(ownerA);
+    if (!cursorResult || cursorResult.ok !== true || !cursorResult.cursor) {
+      throw new Error('The local handoff edit lost Account A\'s Delta cursor.');
+    }
+    const outbox = await window.NexusStorage.readWorkspaceEntityOutboxGroups(
+      ownerA, Number(cursorResult.cursor.acknowledgedSequence), 1000, 1048576
+    );
+    const localOutboxGroupCount = outbox && Array.isArray(outbox.groups) ? outbox.groups.length : 0;
+    return {
+      owner,
+      editedTopicId: editButton.dataset.id,
+      pending: !!window.NexusOfflineSyncQueue?.hasPending(localStorage, ownerA),
+      localOutboxGroupCount
+    };
   }, ownerA);
   assert.equal(initialAPendingResult.owner, ownerA);
   assert.equal(initialAPendingResult.pending, true,
     'the interrupted A verification must have a durable owner-bound pending snapshot');
+  assert.ok(initialAPendingResult.localOutboxGroupCount > 0,
+    'the interrupted A verification must also retain a real local Delta outbox group');
   await page.waitForFunction(() =>
     String(document.querySelector('#cloudStatus')?.textContent || '').trim() === 'Syncing...',
   null, { timeout: 30000 });
