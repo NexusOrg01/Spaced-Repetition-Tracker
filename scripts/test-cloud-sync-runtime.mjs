@@ -814,6 +814,9 @@ assert.match(source,
   /function schedule\(\)\{if\(authSessionVerificationPending\|\|/,
   'normal upload scheduling must pause until a mismatched auth session has been verified');
 assert.match(source,
+  /async function assertActiveUser\(userId,expectedEpoch=sessionEpoch\)\{\s*if\(authSessionVerificationPending\|\|expectedEpoch!==sessionEpoch/,
+  'all owner-bound cloud operations must stop while auth ownership is being re-verified, even before the session epoch rotates');
+assert.match(source,
   /function upload\(\)\{\s*if\(authSessionVerificationPending\|\|/,
   'the public upload coordinator must stop while active auth identity is uncertain');
 assert.match(source,
