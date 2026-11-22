@@ -1842,17 +1842,39 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
       value:{id:'apply-local-pending',subjectId:'apply-subject',name:'Local pending'}}
   ],{operationId:'local-operation-pending'});
   assert.equal(local.count,1);
-  const blocked=await loaded.api.applyWorkspaceEntityDeltaGroup(owner,{
+  const disjoint=await loaded.api.applyWorkspaceEntityDeltaGroup(owner,{
     revision:3,operation_id:'remote-operation-three',
     changes:[{collection:'topics',id:'apply-topic-late',operation:'put',position:0,
       value:{id:'apply-topic-late',subjectId:'apply-subject',name:'Late remote topic'}}]
   },2,3);
+  assert.equal(disjoint.ok,true,
+    'a verified remote change to a different entity must merge without forcing full snapshot recovery');
+  assert.equal(disjoint.cursor.publishRevision,3);
+  assert.equal(disjoint.cursor.acknowledgedSequence,0,
+    'applying a disjoint remote edit must not acknowledge the independent local outbox');
+  assert.ok(disjoint.workspace.state.topics.some(row=>row.id==='apply-local-pending'),
+    'the local pending entity value must remain present after disjoint remote application');
+  assert.ok(disjoint.workspace.state.topics.some(row=>row.id==='apply-topic-late'),
+    'the non-overlapping remote entity must be applied in the same projection');
+  const remainingLocalOutbox=await loaded.api.readWorkspaceEntityOutboxGroups(owner,0,1000,4096);
+  assert.equal(remainingLocalOutbox.groups.length,1,
+    'the original local outbox operation must remain durable for publication after remote apply');
+  assert.equal(remainingLocalOutbox.groups[0].operationId,'local-operation-pending');
+
+  const blocked=await loaded.api.applyWorkspaceEntityDeltaGroup(owner,{
+    revision:4,operation_id:'remote-operation-four',
+    changes:[{collection:'topics',id:'apply-local-pending',operation:'put',position:0,
+      value:{id:'apply-local-pending',subjectId:'apply-subject',name:'Conflicting remote value'}}]
+  },3,4);
   assert.equal(blocked.ok,false);
   assert.equal(blocked.reason,'local_outbox_pending',
-    'remote apply must pause rather than overwrite unacknowledged local entity operations');
+    'a remote update to the exact locally edited entity must still stop for three-way recovery');
   const unchanged=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
-  assert.equal(unchanged.cursor.publishRevision,2,
-    'a blocked remote group must not advance the durable inbound cursor');
+  assert.equal(unchanged.cursor.publishRevision,3,
+    'an overlapping remote group must not advance the durable inbound cursor');
+  const preserved=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(preserved.state.topics.find(row=>row.id==='apply-local-pending').name,'Local pending',
+    'an overlapping remote edit must never overwrite the local pending entity value');
 }
 {
   const owner='entity-delta-apply-rollback-owner';
