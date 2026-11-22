@@ -1274,12 +1274,17 @@ try {
   const sameAccountRefreshToVerifiedMs = Date.now() - sameAccountRefreshStartedAt;
   const warmHeapAfterBytes = await readHeapUsageBytes();
   const sameAccountRefreshEvents = await readAppDiagnostics();
-  const sameAccountRefreshEventsAfterStart = sameAccountRefreshEvents.filter(event =>
-    Date.parse(event.at || '') >= sameAccountRefreshStartedAt
-  );
-  const sameAccountCacheRestore = sameAccountRefreshEventsAfterStart.find(event =>
+  // Anchor event filtering to the app's own ISO clock. The browser and Node
+  // clocks can differ slightly during a hard reload, so a Node-only cutoff can
+  // accidentally discard the terminal verification event even when the UI is Synced.
+  const sameAccountCacheRestore = sameAccountRefreshEvents.find(event =>
     event.stage === 'same-account-workspace-restored' && event.ownerVerified === true
   ) || null;
+  const sameAccountRefreshEventStartAt = sameAccountCacheRestore && typeof sameAccountCacheRestore.at === 'string'
+    ? Date.parse(sameAccountCacheRestore.at) : sameAccountRefreshStartedAt;
+  const sameAccountRefreshEventsAfterStart = sameAccountRefreshEvents.filter(event =>
+    typeof event.at === 'string' && Date.parse(event.at) >= sameAccountRefreshEventStartAt
+  );
   const sameAccountChunkReuse = sameAccountRefreshEventsAfterStart.find(event =>
     event.stage === 'cloud-chunk-read-skipped' &&
     event.reason === 'verified_local_baseline_matches_remote_manifest'
@@ -1309,7 +1314,7 @@ try {
     event.stage === 'delta-sync-result' && event.ok === true &&
     Number.isSafeInteger(event.durationMs)
   ) || null;
-  const warmStageTimings = safeTimingEvents(sameAccountRefreshEventsAfterStart,sameAccountRefreshStartedAt);
+  const warmStageTimings = safeTimingEvents(sameAccountRefreshEventsAfterStart,sameAccountRefreshEventStartAt);
   const coldStageTimings = safeTimingEvents(initialEvents,initialRestoreConfirmedAt);
   const browserEnvironment = await page.evaluate(() => ({
     online: navigator.onLine,
