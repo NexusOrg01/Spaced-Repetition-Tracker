@@ -2846,13 +2846,16 @@ try{
     })
   ]);
 }finally{clearTimeout(authRaceTimeout);}
-await new Promise(resolve=>setTimeout(resolve,100));
+const authRaceSyncDeadline=Date.now()+10000;
+while(getElement('cloudStatus').textContent!=='Synced'&&Date.now()<authRaceSyncDeadline){
+  await new Promise(resolve=>setTimeout(resolve,10));
+}
 assert.equal(window.NexusCloudSync.getAccountState().signedIn,true,
   'the latest same-user SIGNED_IN event must replace a queued SIGNED_OUT null session');
 assert.equal(window.NexusCloudSync.getAccountState().ready,true,
   'the account must finish initialization after the duplicate auth-event burst');
 assert.equal(getElement('cloudStatus').textContent,'Synced',
-  'duplicate auth events must not leave the sync status in a signed-out or loading state');
+  'duplicate auth events must eventually resume and complete verified sync after the authoritative session read');
 
 // Account A's cloud read can remain unresolved while the user signs into account B.
 // B must load and become usable without waiting for A's promise to settle. Releasing A
