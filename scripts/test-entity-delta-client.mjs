@@ -987,6 +987,97 @@ function coordinatorHarness(options={}){
 }
 
 {
+  const stamp='verified-missing-local-base';
+  const remoteSnapshot={
+    app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:'verified-remote-base',
+    __nexusDeltaSync:'entity-delta-v1',
+    state:{schema:3,streams:[],subjects:[{id:'subject-main',name:'Main'}],topics:[
+      {id:'topic-local',name:'Local topic',subjectId:'subject-main',notes:'Remote base value'}
+    ],history:[],exams:[],settings:{theme:'dark'}},
+    featureState:{settings:{dailyMinutes:60},journal:[],papers:[],goals:[],studyLogs:[]}
+  };
+  const localSnapshot=JSON.parse(JSON.stringify(remoteSnapshot));
+  localSnapshot.state.topics[0].notes='Offline edit after verified snapshot';
+  localSnapshot.featureState.settings.dailyMinutes=90;
+  const tailGroup={revision:6,operation_id:'missing-base-tail',changes:[{
+    ordinal:0,collection:'topics',id:'topic-cloud-tail',operation:'put',position:1,
+    value:{id:'topic-cloud-tail',name:'Cloud tail',subjectId:'subject-main',notes:'Published after snapshot'}
+  }]};
+  const remoteState={mode:'delta',protocol_version:1,head_revision:6,snapshot_revision:5,
+    compacted_through_revision:5,snapshot_updated_at:stamp};
+  const pending={operationId:'pending-owner-A',ownerUserId:'account-A',status:'pending',
+    baseServerVersion:stamp,localSequence:12,payload:JSON.parse(JSON.stringify(localSnapshot))};
+  const calls=[];
+  const client={
+    auth:{async getUser(){return {data:{user:{id:'account-A'}},error:null};}},
+    async rpc(name,args){
+      calls.push({name,args:args||null});
+      if(name==='nexus_get_entity_sync_state')return {data:{...remoteState},error:null};
+      if(name==='nexus_read_entity_operations')return {data:{
+        mode:'delta',snapshot_required:false,head_revision:remoteState.head_revision,
+        snapshot_revision:remoteState.snapshot_revision,
+        compacted_through_revision:remoteState.compacted_through_revision,
+        next_revision:6,bytes:1024,groups:args.p_after_revision===5?[tailGroup]:[]
+      },error:null};
+      return {data:null,error:{code:'unexpected_rpc'}};
+    }
+  };
+  let snapshotReads=0;
+  const api=factory({
+    enabled:true,client,storage:{},
+    getActiveOwner:()=> 'account-A',getLocalOwner:()=> 'account-A',
+    getLocalBase:async()=>null,
+    getLocalWorkspace:async()=>JSON.parse(JSON.stringify(localSnapshot)),
+    getPendingSnapshot:async()=>({...pending}),
+    readRemoteSnapshot:async owner=>{
+      assert.equal(owner,'account-A');
+      snapshotReads++;
+      return {payload:JSON.parse(JSON.stringify(remoteSnapshot)),updated_at:stamp,storageMode:'chunked'};
+    },
+    sameWorkspace:async(left,right)=>JSON.stringify(left)===JSON.stringify(right)
+  });
+  const prepared=await api.prepareConflictRecovery('account-A',{maxGroups:20});
+  assert.equal(prepared.ok,true,
+    'a missing local base should be reconstructed from the exact owner-pending version after remote verification: '+JSON.stringify(prepared));
+  assert.equal(prepared.baselineReconstructed,true);
+  assert.equal(prepared.baselineAdvanced,false);
+  assert.equal(snapshotReads,1);
+  assert.equal(prepared.payload.state.topics.find(row=>row.id==='topic-local').notes,
+    'Offline edit after verified snapshot','local edits must survive reconstruction of a missing merge base');
+  assert.ok(prepared.payload.state.topics.some(row=>row.id==='topic-cloud-tail'),
+    'remote delta operations after the verified snapshot must be replayed');
+  assert.equal(calls.filter(call=>call.name==='nexus_read_entity_operations').length,1);
+
+  const stalePendingApi=factory({
+    enabled:true,client,storage:{},
+    getActiveOwner:()=> 'account-A',getLocalOwner:()=> 'account-A',
+    getLocalBase:async()=>null,
+    getLocalWorkspace:async()=>JSON.parse(JSON.stringify(localSnapshot)),
+    getPendingSnapshot:async()=>({...pending,baseServerVersion:'older-snapshot-stamp'}),
+    readRemoteSnapshot:async()=>{throw new Error('must not read a snapshot for a stale queue baseline');},
+    sameWorkspace:async(left,right)=>JSON.stringify(left)===JSON.stringify(right)
+  });
+  const stalePending=await stalePendingApi.prepareConflictRecovery('account-A');
+  assert.equal(stalePending.ok,false);
+  assert.equal(stalePending.reason,'local_snapshot_baseline_mismatch',
+    'a pending snapshot based on an older server version must not be treated as the current Delta baseline');
+
+  const unverifiedApi=factory({
+    enabled:true,client,storage:{},
+    getActiveOwner:()=> 'account-A',getLocalOwner:()=> 'account-A',
+    getLocalBase:async()=>null,
+    getLocalWorkspace:async()=>JSON.parse(JSON.stringify(localSnapshot)),
+    getPendingSnapshot:async()=>({...pending}),
+    readRemoteSnapshot:async()=>({payload:remoteSnapshot,updated_at:'wrong-snapshot-stamp'}),
+    sameWorkspace:async(left,right)=>JSON.stringify(left)===JSON.stringify(right)
+  });
+  const unverified=await unverifiedApi.prepareConflictRecovery('account-A');
+  assert.equal(unverified.ok,false);
+  assert.equal(unverified.reason,'remote_snapshot_baseline_unverified',
+    'a matching queue timestamp is insufficient until the remote snapshot itself verifies');
+}
+
+{
   const baseSnapshot={
     app:'Nexus Spaced Repetition Tracker',schema:4,exportedAt:'base-export',
     state:{schema:3,streams:[],subjects:[{id:'subject-main',name:'Main'}],topics:[

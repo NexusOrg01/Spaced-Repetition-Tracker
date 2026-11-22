@@ -736,16 +736,56 @@
            typeof state.snapshot_updated_at!=='string'||!state.snapshot_updated_at){
           return {ok:false,snapshotRequired:true,reason:'unsupported_remote_sync_state'};
         }
-        const base=await getLocalBase(owner),local=await getLocalWorkspace(owner);
-        if(!base||typeof base.serverVersion!=='string'||!base.serverVersion||
-           !isRecord(base.state)||!isRecord(base.featureState)){
-          return {ok:false,snapshotRequired:true,reason:'local_snapshot_baseline_mismatch'};
-        }
+        const local=await getLocalWorkspace(owner);
         if(!isRecord(local)||!isRecord(local.state)||!isRecord(local.featureState)){
           return {ok:false,snapshotRequired:true,reason:'local_workspace_unavailable'};
         }
+        // Capture the compatibility queue identity before baseline validation. A
+        // missing IndexedDB/localStorage merge base is recoverable only when this
+        // owner's durable pending snapshot was created against the exact active
+        // Delta snapshot timestamp. That timestamp is then independently verified
+        // against the remote snapshot before it is used as the three-way merge base.
+        const pendingBefore=await getPendingSnapshot(owner);
+        const pendingToken=value=>{
+          if(value===null||value===undefined)return '';
+          if(typeof value!=='object')return String(value);
+          return [
+            value.operationId||value.operation_id||value.id||'present',
+            value.ownerUserId||value.owner_id||'',
+            value.baseServerVersion||value.base_server_version||'',
+            value.localSequence??value.sequence??'',
+            value.status||''
+          ].join('|');
+        };
+        const pendingIdentity=pendingToken(pendingBefore);
+        const storedBase=await getLocalBase(owner);
+        let base=storedBase,remoteBasePayload=storedBase,baselineReconstructed=false;
+        const validBase=!!(base&&typeof base.serverVersion==='string'&&base.serverVersion&&
+          isRecord(base.state)&&isRecord(base.featureState));
+        if(!validBase){
+          const pendingIsExactOwnerBaseline=!!(pendingBefore&&pendingBefore.status==='pending'&&
+            pendingBefore.ownerUserId===owner&&
+            pendingBefore.baseServerVersion===state.snapshot_updated_at&&
+            isRecord(pendingBefore.payload)&&isRecord(pendingBefore.payload.state)&&
+            isRecord(pendingBefore.payload.featureState));
+          if(!pendingIsExactOwnerBaseline||typeof readRemoteSnapshot!=='function'){
+            return {ok:false,snapshotRequired:true,reason:'local_snapshot_baseline_mismatch'};
+          }
+          await assertOwner(owner);
+          const currentSnapshot=await readRemoteSnapshot(owner,recoveryOptions.signal||null);
+          await assertOwner(owner);
+          if(!currentSnapshot||currentSnapshot.updated_at!==state.snapshot_updated_at||
+             !isRecord(currentSnapshot.payload)||!isRecord(currentSnapshot.payload.state)||
+             !isRecord(currentSnapshot.payload.featureState)||
+             currentSnapshot.payload.__nexusDeltaSync!=='entity-delta-v1'){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'remote_snapshot_baseline_unverified'};
+          }
+          base={...currentSnapshot.payload,serverVersion:currentSnapshot.updated_at};
+          remoteBasePayload=currentSnapshot.payload;
+          baselineReconstructed=true;
+        }
         const baselineMatches=base.serverVersion===state.snapshot_updated_at;
-        let remoteBasePayload=base;
         if(!baselineMatches){
           if(typeof readRemoteSnapshot!=='function'){
             return {ok:false,snapshotRequired:true,reason:'local_snapshot_baseline_mismatch'};
@@ -762,19 +802,6 @@
           }
           remoteBasePayload=currentSnapshot.payload;
         }
-        const pendingBefore=await getPendingSnapshot(owner);
-        const pendingToken=value=>{
-          if(value===null||value===undefined)return '';
-          if(typeof value!=='object')return String(value);
-          return [
-            value.operationId||value.operation_id||value.id||'present',
-            value.ownerUserId||value.owner_id||'',
-            value.baseServerVersion||value.base_server_version||'',
-            value.localSequence??value.sequence??'',
-            value.status||''
-          ].join('|');
-        };
-        const pendingIdentity=pendingToken(pendingBefore);
         const maxGroups=boundedLimit(recoveryOptions.maxGroups,MAX_RECONCILIATION_GROUPS,MAX_RECONCILIATION_GROUPS);
         const maxBytes=boundedLimit(recoveryOptions.maxBytes,MAX_RECONCILIATION_BYTES,MAX_RECONCILIATION_BYTES,1024);
         const groups=[];
@@ -833,8 +860,11 @@
         const latestBase=await getLocalBase(owner);
         const latestLocal=await getLocalWorkspace(owner);
         const latestPending=await getPendingSnapshot(owner);
-        if(!latestBase||latestBase.serverVersion!==base.serverVersion||
-           !(await sameWorkspace(local,latestLocal))||
+        const baselineStillStable=baselineReconstructed
+          ?(!latestBase||(latestBase.serverVersion===state.snapshot_updated_at&&
+            isRecord(latestBase.state)&&isRecord(latestBase.featureState)))
+          :!!latestBase&&latestBase.serverVersion===base.serverVersion;
+        if(!baselineStillStable||!(await sameWorkspace(local,latestLocal))||
            pendingToken(latestPending)!==pendingIdentity){
           return {ok:false,retryable:true,reason:'local_workspace_changed_during_reconciliation'};
         }
@@ -855,7 +885,7 @@
             expectedHeadRevision:head,actualHeadRevision:safeInteger(finalState&&finalState.head_revision)};
         }
         return {...prepared,ownerId:owner,snapshotUpdatedAt:state.snapshot_updated_at,
-          baselineAdvanced:!baselineMatches,
+          baselineAdvanced:!baselineMatches,baselineReconstructed,
           expectedHeadRevision:head,snapshotRevision:snapshot,
           compactedThroughRevision:floor,pagesRead:pages,
           requiresSnapshotPublication:true,requiresLocalRebase:true};
