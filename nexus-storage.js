@@ -2665,6 +2665,7 @@
         const featureRequest=workspaces.get(entityRecordKey(owner,generation,'_meta','features'));
         trackerRequest.onsuccess=()=>{values.trackerRoot=trackerRequest.result||null;finish();};
         featureRequest.onsuccess=()=>{values.featureRoot=featureRequest.result||null;finish();};
+        finish();
       };
       intentRequest.onsuccess=()=>{values.intent=intentRequest.result||null;finish();};
       workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;finish();};
