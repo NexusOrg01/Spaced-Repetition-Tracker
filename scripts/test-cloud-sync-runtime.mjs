@@ -701,7 +701,7 @@ await staleVerificationAttempt;
 assert.equal(staleInFlightVerification.sandbox.sessionOwnerId, 'account-B',
   'a stale Account A getSession completion must not replace Account B after rotation');
 assert.equal(staleInFlightVerification.sandbox.session.user.id, 'account-B',
-  'the new owner's active session must survive an old verification completion');
+  "the new owner's active session must survive an old verification completion");
 assert.equal(staleInFlightVerification.metrics.rotations, 0,
   'a revoked verification attempt must not initiate another account rotation');
 assert.equal(staleInFlightVerification.metrics.initializations, 0,
