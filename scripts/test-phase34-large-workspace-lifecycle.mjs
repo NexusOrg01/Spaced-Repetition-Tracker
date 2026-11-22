@@ -1158,7 +1158,7 @@ try {
     !!document.querySelector('#topicGrid button[data-action="edit-topic"]'),
   null, { timeout: 30000 });
 
-  const initialAPendingResult = await page.evaluate(async ownerA => {
+  const initialAPendingResult = await page.evaluate(async ({ ownerA, remoteReadTopicId }) => {
     const owner = localStorage.getItem('nexus.cloud.last-user-id');
     if (owner !== ownerA) throw new Error('Account A no longer owns the local workspace before the interrupted verification test.');
 
@@ -1214,7 +1214,7 @@ try {
       pending: !!window.NexusOfflineSyncQueue?.hasPending(localStorage, ownerA),
       localOutboxGroupCount
     };
-  }, ownerA);
+  }, { ownerA, remoteReadTopicId: remoteReadTopic.id });
   assert.equal(initialAPendingResult.owner, ownerA);
   assert.equal(initialAPendingResult.pending, true,
     'the interrupted A verification must have a durable owner-bound pending snapshot');
