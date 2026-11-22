@@ -125,7 +125,7 @@ const SYNC_DIAG_STAGES=new Set([
  'workspace-merge-commit-start','workspace-merge-complete','workspace-merge-error',
  'workspace-merge-normalize-complete','workspace-merge-normalize-error','workspace-merge-normalize-start',
  'workspace-merge-restarted','workspace-merge-start','workspace-saved-locally',
- 'workspace-comparison','workspace-local-commit','same-account-baseline-unavailable','same-account-workspace-check-error','same-account-workspace-restored',
+ 'workspace-comparison','workspace-guard-state','workspace-local-commit','same-account-baseline-unavailable','same-account-workspace-check-error','same-account-workspace-restored',
  'projection-deferred-to-upload','projection-reuse','projection-rebuild','projection-check-start','projection-readiness','workspace-snapshot-current','workspace-render','initial-sync-verification'
 ]);
 function sanitizeSyncDiagEvent(event){
@@ -149,7 +149,7 @@ function sanitizeSyncDiagEvent(event){
   if(value===null)safe[key]=null;
   else if(Number.isSafeInteger(value)&&value>=0)safe[key]=Math.min(value,100000000);
  }
- const booleanFields=['hasPayload','hasUpdatedAt','chunkStorageUnavailable','cleanupBacklogMayRemain','cleanupFailed','priorQueueRetainedForRecovery','storageEnabled','cooperative','queueRebuilt','ready','remoteHadPayload','remoteHasPayload','hasSession','ownerPresent','ownerVerified','ok','resumed','hasQueue','skipped','fromPending','hasPending','matchesAttempted','readbackHasPayload','hadPending','compactionPending','cleanupPending','projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches','baselineRestored','recovered','cloudVerificationPending','triggerConflict','triggerSnapshotRequired','triggerRequiresSnapshotReconciliation','cursorRequiresPull','projectionReused','timedOut','same'];
+ const booleanFields=['hasPayload','hasUpdatedAt','activeAccountPresent','ownerMatches','chunkStorageUnavailable','cleanupBacklogMayRemain','cleanupFailed','priorQueueRetainedForRecovery','storageEnabled','cooperative','queueRebuilt','ready','remoteHadPayload','remoteHasPayload','hasSession','ownerPresent','ownerVerified','ok','resumed','hasQueue','skipped','fromPending','hasPending','matchesAttempted','readbackHasPayload','hadPending','compactionPending','cleanupPending','projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches','baselineRestored','recovered','cloudVerificationPending','triggerConflict','triggerSnapshotRequired','triggerRequiresSnapshotReconciliation','cursorRequiresPull','projectionReused','timedOut','same'];
  for(const key of booleanFields){if(typeof event[key]==='boolean')safe[key]=event[key];}
  const enums={
   watchdogOutcome:['local-ready-unverified','account-verification-delayed','already-terminal'],
@@ -165,6 +165,7 @@ function sanitizeSyncDiagEvent(event){
   projectionRebuildMode:['snapshot-backfill','incremental','unchanged','skipped','reused','other'],
   entitySyncMode:['snapshot-backfill','incremental','unchanged','superseded','skipped','error','other'],
   projectionRebuildErrorCategory:['conflict','timeout','queue-limit','queue-unavailable','other'],
+  guardPhase:['owned','loading','error','offline-unassigned','offline-mismatch','offline','initializing'],
   projectionRebuildFailureStage:['preflight','stage-manifest','generate-rows','write-row-batch','publish-manifest','verify-publication','read-compatibility-workspace','sync-workspace-entities','post-rebuild-readiness','other'],
   projectionRebuildFailureReason:['missing-stable-record-id','duplicate-stable-record-id','indexeddb-write-failed','manifest-stage-write-failed','manifest-publish-failed','manifest-verification-failed','snapshot-unavailable','workspace-revision-invalid','entity-recovery-pending','owner-unavailable','rebuild-not-completed','projection-not-current','source-snapshot-changed','other']
  };
@@ -3012,6 +3013,20 @@ window.NexusCloudSync={schedule,upload,reconnect:connect,getAccountState,deleteA
   syncDiag('workspace-saved-locally',p);
  },
  runHostedQaReplayChecks,runHostedQaOwnerIsolationChecks,
+ isDiagnosticsEnabled:()=>SYNC_DIAG_ENABLED,
+ enableDiagnostics:()=>{
+  try{localStorage.setItem('nexus.syncdiag.enabled','1');sessionStorage.setItem('nexus.syncdiag.enabled','1');location.reload();return true;}
+  catch(error){console.warn('Nexus sync diagnostics could not be enabled.',error);return false;}
+ },
+ downloadDiagnostics:downloadSyncDiagnostics,
+ noteWorkspaceGuardState:(result)=>{
+  syncDiag('workspace-guard-state',null,{
+   guardPhase:result&&typeof result.phase==='string'?result.phase:'initializing',
+   activeAccountPresent:!!(result&&result.activeAccountPresent),
+   ownerPresent:!!(result&&result.ownerPresent),
+   ownerMatches:!!(result&&result.ownerMatches)
+  });
+ },
  noteProjectionReadiness:(result)=>{
   syncDiag('projection-readiness',null,{
    ready:!!(result&&result.ready),
