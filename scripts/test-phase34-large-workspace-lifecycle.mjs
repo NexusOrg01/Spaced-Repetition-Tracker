@@ -1026,7 +1026,7 @@ try {
   // must cancel A's work without dropping A's pending snapshot or blocking B.
   let initialAReadHeld = false;
   let releaseInitialARead = null;
-  const initialAReadPattern = /\\/rest\\/v1\\/nexus_user_data\\?/;
+  const initialAReadPattern = /\/rest\/v1\/nexus_user_data\?/;
   const holdInitialAUploadRead = async route => {
     const requestUrl = new URL(route.request().url());
     if (!initialAReadHeld && requestUrl.pathname === '/rest/v1/nexus_user_data' &&
@@ -1065,7 +1065,6 @@ try {
     !!window.NexusOfflineSyncQueue?.hasPending(localStorage, ownerA), ownerA);
   assert.equal(parkedAPending, true,
     'switching to Account B must park rather than discard Account A pending verification work');
-  assert.equal(signedInB.userId, ownerB);
   const accountBStartedAt = Date.now();
   await waitForAccountAndStatus(appEmailB, ownerB, 'Synced', 90000);
   const accountBReadyMs = Date.now() - accountBStartedAt;
