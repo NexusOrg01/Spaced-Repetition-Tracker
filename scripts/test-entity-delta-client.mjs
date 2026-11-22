@@ -701,6 +701,22 @@ function coordinatorHarness(options={}){
 }
 
 {
+  let cleanupCalls=0;
+  const h=coordinatorHarness({
+    headRevision:9,snapshotRevision:8,compactedThroughRevision:8,initialPublishRevision:9,
+    compactOperations:async()=>{cleanupCalls++;return {ok:true,complete:true,pending:false};}
+  });
+  const result=await h.api.synchronize('account-A',{maxRounds:5,snapshotCompactionThreshold:250});
+  assert.equal(result.ok,true,
+    'a one-operation remote tail must complete sync without waiting for cleanup-only compaction work');
+  assert.equal(result.appliedCount,0);
+  assert.equal(result.snapshotCompaction,null,
+    'below-threshold cleanup is maintenance, not part of the successful sync result');
+  assert.equal(cleanupCalls,0,
+    'cleanup-only cursor, compatibility snapshot and outbox checks must be deferred while a small remote tail remains');
+}
+
+{
   let compactCalls=0;
   const h=coordinatorHarness({
     headRevision:250,snapshotRevision:0,compactedThroughRevision:0,initialPublishRevision:250,
