@@ -94,11 +94,31 @@ function withFacadeAtomic(storage,callback){
  const s=new MemoryStorage({[queue.OWNER]:'account-A'});
  const comparisonRevisionKey=queue.getWorkspaceComparisonRevisionKey('account-A');
  s.setItem(comparisonRevisionKey,'revision-before-account-removal');
- queue.forgetAccount(s,'account-A',[
-  {key:stateKey,value:null},
-  {key:'recall.study.features.v1',value:null}
- ]);
- assert.equal(s.getItem(comparisonRevisionKey),null,'account removal must delete its comparison revision marker');
+ const hadWindow=Object.prototype.hasOwnProperty.call(globalThis,'window');
+ const originalWindow=globalThis.window;
+ globalThis.window={
+  NexusBackupRestoreUtils:globalThis.NexusBackupRestoreUtils,
+  NexusStorage:{
+   isFacade:storage=>storage===s,
+   commitLocalStorageEntries(entries){
+    for(const entry of entries){
+     if(entry.value===null)s.removeItem(entry.key);
+     else s.setItem(entry.key,entry.value);
+    }
+    return Promise.resolve({committed:true});
+   }
+  }
+ };
+ try{
+  queue.forgetAccount(s,'account-A',[
+   {key:stateKey,value:null},
+   {key:'recall.study.features.v1',value:null}
+  ]);
+ }finally{
+  if(hadWindow)globalThis.window=originalWindow;
+  else delete globalThis.window;
+ }
+ assert.equal(s.getItem(comparisonRevisionKey),null,'account removal must delete its comparison revision marker through the same managed-storage path used by the app');
 }
 
 {
