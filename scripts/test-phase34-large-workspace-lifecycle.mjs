@@ -1027,6 +1027,66 @@ try {
   await waitForAccountAndStatus(appEmailB, ownerB, 'Synced', 90000);
   const accountBReadyMs = Date.now() - accountBStartedAt;
 
+  // Reproduce the owner's key middle step: Account B edits while offline,
+  // reconnects, and must have that edit verified before a rapid return to A.
+  const accountBOfflineEditId = 'dla08-b-offline-reconnect-topic';
+  const accountBOfflineEditStartedAt = Date.now();
+  await context.setOffline(true);
+  await page.waitForFunction(() => navigator.onLine === false, null, { timeout: 10000 });
+  const offlineEditResult = await page.evaluate(({ ownerB, topicId }) => {
+    const owner = localStorage.getItem('nexus.cloud.last-user-id');
+    if (owner !== ownerB) throw new Error('The offline edit is not owned by Account B.');
+    const state = JSON.parse(localStorage.getItem('recall.study.tracker.v1') || '{}');
+    const featureState = JSON.parse(localStorage.getItem('recall.study.features.v1') || '{}');
+    if (!Array.isArray(state.topics)) throw new Error('Account B tracker workspace is unavailable.');
+    state.topics.push({
+      id: topicId,
+      name: 'Account B offline reconnect regression',
+      subjectId: state.subjects?.[0]?.id || 'subject-general',
+      notes: 'Created offline; must be acknowledged after reconnect',
+      custom: true,
+      createdAt: '2026-11-22',
+      lastReviewed: '',
+      lastRating: null,
+      dueDate: '',
+      intervalDays: 0,
+      reviewCount: 0,
+      streak: 0,
+      lapses: 0,
+      archived: false
+    });
+    if (!window.NexusCloudSync || typeof window.NexusCloudSync.recordLocalSave !== 'function') {
+      throw new Error('The real account-bound local-save queue is unavailable.');
+    }
+    window.NexusCloudSync.recordLocalSave({ state, featureState });
+    return {
+      owner,
+      queued: !!window.NexusOfflineSyncQueue?.hasPending(localStorage, ownerB),
+      topicCount: state.topics.length
+    };
+  }, { ownerB, topicId: accountBOfflineEditId });
+  assert.equal(offlineEditResult.owner, ownerB,
+    'the offline edit must remain associated with Account B');
+  assert.equal(offlineEditResult.queued, true,
+    'Account B offline edits must be durably queued before reconnect');
+  await context.setOffline(false);
+  await page.waitForFunction(() => navigator.onLine === true, null, { timeout: 10000 });
+  await waitForAccountAndStatus(appEmailB, ownerB, 'Synced', 90000);
+  await page.waitForFunction(owner => {
+    try {
+      return !window.NexusOfflineSyncQueue.hasPending(localStorage, owner);
+    } catch (_) {
+      return false;
+    }
+  }, ownerB, { timeout: 90000 });
+  const accountBOfflineSyncMs = Date.now() - accountBOfflineEditStartedAt;
+  const accountBOfflineRow = await readSnapshotRow(clientB, ownerB);
+  const accountBOfflineVerified = accountBOfflineRow?.payload?.__nexusStorage === 'chunked-v1'
+    ? await chunkStorage.readSnapshot(clientB, ownerB, accountBOfflineRow.payload)
+    : accountBOfflineRow?.payload;
+  assert.ok(accountBOfflineVerified?.state?.topics?.some(topic => topic.id === accountBOfflineEditId),
+    'Account B offline edit must be present in the verified cloud snapshot after reconnect');
+
   const accountAReturnStartedAt = Date.now();
   const accountAReturnStartedIso = new Date(accountAReturnStartedAt).toISOString();
   const onlineAtAccountReturn = await page.evaluate(() => navigator.onLine === true);
@@ -1255,6 +1315,9 @@ try {
     initialWatchdogOutcome,
     initialRemoteReadMs: initialCloudRead.durationMs,
     accountBReadyMs,
+    accountBOfflineEditId,
+    accountBOfflineSyncMs,
+    accountBOfflineEditVerified: !!accountBOfflineVerified?.state?.topics?.some(topic => topic.id === accountBOfflineEditId),
     returningAccountOwnerVerified: cachedRenderEvent.ownerVerified === true,
     cachedRevealWallMs,
     cachedRevealDurationMs,
@@ -1287,6 +1350,20 @@ try {
     'The returning account must confirm server snapshot mode before using the compatibility snapshot path.');
   assert.equal(returnProjectionRebuild, null,
     'A snapshot-mode account must not rebuild a Delta-only projection during A→B→A handoff.');
+  const accountBRowAfterAReturn = await readSnapshotRow(clientB, ownerB);
+  const accountBPayloadAfterAReturn = accountBRowAfterAReturn?.payload?.__nexusStorage === 'chunked-v1'
+    ? await chunkStorage.readSnapshot(clientB, ownerB, accountBRowAfterAReturn.payload)
+    : accountBRowAfterAReturn?.payload;
+  assert.ok(accountBPayloadAfterAReturn?.state?.topics?.some(topic => topic.id === accountBOfflineEditId),
+    'returning to Account A must not remove Account B’s already verified offline edit');
+  const accountARowAfterReturn = await readSnapshotRow(clientA1Restart, ownerA);
+  const accountAPayloadAfterReturn = await chunkStorage.readSnapshot(clientA1Restart, ownerA, accountARowAfterReturn.payload);
+  assert.equal(accountAPayloadAfterReturn.state.topics.length, INITIAL_TOPICS,
+    'Account A must retain its complete 77,144-topic cloud workspace after Account B’s offline sync');
+  assert.equal(accountAPayloadAfterReturn.state.history.length, INITIAL_HISTORY,
+    'Account A must retain its complete 72,001-row review history after Account B’s offline sync');
+  assert.equal(accountAPayloadAfterReturn.state.topics.some(topic => topic.id === accountBOfflineEditId), false,
+    'Account B’s offline edit must never appear in Account A’s cloud workspace');
   assert.ok(returnCloudChunkRead && returnCloudRead,
     'The returning account must continue into a fresh, complete 26.9 MB cloud read after cached workspace reveal.');
   assert.equal(pageErrors.length, 0,
