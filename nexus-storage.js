@@ -2037,11 +2037,23 @@
           // represented by the verified outbox above. For collections with pending
           // local positions, only in-place updates are safe: inserts, deletes, and
           // moves would invalidate the queued absolute positions and require recovery.
-          const pendingCollections=new Set((pendingRows||[]).map(item=>item.collection));
+          const pendingByCollection=new Map();
+          for(const pending of pendingRows||[]){
+            if(!pendingByCollection.has(pending.collection))pendingByCollection.set(pending.collection,[]);
+            pendingByCollection.get(pending.collection).push(pending);
+          }
           for(let index=0;index<normalized.length;index++){
             const change=normalized[index],existing=existingRows[index];
-            if(ENTITY_META_COLLECTIONS.includes(change.collection)||
-               !pendingCollections.has(change.collection))continue;
+            if(ENTITY_META_COLLECTIONS.includes(change.collection))continue;
+            const pendingInCollection=pendingByCollection.get(change.collection)||[];
+            if(!pendingInCollection.length)continue;
+            // A local append (position:null) is order-independent: it remains at
+            // the end after a remote insert/delete. Other pending positions are
+            // absolute, so same-collection inserts/deletes/moves require recovery.
+            const appendOnly=pendingInCollection.every(item=>
+              item.operation==='put'&&(item.position===null||item.position===undefined)
+            );
+            if(appendOnly)continue;
             if(change.operation==='delete'||!existing||Number(existing.position)!==change.position){
               fail('local_outbox_position_rebase_required');return;
             }
