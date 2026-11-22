@@ -1042,23 +1042,47 @@ try {
     event.payloadUtf8Bytes === TARGET_BYTES &&
     event.chunkCount === 103
   );
-  const initialVerification = initialEvents.slice().reverse().find(event =>
-    event.stage === 'initial-sync-verification' && event.ok === true
-  );
+  // Bind the terminal verification event to the authenticated initialization
+  // started by this sign-in. A first-time large restore may hit the bounded
+  // initialization deadline, leave a truthful local-ready/unverified state, and
+  // then reach Synced through the scheduled Delta retry. Do not mistake that
+  // expected two-stage path for a missing success event or require the first
+  // initialization attempt itself to finish successfully.
   const initialInitializationStarted = initialEvents.slice().reverse().find(event =>
-    event.stage === 'initialize-start' &&
-    (!initialVerification || Date.parse(event.at) <= Date.parse(initialVerification.at))
+    event.stage === 'initialize-start' && event.hasSession === true
   ) || null;
-  const initialWatchdog = initialEvents.slice().reverse().find(event =>
+  const initialVerification = initialEvents.find(event =>
+    event.stage === 'initial-sync-verification' &&
+    initialInitializationStarted &&
+    Date.parse(event.at) >= Date.parse(initialInitializationStarted.at)
+  ) || null;
+  const initialWatchdog = initialEvents.find(event =>
     event.stage === 'initialize-status-watchdog' &&
     initialInitializationStarted &&
     Date.parse(event.at) >= Date.parse(initialInitializationStarted.at) &&
     (!initialVerification || Date.parse(event.at) <= Date.parse(initialVerification.at))
   ) || null;
+  const initialRetryDeltaVerification = initialVerification && initialVerification.ok !== true
+    ? initialEvents.find(event =>
+        event.stage === 'delta-sync-result' &&
+        Date.parse(event.at) > Date.parse(initialVerification.at) &&
+        event.ok === true &&
+        event.skipped !== true
+      ) || null
+    : null;
   assert.ok(initialCloudRead,
     'The real Nexus app must read the exact 26.9 MB / 103-chunk account-A fixture.');
+  assert.ok(initialInitializationStarted,
+    'The real Nexus app must record the authenticated Account A initialization start.');
   assert.ok(initialVerification && Number.isSafeInteger(initialVerification.durationMs),
-    'The real Nexus app must record initial verified sync timing for account A.');
+    'The real Nexus app must record the terminal outcome and duration of Account A initial verification.');
+  assert.ok(
+    initialVerification.ok === true ||
+    (initialVerification.timedOut === true &&
+      initialVerification.ready === true &&
+      !!initialRetryDeltaVerification),
+    'A slow first-time restore may leave loading at its bounded watchdog, but it must subsequently complete a successful authenticated Delta retry before this fixture proceeds.'
+  );
   let initialWatchdogDelayMs = null;
   let initialWatchdogOutcome = 'not-needed';
   if (initialVerification.durationMs >= 30000) {
@@ -1528,7 +1552,10 @@ try {
     initialRestoreToVerifiedMs,
     initialWorkspaceRevealMs,
     initialWorkspaceRevealStatus,
-    initialAccountSyncMs: initialVerification.durationMs,
+    initialInitializationDurationMs: initialVerification.durationMs,
+    initialInitializationVerified: initialVerification.ok === true,
+    initialInitializationTimedOut: initialVerification.timedOut === true,
+    initialRetryDeltaVerified: !!initialRetryDeltaVerification,
     initialAUploadVerificationInterrupted: initialAReadHeld,
     initialAPendingParkedAcrossSwitch: parkedAPending,
     initialWatchdogDelayMs,
