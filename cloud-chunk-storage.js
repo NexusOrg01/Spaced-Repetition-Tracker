@@ -111,48 +111,108 @@ function assertManifest(manifest){
 function attachAbortSignal(query,signal){
  return signal&&query&&typeof query.abortSignal==='function'?query.abortSignal(signal):query;
 }
-async function readSnapshot(client,userId,manifest,signal){
+async function readSnapshot(client,userId,manifest,signal,onMetric){
  if(!client||typeof userId!=='string'||!userId)throw fail('A verified account is required to read cloud workspace chunks.');
  assertManifest(manifest);
+ const timingEnabled=typeof onMetric==='function';
+ const clock=()=>timingEnabled&&root&&root.performance&&typeof root.performance.now==='function'
+  ?root.performance.now():timingEnabled?Date.now():0;
+ const elapsed=startedAt=>timingEnabled?Math.max(0,Math.round(clock()-startedAt)):0;
+ const report=(stage,metrics)=>{if(timingEnabled){try{onMetric(stage,metrics);}catch(_){}}};
  // Keep only one database page in memory. Retaining every row and then joining
  // all chunk_data doubled the large snapshot's string footprint on low-memory devices.
  let serialized='',totalBytes=0,expectedIndex=0;
- for(let offset=0;offset<manifest.chunkCount;offset+=READ_BATCH_SIZE){
-  const pageCount=Math.min(READ_BATCH_SIZE,manifest.chunkCount-offset);
-  let query=client.from(TABLE)
-   .select('chunk_index,chunk_count,chunk_bytes,chunk_data')
-   .eq('user_id',userId)
-   .eq('revision_id',manifest.revisionId)
-   .order('chunk_index',{ascending:true})
-   .range(offset,offset+pageCount-1);
-  query=attachAbortSignal(query,signal);
-  const result=await query;
-  if(result&&result.error)throw result.error;
-  if(!result||!Array.isArray(result.data)||result.data.length!==pageCount){
-   throw fail('The published cloud workspace is incomplete. This device’s local workspace and pending changes have been preserved.');
-  }
-  for(const row of result.data){
-   if(!row||row.chunk_index!==expectedIndex||row.chunk_count!==manifest.chunkCount||
-     typeof row.chunk_data!=='string'){
-    throw fail('A cloud workspace chunk failed its structural integrity check. Local data remains preserved.');
+ let pageReadMs=0,pageCount=0,completedPageCount=0,validPageResponses=0,rowsRead=0;
+ let maxPageDurationMs=0,minPageDurationMs=null,validationMs=0,assemblyMs=0;
+ let hashMs=null,parseMs=null,validationOk=false,assemblyOk=false,hashOk=null,parseOk=null;
+ try{
+  for(let offset=0;offset<manifest.chunkCount;offset+=READ_BATCH_SIZE){
+   const expectedRowsInPage=Math.min(READ_BATCH_SIZE,manifest.chunkCount-offset);
+   let query=client.from(TABLE)
+    .select('chunk_index,chunk_count,chunk_bytes,chunk_data')
+    .eq('user_id',userId)
+    .eq('revision_id',manifest.revisionId)
+    .order('chunk_index',{ascending:true})
+    .range(offset,offset+expectedRowsInPage-1);
+   query=attachAbortSignal(query,signal);
+   pageCount++;
+   const pageStartedAt=clock();
+   let result;
+   try{result=await query;}
+   finally{
+    const pageDurationMs=elapsed(pageStartedAt);
+    pageReadMs+=pageDurationMs;
+    maxPageDurationMs=Math.max(maxPageDurationMs,pageDurationMs);
+    minPageDurationMs=minPageDurationMs===null?pageDurationMs:Math.min(minPageDurationMs,pageDurationMs);
    }
-   const actualBytes=utf8ByteLength(row.chunk_data);
-   if(row.chunk_bytes!==actualBytes)throw fail('A cloud workspace chunk failed its byte-length integrity check. Local data remains preserved.');
-   totalBytes+=actualBytes;
-   serialized+=row.chunk_data;
-   expectedIndex++;
+   completedPageCount++;
+   if(result&&result.error)throw result.error;
+   if(!result||!Array.isArray(result.data)||result.data.length!==expectedRowsInPage){
+    throw fail('The published cloud workspace is incomplete. This device’s local workspace and pending changes have been preserved.');
+   }
+   validPageResponses++;
+   rowsRead+=result.data.length;
+   for(const row of result.data){
+    const validationStartedAt=clock();
+    try{
+     if(!row||row.chunk_index!==expectedIndex||row.chunk_count!==manifest.chunkCount||
+       typeof row.chunk_data!=='string'){
+      throw fail('A cloud workspace chunk failed its structural integrity check. Local data remains preserved.');
+     }
+     const actualBytes=utf8ByteLength(row.chunk_data);
+     if(row.chunk_bytes!==actualBytes)throw fail('A cloud workspace chunk failed its byte-length integrity check. Local data remains preserved.');
+     totalBytes+=actualBytes;
+    }finally{validationMs+=elapsed(validationStartedAt);}
+    const assemblyStartedAt=clock();
+    try{serialized+=row.chunk_data;}
+    finally{assemblyMs+=elapsed(assemblyStartedAt);}
+    expectedIndex++;
+   }
   }
+  const manifestValidationStartedAt=clock();
+  try{
+   if(expectedIndex!==manifest.chunkCount||totalBytes!==manifest.totalBytes){
+    throw fail('The cloud workspace size does not match its published manifest. Local data remains preserved.');
+   }
+   validationOk=true;
+  }finally{validationMs+=elapsed(manifestValidationStartedAt);}
+  assemblyOk=expectedIndex===manifest.chunkCount;
+  const hashStartedAt=clock();
+  try{
+   const digest=await sha256(serialized);
+   hashOk=digest===manifest.sha256;
+   if(!hashOk)throw fail('The cloud workspace failed SHA-256 verification. Local data remains preserved.');
+  }finally{hashMs=elapsed(hashStartedAt);}
+  const parseStartedAt=clock();
+  let payload;
+  try{
+   try{payload=JSON.parse(serialized);}catch(_){throw fail('The verified cloud chunks do not contain valid workspace JSON. Local data remains preserved.');}
+   if(!payload||typeof payload!=='object'||!payload.state||!Array.isArray(payload.state.streams)||
+     !payload.featureState||typeof payload.featureState!=='object'||Array.isArray(payload.featureState)){
+    throw fail('The reconstructed cloud workspace has an unsupported format. Local data remains preserved.');
+   }
+   parseOk=true;
+  }finally{parseMs=elapsed(parseStartedAt);}
+  return payload;
+ }finally{
+  const expectedPageCount=Math.ceil(manifest.chunkCount/READ_BATCH_SIZE);
+  report('cloud-chunk-pages-read',{
+   durationMs:pageReadMs,pageCount,completedPageCount,rowsRead,
+   chunkCount:manifest.chunkCount,payloadUtf8Bytes:totalBytes,
+   maxPageDurationMs,minPageDurationMs,chunkDataIncluded:true,
+   ok:validPageResponses===expectedPageCount
+  });
+  report('cloud-chunk-validation',{
+   durationMs:validationMs,chunkCount:manifest.chunkCount,rowsRead,
+   payloadUtf8Bytes:totalBytes,ok:validationOk
+  });
+  report('cloud-snapshot-assembly',{
+   durationMs:assemblyMs,chunkCount:manifest.chunkCount,rowsRead,
+   payloadUtf8Bytes:totalBytes,ok:assemblyOk
+  });
+  if(hashMs!==null)report('cloud-snapshot-hash',{durationMs:hashMs,ok:hashOk===true});
+  if(parseMs!==null)report('cloud-snapshot-parse',{durationMs:parseMs,ok:parseOk===true});
  }
- if(expectedIndex!==manifest.chunkCount||totalBytes!==manifest.totalBytes)throw fail('The cloud workspace size does not match its published manifest. Local data remains preserved.');
- const digest=await sha256(serialized);
- if(digest!==manifest.sha256)throw fail('The cloud workspace failed SHA-256 verification. Local data remains preserved.');
- let payload;
- try{payload=JSON.parse(serialized);}catch(_){throw fail('The verified cloud chunks do not contain valid workspace JSON. Local data remains preserved.');}
- if(!payload||typeof payload!=='object'||!payload.state||!Array.isArray(payload.state.streams)||
-   !payload.featureState||typeof payload.featureState!=='object'||Array.isArray(payload.featureState)){
-  throw fail('The reconstructed cloud workspace has an unsupported format. Local data remains preserved.');
- }
- return payload;
 }
 async function verifySnapshotChunks(client,userId,manifest,serialized,ranges,signal){
  let expectedIndex=0;

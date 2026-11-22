@@ -113,7 +113,7 @@ function syncDiagSummary(payload){
  return {hasPackInstallIntent:packInstalled.length>0,packInstallMarkerCount:packInstalled.length,packDeletionMarkerCount:packDeleted.length,...counts,hasSettings:!!s.settings};
 }
 const SYNC_DIAG_STAGES=new Set([
- 'auth-event','baseline-restored-from-remote','cloud-chunk-read','cloud-chunk-read-error','cloud-chunk-read-skipped','cloud-read','cloud-read-error','cloud-write-complete','cloud-write-error',
+ 'auth-event','baseline-restored-from-remote','cloud-chunk-read','cloud-chunk-read-error','cloud-chunk-read-skipped','cloud-chunk-pages-read','cloud-chunk-validation','cloud-snapshot-assembly','cloud-snapshot-hash','cloud-snapshot-parse','cloud-manifest-read','cloud-sync-mode-read','cloud-read','cloud-read-error','cloud-write-complete','cloud-write-error',
  'curriculum-install-save-requested','delta-auto-downgrade-result','delta-snapshot-downgrade-result','delta-sync-result','delta-recovery-verification','diagnostics-enabled','entity-projection-rebuild','entity-sync-result','initialize-after-cloud-read',
  'initialize-error','initialize-finished','initialize-local-fallback','initialize-settled','initialize-start','initialize-status-watchdog','initialize-stale-status-recovered',
  'account-handoff-checkpoint-failed','account-handoff-outgoing-checkpoint','online-account-workspace-restored','local-save-queue-error',
@@ -142,18 +142,19 @@ function sanitizeSyncDiagEvent(event){
   for(const key of flags){if(typeof input[key]==='boolean')workspace[key]=input[key];}
   if(Object.keys(workspace).length)safe.workspace=workspace;
  }
- const countFields=['durationMs','chunkCount','payloadUtf8Bytes','cleanupDeletedCount','baseTopicCount','localTopicCount','remoteTopicCount','conflictCount','payloadCharacters','appliedCount','publishedCount','acknowledgedCount','rounds','batchCount','topicCount','workspaceRevision','projectionWorkspaceRevision','snapshotRevision','headRevision','cursorPublishRevision','cursorRemoteHeadRevision','cursorAcknowledgedSequence','recoverySnapshotRevision','recoveryHeadRevision'];
+ const countFields=['durationMs','chunkCount','payloadUtf8Bytes','pageCount','completedPageCount','rowsRead','maxPageDurationMs','minPageDurationMs','cleanupDeletedCount','baseTopicCount','localTopicCount','remoteTopicCount','conflictCount','payloadCharacters','appliedCount','publishedCount','acknowledgedCount','rounds','batchCount','topicCount','workspaceRevision','projectionWorkspaceRevision','snapshotRevision','headRevision','cursorPublishRevision','cursorRemoteHeadRevision','cursorAcknowledgedSequence','recoverySnapshotRevision','recoveryHeadRevision'];
  for(const key of countFields){
   if(!Object.prototype.hasOwnProperty.call(event,key))continue;
   const value=event[key];
   if(value===null)safe[key]=null;
   else if(Number.isSafeInteger(value)&&value>=0)safe[key]=Math.min(value,100000000);
  }
- const booleanFields=['hasPayload','hasUpdatedAt','activeAccountPresent','ownerMatches','chunkStorageUnavailable','cleanupBacklogMayRemain','cleanupFailed','priorQueueRetainedForRecovery','storageEnabled','cooperative','queueRebuilt','ready','remoteHadPayload','remoteHasPayload','hasSession','ownerPresent','ownerVerified','ok','resumed','hasQueue','skipped','fromPending','hasPending','matchesAttempted','readbackHasPayload','hadPending','compactionPending','cleanupPending','projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches','baselineRestored','recovered','cloudVerificationPending','triggerConflict','triggerSnapshotRequired','triggerRequiresSnapshotReconciliation','cursorRequiresPull','projectionReused','timedOut','same'];
+ const booleanFields=['hasPayload','hasUpdatedAt','chunkDataIncluded','activeAccountPresent','ownerMatches','chunkStorageUnavailable','cleanupBacklogMayRemain','cleanupFailed','priorQueueRetainedForRecovery','storageEnabled','cooperative','queueRebuilt','ready','remoteHadPayload','remoteHasPayload','hasSession','ownerPresent','ownerVerified','ok','resumed','hasQueue','skipped','fromPending','hasPending','matchesAttempted','readbackHasPayload','hadPending','compactionPending','cleanupPending','projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches','baselineRestored','recovered','cloudVerificationPending','triggerConflict','triggerSnapshotRequired','triggerRequiresSnapshotReconciliation','cursorRequiresPull','projectionReused','timedOut','same'];
  for(const key of booleanFields){if(typeof event[key]==='boolean')safe[key]=event[key];}
  const enums={
   watchdogOutcome:['local-ready-unverified','account-verification-delayed','already-terminal'],
   storageMode:['chunked','legacy-schema-compatibility','legacy','empty'],
+  syncMode:['delta','snapshot','unknown'],
   reason:['local-save','curriculum-install','sync','resume-existing-journal','conflict-or-snapshot-required','local-outbox-changed-during-merge','compatibility_snapshot_not_represented_by_delta_projection','entity_projection_unavailable','stale_entity_projection','entity_projection_owner_unavailable','entity_projection_rebuild_failed','staging_delta_gate_closed','staging_recovery_journal_pending','server_snapshot_mode','server_sync_state_missing','post_recovery_delta_sync_failed','local_snapshot_baseline_mismatch','compatibility_snapshot_still_pending','local_workspace_differs_from_verified_snapshot','remote_delta_history_precedes_local_baseline','local_delta_cursor_unavailable','local_delta_cursor_snapshot_baseline_mismatch','local_delta_cursor_generation_mismatch','local_delta_cursor_outside_retention','remote_changes_must_be_applied_first','local_outbox_requires_snapshot','local_outbox_pending','local_outbox_unavailable','local_and_remote_changes_overlap','local_and_remote_changes_overlap_after_partial_publish','invalid_remote_sync_state','unsupported_remote_sync_state','remote_state_changed_during_reconciliation','remote_pull_made_no_progress','local_publish_made_no_progress','delta_sync_round_limit','remote_snapshot_baseline_unverified','remote_read_failed','remote_reconciliation_page_unavailable','remote_reconciliation_made_no_progress','remote_reconciliation_incomplete','remote_reconciliation_group_limit','remote_reconciliation_byte_limit','remote_snapshot_reconstruction_failed','workspace_three_way_merge_unavailable','workspace_three_way_merge_failed','account_or_snapshot_reconciliation_verification_failed','conflict_recovery_commit_failed','delta_snapshot_publication_unverified','local_recovery_revision_unavailable','local_recovery_generation_not_staged','staged_recovery_generation_unavailable','staged_recovery_candidate_digest_mismatch','verified_snapshot_waiting_for_local_recovery_commit','local_recovery_post_commit_verification_failed','queued-base-version-matches-remote-snapshot','verified_local_baseline_matches_remote_manifest','local_entity_outbox_unavailable','local_outbox_sequence_gap','invalid_local_outbox_row','local_outbox_generation_mismatch','local_outbox_reader_unavailable','local_outbox_changed_before_acknowledgement','local_outbox_group_mismatch','invalid_local_outbox_high_watermark','local_publish_unavailable','remote_pull_unavailable','operation_publish_failed','snapshot_compaction_local_outbox_not_empty','workspace-removal-locked','indexeddb-unavailable','owner-mismatch','recovery-locked','manifest-not-ready','stale-workspace-revision','active-generation-roots-invalid','projection-changed-during-readiness-check','other'],
   recoveryStep:['read-journal','prepare-candidate','write-prepared-intent','reuse-active-generation','stage-generation','restage-generation','read-staged-generation','reconstruct-candidate','verify-candidate-digest','verify-existing-snapshot','publish-snapshot','mark-journal-published','commit-local-recovery','verify-active-generation','apply-recovered-workspace','other'],
   progressPhase:['started','completed','failed'],
@@ -470,8 +471,19 @@ async function fetchRemote(userId,knownWrite,signal,localBaselineReuse){
   const {data,error}=await scope.race(query.maybeSingle(),'cloud workspace verification');
   await assertActiveUser(uid,readEpoch);
   const durationMs=Date.now()-startedAt;
- if(error){syncDiag('cloud-read-error',null,{errorCategory:syncDiagErrorCategory(error),durationMs});throw error;}
+ if(error){
+  syncDiag('cloud-manifest-read',null,{durationMs,ok:false,errorCategory:syncDiagErrorCategory(error)});
+  syncDiag('cloud-read-error',null,{errorCategory:syncDiagErrorCategory(error),durationMs});
+  throw error;
+ }
  let remote=data;
+ const remoteManifest=remote&&remote.payload&&remote.payload.__nexusStorage==='chunked-v1'?remote.payload:null;
+ syncDiag('cloud-manifest-read',null,{
+  durationMs,ok:true,hasPayload:!!(remote&&remote.payload),
+  storageMode:remoteManifest?'chunked':remote&&remote.payload?'legacy':'empty',
+  chunkCount:remoteManifest&&Number.isSafeInteger(remoteManifest.chunkCount)?remoteManifest.chunkCount:null,
+  payloadUtf8Bytes:remoteManifest&&Number.isSafeInteger(remoteManifest.totalBytes)?remoteManifest.totalBytes:null
+ });
  if(remote&&remote.payload&&remote.payload.__nexusStorage==='chunked-v1'){
   const chunks=window.NexusCloudChunkStorage;
   if(!chunks||!chunks.isManifest(remote.payload))throw new Error('The cloud workspace uses an unsupported chunked format. Local data and pending changes remain preserved.');
@@ -498,16 +510,20 @@ async function fetchRemote(userId,knownWrite,signal,localBaselineReuse){
     payloadUtf8Bytes:Number.isSafeInteger(manifest.totalBytes)?manifest.totalBytes:null
    });
   }else{
-   try{
    const chunkReadStartedAt=Date.now();
-    const reconstructed=await scope.race(chunks.readSnapshot(client,uid,remote.payload,activeSignal),'cloud chunk reconstruction');
-   syncDiag('cloud-chunk-read',null,{durationMs:Date.now()-chunkReadStartedAt,
-    chunkCount:Number.isSafeInteger(remote.payload.chunkCount)?remote.payload.chunkCount:null,
-    payloadUtf8Bytes:Number.isSafeInteger(remote.payload.totalBytes)?remote.payload.totalBytes:null});
+   try{
+    const metricCallback=SYNC_DIAG_ENABLED?(stage,metrics)=>syncDiag(stage,null,metrics):null;
+    const reconstructed=await scope.race(
+     chunks.readSnapshot(client,uid,remote.payload,activeSignal,metricCallback),
+     'cloud chunk reconstruction');
+    syncDiag('cloud-chunk-read',null,{durationMs:Date.now()-chunkReadStartedAt,ok:true,
+     chunkCount:Number.isSafeInteger(remote.payload.chunkCount)?remote.payload.chunkCount:null,
+     payloadUtf8Bytes:Number.isSafeInteger(remote.payload.totalBytes)?remote.payload.totalBytes:null});
     await assertActiveUser(uid,readEpoch);
     remote={...remote,payload:reconstructed,storageMode:'chunked',chunkManifest:remote.payload};
    }catch(chunkError){
-    syncDiag('cloud-chunk-read-error',null,{errorCategory:syncDiagErrorCategory(chunkError)});
+    syncDiag('cloud-chunk-read-error',null,{durationMs:Date.now()-chunkReadStartedAt,
+     errorCategory:syncDiagErrorCategory(chunkError)});
     throw chunkError;
    }
   }
@@ -518,7 +534,20 @@ async function fetchRemote(userId,knownWrite,signal,localBaselineReuse){
   let syncStateQuery=client.from('nexus_workspace_sync_state')
    .select('mode').eq('user_id',uid);
   syncStateQuery=attachAbortSignal(syncStateQuery,activeSignal);
-  const syncStateRead=await scope.race(syncStateQuery.maybeSingle(),'workspace sync-mode verification');
+  const syncModeStartedAt=Date.now();
+  let syncStateRead;
+  try{
+   syncStateRead=await scope.race(syncStateQuery.maybeSingle(),'workspace sync-mode verification');
+   syncDiag('cloud-sync-mode-read',null,{
+    durationMs:Date.now()-syncModeStartedAt,ok:!(syncStateRead&&syncStateRead.error),
+    syncMode:syncStateRead&&syncStateRead.data&&['delta','snapshot'].includes(syncStateRead.data.mode)
+     ?syncStateRead.data.mode:'unknown'
+   });
+  }catch(syncModeError){
+   syncDiag('cloud-sync-mode-read',null,{durationMs:Date.now()-syncModeStartedAt,
+    ok:false,errorCategory:syncDiagErrorCategory(syncModeError),syncMode:'unknown'});
+   throw syncModeError;
+  }
   await assertActiveUser(uid,readEpoch);
   if(syncStateRead&&syncStateRead.error)throw new Error(
    'Could not verify the chunked workspace sync mode. The downloaded snapshot was not applied: '+
