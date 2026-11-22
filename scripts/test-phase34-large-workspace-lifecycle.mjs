@@ -1059,15 +1059,18 @@ try {
     'the test must hold Account A at its actual remote snapshot verification read');
   const signedInB = await signInAppTestAccount(appEmailB, appPasswordB);
   assert.equal(signedInB.userId, ownerB);
+  const accountBStartedAt = Date.now();
+  await waitForAccountAndStatus(appEmailB, ownerB, 'Synced', 90000);
+  const accountBReadyMs = Date.now() - accountBStartedAt;
+  // Keep A's original remote read held until B has independently reached Synced.
+  // Releasing it now detects a stale completion that would otherwise acknowledge
+  // or overwrite A's queue after its session epoch has been revoked.
   if (releaseInitialARead) releaseInitialARead();
   await page.unroute(initialAReadPattern, holdInitialAUploadRead);
   const parkedAPending = await page.evaluate(ownerA =>
     !!window.NexusOfflineSyncQueue?.hasPending(localStorage, ownerA), ownerA);
   assert.equal(parkedAPending, true,
-    'switching to Account B must park rather than discard Account A pending verification work');
-  const accountBStartedAt = Date.now();
-  await waitForAccountAndStatus(appEmailB, ownerB, 'Synced', 90000);
-  const accountBReadyMs = Date.now() - accountBStartedAt;
+    'switching to Account B must park rather than discard Account A pending verification work, even after B is synced');
 
   // Reproduce the owner's key middle step: Account B edits while offline,
   // reconnects, and must have that edit verified before a rapid return to A.
