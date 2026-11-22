@@ -436,7 +436,7 @@
         const localWorkspace=await getLocalWorkspace(owner);
         const pendingCheck=await validatePendingCompatibilitySnapshot(owner,state.snapshot_updated_at,localWorkspace);
         if(!pendingCheck.ok)return {ok:false,snapshotRequired:true,reason:pendingCheck.reason};
-        const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
+        let cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
         if(!cursorResult||cursorResult.ok!==true){
           return {ok:false,snapshotRequired:!!(cursorResult&&cursorResult.snapshotRequired),
             reason:cursorResult&&cursorResult.reason||'local_delta_cursor_unavailable'};
@@ -455,7 +455,18 @@
           if(!initialized||initialized.ok!==true){
             return {ok:false,snapshotRequired:true,reason:initialized&&initialized.reason||'cursor_initialization_failed'};
           }
-          cursor=initialized.cursor;
+                    // Projection activation can race the initial absent-cursor read. The
+          // initializer binds the cursor to the generation active when its
+          // IndexedDB transaction commits. Refresh the manifest/cursor pair before
+          // comparing generations so an obsolete observation cannot trigger a
+          // needless full snapshot recovery.
+          cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
+          await assertOwner(owner);
+          if(!cursorResult||cursorResult.ok!==true||cursorResult.exists!==true||!cursorResult.cursor){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:cursorResult&&cursorResult.reason||'local_delta_cursor_initialization_race'};
+          }
+          cursor=cursorResult.cursor;
         }else{
           cursor=cursorResult.cursor;
         }
@@ -585,7 +596,7 @@
         const pendingCheck=await validatePendingCompatibilitySnapshot(owner,state.snapshot_updated_at,localWorkspace);
         if(!pendingCheck.ok)return {ok:false,snapshotRequired:true,reason:pendingCheck.reason};
         let pendingOutboxHasChanges=false;
-        const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
+        let cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
         if(!cursorResult||cursorResult.ok!==true){
           return {ok:false,snapshotRequired:!!(cursorResult&&cursorResult.snapshotRequired),
             reason:cursorResult&&cursorResult.reason||'local_delta_cursor_unavailable'};
@@ -604,7 +615,18 @@
           if(!initialized||initialized.ok!==true){
             return {ok:false,snapshotRequired:true,reason:initialized&&initialized.reason||'cursor_initialization_failed'};
           }
-          cursor=initialized.cursor;
+                    // Projection activation can race the initial absent-cursor read. The
+          // initializer binds the cursor to the generation active when its
+          // IndexedDB transaction commits. Refresh the manifest/cursor pair before
+          // comparing generations so an obsolete observation cannot trigger a
+          // needless full snapshot recovery.
+          cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
+          await assertOwner(owner);
+          if(!cursorResult||cursorResult.ok!==true||cursorResult.exists!==true||!cursorResult.cursor){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:cursorResult&&cursorResult.reason||'local_delta_cursor_initialization_race'};
+          }
+          cursor=cursorResult.cursor;
         }else{
           cursor=cursorResult.cursor;
         }
