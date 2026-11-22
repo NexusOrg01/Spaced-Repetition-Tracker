@@ -1,5 +1,7 @@
 # DLA-09 Execution Report — 22 November 2026
 
+**Latest update (23 November 2026):** DLA-09C is now completed against the explicit acceptance criteria in the execution request. The 22 November status table and ledger entry below are historical snapshots; the current DLA-09 status is recorded in Section 8.
+
 **Repository:** `NexusOrg01/Spaced-Repetition-Tracker`  
 **PR:** [#147](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/pull/147)  
 **Branch:** `fix/sync-account-handoff-reliability`  
@@ -227,3 +229,69 @@ The diagnostics privacy suite passed strict event-stage and field allowlisting, 
 - **Merge / production / live changes — NOT AUTHORIZED and NOT PERFORMED.**
 
 **Residual engineering finding:** first-time restore still takes approximately 92 seconds to reach verified sync because of the cold projection backfill. DLA-09B's profiling/attribution task is complete; optimizing that bottleneck is a separate follow-on decision and was not started here.
+
+
+## 8. DLA-09C — Authentication Verification Recovery (23 November 2026)
+
+**Current status: COMPLETED — implementation audited, focused regressions passed, authenticated local integration passed, and disposable test infrastructure was cleaned up.**
+
+- **PR:** #147 — open, draft, unmerged
+- **Branch:** fix/sync-account-handoff-reliability
+- **Starting head observed:** 1fe009f855d84b567f58c18dd84932fc4bac8483
+- **Final code-validation head:** e69eb6b39b8089083f28bd6ed04b09cb417b6d06
+- **Execution change made in this run:** test-only correction in scripts/test-cloud-sync-runtime.mjs; the authentication-recovery implementation was already present on the starting branch head.
+
+### 8.1 Active-ledger reconciliation
+
+The latest ⭐-marked ledger recorded DLA-09A and DLA-09B as COMPLETED and DLA-09C/D/E as NOT STARTED. The A/B completion declarations were retained and checked against the earlier current-head evidence (runs #514 and #522).
+
+The DLA-09C NOT STARTED field was stale relative to the actual branch. Comparing the report's recorded head 2a8b8d6c000703ad95cdf7a2e60aec36a06386f3 with the starting PR head 1fe009f855d84b567f58c18dd84932fc4bac8483 showed 16 intervening commits and changes in cloud-sync.js, scripts/test-cloud-sync-runtime.mjs, workspace-isolation-guard.js, and this report. The current code already contained the DLA-09C recovery implementation and its regression harness. No duplicate implementation was added; this execution audited it, corrected the failing timing assertion, and validated the final code head.
+
+### 8.2 Implementation audit
+
+The existing implementation was checked against the DLA-09C objectives:
+
+- A mismatched/stale auth event sets the authoritative-verification gate, aborts an active upload, and reports Account verification delayed. Other auth events are ignored while that gate is pending; they cannot directly change the active owner.
+- getSession() is performed after the auth callback returns and is bounded by a 15-second verification timeout. Error responses, rejected promises, invalid/missing sessions, and timeouts retain the gate and schedule one 15-second retry.
+- A successful same-owner verification clears the gate and resumes the existing sync coordinator. A verified different owner rotates the session epoch and enters normal owner-scoped initialization. A verified null session follows the signed-out path.
+- Late verification completions are fenced by attempt ID and session epoch, so a result from an outgoing account cannot replace the newly active account.
+- upload(), performUpload(), and schedule() remain closed while ownership is uncertain. The upload path rechecks the session owner/epoch and local OWNER_KEY before cloud writes; account rotation aborts the outgoing initialization and upload scopes and releases their coordinator slots.
+- The workspace isolation guard maps Account verification delayed to a locked/error state, hiding and disabling the previous workspace. Synced is not set merely because an auth event arrived; it follows the verified sync path.
+
+### 8.3 Regression and CI evidence
+
+The cloud-sync runtime regression harness covers same-owner stale refresh events, a confirmed Account B change, getSession() error objects, rejected promises, timeouts, repeated failures followed by eventual success, the 15-second retry timer, stale in-flight verification after rotation, upload/scheduler pause while ownership is uncertain, and the truthful delayed/locked UI state.
+
+The first run on starting head 1fe009 (catalogue run #2048 and local integration run #534) exposed a test-harness timing assertion at scripts/test-cloud-sync-runtime.mjs:2854. The test expected Synced after only 100 ms, although the verified recovery path intentionally reports Sync pending and schedules its upload after 650 ms. This was a premature test expectation, not a false-Synced product defect. The test now waits up to 10 seconds for the actual terminal Synced state. The correction is commit e69eb6b39b8089083f28bd6ed04b09cb417b6d06.
+
+- **Validate curriculum catalogue — run #2049:** PASSED. This included inline JavaScript/source syntax checks, isolated static build, storage and offline-queue suites, backup/restore safety, cloud-sync runtime, workspace-isolation guard, data-safety wiring, account-deletion checks, security-header validation, core regression, service-worker, and undo lifecycle tests. [Workflow run #2049](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45061632755)
+- **Phase 3.4 local authenticated two-client integration — run #535:** PASSED on the final code-validation head. The real authenticated A1/A2/B Chromium protocol passed. The 26.9 MB / 103-chunk / 77,144-topic / 72,001-history lifecycle then passed all 27 assertions, including A→B→A owner isolation, offline edit preservation, stale-device recovery, and large deletion/compaction. [Workflow run #535](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45061632714)
+- **Large-workspace timing in run #535:** first sign-in reached verified sync in 88.001 s; the workspace became visible in 1.133 s and remained truthfully local-ready-unverified after the 30-second watchdog until verification completed. Account B became ready in 1.315 s and its offline edit verified in 1.794 s. Returning A's cached reveal took 2.016 s and verified return sync took 21.485 s, within the 30-second reveal and 60-second verification targets.
+- **Data-integrity result:** 12,032 topics and 12,541 subject-owned history rows were deleted in 13 groups. Final reconstructed state retained 53,080 unrelated topics and 59,460 unrelated history rows. The lifecycle reported one expected conflict, five cleanup calls, and 27 passing assertions.
+- **Disposable-environment cleanup:** PASSED. Temporary Auth users, allowlist/downgrade receipts and Delta rows were removed; RPC grants were revoked; the local database was verified clean; and the local Supabase containers were stopped.
+
+### 8.4 Preview, PR and safety
+
+- **Netlify PR preview:** https://deploy-preview-147--nexussrt.netlify.app — current-head status SUCCESS.
+- **Vercel:** current-head status SUCCESS.
+- PR #147 remains open, draft and unmerged.
+- No new PR was created. No merge, production deployment/promotion, production Supabase query/write, production schema/policy/configuration change, live-user data operation, or live Nexus change was performed. All authenticated backend integration used disposable local Supabase and temporary synthetic accounts.
+
+### 8.5 Remaining qualification and scope boundary
+
+- The getSession() failure/timeout/repeated-retry path is deterministically exercised by the runtime regression harness; the local Supabase/Chromium run verifies real normal authentication and account transitions, but does not simulate an outage of the hosted Supabase Auth service.
+- The first-time cold restore remains materially slower than a returning-account handoff (88.001 s to verified sync in run #535). Its 30-second watchdog is truthful and the workspace was revealed locally in 1.133 s; optimizing the cold projection/restore interval remains a separate performance task, not a DLA-09C blocker.
+- The uploaded Project roadmap file was present in the conversation file listing, but Files read failed internally and Files materialization explicitly reported that the Project file has no authorized raw-byte materialization path. This execution therefore followed the detailed DLA-09C acceptance criteria in the execution request and the available prior ledger/report; any additional source-only directions could not be independently inspected.
+- DLA-09D and DLA-09E remain NOT STARTED and were not opened by this execution.
+
+### 8.6 Updated active ledger
+
+| Codename | Current status | Evidence |
+|---|---|---|
+| DLA-09A | **COMPLETED** | Prior evidence runs #514 and #522 retained; current run #535 revalidated the authenticated large-workspace lifecycle |
+| DLA-09B | **COMPLETED** | Run #522 profiling retained; run #535 confirms current large-workspace A→B→A timing and integrity |
+| DLA-09C | **COMPLETED** | Runtime recovery regressions and full validation run #2049 passed; authenticated local integration run #535 and cleanup passed |
+| DLA-09D | **NOT STARTED** | Explicitly out of scope for this execution |
+| DLA-09E | **NOT STARTED** | Explicitly out of scope for this execution |
+
+**Merge / production / live changes remain NOT AUTHORIZED and NOT PERFORMED.**
