@@ -1960,7 +1960,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    const recoveryStartedAt=Date.now();
    const resumed=await makeClient.publishConflictRecovery(ownerId,{
     signal,maxGroups:100,maxBytes:8*1048576,
-    onProgress:SYNC_DIAG_ENABLED?progress=>syncDiag('snapshot-recovery-progress',null,progress):null
+    onProgress:progress=>{if(typeof syncDiag==='function')syncDiag('snapshot-recovery-progress',null,progress);}
    });
    if(typeof syncDiag==='function')syncDiag('snapshot-recovery-complete',null,{
     durationMs:Math.max(0,Date.now()-recoveryStartedAt),
@@ -2040,7 +2040,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   const recoveryStartedAt=Date.now();
   const recovered=await makeClient.publishConflictRecovery(ownerId,{
    signal,maxGroups:100,maxBytes:8*1048576,
-   onProgress:SYNC_DIAG_ENABLED?progress=>syncDiag('snapshot-recovery-progress',null,progress):null
+   onProgress:progress=>{if(typeof syncDiag==='function')syncDiag('snapshot-recovery-progress',null,progress);}
   });
   if(typeof syncDiag==='function')syncDiag('snapshot-recovery-complete',null,{
    durationMs:Math.max(0,Date.now()-recoveryStartedAt),
