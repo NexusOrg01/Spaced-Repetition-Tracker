@@ -1991,10 +1991,12 @@
         const values={manifest:null,workspace:null,cursor:null,sequence:null};
         let coreRemaining=4,started=false;
         const fail=(reason)=>set({ok:false,snapshotRequired:true,reason});
-        const applyRows=existingRows=>{
+        const applyRows=(existingRows,pendingRows)=>{
           const manifest=values.manifest,row=values.workspace,cursor=values.cursor;
           const workspaceRevision=row&&Number.isSafeInteger(Number(row.workspaceRevision))
             ?Number(row.workspaceRevision):(row&&Number.isSafeInteger(Number(row.revision))?Number(row.revision):null);
+          const cursorWorkspaceRevision=Number(cursor&&cursor.workspaceRevision);
+          const pendingCount=Array.isArray(pendingRows)?pendingRows.length:0;
           if(entityRemovalOwners.has(owner)||!enabled||committedOwnerId!==owner){
             fail('active_entity_owner_changed');return;
           }
@@ -2006,7 +2008,8 @@
           }
           if(!cursor||cursor.key!==cursorKey||cursor.ownerId!==owner||
              cursor.protocolVersion!==1||cursor.generation!==manifest.activeGeneration||
-             Number(cursor.workspaceRevision)!==workspaceRevision||
+             !Number.isSafeInteger(cursorWorkspaceRevision)||cursorWorkspaceRevision>workspaceRevision||
+             (pendingCount===0&&cursorWorkspaceRevision!==workspaceRevision)||
              !Number.isSafeInteger(Number(cursor.publishRevision))||
              !Number.isSafeInteger(Number(cursor.acknowledgedSequence))||
              !Number.isSafeInteger(Number(cursor.remoteHeadRevision))||
@@ -2029,6 +2032,19 @@
           }
           if(!Array.isArray(existingRows)||existingRows.length!==normalized.length){
             fail('remote_entity_rows_unavailable');return;
+          }
+          // A lagging cursor is safe only while every intervening local change is
+          // represented by the verified outbox above. For collections with pending
+          // local positions, only in-place updates are safe: inserts, deletes, and
+          // moves would invalidate the queued absolute positions and require recovery.
+          const pendingCollections=new Set((pendingRows||[]).map(item=>item.collection));
+          for(let index=0;index<normalized.length;index++){
+            const change=normalized[index],existing=existingRows[index];
+            if(ENTITY_META_COLLECTIONS.includes(change.collection)||
+               !pendingCollections.has(change.collection))continue;
+            if(change.operation==='delete'||!existing||Number(existing.position)!==change.position){
+              fail('local_outbox_position_rebase_required');return;
+            }
           }
           const rowCount=Number(manifest.rowCount);
           if(!Number.isSafeInteger(rowCount)||rowCount<2){
@@ -2081,7 +2097,7 @@
             counts[collection]=current+delta;
           }
           const nextCursor={
-            ...cursor,publishRevision:revisionValue,
+            ...cursor,workspaceRevision,publishRevision:revisionValue,
             remoteHeadRevision:Math.max(Number(cursor.remoteHeadRevision),remoteHead),
             requiresPull:Math.max(Number(cursor.remoteHeadRevision),remoteHead)>revisionValue,
             lastAppliedOperationId:operationId,updatedAt:timestamp()
@@ -2105,7 +2121,8 @@
              Number(manifest.sourceWorkspaceRevision)!==workspaceRevision||
              !cursor||cursor.key!==cursorKey||cursor.ownerId!==owner||
              cursor.protocolVersion!==1||cursor.generation!==manifest.activeGeneration||
-             Number(cursor.workspaceRevision)!==workspaceRevision||
+             !Number.isSafeInteger(Number(cursor.workspaceRevision))||
+             Number(cursor.workspaceRevision)>workspaceRevision||
              !Number.isSafeInteger(Number(cursor.acknowledgedSequence))||
              Number(cursor.acknowledgedSequence)<0){
             fail('entity_projection_or_cursor_unavailable');return;
@@ -2158,7 +2175,7 @@
               request.onsuccess=()=>{
                 existingRows[index]=request.result||null;
                 remaining--;
-                if(remaining===0)applyRows(existingRows);
+                if(remaining===0)applyRows(existingRows,pendingRows);
               };
             });
           };
