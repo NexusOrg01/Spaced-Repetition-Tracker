@@ -1,13 +1,13 @@
-# DLA-09 Execution Report — 22 November 2026
+# DLA-09 Execution Report — 22–23 November 2026
 
-**Latest update (23 November 2026):** DLA-09C and DLA-09D are now complete on PR #147. Section 8 records DLA-09C; Section 9 records DLA-09D. The original 22 November status table and the earlier DLA-09D NOT STARTED statement in Section 8.5 are historical snapshots and are superseded by Section 9.
+**Latest update (23 November 2026):** DLA-09C and DLA-09D are verified complete; DLA-09E is substantially complete after the current-head lifecycle matrix in Section 10. The original 22 November status table and earlier NOT STARTED statements in Sections 1, 8.5, and 9 are historical snapshots superseded by the later addenda.
 
 **Repository:** `NexusOrg01/Spaced-Repetition-Tracker`  
 **PR:** [#147](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/pull/147)  
 **Branch:** `fix/sync-account-handoff-reliability`  
-**Code head validated:** `2a8b8d6c000703ad95cdf7a2e60aec36a06386f3`  
+**Current PR head:** `741236d7b5a12ecd54db195c3392e59dc0c47c45` (DLA-09E test-only commit; DLA-09C/D application implementation unchanged)  
 **PR state at audit:** open, draft, unmerged  
-**Scope:** DLA-09A evidence reconciliation and DLA-09B cold/warm restore profiling only. DLA-09C/D/E were not started.
+**Original scope:** Sections 1–7 record DLA-09A evidence reconciliation and DLA-09B cold/warm restore profiling. Later append-only Sections 8–10 record DLA-09C/D implementation and DLA-09E lifecycle acceptance.
 
 > This is an append-only execution addendum to the DLA-09 roadmap. It does not alter the original task definitions. No application implementation change was made for DLA-09A/B during this evidence pass; the latest code-head commit only corrected the browser test's diagnostic-clock anchoring for warm-event selection.
 
@@ -17,9 +17,9 @@
 |---|---|---|
 | DLA-09A | **COMPLETED — evidence reconciled on current head** | Historical authenticated run #514 remains valid for its recorded commit. The original timing gap was remeasured on the current PR head in run #522, so the evidence-only current-head gap is closed. |
 | DLA-09B | **COMPLETED — current-head profiling passed** | Run #522 measured the controlled cold and warm restore paths, attributed the previously unaccounted cold interval to entity-projection rebuild, and passed all authenticated/lifecycle assertions. |
-| DLA-09C | NOT STARTED | Out of scope for this execution. |
-| DLA-09D | NOT STARTED | Out of scope for this execution. |
-| DLA-09E | NOT STARTED | Out of scope for this execution. |
+| DLA-09C | **COMPLETED** | Section 8 authentication-verification recovery implementation and current-head regression evidence. |
+| DLA-09D | **COMPLETED** | Section 9 revision-fenced comparison reuse and same-fixture before/after evidence. |
+| DLA-09E | **SUBSTANTIALLY COMPLETE — performance qualification remains** | Section 10 current-head lifecycle matrix passed; first-time cold restore remains above 60 seconds. |
 
 ## 2. DLA-09A — evidence reconciliation
 
@@ -365,7 +365,7 @@ Both run #522 and run #539 use the same controlled fixture and reported environm
 - The same-owner warm-refresh comparison target is complete. A separate app-level A→B→offline-B→online-B→A lifecycle sample in run #539 still records three deep comparisons totaling 12.943 s. That distinct cross-account handoff path nevertheless revealed the returning workspace in 1.927 s and reached verified `Synced` in 21.595 s (21.638 s wall time). It was not the same-owner warm-refresh profile optimized and measured above. If the DLA-09D source roadmap intended to include that separate handoff comparison chain as well, it needs a separately scoped follow-up.
 - First-time cold restore in run #539 took 84.494 s to verified sync, including a 76.620 s projection rebuild. The watchdog exposed the owner-verified local workspace and did not claim premature `Synced`; cold projection construction is a separate performance qualification, not evidence that the warm comparison optimization failed.
 - The uploaded Project roadmap file could not be read because the Project file had no authorized raw-byte materialization path, as recorded in Section 8.5. This addendum therefore records the explicit DLA-09D criteria in the execution request and the available PR code/CI evidence; no additional source-only requirement is assumed.
-- DLA-09E remains **NOT STARTED**.
+- At the time Section 9 was written, DLA-09E remained **NOT STARTED**. Section 10 supersedes that historical status.
 
 ### 9.7 Updated DLA-09 ledger
 
@@ -375,6 +375,96 @@ Both run #522 and run #539 use the same controlled fixture and reported environm
 | DLA-09B | **COMPLETED** | Three-pass profiling run #522; same-fixture current profile rerun in #539 |
 | DLA-09C | **COMPLETED** | Section 8 acceptance record; current-head cloud-sync runtime and authenticated integration revalidation passed |
 | DLA-09D | **COMPLETED** | Revision-fenced comparison reuse, concurrent-edit and rotation/cancellation regressions, atomic marker tests, and 33.9% reduction against the task-specified baseline |
-| DLA-09E | **NOT STARTED** | Not requested or opened by this execution |
+| DLA-09E | **SUBSTANTIALLY COMPLETE — performance qualification remains** | Section 10 current-head lifecycle matrix passed; first-time cold restore remains above 60 seconds |
 
 **No merge, production deployment/promotion, production Supabase operation, production schema/policy/configuration change, or live Nexus action was performed.**
+
+
+## 10. DLA-09E — final lifecycle acceptance (23 November 2026)
+
+**Status: SUBSTANTIALLY COMPLETE — all requested lifecycle scenarios were exercised on the current PR head, including a new real-browser navigation-during-sync regression. Returning-account cached reveal and verified sync met the 30/60-second targets. First-time cold restore remains above 60 seconds and is retained as an explicit performance qualification rather than being marked fully closed.**
+
+### 10.1 Current branch and validation heads
+
+- Repository: `NexusOrg01/Spaced-Repetition-Tracker`
+- PR: [#147](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/pull/147) — open, draft, unmerged.
+- Branch: `fix/sync-account-handoff-reliability`
+- Current PR head at this report update: `741236d7b5a12ecd54db195c3392e59dc0c47c45`.
+- DLA-09E test-only commit: [`741236d`](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/commit/741236d7b5a12ecd54db195c3392e59dc0c47c45), modifying only `scripts/test-phase34-large-workspace-lifecycle.mjs`.
+- [Validation run #2055](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45095150029): **PASS** on the test commit. Build, security, storage, backup/restore, cloud-sync runtime, comparison cancellation, navigation-performance, and broad regression checks passed.
+- [Authenticated local Supabase + Chromium run #541](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45095150137): **PASS** on the test commit. Twenty authenticated local integration assertions and 28 large-workspace two-device lifecycle assertions passed. The cleanup step verified disposable users, Delta rows, allowlist/downgrade receipts and temporary RPC grants were removed/revoked, and the local database was clean.
+- Netlify Deploy Preview: **success** — https://deploy-preview-147--nexussrt.netlify.app
+- Vercel status check: **success**.
+- F-Droid/Android workflow was skipped; Android/APK work remains outside this Web/PWA task.
+
+### 10.2 Controlled fixture and environment
+
+- Fixture: `nexus-large-workspace-synthetic-v1`.
+- Payload: **26,900,000 UTF-8 bytes**, **103 chunks**, **77,144 topics**, **72,001 review-history rows**.
+- Environment: online Linux x64 GitHub Actions runner; Chromium `141.0.7390.37`; 4 reported hardware threads; 8 GB reported device memory.
+- Backend: disposable local Supabase only; authenticated test users were created for the run and deleted in the cleanup step.
+- The current-head lifecycle run reported `sameFixtureAndEnvironment=true` for its cold and warm measurements.
+
+### 10.3 Current-head measurements
+
+| Scenario | Run #541 result | Acceptance |
+|---|---:|---|
+| First-time cold restore to verified | **107.736 s** total; sign-in to verified 109.250 s | Safe local-first recovery; exceeds 60 s if the verified-sync target is applied to cold restore |
+| First owner-verified workspace reveal | **1.393 s** | Pass; workspace was available before cloud verification |
+| Cold-restore watchdog | **30.001 s**, `local-ready-unverified` | Pass; no premature `Synced` |
+| Cold entity-projection rebuild | **99.007 s** | Residual performance bottleneck |
+| Same-owner warm refresh to verified | **15.738 s** | Pass |
+| Same-owner warm cached reveal | **3.751 s** | Pass; no 103-chunk re-download |
+| Same-owner deep-comparison time | **8.839 s**, two deep passes plus one revision-fenced reuse; one pass saved | Pass; **32.5%** below the 13.094 s task-specified three-pass baseline |
+| Account B ready after handoff | **1.659 s** | Pass |
+| Account B offline edit and reconnect | **2.050 s** to verified sync; edit confirmed in cloud | Pass |
+| Returning Account A cached reveal | **2.244 s** wall time; 21 ms render operation | Pass; ≤30 s |
+| Returning Account A verified sync | **24.783 s**; 24.846 s wall time | Pass; ≤60 s |
+
+The returning A→B→A path recorded three cross-account deep comparisons of **4.315 s + 4.355 s + 4.369 s = 13.039 s**. This distinct handoff path still uses three deep passes; the DLA-09D reuse optimization applies to the same-owner warm-refresh path. The complete A return nevertheless reached verified `Synced` in 24.783 seconds.
+
+A prior same-fixture run #540 recorded a slower first-time restore of 133.379 seconds, including a 121.048-second projection rebuild and a 120-second initialization timeout followed by successful retry. Current-head run #541 completed first-time verification in 109.215 seconds without that 120-second timeout. The cold path therefore varies materially, but both runs preserved the bounded watchdog state and avoided false `Synced`.
+
+### 10.4 Lifecycle scenario matrix
+
+| Required scenario | Mechanical evidence | Result |
+|---|---|---|
+| First sign-in / cold restore | Run #541 measured 1.393 s owner-verified reveal, 30.001 s watchdog, and eventual verification | Pass with >60 s performance qualification |
+| Returning-account cached reveal and verification | Run #541: 2.244 s reveal; 24.783 s verified sync | Pass |
+| A→B→A handoff | Run #541 retained A's pending work while B was active; A's queue cleared only after A's returning cloud state was verified | Pass |
+| Offline edits and reconnect | B's offline topic edit was durably queued, reconnected, and confirmed in B's cloud snapshot in 2.050 s | Pass |
+| Auth lookup failure / retry / recovery | Run #2055 cloud-sync runtime suite exercises getSession error responses, rejected promises, repeated 15-second retries, timeout, ignored late response, and eventual same-owner recovery | Pass in deterministic regression harness |
+| Interrupted comparison / cancellation | Run #2055 cooperative comparison cancellation passed after 1,023 inspected records; run #541 also held A's remote read across account rotation | Pass |
+| Pending local changes during rotation | Run #541 parked A's pending snapshot/outbox during B and preserved B's independent offline edit | Pass |
+| Remote conflict / retry | Run #541's 20 authenticated assertions included concurrent CAS publication with one winner and one revision conflict; offline recovery and three-way merge preserved independent edits | Pass |
+| Failed verification / recovery | Run #2055 runtime tests verified delayed/error state, closed cloud-write gate, 15-second retry, eventual recovery, and no premature `Synced` | Pass in deterministic regression harness |
+| Navigation / rendering during sync | New run #541 browser assertion held Account A's authenticated remote read and navigated Home → Study Hub → Library in **296 ms**; 100 topic cards rendered, owner remained verified, and status stayed `Syncing...` | Pass |
+
+The new browser assertion is recorded as `DLA-09E_NAVIGATION_DURING_SYNC` in run #541. It verifies that the workspace remains navigable while remote verification is deliberately blocked, without exposing another account or claiming sync completion.
+
+### 10.5 Safety and cleanup
+
+- No cross-account workspace exposure, stale-session write, lost pending local edit, premature `Synced`, or manifest corruption was observed in the current-head lifecycle run.
+- Account A's pending snapshot/outbox was not acknowledged or discarded during B's session; it was cleared only after A returned and cloud verification succeeded.
+- Account B's offline edit remained in B's cloud snapshot after returning to A.
+- Concurrent CAS conflict handling preserved the losing device's local edit and journal entry; stale-device reconstruction recovered the compacted snapshot plus contiguous tail groups.
+- Run #541 cleanup passed: disposable users and Delta/receipt/allowlist rows removed, RPC grants revoked, and the disposable local Supabase database verified clean.
+
+### 10.6 Remaining qualification
+
+1. **First-time cold restore exceeds 60 seconds.** Current-head run #541 took 107.736 seconds to verified restore, with a 99.007-second entity-projection rebuild. The owner-verified local workspace appeared in 1.393 seconds; the 30-second watchdog reported `local-ready-unverified`; final verification later succeeded. If the 60-second verified-sync target is intended to apply to first-time cold restore as well as returning accounts, that target remains open.
+2. **Cross-account A→B→A still performs three deep comparisons.** It used 13.039 seconds of comparison time but remained within the 60-second end-to-end verified-sync target. The measured DLA-09D one-pass reuse is the same-owner warm-refresh path.
+3. **Auth failure/retry coverage is deterministic rather than a deliberately induced hosted Supabase outage.** The local authenticated integration exercises real account handoff and sync; the getSession timeout/rejection/retry sequence is covered by the current-head runtime regression harness.
+4. The uploaded Project roadmap still has no authorized raw-byte materialization path. This section records the explicit acceptance criteria supplied in the execution request and the available PR code/CI evidence; no unseen source-only requirement is assumed.
+
+### 10.7 Updated DLA-09 completion ledger
+
+| Codename | Current status | Evidence |
+|---|---|---|
+| DLA-09A | **COMPLETED** | Historical evidence retained; current-head restore profile reconciled |
+| DLA-09B | **COMPLETED** | Controlled cold/warm restore profiling; Section 10 current-head measurements |
+| DLA-09C | **COMPLETED** | Section 8 implementation and current-head authentication recovery/isolation regressions |
+| DLA-09D | **COMPLETED** | Section 9 revision-fenced comparison reuse, concurrent-edit and cancellation tests, same-fixture before/after evidence |
+| DLA-09E | **SUBSTANTIALLY COMPLETE — cold-restore performance qualification remains** | Run #541 passed 28 lifecycle assertions; all requested lifecycle scenarios covered; first-time cold restore remains above 60 s |
+
+**Safety boundary:** only PR #147's existing branch and its Deploy Preview were updated. No production/live Nexus deployment, production Supabase configuration/schema/policy/data change, production account operation, promotion, or merge was performed. PR #147 remains open, draft, and unmerged.
