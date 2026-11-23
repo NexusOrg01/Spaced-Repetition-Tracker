@@ -1535,6 +1535,24 @@ try {
   assert.equal(appInitialCursor.remoteHeadRevision, Number(stateBeforeRemoteRead.head_revision));
   assert.equal(appInitialCursor.requiresPull, false);
 
+  // Do not let an older pending save or outbox group satisfy this regression.
+  // The test must start with a clean, already-verified Account A baseline.
+  await page.waitForFunction(async ({ ownerId, expectedHead }) => {
+    const queue = window.NexusOfflineSyncQueue;
+    const storage = window.NexusStorage;
+    if (!queue || !storage || queue.hasPending(localStorage, ownerId)) return false;
+    const cursorResult = await storage.readWorkspaceEntityDeltaCursor(ownerId);
+    if (!cursorResult || cursorResult.ok !== true || !cursorResult.cursor) return false;
+    if (Number(cursorResult.cursor.publishRevision) !== expectedHead ||
+        Number(cursorResult.cursor.remoteHeadRevision) !== expectedHead ||
+        cursorResult.cursor.requiresPull === true) return false;
+    const outbox = await storage.readWorkspaceEntityOutboxGroups(
+      ownerId, Number(cursorResult.cursor.acknowledgedSequence), 1000, 1048576
+    );
+    return !!outbox && outbox.ownerId === ownerId && Array.isArray(outbox.groups) &&
+      outbox.groups.length === 0 && outbox.hasMore !== true && outbox.snapshotRequired !== true;
+  }, { ownerId: ownerA, expectedHead: Number(stateBeforeRemoteRead.head_revision) }, { timeout: 90000 });
+
   // Locate the topic by its generated ID, not by array position: the
   // snapshot decoder is free to reconstruct topic arrays in a different order,
   // and the exact-size padding is attached to one special topic.
@@ -1564,6 +1582,25 @@ try {
   assert.equal(remoteReadOperation.ok, true,
     'The isolated remote Delta operation must publish successfully before the browser handoff race.');
   assert.equal(Number(remoteReadOperation.revision), Number(stateBeforeRemoteRead.head_revision) + 1);
+  const cursorAfterRemoteTrigger = await page.evaluate(async ownerId => {
+    const result = await window.NexusStorage.readWorkspaceEntityDeltaCursor(ownerId);
+    if (!result || result.ok !== true || !result.cursor) {
+      throw new Error('The remote-read trigger unexpectedly removed Account A\'s verified cursor.');
+    }
+    return {
+      publishRevision: Number(result.cursor.publishRevision),
+      remoteHeadRevision: Number(result.cursor.remoteHeadRevision),
+      requiresPull: result.cursor.requiresPull === true
+    };
+  }, ownerA);
+  assert.equal(cursorAfterRemoteTrigger.publishRevision, appInitialCursor.publishRevision,
+    'the independent remote operation must remain unread until the held authenticated read begins');
+  console.log('DLA09E_REMOTE_TRIGGER_CURSOR_PROOF=' + JSON.stringify({
+    ownerId: ownerA,
+    initialPublishRevision: appInitialCursor.publishRevision,
+    cursorAfterRemoteTrigger,
+    serverHeadRevision: Number(remoteReadOperation.revision)
+  }));
 
   // Topic cards are rendered lazily only while Library is the active view.
   // Open it explicitly and wait for the normal edit controls before driving
@@ -1573,20 +1610,6 @@ try {
     !!document.querySelector('#topicGrid button[data-action="edit-topic"]'),
   null, { timeout: 30000 });
 
-  // Do not let an older pending save or outbox group satisfy this regression.
-  // The test must start with a clean, already-verified Account A baseline.
-  await page.waitForFunction(async ownerId => {
-    const queue = window.NexusOfflineSyncQueue;
-    const storage = window.NexusStorage;
-    if (!queue || !storage || queue.hasPending(localStorage, ownerId)) return false;
-    const cursorResult = await storage.readWorkspaceEntityDeltaCursor(ownerId);
-    if (!cursorResult || cursorResult.ok !== true || !cursorResult.cursor) return false;
-    const outbox = await storage.readWorkspaceEntityOutboxGroups(
-      ownerId, Number(cursorResult.cursor.acknowledgedSequence), 1000, 1048576
-    );
-    return !!outbox && outbox.ownerId === ownerId && Array.isArray(outbox.groups) &&
-      outbox.groups.length === 0 && outbox.hasMore !== true && outbox.snapshotRequired !== true;
-  }, ownerA, { timeout: 90000 });
 
   const initialAPendingResult = await page.evaluate(async ({ ownerA, remoteReadTopicId }) => {
     const owner = localStorage.getItem('nexus.cloud.last-user-id');
