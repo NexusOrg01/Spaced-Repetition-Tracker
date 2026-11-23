@@ -2574,7 +2574,7 @@ function makeParkedRecoveryFixture(options={}){
           value:{id:'parked-topic',name:'CHANGED-DURING-READBACK'}}]}];
         outboxDigest='f'.repeat(64);
       }
-      if(readSnapshotCount>1&&options.readbackMode==='missing')return null;
+      if(readSnapshotCount===2&&options.readbackMode==='missing')return null;
       if(readSnapshotCount>1&&options.readbackMode==='missing-edit'){
         return {payload:{...publishedCandidate,state:{...publishedCandidate.state,
           topics:[{id:'parked-topic',name:'original'}]}},updated_at:'snapshot-stamp-2'};
@@ -2595,8 +2595,7 @@ function makeParkedRecoveryFixture(options={}){
       // The authenticated sync-state RPC reads the harness-owned state object;
       // mirror the published revision tuple there before the mandatory read-back.
       Object.assign(h.state,state);
-      if(options.readbackMode==='missing')remoteSnapshot=null;
-      else if(options.readbackMode==='missing-edit')remoteSnapshot={
+      if(options.readbackMode==='missing-edit')remoteSnapshot={
         payload:{...candidate,state:{...candidate.state,topics:[{id:'parked-topic',name:'original'}]}},
         updated_at:'snapshot-stamp-2'
       };
