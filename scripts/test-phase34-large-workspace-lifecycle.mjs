@@ -1498,24 +1498,39 @@ try {
   }));
 
   // Start a same-owner A verification while its large cached workspace is
-  // already visible, then deliberately hold the remote read. Switching to B
-  // must cancel A's work without dropping A's pending snapshot or blocking B.
-  let initialAReadHeld = false;
-  let releaseInitialARead = null;
-  const initialAReadPattern = /\/rest\/v1\/rpc\/nexus_read_entity_operations(?:\?|$)/;
-  const holdInitialAUploadRead = async route => {
+  // already visible. Hold the first authenticated remote-state read, Delta
+  // operation read, or recovery-snapshot publication actually reached by the
+  // cursor-mismatch path. Switching to B must cancel A's work without dropping
+  // A's pending snapshot or blocking B.
+  let initialARecoveryBoundaryHeld = false;
+  let releaseInitialARecoveryBoundary = null;
+  let initialARecoveryBoundaryRpc = null;
+  const initialARecoveryBoundaryPattern =
+    /\/rest\/v1\/rpc\/(?:nexus_get_entity_sync_state|nexus_read_entity_operations|nexus_publish_entity_snapshot)(?:\?|$)/;
+  const holdInitialARecoveryBoundary = async route => {
     const requestUrl = new URL(route.request().url());
-    if (!initialAReadHeld && requestUrl.pathname === '/rest/v1/rpc/nexus_read_entity_operations') {
-      initialAReadHeld = true;
-      await new Promise(resolve => { releaseInitialARead = resolve; });
+    const rpcName = requestUrl.pathname.split('/').pop();
+    if (!initialARecoveryBoundaryHeld && [
+      'nexus_get_entity_sync_state',
+      'nexus_read_entity_operations',
+      'nexus_publish_entity_snapshot'
+    ].includes(rpcName)) {
+      initialARecoveryBoundaryHeld = true;
+      initialARecoveryBoundaryRpc = rpcName;
+      console.log('DLA09E_RECOVERY_BOUNDARY_HELD=' + JSON.stringify({
+        rpc: rpcName,
+        path: requestUrl.pathname
+      }));
+      await new Promise(resolve => { releaseInitialARecoveryBoundary = resolve; });
     }
     try { await route.continue(); } catch (_) {}
   };
-  await page.route(initialAReadPattern, holdInitialAUploadRead);
+  const initialAReadPattern = /\/rest\/v1\/rpc\/nexus_read_entity_operations(?:\?|$)/;
 
   // The initial page load has already verified Account A's current Delta head.
-  // Advance the disposable server by one independent operation so the next real
-  // upload must issue an authenticated nexus_read_entity_operations RPC.
+  // Advance the disposable server by one independent operation. Account A's
+  // verified cursor must remain behind so recovery must read the new remote head
+  // before it can publish a replacement snapshot.
   const appInitialCursor = await page.evaluate(async ownerId => {
     const result = await window.NexusStorage.readWorkspaceEntityDeltaCursor(ownerId);
     if (!result || result.ok !== true || !result.cursor) {
@@ -1552,6 +1567,10 @@ try {
     return !!outbox && outbox.ownerId === ownerId && Array.isArray(outbox.groups) &&
       outbox.groups.length === 0 && outbox.hasMore !== true && outbox.snapshotRequired !== true;
   }, { ownerId: ownerA, expectedHead: Number(stateBeforeRemoteRead.head_revision) }, { timeout: 90000 });
+
+  // Install the hold only after the clean baseline is established. This avoids
+  // parking an unrelated initial-load RPC before the remote trigger is created.
+  await page.route(initialARecoveryBoundaryPattern, holdInitialARecoveryBoundary);
 
   // Locate the topic by its generated ID, not by array position: the
   // snapshot decoder is free to reconstruct topic arrays in a different order,
@@ -1731,19 +1750,25 @@ try {
   await page.waitForFunction(() =>
     String(document.querySelector('#cloudStatus')?.textContent || '').trim() === 'Syncing...',
   null, { timeout: 30000 });
-  for (let i = 0; i < 200 && !initialAReadHeld; i++) await page.waitForTimeout(25);
-  assert.equal(initialAReadHeld, true,
-    'the test must hold Account A at its actual authenticated Delta operation read');
+  for (let i = 0; i < 3600 && !initialARecoveryBoundaryHeld; i++) await page.waitForTimeout(25);
+  assert.equal(initialARecoveryBoundaryHeld, true,
+    'the test must hold Account A at an authenticated recovery read or snapshot-publication boundary');
+  assert.ok([
+    'nexus_get_entity_sync_state',
+    'nexus_read_entity_operations',
+    'nexus_publish_entity_snapshot'
+  ].includes(initialARecoveryBoundaryRpc),
+  'the held Account A boundary must be a recognized remote-state, operation-read, or snapshot-publication RPC');
   const signedInB = await signInAppTestAccount(appEmailB, appPasswordB);
   assert.equal(signedInB.userId, ownerB);
   const accountBStartedAt = Date.now();
   await waitForAccountAndStatus(appEmailB, ownerB, 'Synced', 90000);
   const accountBReadyMs = Date.now() - accountBStartedAt;
-  // Keep A's original remote read held until B has independently reached Synced.
-  // Releasing it now detects a stale completion that would otherwise acknowledge
-  // or overwrite A's queue after its session epoch has been revoked.
-  if (releaseInitialARead) releaseInitialARead();
-  await page.unroute(initialAReadPattern, holdInitialAUploadRead);
+  // Keep A's original recovery boundary held until B has independently reached
+  // Synced. Releasing it now detects a stale completion that would otherwise
+  // acknowledge or overwrite A's queue after its session epoch has been revoked.
+  if (releaseInitialARecoveryBoundary) releaseInitialARecoveryBoundary();
+  await page.unroute(initialARecoveryBoundaryPattern, holdInitialARecoveryBoundary);
   const parkedAPending = await page.evaluate(ownerA =>
     !!window.NexusOfflineSyncQueue?.hasPending(localStorage, ownerA), ownerA);
   assert.equal(parkedAPending, true,
@@ -2373,7 +2398,8 @@ try {
     initialInitializationVerified: initialVerification.ok === true,
     initialInitializationTimedOut: initialVerification.timedOut === true,
     initialRetryDeltaVerified: !!initialRetryDeltaVerification,
-    initialAUploadVerificationInterrupted: initialAReadHeld,
+    initialAUploadVerificationInterrupted: initialARecoveryBoundaryHeld,
+    initialARecoveryBoundaryRpc,
     initialAPendingParkedAcrossSwitch: parkedAPending,
     initialWatchdogDelayMs,
     initialWatchdogOutcome,
