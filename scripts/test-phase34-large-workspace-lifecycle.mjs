@@ -1004,7 +1004,10 @@ try {
       'pendingLocalSequence','pendingLocalChangeCount','retryDelayMs','retryAttempt','delayMs','attempt','snapshotRevision','headRevision',
       'projectionBatchCount','projectionRowsWritten','projectionWriteDurationMs',
       'projectionPruneDurationMs','projectionPruneRowsScanned','projectionPruneRowsRemoved',
-      'projectionOutboxPruneDurationMs','projectionOutboxPruneRowsRemoved'
+      'projectionOutboxPruneDurationMs','projectionOutboxPruneRowsRemoved',
+      'projectionTransactionWaitDurationMs','projectionTransactionCount',
+      'projectionKeyRangeWaitDurationMs','projectionRowGenerationDurationMs',
+      'projectionSerializationDurationMs'
     ];
     const booleanFields = [
       'ok','ready','ownerVerified','timedOut','same','chunkDataIncluded','hasPayload',
@@ -1028,7 +1031,7 @@ try {
       for (const key of booleanFields) {
         if (typeof event[key] === 'boolean') row[key] = event[key];
       }
-      for (const key of ['storageMode','syncMode','projectionRebuildMode','errorCategory','statusAfterWatchdog','recoveryStep','progressPhase']) {
+      for (const key of ['storageMode','syncMode','projectionRebuildMode','projectionSerializationMode','errorCategory','statusAfterWatchdog','recoveryStep','progressPhase']) {
         if (typeof event[key] === 'string') row[key] = event[key];
       }
       const topicCount = event.workspace && event.workspace.topicCount;
@@ -2481,7 +2484,13 @@ try {
       const recentStages = events.slice(-40).map(event => {
         const row = { stage: typeof event.stage === 'string' ? event.stage : 'unknown' };
         for (const key of ['durationMs','pageCount','completedPageCount','rowsRead',
-          'chunkCount','payloadUtf8Bytes','maxPageDurationMs','minPageDurationMs']) {
+          'chunkCount','payloadUtf8Bytes','maxPageDurationMs','minPageDurationMs',
+          'projectionBatchCount','projectionRowsWritten','projectionWriteDurationMs',
+          'projectionPruneDurationMs','projectionPruneRowsScanned','projectionPruneRowsRemoved',
+          'projectionOutboxPruneDurationMs','projectionOutboxPruneRowsRemoved',
+          'projectionTransactionWaitDurationMs','projectionTransactionCount',
+          'projectionKeyRangeWaitDurationMs','projectionRowGenerationDurationMs',
+          'projectionSerializationDurationMs']) {
           if (Number.isSafeInteger(event[key]) && event[key] >= 0) row[key] = event[key];
         }
         for (const key of ['ok','ready','ownerVerified','timedOut','chunkDataIncluded']) {

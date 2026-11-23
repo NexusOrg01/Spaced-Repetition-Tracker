@@ -261,6 +261,7 @@ const statusRecoverySandbox = {
   },
   get statusValue() { return this.statusNode.textContent; },
   retryCalls: 0,
+  retryTimer: null,
   watchdogEvents: [],
   watchdogDelay: null,
   watchdogCallback: null,

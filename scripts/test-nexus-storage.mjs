@@ -1533,6 +1533,18 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(migration.counts.history,totalHistory,'large migration must preserve every review-history row');
   assert.equal(migration.counts.studyLogs,totalStudyLogs,'large migration must preserve every study log');
   assert.equal(migration.rowCount,149148,'large manifest must publish exact metadata-plus-record row count');
+  assert.ok(Number.isSafeInteger(migration.transactionWaitDurationMs)&&migration.transactionWaitDurationMs>=0,
+    'large projection rebuild must expose cumulative IndexedDB transaction wait time');
+  assert.ok(Number.isSafeInteger(migration.transactionCount)&&migration.transactionCount>0,
+    'large projection rebuild must expose the number of measured IndexedDB transactions');
+  assert.ok(Number.isSafeInteger(migration.keyRangeWaitDurationMs)&&migration.keyRangeWaitDurationMs>=0,
+    'large projection cleanup must expose bounded key-range request wait time');
+  assert.ok(Number.isSafeInteger(migration.rowGenerationDurationMs)&&migration.rowGenerationDurationMs>=0,
+    'large projection rebuild must expose attributable row-generation time');
+  assert.equal(migration.serializationDurationMs,null,
+    'the browser-managed IndexedDB structured-clone serialization cost must not be misreported as an explicit JSON serialization phase');
+  assert.equal(migration.serializationMode,'indexeddb-structured-clone-in-write-transaction',
+    'projection diagnostics must state that structured-clone cost is included in IndexedDB write transactions');
   assert.ok(cooperativeBatches>=Math.ceil(migration.rowCount/8000)-1,
     'large migration must yield after each bounded 8,000-row write batch');
   assert.equal(migration.pruneRowsScanned,0,

@@ -144,7 +144,7 @@ function sanitizeSyncDiagEvent(event){
   for(const key of flags){if(typeof input[key]==='boolean')workspace[key]=input[key];}
   if(Object.keys(workspace).length)safe.workspace=workspace;
  }
- const countFields=['durationMs','chunkCount','payloadUtf8Bytes','pageCount','completedPageCount','rowsRead','maxPageDurationMs','minPageDurationMs','comparisonPassesSaved','cleanupDeletedCount','baseTopicCount','localTopicCount','remoteTopicCount','conflictCount','payloadCharacters','appliedCount','publishedCount','acknowledgedCount','rounds','batchCount','topicCount','workspaceRevision','projectionWorkspaceRevision','snapshotRevision','headRevision','cursorPublishRevision','cursorRemoteHeadRevision','cursorAcknowledgedSequence','recoverySnapshotRevision','recoveryHeadRevision','projectionBatchCount','projectionRowsWritten','projectionWriteDurationMs','projectionPruneDurationMs','projectionPruneRowsScanned','projectionPruneRowsRemoved','projectionOutboxPruneDurationMs','projectionOutboxPruneRowsRemoved','pendingLocalSequence','pendingLocalChangeCount','retryDelayMs','retryAttempt','delayMs','attempt'];
+ const countFields=['durationMs','chunkCount','payloadUtf8Bytes','pageCount','completedPageCount','rowsRead','maxPageDurationMs','minPageDurationMs','comparisonPassesSaved','cleanupDeletedCount','baseTopicCount','localTopicCount','remoteTopicCount','conflictCount','payloadCharacters','appliedCount','publishedCount','acknowledgedCount','rounds','batchCount','topicCount','workspaceRevision','projectionWorkspaceRevision','snapshotRevision','headRevision','cursorPublishRevision','cursorRemoteHeadRevision','cursorAcknowledgedSequence','recoverySnapshotRevision','recoveryHeadRevision','projectionBatchCount','projectionRowsWritten','projectionWriteDurationMs','projectionPruneDurationMs','projectionPruneRowsScanned','projectionPruneRowsRemoved','projectionOutboxPruneDurationMs','projectionOutboxPruneRowsRemoved','projectionTransactionWaitDurationMs','projectionTransactionCount','projectionKeyRangeWaitDurationMs','projectionRowGenerationDurationMs','projectionSerializationDurationMs','pendingLocalSequence','pendingLocalChangeCount','retryDelayMs','retryAttempt','delayMs','attempt'];
  for(const key of countFields){
   if(!Object.prototype.hasOwnProperty.call(event,key))continue;
   const value=event[key];
@@ -173,6 +173,7 @@ function sanitizeSyncDiagEvent(event){
   event:['INITIAL_SESSION','SIGNED_IN','SIGNED_OUT','TOKEN_REFRESHED','USER_UPDATED'],
   errorCategory:['conflict','timeout','queue-limit','queue-unavailable','other'],
   projectionRebuildMode:['snapshot-backfill','incremental','unchanged','skipped','reused','other'],
+  projectionSerializationMode:['indexeddb-structured-clone-in-write-transaction'],
   entitySyncMode:['snapshot-backfill','incremental','unchanged','superseded','skipped','error','other'],
   projectionRebuildErrorCategory:['conflict','timeout','queue-limit','queue-unavailable','other'],
   guardPhase:['owned','loading','error','offline-unassigned','offline-mismatch','offline','initializing'],
@@ -2049,7 +2050,14 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
       projectionPruneRowsScanned:safeProjectionMetric(rebuilt&&rebuilt.pruneRowsScanned),
       projectionPruneRowsRemoved:safeProjectionMetric(rebuilt&&rebuilt.prunedRows),
       projectionOutboxPruneDurationMs:safeProjectionMetric(rebuilt&&rebuilt.outboxPruneDurationMs),
-      projectionOutboxPruneRowsRemoved:safeProjectionMetric(rebuilt&&rebuilt.prunedOutboxRows)
+      projectionOutboxPruneRowsRemoved:safeProjectionMetric(rebuilt&&rebuilt.prunedOutboxRows),
+      projectionTransactionWaitDurationMs:safeProjectionMetric(rebuilt&&rebuilt.transactionWaitDurationMs),
+      projectionTransactionCount:safeProjectionMetric(rebuilt&&rebuilt.transactionCount),
+      projectionKeyRangeWaitDurationMs:safeProjectionMetric(rebuilt&&rebuilt.keyRangeWaitDurationMs),
+      projectionRowGenerationDurationMs:safeProjectionMetric(rebuilt&&rebuilt.rowGenerationDurationMs),
+      projectionSerializationDurationMs:safeProjectionMetric(rebuilt&&rebuilt.serializationDurationMs),
+      projectionSerializationMode:rebuilt&&rebuilt.serializationMode==='indexeddb-structured-clone-in-write-transaction'
+        ?'indexeddb-structured-clone-in-write-transaction':null
      };
     await assertActiveUser(ownerId,operationEpoch);
     if(localStorage.getItem(OWNER_KEY)!==ownerId||!rebuilt||

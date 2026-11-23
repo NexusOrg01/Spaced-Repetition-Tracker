@@ -51,6 +51,10 @@ const projectionEvent={
  projectionRebuildMode:'snapshot-backfill',projectionRebuildErrorCategory:'other',
  projectionRebuildFailureStage:'write-row-batch',projectionRebuildFailureReason:'indexeddb-write-failed',
  workspaceRevision:5,projectionWorkspaceRevision:5,projectionRevisionMatches:true,
+ projectionTransactionWaitDurationMs:25,projectionTransactionCount:6,
+ projectionKeyRangeWaitDurationMs:7,projectionRowGenerationDurationMs:11,
+ projectionSerializationDurationMs:null,
+ projectionSerializationMode:'indexeddb-structured-clone-in-write-transaction',
  reason:'entity_projection_unavailable',
  errorMessage:'PRIVATE DATABASE DETAIL',ownerId:'PRIVATE-OWNER'
 };
@@ -63,6 +67,10 @@ assert.deepEqual(safeProjectionEvent,{
  projectionRebuildMode:'snapshot-backfill',projectionRebuildErrorCategory:'other',
  projectionRebuildFailureStage:'write-row-batch',projectionRebuildFailureReason:'indexeddb-write-failed',
  workspaceRevision:5,projectionWorkspaceRevision:5,projectionRevisionMatches:true,
+ projectionTransactionWaitDurationMs:25,projectionTransactionCount:6,
+ projectionKeyRangeWaitDurationMs:7,projectionRowGenerationDurationMs:11,
+ projectionSerializationDurationMs:null,
+ projectionSerializationMode:'indexeddb-structured-clone-in-write-transaction',
  reason:'entity_projection_unavailable'
 },'projection diagnostics must preserve only safe owner-free rebuild and revision facts');
 for(const forbidden of ['PRIVATE','ownerId','errorMessage'])assert.equal(
