@@ -3180,6 +3180,28 @@
     return recovery;
   }
 
+  function validRecoveryRemoteReadbackProof(owner,intent,publication){
+    if(!intent||(!intent.pendingSnapshotProof&&!intent.pendingOutboxProof))return true;
+    const proof=publication&&publication.remoteReadbackProof;
+    return !!(proof&&proof.proofVersion===1&&proof.remoteReadbackVerified===true&&
+      proof.pendingLocalChangesPreserved===true&&proof.ownerId===owner&&
+      proof.candidateDigest===intent.candidateDigest&&
+      proof.remotePayloadDigest===intent.candidateDigest&&
+      typeof proof.snapshotUpdatedAt==='string'&&proof.snapshotUpdatedAt===publication.updated_at&&
+      Number.isSafeInteger(Number(proof.snapshotRevision))&&
+      Number(proof.snapshotRevision)===Number(publication.snapshotRevision)&&
+      Number.isSafeInteger(Number(proof.headRevision))&&
+      Number(proof.headRevision)===Number(publication.headRevision)&&
+      Number.isSafeInteger(Number(proof.compactedThroughRevision))&&
+      Number(proof.compactedThroughRevision)===Number(publication.compactedThroughRevision)&&
+      Number.isSafeInteger(Number(proof.pendingLocalChangeCount))&&
+      Number(proof.pendingLocalChangeCount)>=0&&
+      stableEntityOperationJson(proof.pendingSnapshotProof||null)===
+        stableEntityOperationJson(intent.pendingSnapshotProof||null)&&
+      stableEntityOperationJson(proof.pendingOutboxProof||null)===
+        stableEntityOperationJson(intent.pendingOutboxProof||null));
+  }
+
   async function markWorkspaceEntityRecoveryPublished(ownerId,intentId,publication){
     const owner=entityOwnerKey(ownerId),id=String(intentId||''),
       stamp=String(publication&&publication.updated_at||''),snapshot=Number(publication&&publication.snapshotRevision),
@@ -3197,6 +3219,9 @@
            snapshot!==intent.expectedHeadRevision){
           set({ok:false,reason:'recovery_publication_does_not_match_staged_generation'});return;
         }
+        if(!validRecoveryRemoteReadbackProof(owner,intent,publication)){
+          set({ok:false,reason:'recovery_remote_readback_proof_required'});return;
+        }
         if(intent.phase==='published'){
           const prior=intent.publication||{};
           if(prior.updated_at!==stamp||Number(prior.snapshotRevision)!==snapshot){
@@ -3207,7 +3232,8 @@
           // cursor created by the final local commit.
           const refreshed={...intent,publication:{...prior,
             headRevision:Math.max(Number(prior.headRevision)||snapshot,head),
-            compactedThroughRevision:Math.max(Number(prior.compactedThroughRevision)||snapshot,compacted)},
+            compactedThroughRevision:Math.max(Number(prior.compactedThroughRevision)||snapshot,compacted),
+            remoteReadbackProof:publication.remoteReadbackProof||prior.remoteReadbackProof||null},
             updatedAt:timestamp()};
           store.put(refreshed);
           set({ok:true,alreadyPublished:true,intent:refreshed});
@@ -3216,7 +3242,8 @@
         if(intent.phase!=='staged'){set({ok:false,reason:'recovery_generation_not_staged'});return;}
         const next={...intent,phase:'published',
           publication:{updated_at:stamp,snapshotRevision:snapshot,headRevision:head,
-            compactedThroughRevision:compacted,storageMode:String(publication.storageMode||'unknown')},
+            compactedThroughRevision:compacted,storageMode:String(publication.storageMode||'unknown'),
+            remoteReadbackProof:publication.remoteReadbackProof||null},
           publishedAt:timestamp(),updatedAt:timestamp()};
         store.put(next);set({ok:true,alreadyPublished:false,intent:next});
       };
@@ -3277,6 +3304,10 @@
          recoveryBeforeCommit.intent.intentId!==id){
         throw new Error('The owner-bound recovery intent could not be verified before local commit.');
       }
+      if(!validRecoveryRemoteReadbackProof(owner,recoveryBeforeCommit.intent,
+          recoveryBeforeCommit.intent.publication)){
+        throw new Error('The owner-bound exact remote snapshot read-back proof is missing or invalid; pending local changes remain preserved.');
+      }
       const outboxBeforeCommit=await readWorkspaceEntityDeltaRecoveryState(owner);
       if(!outboxBeforeCommit||outboxBeforeCommit.ok!==true){
         throw new Error('The local Delta outbox could not be verified before recovery commit; pending changes remain preserved.');
@@ -3327,6 +3358,9 @@
             workspaceRevision=workspace&&Number.isSafeInteger(Number(workspace.workspaceRevision))
               ?Number(workspace.workspaceRevision):(workspace&&Number.isSafeInteger(Number(workspace.revision))?Number(workspace.revision):null),
             publication=intent&&intent.publication;
+          if(!validRecoveryRemoteReadbackProof(owner,intent,publication)){
+            set({ok:false,reason:'recovery_remote_readback_proof_invalid'});return;
+          }
           if(writeSequence!==capturedWriteSequence||!enabled||committedOwnerId!==owner||entityRemovalOwners.has(owner)||
              rowValue(values.owner)!==owner||!manifest||manifest.ownerId!==owner||manifest.status!=='ready'||
              manifest.activeGeneration!==intent?.activeGeneration||manifest.pendingRecoveryIntentId!==id||
