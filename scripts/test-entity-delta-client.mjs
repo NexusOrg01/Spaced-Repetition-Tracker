@@ -93,7 +93,7 @@ function harness(options={}){
           const nextRevision=readGroups.length?readGroups[readGroups.length-1].revision:afterRevision;
           const bytes=new TextEncoder().encode(JSON.stringify(readGroups)).length;
           return {data:{mode:'delta',snapshot_required:false,head_revision:state.head_revision,
-            snapshot_revision:0,compacted_through_revision:0,next_revision,bytes,groups:readGroups},error:null};
+            snapshot_revision:0,compacted_through_revision:0,next_revision:nextRevision,bytes,groups:readGroups},error:null};
         }
         return {data:{
           mode:'delta',snapshot_required:false,head_revision:2,snapshot_revision:0,
