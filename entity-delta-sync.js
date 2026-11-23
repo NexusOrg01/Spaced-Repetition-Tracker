@@ -322,14 +322,21 @@
         const baseRows=rowsById('base',basePayload,'state',collection);
         const localRows=rowsById('local',localPayload,'state',collection);
         for(const id of new Set([...baseRows.keys(),...localRows.keys()])){
-          touched.set(collection+'\u0000'+id,{collection,id,operation:localRows.has(id)?'put':'delete'});
+          const baseRow=baseRows.get(id)||null,localRow=localRows.get(id)||null;
+          // Only an actual local delta is pending work. Unchanged rows must not
+          // be treated as local puts: a verified remote tombstone may legitimately
+          // remove one while a compatibility shadow is being cleared.
+          if(baseRow&&localRow&&sameValue(baseRow,localRow))continue;
+          touched.set(collection+'\u0000'+id,{collection,id,operation:localRow?'put':'delete'});
         }
       }
       for(const collection of FEATURE_RECORD_COLLECTIONS){
         const baseRows=rowsById('base',basePayload,'featureState',collection);
         const localRows=rowsById('local',localPayload,'featureState',collection);
         for(const id of new Set([...baseRows.keys(),...localRows.keys()])){
-          touched.set(collection+'\u0000'+id,{collection,id,operation:localRows.has(id)?'put':'delete'});
+          const baseRow=baseRows.get(id)||null,localRow=localRows.get(id)||null;
+          if(baseRow&&localRow&&sameValue(baseRow,localRow))continue;
+          touched.set(collection+'\u0000'+id,{collection,id,operation:localRow?'put':'delete'});
         }
       }
       const metadataChanged=(baseRoot,localRoot,excluded)=>{
