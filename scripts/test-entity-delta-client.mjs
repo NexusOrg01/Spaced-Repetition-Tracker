@@ -2314,14 +2314,22 @@ function makeParkedRecoveryFixture(options={}){
     __nexusDeltaSync:'entity-delta-v1',
     state:{...payload.state,topics:[{id:'parked-topic',name:'original'}]}
   };
-  const pending={
+  const pending=options.outboxOnly?null:{
     status:'pending',ownerUserId:owner,operationId:'parked-op-1',
     localSequence:11,baseServerVersion:'snapshot-stamp',payload:parkedPayload
   };
   const state={mode:'delta',protocol_version:1,head_revision:0,snapshot_revision:0,
     compacted_through_revision:0,snapshot_updated_at:'snapshot-stamp'};
   let remoteSnapshot={payload:remoteBaseline,updated_at:'snapshot-stamp'};
-  let currentPending=pending,staged=null,active=null,intent=null,committed=false;
+  let currentPending=pending,staged=null,
+    active=options.outboxOnly?{ownerId:owner,generation:'generation-B',
+      state:parkedPayload.state,featureState:parkedPayload.featureState,pending:false}:null,
+    intent=null,committed=false,outboxCommitted=false;
+  const parkedOutboxGroup={operationId:'parked-outbox-op-1',firstSequence:1,lastSequence:1,
+    changeCount:1,changes:[{collection:'topics',id:'parked-topic',operation:'put',position:0,
+      value:{id:'parked-topic',name:'PARKED-EDIT'}}]};
+  let outboxGroups=options.outboxOnly?[parkedOutboxGroup]:[];
+  let outboxDigest='d'.repeat(64);
   let publishedCandidate=null,readSnapshotCount=0,proofAtCommit=null;
   const storage={
     async readWorkspaceEntityRecovery(){return {intent:intent?{...intent}:null};},
@@ -2330,7 +2338,8 @@ function makeParkedRecoveryFixture(options={}){
         activeGeneration:'generation-A',baseUpdatedAt:input.baseUpdatedAt,
         expectedHeadRevision:input.expectedHeadRevision,snapshotRevision:input.snapshotRevision,
         candidateDigest:input.candidateDigest,conflicts:input.conflicts,
-        payloadMetadata:input.payloadMetadata,pendingSnapshotProof:input.pendingSnapshotProof};
+        payloadMetadata:input.payloadMetadata,pendingSnapshotProof:input.pendingSnapshotProof,
+        pendingOutboxProof:input.pendingOutboxProof};
       return {ok:true,intent:{...intent}};
     },
     getStatus(){return {revision:1};},
@@ -2351,21 +2360,48 @@ function makeParkedRecoveryFixture(options={}){
     },
     async commitWorkspaceEntityRecovery(){return {ok:true};},
     async readWorkspaceEntityDeltaCursor(){
-      return {ok:true,cursor:{publishRevision:0,snapshotUpdatedAt:'snapshot-stamp-2',
-        remoteHeadRevision:0},generation:'generation-B'};
+      if(options.outboxOnly&&!outboxCommitted){
+        return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_mismatch'};
+      }
+      return {ok:true,cursor:{generation:'generation-B',publishRevision:0,
+        acknowledgedSequence:outboxCommitted?1:0,snapshotUpdatedAt:outboxCommitted
+          ?'snapshot-stamp-2':'snapshot-stamp',remoteHeadRevision:0,requiresPull:false},
+        generation:'generation-B'};
+    },
+    async readWorkspaceEntityDeltaRecoveryState(){
+      const cursor=outboxCommitted
+        ?{generation:'generation-B',publishRevision:0,acknowledgedSequence:1,
+          remoteHeadRevision:0,snapshotUpdatedAt:'snapshot-stamp-2',requiresPull:false}
+        :{generation:'generation-A',publishRevision:0,acknowledgedSequence:0,
+          remoteHeadRevision:0,snapshotUpdatedAt:'snapshot-stamp',requiresPull:false};
+      const groups=outboxCommitted?[]:outboxGroups;
+      return {ok:true,ownerId:owner,activeGeneration:'generation-B',
+        generationMismatch:!outboxCommitted,workspaceRevision:2,cursor,
+        outbox:{groups,throughSequence:1,highWatermark:1,groupCount:groups.length,
+          changeCount:groups.reduce((sum,group)=>sum+group.changeCount,0),
+          digest:outboxCommitted?'e'.repeat(64):outboxDigest,hasMore:false}};
+    },
+    async readWorkspaceEntityOutboxGroups(targetOwner,afterSequence=0){
+      return {ownerId:owner,groups:outboxCommitted?[]:
+        outboxGroups.filter(group=>group.lastSequence>afterSequence),hasMore:false};
     }
   };
   const h=harness({state,pendingSnapshot:pending});
   const client=h.createClient({
     storage,
     getLocalBase:async()=>staleLocalBase,
-    getLocalWorkspace:async()=>parkedPayload,
+    getLocalWorkspace:async()=>options.outboxOnly?remoteBaseline:parkedPayload,
     getPendingSnapshot:async()=>currentPending,
     readRemoteSnapshot:async()=>{
       readSnapshotCount++;
-      if(readSnapshotCount===2&&options.mutatePendingOnReadback){
+      if(readSnapshotCount===2&&options.mutatePendingOnReadback&&currentPending){
         currentPending={...currentPending,payload:{...currentPending.payload,
           state:{...currentPending.payload.state,topics:[{id:'parked-topic',name:'CHANGED-DURING-READBACK'}]}}};
+      }
+      if(readSnapshotCount===2&&options.mutateOutboxOnReadback&&outboxGroups.length){
+        outboxGroups=[{...parkedOutboxGroup,changes:[{...parkedOutboxGroup.changes[0],
+          value:{id:'parked-topic',name:'CHANGED-DURING-READBACK'}}]}];
+        outboxDigest='f'.repeat(64);
       }
       if(readSnapshotCount>1&&options.readbackMode==='missing')return null;
       if(readSnapshotCount>1&&options.readbackMode==='missing-edit'){
@@ -2397,14 +2433,21 @@ function makeParkedRecoveryFixture(options={}){
     },
     commitLocalRecovery:async(targetOwner,candidate,publication,conflicts,metadata)=>{
       proofAtCommit={owner:targetOwner,candidate,publication,metadata,
-        pending:currentPending?{...currentPending}:null};
-      committed=true;active={...staged,pending:false};
+        pending:currentPending?{...currentPending}:null,
+        pendingOutboxProof:intent&&intent.pendingOutboxProof||null};
+      if(options.outboxOnly&&(!intent||!intent.pendingOutboxProof||
+         candidate.state.topics[0].name!=='PARKED-EDIT')){
+        return {ok:false,reason:'pending_outbox_candidate_or_proof_missing'};
+      }
+      committed=true;outboxCommitted=!!options.outboxOnly;outboxGroups=[];
+      active={...staged,pending:false};intent=null;
       return {ok:true,generation:'generation-B'};
     }
   });
   return {client,h,state,pending:()=>currentPending,committed:()=>committed,
     intent:()=>intent,publishedCandidate:()=>publishedCandidate,
     proofAtCommit:()=>proofAtCommit,readSnapshotCount:()=>readSnapshotCount,
+    outbox:()=>outboxGroups,
     setReadbackMode:value=>{options.readbackMode=value;}};
 }
 
