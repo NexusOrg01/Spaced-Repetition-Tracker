@@ -2324,7 +2324,7 @@ function makeParkedRecoveryFixture(options={}){
   let currentPending=pending,staged=null,
     active=options.outboxOnly?{ownerId:owner,generation:'generation-B',
       state:parkedPayload.state,featureState:parkedPayload.featureState,pending:false}:null,
-    intent=null,committed=false,outboxCommitted=false;
+    intent=null,completedIntent=null,committed=false,outboxCommitted=false;
   const parkedOutboxGroup={operationId:'parked-outbox-op-1',firstSequence:1,lastSequence:1,
     changeCount:1,changes:[{collection:'topics',id:'parked-topic',operation:'put',position:0,
       value:{id:'parked-topic',name:'PARKED-EDIT'}}]};
@@ -2369,17 +2369,19 @@ function makeParkedRecoveryFixture(options={}){
         generation:'generation-B'};
     },
     async readWorkspaceEntityDeltaRecoveryState(){
-      const cursor=outboxCommitted
-        ?{generation:'generation-B',publishRevision:0,acknowledgedSequence:1,
-          remoteHeadRevision:0,snapshotUpdatedAt:'snapshot-stamp-2',requiresPull:false}
-        :{generation:'generation-A',publishRevision:0,acknowledgedSequence:0,
-          remoteHeadRevision:0,snapshotUpdatedAt:'snapshot-stamp',requiresPull:false};
-      const groups=outboxCommitted?[]:outboxGroups;
+      const recoveryActive=!!(options.outboxOnly&&!outboxCommitted);
+      const cursor=recoveryActive
+        ?{generation:'generation-A',publishRevision:0,acknowledgedSequence:0,
+          remoteHeadRevision:0,snapshotUpdatedAt:'snapshot-stamp',requiresPull:false}
+        :{generation:'generation-B',publishRevision:0,acknowledgedSequence:outboxCommitted?1:0,
+          remoteHeadRevision:0,snapshotUpdatedAt:outboxCommitted?'snapshot-stamp-2':'snapshot-stamp',
+          requiresPull:false};
+      const groups=recoveryActive?outboxGroups:[];
       return {ok:true,ownerId:owner,activeGeneration:'generation-B',
-        generationMismatch:!outboxCommitted,workspaceRevision:2,cursor,
+        generationMismatch:recoveryActive,workspaceRevision:2,cursor,
         outbox:{groups,throughSequence:1,highWatermark:1,groupCount:groups.length,
           changeCount:groups.reduce((sum,group)=>sum+group.changeCount,0),
-          digest:outboxCommitted?'e'.repeat(64):outboxDigest,hasMore:false}};
+          digest:recoveryActive?outboxDigest:'e'.repeat(64),hasMore:false}};
     },
     async readWorkspaceEntityOutboxGroups(targetOwner,afterSequence=0){
       return {ownerId:owner,groups:outboxCommitted?[]:
@@ -2439,13 +2441,15 @@ function makeParkedRecoveryFixture(options={}){
          candidate.state.topics[0].name!=='PARKED-EDIT')){
         return {ok:false,reason:'pending_outbox_candidate_or_proof_missing'};
       }
-      committed=true;outboxCommitted=!!options.outboxOnly;outboxGroups=[];
-      active={...staged,pending:false};intent=null;
+      committed=true;
+      if(options.outboxOnly){outboxCommitted=true;outboxGroups=[];}
+      active={...staged,pending:false};
+      completedIntent=intent?{...intent}:null;intent=null;
       return {ok:true,generation:'generation-B'};
     }
   });
   return {client,h,state,pending:()=>currentPending,committed:()=>committed,
-    intent:()=>intent,publishedCandidate:()=>publishedCandidate,
+    intent:()=>intent||completedIntent,publishedCandidate:()=>publishedCandidate,
     proofAtCommit:()=>proofAtCommit,readSnapshotCount:()=>readSnapshotCount,
     outbox:()=>outboxGroups,
     setReadbackMode:value=>{options.readbackMode=value;}};
