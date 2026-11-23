@@ -1210,6 +1210,30 @@
     return fingerprint;
   }
 
+  async function fingerprintEntityOutboxGroups(groups){
+    const normalized=(Array.isArray(groups)?groups:[]).map(group=>({
+      operationId:String(group&&group.operationId||''),
+      firstSequence:Number(group&&group.firstSequence),
+      lastSequence:Number(group&&group.lastSequence),
+      changeCount:Number(group&&group.changeCount),
+      changes:(Array.isArray(group&&group.changes)?group.changes:[]).map(change=>({
+        collection:change.collection,id:change.id,operation:change.operation,
+        position:change.position,
+        ...(change.operation==='put'?{value:change.value}:{})
+      }))
+    }));
+    const canonical=stableEntityOperationJson(normalized);
+    const cryptoApi=root&&root.crypto,Encoder=root&&root.TextEncoder;
+    if(!cryptoApi||!cryptoApi.subtle||typeof cryptoApi.subtle.digest!=='function'||
+       typeof Encoder!=='function'){
+      throw new Error('Secure SHA-256 support is unavailable; recovery cannot prove the pending outbox.');
+    }
+    const digest=await cryptoApi.subtle.digest('SHA-256',new Encoder().encode(canonical));
+    let fingerprint='';
+    for(const byte of new Uint8Array(digest))fingerprint+=byte.toString(16).padStart(2,'0');
+    return fingerprint;
+  }
+
   async function writeWorkspaceEntityChanges(ownerId,changes,options={}){
     const owner=entityOwnerKey(ownerId);
     if(entityRemovalOwners.has(owner))throw new Error('This account workspace is being permanently deleted.');
@@ -1819,20 +1843,25 @@
     if(pending.size)return fail('recovery_local_writes_pending');
     const readCore=()=>transaction([WORKSPACES,'migrationMeta'],'readonly',(tx,set)=>{
       const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta');
-      const values={manifest:null,workspace:null,cursor:null};let remaining=3;
+      const values={manifest:null,workspace:null,cursor:null,sequence:null};let remaining=4;
       const finish=()=>{remaining--;if(remaining===0)set(values);};
       const manifestRequest=meta.get(entityManifestKey(owner));
       const workspaceRequest=entities.get(workspaceKey(owner));
       const cursorRequest=meta.get(key);
+      const sequenceRequest=meta.get(entitySequenceKey(owner));
       manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;finish();};
       workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;finish();};
       cursorRequest.onsuccess=()=>{values.cursor=cursorRequest.result||null;finish();};
+      sequenceRequest.onsuccess=()=>{values.sequence=sequenceRequest.result||null;finish();};
     });
     try{
       const initial=await readCore();
-      const manifest=initial&&initial.manifest,row=initial&&initial.workspace,cursor=initial&&initial.cursor;
+      const manifest=initial&&initial.manifest,row=initial&&initial.workspace,cursor=initial&&initial.cursor,
+        sequence=initial&&initial.sequence;
       const workspaceRevision=row&&Number.isSafeInteger(Number(row.workspaceRevision))
         ?Number(row.workspaceRevision):(row&&Number.isSafeInteger(Number(row.revision))?Number(row.revision):null);
+      const sequenceHighWatermark=sequence&&Number.isSafeInteger(Number(sequence.value))
+        ?Number(sequence.value):0;
       if(entityRemovalOwners.has(owner)||!enabled||committedOwnerId!==owner||
          !manifest||manifest.ownerId!==owner||manifest.status!=='ready'||
          !manifest.activeGeneration||!validWorkspaceRow(row,owner)||
@@ -1852,6 +1881,10 @@
         typeof cursor.requiresPull==='boolean'&&
         cursor.requiresPull===(Number(cursor.remoteHeadRevision)>Number(cursor.publishRevision)));
       if(!cursorValid)return fail('recovery_cursor_invalid');
+      if(!Number.isSafeInteger(sequenceHighWatermark)||
+         sequenceHighWatermark<Number(cursor.acknowledgedSequence)){
+        return fail('recovery_outbox_high_watermark_invalid');
+      }
       const groups=[];
       let after=Number(cursor.acknowledgedSequence),totalChanges=0,totalBytes=0,pages=0,complete=false;
       const maxPages=256,maxChanges=250000,maxBytes=64*1024*1024;
@@ -1902,22 +1935,26 @@
       }
       if(Number(cursor.workspaceRevision)>workspaceRevision)return fail('recovery_cursor_revision_ahead');
       const latest=await readCore();
+      if(after!==sequenceHighWatermark)return fail('recovery_outbox_high_watermark_mismatch');
+      const digest=await fingerprintEntityOutboxGroups(groups);
       const latestManifest=latest&&latest.manifest,latestRow=latest&&latest.workspace,
-        latestCursor=latest&&latest.cursor;
+        latestCursor=latest&&latest.cursor,latestSequence=latest&&latest.sequence;
       const latestWorkspaceRevision=latestRow&&Number.isSafeInteger(Number(latestRow.workspaceRevision))
         ?Number(latestRow.workspaceRevision):(latestRow&&Number.isSafeInteger(Number(latestRow.revision))
           ?Number(latestRow.revision):null);
       if(pending.size||!latestManifest||latestManifest.ownerId!==owner||
          latestManifest.status!=='ready'||latestManifest.activeGeneration!==manifest.activeGeneration||
          !validWorkspaceRow(latestRow,owner)||latestWorkspaceRevision!==workspaceRevision||
-         JSON.stringify(latestCursor)!==JSON.stringify(cursor)){
+         JSON.stringify(latestCursor)!==JSON.stringify(cursor)||
+         JSON.stringify(latestSequence)!==JSON.stringify(sequence)){
         return fail('recovery_state_changed_during_outbox_read');
       }
       return {
         ok:true,ownerId:owner,activeGeneration:manifest.activeGeneration,
         generationMismatch:cursor.generation!==manifest.activeGeneration,
         workspaceRevision,cursor:{...cursor},
-        outbox:{groups,throughSequence:after,changeCount:totalChanges,bytes:totalBytes,hasMore:false}
+        outbox:{groups,throughSequence:after,highWatermark:sequenceHighWatermark,
+          groupCount:groups.length,changeCount:totalChanges,bytes:totalBytes,hasMore:false,digest}
       };
     }catch(error){
       return unavailable('recovery_outbox_read_failed');
