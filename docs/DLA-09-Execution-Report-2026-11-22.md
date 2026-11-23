@@ -541,3 +541,66 @@ Account B's independent offline edit remained in B's cloud state, and no cross-a
 Authenticated local Supabase cleanup passed in both runs #559 and #560: disposable users and Delta/receipt/allowlist rows were removed, temporary RPC grants revoked, and the local database verified clean. The failures above are confined to disposable test fixtures; they are not evidence of production data access or mutation.
 
 **Final safety disposition:** PR #147 remains open/draft/unmerged. Only its existing branch and preview were changed. No production/live Nexus or Supabase changes, production deployment/promotion, merge, or additional PR occurred. DLA-09 cannot be declared complete while the Account A pending-edit loss is reproducible.
+
+
+## 11.6 Follow-up after stop — run #561 and current PR head (23 November 2026)
+
+**Disposition remains STOPPED — DLA-09A/E are not closed.** This update records already-completed CI evidence only. No further recovery-path edits, manual lifecycle reruns, or attempts to bypass the failed integrity checks were made.
+
+### Current PR head and validation state
+
+- PR #147 remains open, draft and unmerged on `fix/sync-account-handoff-reliability`.
+- PR head at this inspection: [`8b45404cf22e80bd8b453a4082ef77599550b0f8`](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/commit/8b45404cf22e80bd8b453a4082ef77599550b0f8).
+- The only application-code change in that commit is in `entity-delta-sync.js`: it exposes four boolean diagnostics when a staged recovery candidate is rejected (`candidateDigestMatches`, `expectedHeadRevisionMatches`, `snapshotRevisionMatches`, and `baseUpdatedAtMatches`). The commit does not change recovery merge ordering, outbox acknowledgement, or publication behavior.
+- Current PR checks at this head: Vercel **success** and Netlify Deploy Preview **success**. The authenticated integration and catalogue validation workflows failed; successful preview checks do not override those test failures.
+- Preview: https://deploy-preview-147--nexussrt.netlify.app
+
+### Run #561 — final result: FAILED on the Account A pending-edit assertion
+
+[Authenticated local Supabase + Chromium run #561](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45175474920) completed. It checked out PR merge ref `4e19fdda5b66ce3cc6fa170ab2b69284b7f9a4bc`, which merged PR head `4d75f3ce85c4eab79dc026d79a7d4aa5ccd0fd4b` into base `91df34656925b19c122bf73f50660014d77e0b78`. It therefore does **not** validate the later diagnostic-only head `8b45404`.
+
+The authenticated lifecycle reached the Account A return path using the existing 26,900,000-byte / 103-chunk large-workspace fixture. Before switching accounts, the harness verified that Account A had both an owner-bound pending compatibility snapshot and at least one real Delta outbox group. The A work remained parked while B independently synchronized. On return to A:
+
+- Workspace reveal was reported at **3.024 s**.
+- The app entered cursor-mismatch snapshot recovery.
+- `delta-recovery-verification` reported `ok: true`.
+- `snapshot-recovery-complete` reported **20.504 s**.
+- `delta-sync-result` reported **25.237 s** with `ok: true`.
+- `initial-sync-verification` reported **28.164 s**, `ok: true`, `ready: true`, `timedOut: false`.
+- Diagnostics reported Account A present, owner present, and UI status **`Synced`**.
+- The final remote notes were `n` repeated 100 times; expected was `x` followed by 99 `n` characters.
+- The workflow failed the exact assertion: `cursor mismatch recovery must publish Account A’s exact local edit`.
+
+This is a third observed false-success/data-loss result after runs #559 and #560. The successful recovery/verification statuses and cleared pending work did not prove the exact parked edit was present in the remote snapshot. Treat this as a critical integrity failure. The run's disposable local Supabase cleanup step completed successfully.
+
+### Current-head recovery retry regressions — runs #598 and #2112
+
+Two workflows associated with PR head `8b45404` also failed before the browser lifecycle could start:
+
+- [Authenticated local Supabase integration run #598](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45207291584) failed in the DLA-02/DLA-03 RPC and snapshot-integrity test step. Auth fixture creation, Chromium setup and the lifecycle step were skipped.
+- [Validate curriculum catalogue run #2112](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45207291575) failed in the catalogue/inline-JavaScript validation step.
+
+Both exposed the same recovery retry assertion: `a retry should verify the exact already-published snapshot and finish locally`. The returned result was `ok: false`, `retryable: true`, `snapshotRequired: true`, reason `staged_recovery_candidate_changed`. The new diagnostics were:
+
+| Diagnostic | Result |
+|---|---|
+| `candidateDigestMatches` | true |
+| `expectedHeadRevisionMatches` | true |
+| `snapshotRevisionMatches` | false |
+| `baseUpdatedAtMatches` | false |
+
+This is a separate unresolved prepared/staged recovery metadata mismatch. It is not evidence that the candidate digest or expected head revision differed; the snapshot revision and base timestamp comparisons failed. No recovery retry behavior was changed in response to these failures.
+
+### Updated DLA-09 disposition
+
+| Subtask | Evidence-backed status | Latest qualification |
+|---|---|---|
+| DLA-09A | **BLOCKED — CRITICAL STOP CONDITION** | Run #561 reproduced the exact Account A parked-edit loss and false `Synced` result. Runs #598/#2112 also fail the staged-recovery retry assertion. |
+| DLA-09B | **PARTIAL — COLD TARGET UNMET** | Run #561 returning-account reveal was 3.024 s and its recovery verification path reported 28.164 s, but that result is invalid as successful sync because the exact edit was absent. The prior cold benchmark remains run #560: 95.143 s cold restore / 86.367 s projection rebuild. No new cold-first-login measurement or projection write/prune phase attribution was produced by #561. |
+| DLA-09C | **COMPLETED** | Prior focused getSession failure/rejection/timeout, retry, stale-result and eventual recovery regressions remain the supporting evidence. |
+| DLA-09D | **COMPLETED — SCOPED** | Same-owner warm comparison optimization remains valid; cross-account recovery comparisons remain multiple passes. |
+| DLA-09E | **BLOCKED — LIFECYCLE STOP CONDITION** | Run #561 failed the parked-edit preservation assertion. Runs #598/#2112 did not reach the lifecycle step. |
+
+**Required stop retained:** do not edit cursor-mismatch recovery, recovery merge ordering, snapshot publication, or outbox acknowledgement while the stop condition remains active. Do not launch another A→B→A lifecycle attempt to try to turn the failing result green. Resume only with a safe, evidence-backed correction plan that preserves all owner/session-epoch/revision/manifest/integrity/cancellation/conflict fences, then run focused regressions before one controlled lifecycle acceptance.
+
+No production/live Nexus or Supabase data was inspected or changed. No production schema, policy, configuration or data was changed. No production deployment/promotion, merge, new PR, or paid service was used.
