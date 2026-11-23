@@ -3267,6 +3267,8 @@
             set({ok:false,reason:'invalid_local_outbox_high_watermark'});return;
           }
           if(highWatermark!==expectedOutboxHighWatermark||
+             stableEntityOperationJson(intent.pendingOutboxProof||null)!==
+               stableEntityOperationJson(pendingOutboxProof||null)||
              (pendingOutboxProof&&(manifest.activeGeneration!==pendingOutboxProof.activeGeneration||
                workspaceRevision!==Number(pendingOutboxProof.workspaceRevision)||
                highWatermark!==Number(pendingOutboxProof.throughSequence)))){
