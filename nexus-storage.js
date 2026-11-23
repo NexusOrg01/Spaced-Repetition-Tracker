@@ -532,7 +532,7 @@
   // Snapshot backfill writes many immutable entity rows. Use a larger bounded
   // transaction page than ordinary outbox/cleanup scans to amortize IndexedDB
   // commit overhead, while yielding between pages so the UI remains responsive.
-  const ENTITY_MIGRATION_BATCH_SIZE=2000;
+  const ENTITY_MIGRATION_BATCH_SIZE=8000;
   let entityGenerationSequence=0;
   let entitySyncSerial=Promise.resolve();
   // Prevent new entity writes from recreating rows while an account is being deleted.

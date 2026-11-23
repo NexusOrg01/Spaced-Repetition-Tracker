@@ -604,10 +604,10 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'migration must reject a workspace owner different from the committed session');
 
   // A failed replacement generation must never displace the currently readable
-  // generation. The first 2,000 rows commit, then the next batch is interrupted.
+  // generation. The first 8,000 rows commit, then the next batch is interrupted.
   const expandedState={
     ...afterChanges.state,
-    topics:afterChanges.state.topics.concat(Array.from({length:2200},(_,index)=>({
+    topics:afterChanges.state.topics.concat(Array.from({length:8200},(_,index)=>({
       id:'expanded-topic-'+index,subjectId:'subject-1',name:'Expanded topic '+index,reviewCount:0
     })))
   };
@@ -665,9 +665,9 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.notEqual(resumedMigration.generation,afterChanges.generation,
     'retrying an interrupted migration must publish a new generation only after all batches commit');
   const resumedWorkspace=await loaded.api.readWorkspaceEntities('entity-owner-a');
-  assert.equal(resumedWorkspace.state.topics.length,2202,'the resumed generation must contain the complete topic collection');
-  assert.equal(resumedWorkspace.counts.topics,2202,'the resumed manifest must contain exact collection counts');
-  assert.equal(resumedWorkspace.rowCount,2212,'the resumed manifest must publish an exact total entity row count');
+  assert.equal(resumedWorkspace.state.topics.length,8202,'the resumed generation must contain the complete topic collection');
+  assert.equal(resumedWorkspace.counts.topics,8202,'the resumed manifest must contain exact collection counts');
+  assert.equal(resumedWorkspace.rowCount,8212,'the resumed manifest must publish an exact total entity row count');
 
   const duplicateIdState={
     ...resumedWorkspace.state,
@@ -683,7 +683,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const afterDuplicateIdFailure=await loaded.api.readWorkspaceEntities('entity-owner-a');
   assert.equal(afterDuplicateIdFailure.generation,resumedMigration.generation,
     'a duplicate-ID migration must leave the previous complete generation active');
-  assert.equal(afterDuplicateIdFailure.rowCount,2212,
+  assert.equal(afterDuplicateIdFailure.rowCount,8212,
     'a failed replacement must preserve the prior generation row-count integrity metadata');
   const missingIdState={
     ...resumedWorkspace.state,
@@ -699,7 +699,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const afterMissingIdFailure=await loaded.api.readWorkspaceEntities('entity-owner-a');
   assert.equal(afterMissingIdFailure.generation,resumedMigration.generation,
     'a missing-ID migration must leave the previous complete generation active');
-  assert.equal(afterMissingIdFailure.rowCount,2212,
+  assert.equal(afterMissingIdFailure.rowCount,8212,
     'a failed migration with a missing ID must preserve the previous generation row count');
 
   // Existing entity rows/outbox entries remain physically stored but must be
@@ -1420,7 +1420,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   // Aborting a large replacement after its first IndexedDB batch must leave the
   // previously published generation selected and usable.
   const generationBeforeAbort=afterFirst.generation;
-  const replacementState={...afterFirst.state,topics:Array.from({length:2200},(_,index)=>({
+  const replacementState={...afterFirst.state,topics:Array.from({length:8200},(_,index)=>({
     id:'cancel-rebuild-'+index,name:'Cancelled rebuild '+index,subjectId:'hydrate-subject'
   }))};
   const controller=new AbortController(),nativeYield=first.context.window.setTimeout;
