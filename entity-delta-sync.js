@@ -1436,12 +1436,19 @@
             state:prepared.payload.state,featureState:prepared.payload.featureState
           };
           const digest=await runRecoveryStep('verify-candidate-digest',()=>workspaceDigest(candidate));
-          if(intent.candidateDigest!==digest||
-             intent.expectedHeadRevision!==prepared.expectedHeadRevision||
-             intent.snapshotRevision!==prepared.snapshotRevision||
-             intent.baseUpdatedAt!==prepared.snapshotUpdatedAt){
+          const recoveryCandidateDiagnostics={
+            candidateDigestMatches:intent.candidateDigest===digest,
+            expectedHeadRevisionMatches:Number(intent.expectedHeadRevision)===Number(prepared.expectedHeadRevision),
+            snapshotRevisionMatches:Number(intent.snapshotRevision)===Number(prepared.snapshotRevision),
+            baseUpdatedAtMatches:intent.baseUpdatedAt===prepared.snapshotUpdatedAt
+          };
+          if(!recoveryCandidateDiagnostics.candidateDigestMatches||
+             !recoveryCandidateDiagnostics.expectedHeadRevisionMatches||
+             !recoveryCandidateDiagnostics.snapshotRevisionMatches||
+             !recoveryCandidateDiagnostics.baseUpdatedAtMatches){
             return {ok:false,retryable:true,snapshotRequired:true,
-              reason:'staged_recovery_candidate_changed',intentId:intent.intentId};
+              reason:'staged_recovery_candidate_changed',intentId:intent.intentId,
+              diagnostics:recoveryCandidateDiagnostics};
           }
           await stageRecoveryCandidate(candidate,digest,true);
           if(!intent||!['staged','published'].includes(intent.phase))
