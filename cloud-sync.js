@@ -1796,7 +1796,8 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   if(!queue||typeof queue.getPending!=='function'||typeof queue.acknowledge!=='function'||
      !pending||pending.ownerUserId!==userId||pending.status!=='pending'||
      pending.baseServerVersion!==serverVersion||localStorage.getItem(OWNER_KEY)!==userId||
-     !proof||proof.remoteReadbackVerified!==true||proof.ownerId!==userId||
+     !proof||proof.remoteReadbackVerified!==true||proof.pendingLocalChangesPreserved!==true||
+     !Number.isSafeInteger(Number(proof.pendingLocalChangeCount))||proof.ownerId!==userId||
      proof.pendingOperationId!==pending.operationId||
      Number(proof.pendingLocalSequence)!==Number(pending.localSequence)||
      proof.snapshotUpdatedAt!==serverVersion||
@@ -1821,7 +1822,9 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
      !(await sameWorkspace(current.payload,snapshot(),signal)))return false;
   await assertActiveUser(userId);
   syncDiag('pending-snapshot-remote-readback',null,{
-   ok:true,remoteReadbackVerified:true,pendingLocalSequence:Number(current.localSequence),
+   ok:true,remoteReadbackVerified:true,pendingLocalChangesPreserved:true,
+   pendingLocalChangeCount:Number(proof.pendingLocalChangeCount),
+   pendingLocalSequence:Number(current.localSequence),
    snapshotRevision:Number(proof.snapshotRevision),headRevision:Number(proof.headRevision)
   });
   const acknowledgement=queue.acknowledge(localStorage,userId,current.operationId,
@@ -1829,7 +1832,9 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   const acknowledged=!!(acknowledgement&&acknowledgement.acknowledged===true)&&
     localStorage.getItem(OWNER_KEY)===userId;
   if(acknowledged)syncDiag('pending-snapshot-acknowledged',null,{
-   ok:true,acknowledged:true,pendingLocalSequence:Number(current.localSequence),
+   ok:true,acknowledged:true,pendingLocalChangesPreserved:true,
+   pendingLocalChangeCount:Number(proof.pendingLocalChangeCount),
+   pendingLocalSequence:Number(current.localSequence),
    snapshotRevision:Number(proof.snapshotRevision),headRevision:Number(proof.headRevision)
   });
   return acknowledged;
