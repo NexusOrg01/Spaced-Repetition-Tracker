@@ -1178,7 +1178,8 @@ function coordinatorHarness(options={}){
   const state={mode:'delta',protocol_version:1,head_revision:1,snapshot_revision:0,
     compacted_through_revision:0,snapshot_updated_at:'snapshot-stamp'};
   const pending={operationId:'local-queue-recovery',ownerUserId:'account-A',
-    baseServerVersion:'snapshot-stamp',localSequence:4,status:'pending'};
+    baseServerVersion:'snapshot-stamp',localSequence:4,status:'pending',
+    payload:JSON.parse(JSON.stringify(localSnapshot))};
   const calls=[];
   const client={
     auth:{async getUser(){return {data:{user:{id:'account-A'}},error:null};}},
