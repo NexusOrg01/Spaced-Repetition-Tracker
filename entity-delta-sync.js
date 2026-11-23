@@ -798,6 +798,69 @@
       }
     }
 
+    async function readCursorMismatchOutboxRecovery(owner,localFallback){
+      if(!storage||typeof storage.readWorkspaceEntityDeltaCursor!=='function')
+        return {ok:true,applicable:false};
+      const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
+      if(!cursorResult||cursorResult.ok===true||cursorResult.reason!=='local_delta_cursor_mismatch')
+        return {ok:true,applicable:false};
+      if(typeof storage.readWorkspaceEntityDeltaRecoveryState!=='function'||
+         typeof storage.readWorkspaceEntities!=='function'){
+        return {ok:false,reason:'pending_outbox_recovery_reader_unavailable'};
+      }
+      const state=await storage.readWorkspaceEntityDeltaRecoveryState(owner);
+      if(!state||state.ok!==true||state.generationMismatch!==true||
+         !state.outbox||!Array.isArray(state.outbox.groups)){
+        return {ok:false,reason:state&&state.reason||'pending_outbox_recovery_state_unverified'};
+      }
+      const projection=await storage.readWorkspaceEntities(owner);
+      if(!projection||projection.ownerId!==owner||projection.pending===true||
+         projection.generation!==state.activeGeneration||
+         !isRecord(projection.state)||!isRecord(projection.featureState)){
+        return {ok:false,reason:'pending_outbox_active_projection_unverified'};
+      }
+      const payload={
+        ...(isRecord(localFallback)?localFallback:{}),
+        __nexusDeltaSync:'entity-delta-v1',
+        state:projection.state,featureState:projection.featureState
+      };
+      return {ok:true,applicable:true,state,projection,payload};
+    }
+
+    function pendingOutboxProofMatchesState(proof,state){
+      if(!proof||!state||state.ok!==true||!state.outbox||!state.cursor)return false;
+      const cursor=proof.cursor||{},current=state.cursor,outbox=state.outbox;
+      return proof.ownerId===state.ownerId&&
+        proof.activeGeneration===state.activeGeneration&&
+        Number(proof.workspaceRevision)===Number(state.workspaceRevision)&&
+        Number(proof.throughSequence)===Number(outbox.throughSequence)&&
+        Number(proof.throughSequence)===Number(outbox.highWatermark)&&
+        Number(proof.groupCount)===Number(outbox.groupCount)&&
+        Number(proof.changeCount)===Number(outbox.changeCount)&&
+        proof.digest===outbox.digest&&
+        cursor.generation===current.generation&&
+        Number(cursor.publishRevision)===Number(current.publishRevision)&&
+        Number(cursor.acknowledgedSequence)===Number(current.acknowledgedSequence)&&
+        Number(cursor.remoteHeadRevision)===Number(current.remoteHeadRevision)&&
+        cursor.snapshotUpdatedAt===current.snapshotUpdatedAt&&
+        cursor.requiresPull===current.requiresPull;
+    }
+
+    async function verifyPendingOutboxProof(owner,proof){
+      if(!proof)return true;
+      if(!storage||typeof storage.readWorkspaceEntityDeltaRecoveryState!=='function'||
+         typeof storage.readWorkspaceEntities!=='function')return false;
+      const state=await storage.readWorkspaceEntityDeltaRecoveryState(owner);
+      if(!pendingOutboxProofMatchesState(proof,state))return false;
+      const projection=await storage.readWorkspaceEntities(owner);
+      if(!projection||projection.ownerId!==owner||projection.pending===true||
+         projection.generation!==proof.activeGeneration)return false;
+      const digest=await workspaceDigest({
+        state:projection.state,featureState:projection.featureState
+      });
+      return digest===proof.localPayloadDigest;
+    }
+
     async function prepareConflictRecovery(ownerId,recoveryOptions={}){
       if(!enabled)return {ok:false,skipped:true,reason:'feature_disabled'};
       const owner=String(ownerId||'').trim();
@@ -825,7 +888,7 @@
            typeof state.snapshot_updated_at!=='string'||!state.snapshot_updated_at){
           return {ok:false,snapshotRequired:true,reason:'unsupported_remote_sync_state'};
         }
-        const local=await getLocalWorkspace(owner);
+        let local=await getLocalWorkspace(owner);
         if(!isRecord(local)||!isRecord(local.state)||!isRecord(local.featureState)){
           return {ok:false,snapshotRequired:true,reason:'local_workspace_unavailable'};
         }
@@ -835,6 +898,13 @@
         // Delta snapshot timestamp. That timestamp is then independently verified
         // against the remote snapshot before it is used as the three-way merge base.
         const pendingBefore=await getPendingSnapshot(owner);
+        const outboxRecoveryResult=await readCursorMismatchOutboxRecovery(owner,local);
+        if(!outboxRecoveryResult||outboxRecoveryResult.ok!==true){
+          return {ok:false,retryable:true,snapshotRequired:true,
+            reason:outboxRecoveryResult&&outboxRecoveryResult.reason||'pending_outbox_recovery_unavailable'};
+        }
+        const outboxRecovery=outboxRecoveryResult.applicable===true?outboxRecoveryResult:null;
+        if(outboxRecovery)local=outboxRecovery.payload;
         const pendingToken=value=>{
           if(value===null||value===undefined)return '';
           if(typeof value!=='object')return String(value);
@@ -875,7 +945,18 @@
              currentSnapshot.payload.__nexusDeltaSync!=='entity-delta-v1')return null;
           return currentSnapshot;
         };
-        if(pendingBefore){
+        if(outboxRecovery){
+          // A stale cursor generation must not cause the durable local outbox to be
+          // ignored. Rebuild its exact local projection from the remote state at the
+          // cursor's last published revision; the candidate is not eligible to clear
+          // these rows unless that reconstruction matches the active generation.
+          const currentSnapshot=await readVerifiedRemoteBase();
+          if(!currentSnapshot)return {ok:false,retryable:true,snapshotRequired:true,
+            reason:'remote_snapshot_baseline_unverified'};
+          base={...currentSnapshot.payload,serverVersion:currentSnapshot.updated_at};
+          remoteBasePayload=currentSnapshot.payload;
+          baselineReconstructed=true;
+        }else if(pendingBefore){
           // The compatibility snapshot's base revision is part of its identity.
           // A timestamp match alone is not enough: the locally cached base may
           // contain the parked edit itself, which would make a three-way merge
@@ -915,7 +996,8 @@
           }
         }
         const baselineMatches=base.serverVersion===state.snapshot_updated_at;
-        const mergeLocalPayload=pendingBefore?pendingBefore.payload:local;
+        let mergeLocalPayload=pendingBefore?pendingBefore.payload:local;
+        let mergeBasePayload=base,pendingOutboxProof=null;
         const maxGroups=boundedLimit(recoveryOptions.maxGroups,MAX_RECONCILIATION_GROUPS,MAX_RECONCILIATION_GROUPS);
         const maxBytes=boundedLimit(recoveryOptions.maxBytes,MAX_RECONCILIATION_BYTES,MAX_RECONCILIATION_BYTES,1024);
         const groups=[];
@@ -957,6 +1039,62 @@
             throughRevision:after,expectedHeadRevision:head};
         }
 
+        if(outboxRecovery){
+          const cursor=outboxRecovery.state.cursor,cursorPublish=safeInteger(cursor&&cursor.publishRevision);
+          if(!cursor||cursor.snapshotUpdatedAt!==state.snapshot_updated_at||
+             cursorPublish===null||cursorPublish<snapshot||cursorPublish>head){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'pending_outbox_cursor_baseline_unreconstructable'};
+          }
+          const remoteGroupsAtCursor=groups.filter(group=>Number(group.revision)<=cursorPublish);
+          const commonBase=cursorPublish===snapshot
+            ?{ok:true,payload:remoteBasePayload}
+            :reconstructRemoteSnapshot(remoteBasePayload,remoteGroupsAtCursor,snapshot,cursorPublish);
+          if(!commonBase||commonBase.ok!==true){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:commonBase&&commonBase.reason||'pending_outbox_common_base_reconstruction_failed'};
+          }
+          const localOutboxGroups=outboxRecovery.state.outbox.groups.map((group,index)=>({
+            revision:cursorPublish+index+1,
+            operation_id:group.operationId,
+            changes:group.changes.map((change,ordinal)=>({...change,ordinal}))
+          }));
+          const localReconstruction=reconstructRemoteSnapshot(
+            commonBase.payload,localOutboxGroups,cursorPublish,cursorPublish+localOutboxGroups.length
+          );
+          if(!localReconstruction||localReconstruction.ok!==true||
+             !(await sameWorkspace(localReconstruction.payload,local))){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'pending_outbox_does_not_reconstruct_active_projection'};
+          }
+          mergeBasePayload=commonBase.payload;
+          mergeLocalPayload=local;
+          const localPayloadDigest=await workspaceDigest({
+            state:local.state,featureState:local.featureState
+          });
+          const outbox=outboxRecovery.state.outbox;
+          pendingOutboxProof={
+            ownerId:owner,activeGeneration:outboxRecovery.state.activeGeneration,
+            workspaceRevision:outboxRecovery.state.workspaceRevision,
+            throughSequence:outbox.throughSequence,groupCount:outbox.groupCount,
+            changeCount:outbox.changeCount,digest:outbox.digest,localPayloadDigest,
+            cursor:{
+              generation:cursor.generation,
+              publishRevision:Number(cursor.publishRevision),
+              acknowledgedSequence:Number(cursor.acknowledgedSequence),
+              remoteHeadRevision:Number(cursor.remoteHeadRevision),
+              snapshotUpdatedAt:cursor.snapshotUpdatedAt,
+              requiresPull:cursor.requiresPull
+            }
+          };
+          const latestOutboxState=await storage.readWorkspaceEntityDeltaRecoveryState(owner);
+          if(!pendingOutboxProofMatchesState(pendingOutboxProof,latestOutboxState)||
+             !(await verifyPendingOutboxProof(owner,pendingOutboxProof))){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'pending_outbox_changed_during_reconciliation'};
+          }
+        }
+
         await assertOwner(owner);
         const latestStateResult=await client.rpc('nexus_get_entity_sync_state');
         if(latestStateResult.error)return unavailable('remote_state_recheck_failed',{
@@ -981,11 +1119,14 @@
           ?!!latestBase&&latestBase.serverVersion===storedBase.serverVersion&&
             latestBaseDigest===storedBaseDigest
           :!latestBase;
-        if(!baselineStillStable||!(await sameWorkspace(local,latestLocal))||
+        const localStillStable=outboxRecovery
+          ?await verifyPendingOutboxProof(owner,pendingOutboxProof)
+          :await sameWorkspace(local,latestLocal);
+        if(!baselineStillStable||!localStillStable||
            pendingToken(latestPending)!==pendingIdentity||latestPendingDigest!==pendingDigest){
           return {ok:false,retryable:true,reason:'local_workspace_changed_during_reconciliation'};
         }
-        const prepared=await prepareSnapshotReconciliationFromBases(base,mergeLocalPayload,
+        const prepared=await prepareSnapshotReconciliationFromBases(mergeBasePayload,mergeLocalPayload,
           remoteBasePayload,groups,snapshot,head,mergeWorkspace,recoveryOptions);
         if(!prepared.ok)return prepared;
         await assertOwner(owner);
@@ -1011,6 +1152,8 @@
           pendingOperationId:pendingBefore&&pendingBefore.operationId||null,
           pendingLocalSequence:pendingBefore&&Number.isSafeInteger(Number(pendingBefore.localSequence))
             ?Number(pendingBefore.localSequence):null,
+          pendingOutboxIncluded:!!pendingOutboxProof,
+          pendingOutboxProof,
           requiresSnapshotPublication:true,requiresLocalRebase:true};
       }catch(error){
         return unavailable('account_or_snapshot_reconciliation_verification_failed',{
