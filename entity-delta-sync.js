@@ -595,11 +595,60 @@
         const localWorkspace=await getLocalWorkspace(owner);
         const pendingCheck=await validatePendingCompatibilitySnapshot(owner,state.snapshot_updated_at,localWorkspace);
         if(!pendingCheck.ok)return {ok:false,snapshotRequired:true,reason:pendingCheck.reason};
-        let pendingOutboxHasChanges=false;
+        let pendingOutboxHasChanges=false,cursorRecovery=null;
         let cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
         if(!cursorResult||cursorResult.ok!==true){
-          return {ok:false,snapshotRequired:!!(cursorResult&&cursorResult.snapshotRequired),
-            reason:cursorResult&&cursorResult.reason||'local_delta_cursor_unavailable'};
+          if(cursorResult&&cursorResult.reason==='local_delta_cursor_mismatch'&&
+             typeof storage.repairWorkspaceEntityDeltaCursorGeneration==='function'){
+            const recoveryStartedAt=Date.now();
+            const reportRecoveryProgress=(progressPhase,details={})=>{
+              if(typeof readOptions.onRecoveryProgress!=='function')return;
+              try{
+                readOptions.onRecoveryProgress({
+                  recoveryStep:'rebind-cursor-generation',progressPhase,journalPhase:'none',...details
+                });
+              }catch(_){}
+            };
+            reportRecoveryProgress('started',{ownerVerified:true});
+            const repaired=await storage.repairWorkspaceEntityDeltaCursorGeneration(owner,{
+              snapshotUpdatedAt:state.snapshot_updated_at,
+              headRevision:head,
+              compactedThroughRevision:floor
+            });
+            await assertOwner(owner);
+            if(repaired&&repaired.ok===true){
+              cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
+              if(cursorResult&&cursorResult.ok===true&&cursorResult.cursor&&
+                 cursorResult.cursor.generation===cursorResult.generation){
+                cursorRecovery={
+                  repaired:repaired.repaired===true,projectionReused:true,
+                  reason:'local_delta_cursor_mismatch',snapshotRevision:snapshot,headRevision:head
+                };
+                reportRecoveryProgress('completed',{
+                  durationMs:Math.max(0,Date.now()-recoveryStartedAt),ok:true,
+                  ownerVerified:true,projectionReused:true,snapshotRevision:snapshot,headRevision:head
+                });
+              }else{
+                reportRecoveryProgress('failed',{
+                  durationMs:Math.max(0,Date.now()-recoveryStartedAt),ok:false,
+                  reason:'cursor_repair_readback_failed'
+                });
+                return {ok:false,retryable:true,snapshotRequired:true,
+                  reason:cursorResult&&cursorResult.reason||'cursor_repair_readback_failed'};
+              }
+            }else{
+              reportRecoveryProgress('failed',{
+                durationMs:Math.max(0,Date.now()-recoveryStartedAt),ok:false,
+                reason:repaired&&repaired.reason||cursorResult.reason||'cursor_repair_unavailable'
+              });
+              return {ok:false,retryable:true,snapshotRequired:true,
+                reason:repaired&&repaired.reason||cursorResult.reason||'cursor_repair_unavailable'};
+            }
+          }
+          if(!cursorResult||cursorResult.ok!==true){
+            return {ok:false,snapshotRequired:!!(cursorResult&&cursorResult.snapshotRequired),
+              reason:cursorResult&&cursorResult.reason||'local_delta_cursor_unavailable'};
+          }
         }
         let cursor;
         if(!cursorResult.exists){
@@ -677,13 +726,13 @@
           }
         }
         if(cursor.requiresPull!==true&&Number(cursor.publishRevision)===head){
-          return {ok:true,idle:true,appliedCount:0,cursor};
+          return {ok:true,idle:true,appliedCount:0,cursor,cursorRecovery};
         }
         const page=await readRemotePage(owner,Number(cursor.publishRevision),{
           limitGroups:Math.max(1,Math.min(100,Math.floor(Number(readOptions.limitGroups)||1))),
           maxBytes:Math.max(1024,Math.min(MAX_BYTES,Math.floor(Number(readOptions.maxBytes)||MAX_BYTES)))
         });
-        if(!page||page.ok!==true)return page||unavailable('remote_page_unavailable');
+        if(!page||page.ok!==true)return {...(page||unavailable('remote_page_unavailable')),cursorRecovery};
         if(page.snapshotRequired||page.mode!=='delta'){
           return {ok:false,snapshotRequired:true,reason:page.reason||'remote_snapshot_required'};
         }
@@ -691,7 +740,7 @@
           if(page.headRevision!==Number(cursor.publishRevision)){
             return {ok:false,snapshotRequired:true,reason:'empty_remote_page_before_server_head'};
           }
-          return {ok:true,idle:true,appliedCount:0,cursor,headRevision:page.headRevision};
+          return {ok:true,idle:true,appliedCount:0,cursor,headRevision:page.headRevision,cursorRecovery};
         }
         let appliedCount=0,lastWorkspace=null;
         for(const group of page.groups){
@@ -733,7 +782,7 @@
         }
         return {ok:true,appliedCount,cursor,workspace:lastWorkspace,
           headRevision:page.headRevision,requiresPull:cursor.requiresPull===true,
-          morePending:cursor.requiresPull===true};
+          morePending:cursor.requiresPull===true,cursorRecovery};
       }catch(error){
         return unavailable('account_or_remote_apply_verification_failed',{
           retryable:true,errorCode:String(error&&error.code||'unknown')
@@ -1563,18 +1612,21 @@
       const maxRounds=Math.max(1,Math.min(50,Math.floor(Number(syncOptions.maxRounds)||20)));
       const maxGroups=Math.max(1,Math.min(100,Math.floor(Number(syncOptions.maxGroups)||20)));
       const maxBytes=Math.max(1024,Math.min(MAX_BYTES,Math.floor(Number(syncOptions.maxBytes)||MAX_BYTES)));
-      let appliedCount=0,publishedCount=0,acknowledgedCount=0;
+      let appliedCount=0,publishedCount=0,acknowledgedCount=0,cursorRecovery=null;
       for(let round=0;round<maxRounds;round++){
-        const pull=await applyRemotePage(owner,{limitGroups:1,maxBytes});
-        if(pull&&pull.skipped)return {...pull,rounds:round+1};
+        const pull=await applyRemotePage(owner,{
+          limitGroups:1,maxBytes,onRecoveryProgress:syncOptions.onRecoveryProgress
+        });
+        if(pull&&pull.cursorRecovery)cursorRecovery=pull.cursorRecovery;
+        if(pull&&pull.skipped)return {...pull,rounds:round+1,cursorRecovery};
         if(!pull||pull.ok!==true){
           if(pull&&pull.reason==='local_outbox_pending'){
             return {ok:false,conflict:true,requiresSnapshotReconciliation:true,
               reason:'local_and_remote_changes_overlap',appliedCount,publishedCount,
-              acknowledgedCount,rounds:round+1};
+              acknowledgedCount,rounds:round+1,cursorRecovery};
           }
           return {...(pull||unavailable('remote_pull_unavailable')),appliedCount,
-            publishedCount,acknowledgedCount,rounds:round+1};
+            publishedCount,acknowledgedCount,rounds:round+1,cursorRecovery};
         }
         const applied=Number(pull.appliedCount)||0;
         appliedCount+=applied;
@@ -1615,10 +1667,11 @@
         const snapshotCompaction=await compactIdleSnapshot(owner,syncOptions);
         return {ok:true,appliedCount,publishedCount,acknowledgedCount,rounds:round+1,
           throughSequence:push.throughSequence,
-          snapshotCompaction:snapshotCompaction&&snapshotCompaction.skipped?null:snapshotCompaction};
+          snapshotCompaction:snapshotCompaction&&snapshotCompaction.skipped?null:snapshotCompaction,
+          cursorRecovery};
       }
       return {ok:false,retryable:true,reason:'delta_sync_round_limit',
-        appliedCount,publishedCount,acknowledgedCount,rounds:maxRounds};
+        appliedCount,publishedCount,acknowledgedCount,rounds:maxRounds,cursorRecovery};
     }
 
     return Object.freeze({readRemotePage,applyRemotePage,publishPending,prepareConflictRecovery,
