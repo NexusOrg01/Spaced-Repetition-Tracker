@@ -551,7 +551,7 @@ function coordinatorHarness(options={}){
   let cursor={ownerId:owner,generation:'generation-A',workspaceRevision:2,publishRevision:initialPublishRevision,
     acknowledgedSequence:0,remoteHeadRevision:initialPublishRevision,
     snapshotUpdatedAt:'snapshot-stamp',requiresPull:false};
-  const published=[],applied=[],acknowledgements=[],calls=[];
+  const published=[],publishedGroups=[],applied=[],acknowledgements=[],calls=[];
   const storage={
     async readWorkspaceEntityDeltaCursor(){
       return {ok:true,exists:true,cursor:{...cursor},generation:cursor.generation,workspaceRevision:cursor.workspaceRevision};
@@ -603,10 +603,14 @@ function coordinatorHarness(options={}){
       calls.push({name,args:args?JSON.parse(JSON.stringify(args)):null});
       if(name==='nexus_get_entity_sync_state')return {data:{...state},error:null};
       if(name==='nexus_read_entity_operations'){
-        const page=remoteGroups.filter(group=>group.revision>args.p_after_revision).slice(0,args.p_limit_groups);
+        const afterRevision=Number(args.p_after_revision)||0;
+        const page=[...remoteGroups,...publishedGroups]
+          .filter(group=>group.revision>afterRevision)
+          .sort((a,b)=>a.revision-b.revision)
+          .slice(0,args.p_limit_groups);
         return {data:{mode:'delta',snapshot_required:false,head_revision:state.head_revision,
           snapshot_revision:state.snapshot_revision,compacted_through_revision:state.compacted_through_revision,
-          next_revision:page.length?page[page.length-1].revision:args.p_after_revision,
+          next_revision:page.length?page[page.length-1].revision:afterRevision,
           bytes:100,groups:page},error:null};
       }
       if(name==='nexus_publish_entity_operation'){
@@ -616,6 +620,8 @@ function coordinatorHarness(options={}){
         const revision=state.head_revision+1;
         state.head_revision=revision;
         published.push(args.p_operation_id);
+        publishedGroups.push({revision,operation_id:args.p_operation_id,
+          changes:args.p_changes.map((change,index)=>({...change,ordinal:index}))});
         return {data:{ok:true,replayed:false,operation_id:args.p_operation_id,revision,
           change_count:args.p_changes.length,head_revision:revision},error:null};
       }
