@@ -1663,6 +1663,17 @@ try {
   const onlineAtAccountReturn = await page.evaluate(() => navigator.onLine === true);
   assert.equal(onlineAtAccountReturn, true,
     'The A→B→A acceptance run must execute in an online browser context.');
+  let returnAReadHeld = false;
+  let releaseReturnARead = null;
+  const holdReturnARead = async route => {
+    const requestUrl = new URL(route.request().url());
+    if (!returnAReadHeld && requestUrl.pathname === '/rest/v1/rpc/nexus_read_entity_operations') {
+      returnAReadHeld = true;
+      await new Promise(resolve => { releaseReturnARead = resolve; });
+    }
+    try { await route.continue(); } catch (_) {}
+  };
+  await page.route(initialAReadPattern, holdReturnARead);
   const returnedA = await signInAppTestAccount(appEmailA, appPasswordA);
   assert.equal(returnedA.userId, ownerA);
   // The compatibility workspace is rendered before projection reuse/rebuild
@@ -1708,6 +1719,83 @@ try {
     'The complete live A→B→A return must reveal the owner-verified cached workspace within 30 seconds.');
   assert.ok(cachedRevealDurationMs <= 30000,
     'The owner-verified compatibility render operation must finish within 30 seconds.');
+
+  // Hold the returning Account A Delta read while exercising real application
+  // navigation. This proves that a large owner-verified workspace remains
+  // usable and its views can render before cloud verification reaches Synced.
+  let navigationDuringSyncEvidence = null;
+  try {
+    for (let i = 0; i < 400 && !returnAReadHeld; i++) await page.waitForTimeout(25);
+    assert.equal(returnAReadHeld, true,
+      'the returning Account A sync must reach the deliberately held authenticated remote-read boundary');
+    const statusBeforeNavigation = String(await page.locator('#cloudStatus').textContent() || '').trim();
+    assert.notEqual(statusBeforeNavigation, 'Synced',
+      'holding the returning account remote read must keep the UI from claiming cloud verification');
+
+    const navigationStartedAt = Date.now();
+    const navigationViews = ['overview', 'studyhub', 'topics'];
+    for (const view of navigationViews) {
+      await page.locator('button.tab[data-view="' + view + '"]').click();
+      await page.waitForFunction(viewName => {
+        const panel = document.getElementById('view-' + viewName);
+        const button = document.querySelector('button.tab[data-view="' + viewName + '"]');
+        return !!panel && panel.classList.contains('active') &&
+          !!button && button.getAttribute('aria-selected') === 'true';
+      }, view, { timeout: 15000 });
+      if (view === 'overview') {
+        await page.waitForFunction(() => {
+          const stats = document.getElementById('statsGrid');
+          return !!stats && stats.children.length > 0;
+        }, null, { timeout: 15000 });
+      } else if (view === 'studyhub') {
+        await page.waitForFunction(() => {
+          const content = document.getElementById('hubContent');
+          return !!content && content.children.length > 0;
+        }, null, { timeout: 15000 });
+      } else if (view === 'topics') {
+        await page.waitForFunction(() => {
+          const grid = document.getElementById('topicGrid');
+          return !!grid && grid.children.length > 0;
+        }, null, { timeout: 15000 });
+      }
+    }
+    const navigationDuringSyncMs = Date.now() - navigationStartedAt;
+    const navigationState = await page.evaluate(ownerId => ({
+      owner: localStorage.getItem('nexus.cloud.last-user-id'),
+      workspaceAuth: document.documentElement.dataset.workspaceAuth || '',
+      status: String(document.querySelector('#cloudStatus')?.textContent || '').trim(),
+      activeView: document.querySelector('.view.active')?.id || '',
+      topicCards: document.querySelectorAll('#topicGrid button[data-action="edit-topic"]').length
+    }), ownerA);
+    assert.equal(navigationState.owner, ownerA,
+      'navigation during Account A verification must retain the verified Account A owner');
+    assert.equal(navigationState.workspaceAuth, 'ready',
+      'navigation during sync must keep the owner-verified cached workspace available');
+    assert.notEqual(navigationState.status, 'Synced',
+      'navigation must not turn an in-flight remote verification into a false Synced state');
+    assert.equal(navigationState.activeView, 'view-topics',
+      'the final Library view must remain selected after rendering during sync');
+    assert.ok(navigationState.topicCards > 0,
+      'the large Library topic list must render while cloud verification is still held');
+    assert.ok(navigationDuringSyncMs <= 30000,
+      'Home, Study Hub and Library must remain navigable and render within 30 seconds during sync');
+    navigationDuringSyncEvidence = {
+      views: navigationViews,
+      durationMs: navigationDuringSyncMs,
+      ownerVerified: navigationState.workspaceAuth === 'ready' && navigationState.owner === ownerA,
+      statusWhileReadHeld: navigationState.status,
+      finalView: navigationState.activeView,
+      topicCards: navigationState.topicCards
+    };
+    check('DLA-09E keeps Home, Study Hub and Library navigable and rendered during held Account A verification',
+      navigationDuringSyncEvidence.ownerVerified &&
+      navigationDuringSyncEvidence.statusWhileReadHeld !== 'Synced' &&
+      navigationDuringSyncEvidence.topicCards > 0);
+    console.log('DLA-09E_NAVIGATION_DURING_SYNC=' + JSON.stringify(navigationDuringSyncEvidence));
+  } finally {
+    if (releaseReturnARead) releaseReturnARead();
+    await page.unroute(initialAReadPattern, holdReturnARead);
+  }
 
   // A successful verification event ends the wait early. Otherwise observe the
   // full 60-second deadline so a watchdog-delayed state is measured rather than
@@ -1897,6 +1985,7 @@ try {
     accountBReadyMs,
     accountBOfflineSyncMs,
     accountBOfflineEditVerified: !!accountBOfflineVerified?.state?.topics?.some(topic => topic.id === accountBOfflineEditId),
+    navigationDuringSync: navigationDuringSyncEvidence,
     returningAccountOwnerVerified: cachedRenderEvent.ownerVerified === true,
     cachedRevealWallMs,
     cachedRevealDurationMs,
