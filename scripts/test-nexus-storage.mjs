@@ -1898,6 +1898,17 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(staleGenerationRead.ok,false);
   assert.equal(staleGenerationRead.reason,'local_delta_cursor_mismatch',
     'a stale generation must be reported rather than silently accepted');
+  const recoveryState=await loaded.api.readWorkspaceEntityDeltaRecoveryState(owner);
+  assert.equal(recoveryState.ok,true,
+    'read-only recovery may inspect pending outbox rows only after active owner, manifest, generation and revision integrity are verified');
+  assert.equal(recoveryState.generationMismatch,true,
+    'the recovery reader must report, not silently accept, the stale cursor generation');
+  assert.equal(recoveryState.cursor.generation,'dla09-stale-generation');
+  assert.ok(recoveryState.activeGeneration);
+  assert.equal(recoveryState.outbox.groups.length,1,
+    'the recovery reader must preserve the exact unacknowledged operation while the cursor generation is stale');
+  assert.equal(recoveryState.outbox.groups[0].operationId,'local-operation-pending');
+  assert.equal(recoveryState.outbox.hasMore,false);
   const generationRepair=await loaded.api.repairWorkspaceEntityDeltaCursorGeneration(owner,{
     snapshotUpdatedAt:'verified-remote-snapshot-2026-11-14',
     headRevision:3,

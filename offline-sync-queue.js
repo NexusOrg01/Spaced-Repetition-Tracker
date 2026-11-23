@@ -93,6 +93,38 @@ function rebaseWithBase(s,owner,payload,base,reason,basePayload,transaction={}){
 }
 function archive(s,owner,reason){if(!owner)return false;const q=read(s),key=String(owner),old=getPending(s,key);if(!old)return false;const item={...old,status:'archived',archivedAt:now(),archiveReason:String(reason||'user-selected-cloud-restore')};q.archived.push(item);q.pending[key]=item;write(s,[{key:KEY,value:JSON.stringify(q)}]);return true;}
 function acknowledge(s,owner,operationId,base,stamp){if(!owner||!operationId)throw new Error('Verified account owner and operation ID required.');const q=read(s),key=String(owner),x=q.pending[key],sm=stamps(s);sm[key]=typeof stamp==='string'&&stamp?stamp:null;let acknowledged=false,rebased=false;if(x&&x.status==='pending'&&x.operationId===operationId){delete q.pending[key];acknowledged=true;}else if(x&&x.status==='pending'&&x.baseServerVersion===(base||null)){q.pending[key]={...x,baseServerVersion:sm[key],updatedAt:now()};rebased=true;}write(s,[{key:KEY,value:JSON.stringify(q)},{key:STAMP,value:JSON.stringify(sm)}]);return {acknowledged,rebased};}
+function acknowledgeWithBase(s,owner,operationId,base,stamp,verifiedRemotePayload){
+ if(!s||!owner||!operationId||!obj(verifiedRemotePayload)||
+    !obj(verifiedRemotePayload.state)||!obj(verifiedRemotePayload.featureState)||
+    typeof stamp!=='string'||!stamp){
+  throw fail('A verified remote snapshot and matching pending operation are required for atomic acknowledgement.');
+ }
+ const q=read(s),key=String(owner),current=q.pending[key],sm=stamps(s),
+  bases=readOwnerMap(s,BASE,'The last-synced workspace base');
+ if(!current||current.status!=='pending'||current.ownerUserId!==key){
+  return {acknowledged:false,rebased:false,reason:'pending_snapshot_missing_or_wrong_owner'};
+ }
+ const expectedBase=base||null;
+ let acknowledged=false,rebased=false;
+ if(current.operationId===operationId){
+  delete q.pending[key];acknowledged=true;
+ }else if(current.baseServerVersion===expectedBase){
+  q.pending[key]={...current,baseServerVersion:stamp,updatedAt:now()};rebased=true;
+ }else{
+  return {acknowledged:false,rebased:false,reason:'pending_operation_changed'};
+ }
+ // Base, pending queue and server stamp are one rollback-safe localStorage write.
+ // If any key cannot be committed, none of the three may advance independently.
+ bases[key]={state:verifiedRemotePayload.state,featureState:verifiedRemotePayload.featureState,
+  serverVersion:stamp,verified:true};
+ sm[key]=stamp;
+ write(s,[
+  {key:KEY,value:JSON.stringify(q)},
+  {key:BASE,value:JSON.stringify(bases)},
+  {key:STAMP,value:JSON.stringify(sm)}
+ ]);
+ return {acknowledged,rebased,baseUpdated:true};
+}
 function rememberStamp(s,owner,stamp){if(!owner)return;const sm=stamps(s);sm[String(owner)]=typeof stamp==='string'&&stamp?stamp:null;write(s,[{key:STAMP,value:JSON.stringify(sm)}]);}
 function getStamp(s,owner){if(!owner)return null;const sm=stamps(s);return sm[String(owner)]||null;}
 function readOwnerMap(s,key,label){
@@ -237,5 +269,5 @@ function compactMetadata(s){
 }
 function summary(s,owner){const q=read(s),x=owner?q.pending[String(owner)]:null;return {schemaVersion:SCHEMA,pendingForOwner:!!(x&&x.status==='pending'),localSequence:x&&x.status==='pending'?x.localSequence:null,archivedForOwner:q.archived.filter(a=>a&&a.ownerUserId===String(owner)).length};}
 function allPending(s){const q=read(s);return Object.keys(q.pending).map(k=>q.pending[k]).filter(x=>x&&x.status==='pending');}
-return {KEY,OWNER,STAMP,BASE,CONFLICTS,QUARANTINE,SCHEMA,commitWorkspace,forgetAccount,compactMetadata,getPending,hasPending:(s,o)=>!!getPending(s,o),getAllPending:allPending,rebase,rebaseWithBase,archive,acknowledge,rememberStamp,getStamp,getBase,rememberBase,archiveConflicts,commitVerifiedEntityDeltaSnapshot,getConflictHistory,summary,getWorkspaceComparisonRevisionKey:workspaceComparisonRevisionKey,createWorkspaceComparisonRevisionEntry};
+return {KEY,OWNER,STAMP,BASE,CONFLICTS,QUARANTINE,SCHEMA,commitWorkspace,forgetAccount,compactMetadata,getPending,hasPending:(s,o)=>!!getPending(s,o),getAllPending:allPending,rebase,rebaseWithBase,archive,acknowledge,acknowledgeWithBase,rememberStamp,getStamp,getBase,rememberBase,archiveConflicts,commitVerifiedEntityDeltaSnapshot,getConflictHistory,summary,getWorkspaceComparisonRevisionKey:workspaceComparisonRevisionKey,createWorkspaceComparisonRevisionEntry};
 });

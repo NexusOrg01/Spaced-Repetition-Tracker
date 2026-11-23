@@ -409,4 +409,46 @@ function withFacadeAtomic(storage,callback){
  }
 }
 
+
+{
+ const owner='atomic-ack-owner';
+ const s=new MemoryStorage({[queue.OWNER]:owner});
+ const base=payload('atomic-base'),pendingPayload=payload('atomic-pending'),remote=payload('atomic-remote');
+ queue.rememberStamp(s,owner,'atomic-rev-1');
+ queue.rememberBase(s,owner,base,'atomic-rev-1');
+ queue.commitWorkspace(s,[
+  {key:stateKey,value:JSON.stringify(pendingPayload.state)},
+  {key:'recall.study.features.v1',value:JSON.stringify(pendingPayload.featureState)}
+ ],pendingPayload,{baseServerVersion:'atomic-rev-1'});
+ const pending=queue.getPending(s,owner);
+ const acknowledged=queue.acknowledgeWithBase(s,owner,pending.operationId,
+  pending.baseServerVersion,'atomic-rev-2',remote);
+ assert.equal(acknowledged.acknowledged,true,
+  'a read-back-verified pending operation must be acknowledged');
+ assert.equal(queue.getPending(s,owner),null,
+  'the exact pending operation must be removed in the same transaction as its new base');
+ assert.deepEqual(queue.getBase(s,owner),{
+  state:remote.state,featureState:remote.featureState,serverVersion:'atomic-rev-2',verified:true
+ });
+ assert.equal(queue.getStamp(s,owner),'atomic-rev-2');
+
+ const later=payload('atomic-later');
+ queue.commitWorkspace(s,[
+  {key:stateKey,value:JSON.stringify(later.state)},
+  {key:'recall.study.features.v1',value:JSON.stringify(later.featureState)}
+ ],later,{baseServerVersion:'atomic-rev-2'});
+ const baseBefore=queue.getBase(s,owner),stampBefore=queue.getStamp(s,owner),
+  pendingBefore=queue.getPending(s,owner);
+ const mismatch=queue.acknowledgeWithBase(s,owner,'not-the-current-operation',
+  'atomic-rev-1','atomic-rev-3',payload('must-not-advance'));
+ assert.equal(mismatch.acknowledged,false);
+ assert.equal(mismatch.rebased,false);
+ assert.deepEqual(queue.getBase(s,owner),baseBefore,
+  'a stale acknowledgement must not advance the merge base');
+ assert.equal(queue.getStamp(s,owner),stampBefore,
+  'a stale acknowledgement must not advance the server stamp');
+ assert.deepEqual(queue.getPending(s,owner),pendingBefore,
+  'a stale acknowledgement must leave the exact pending edit intact');
+}
+
 console.log('Account-bound offline sync queue tests passed.');
