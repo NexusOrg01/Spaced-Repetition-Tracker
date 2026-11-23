@@ -2592,6 +2592,9 @@ function makeParkedRecoveryFixture(options={}){
         state.snapshot_revision=0;state.head_revision=0;state.compacted_through_revision=0;
       }
       state.snapshot_updated_at='snapshot-stamp-2';
+      // The authenticated sync-state RPC reads the harness-owned state object;
+      // mirror the published revision tuple there before the mandatory read-back.
+      Object.assign(h.state,state);
       if(options.readbackMode==='missing')remoteSnapshot=null;
       else if(options.readbackMode==='missing-edit')remoteSnapshot={
         payload:{...candidate,state:{...candidate.state,topics:[{id:'parked-topic',name:'original'}]}},
