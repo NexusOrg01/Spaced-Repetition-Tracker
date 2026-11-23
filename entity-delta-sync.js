@@ -734,7 +734,7 @@
         });
         if(!page||page.ok!==true)return {...(page||unavailable('remote_page_unavailable')),cursorRecovery};
         if(page.snapshotRequired||page.mode!=='delta'){
-          return {ok:false,snapshotRequired:true,reason:page.reason||'remote_snapshot_required'};
+          return {ok:false,snapshotRequired:true,reason:page.reason||'remote_snapshot_required',cursorRecovery};
         }
         if(!page.groups.length){
           if(page.headRevision!==Number(cursor.publishRevision)){
@@ -750,7 +750,7 @@
           if(!applied||applied.ok!==true){
             return {ok:false,snapshotRequired:!!(applied&&applied.snapshotRequired),
               reason:applied&&applied.reason||'remote_entity_apply_failed',
-              appliedCount,cursor:applied&&applied.cursor||cursor};
+              appliedCount,cursor:applied&&applied.cursor||cursor,cursorRecovery};
           }
           await assertOwner(owner);
           cursor=applied.cursor;
@@ -761,7 +761,7 @@
             catch(error){
               return {ok:false,snapshotRequired:true,appliedCount,cursor,
                 reason:'in_memory_workspace_apply_failed',
-                errorCode:String(error&&error.code||'unknown')};
+                errorCode:String(error&&error.code||'unknown'),cursorRecovery};
             }
             await assertOwner(owner);
           }
@@ -777,7 +777,7 @@
           await assertOwner(owner);
           if(rebased!==true&&!(rebased&&rebased.ok===true)){
             return {ok:false,retryable:true,snapshotRequired:true,appliedCount,cursor,
-              reason:'compatibility_snapshot_rebase_failed'};
+              reason:'compatibility_snapshot_rebase_failed',cursorRecovery};
           }
         }
         return {ok:true,appliedCount,cursor,workspace:lastWorkspace,
@@ -1632,7 +1632,7 @@
         appliedCount+=applied;
         if(pull.requiresPull===true||pull.morePending===true){
           if(applied<1)return {ok:false,retryable:true,reason:'remote_pull_made_no_progress',
-            appliedCount,publishedCount,acknowledgedCount,rounds:round+1};
+            appliedCount,publishedCount,acknowledgedCount,rounds:round+1,cursorRecovery};
           continue;
         }
         const push=await publishPending(owner,{maxGroups,maxBytes});
@@ -1641,13 +1641,13 @@
             return {...push,requiresSnapshotReconciliation:true,appliedCount,
               publishedCount:publishedCount+(Number(push.publishedCount)||0),
               acknowledgedCount:acknowledgedCount+(Number(push.acknowledgedCount)||0),
-              rounds:round+1};
+              rounds:round+1,cursorRecovery};
           }
           if(push&&push.requiresPull&&!push.morePending){
             continue;
           }
           return {...(push||unavailable('local_publish_unavailable')),appliedCount,
-            publishedCount,acknowledgedCount,rounds:round+1};
+            publishedCount,acknowledgedCount,rounds:round+1,cursorRecovery};
         }
         const published=Number(push.publishedCount)||0;
         publishedCount+=published;
@@ -1660,7 +1660,7 @@
         if(push.requiresPull===true||push.morePending===true){
           if(published<1&&!push.requiresPull){
             return {ok:false,retryable:true,reason:'local_publish_made_no_progress',
-              appliedCount,publishedCount,acknowledgedCount,rounds:round+1};
+              appliedCount,publishedCount,acknowledgedCount,rounds:round+1,cursorRecovery};
           }
           continue;
         }
