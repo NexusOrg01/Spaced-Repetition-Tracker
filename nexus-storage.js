@@ -2917,13 +2917,17 @@
        Number.isSafeInteger(Number(pendingOutboxProof.groupCount))&&Number(pendingOutboxProof.groupCount)>=0&&
        Number.isSafeInteger(Number(pendingOutboxProof.changeCount))&&Number(pendingOutboxProof.changeCount)>=0&&
        typeof pendingOutboxProof.digest==='string'&&/^[a-f0-9]{64}$/i.test(pendingOutboxProof.digest)&&
+        typeof pendingOutboxProof.localPayloadDigest==='string'&&/^[a-f0-9]{64}$/i.test(pendingOutboxProof.localPayloadDigest)&&
        pendingOutboxProof.cursor&&typeof pendingOutboxProof.cursor==='object'&&
        typeof pendingOutboxProof.cursor.generation==='string'&&
        Number.isSafeInteger(Number(pendingOutboxProof.cursor.publishRevision))&&
        Number.isSafeInteger(Number(pendingOutboxProof.cursor.acknowledgedSequence))&&
        Number.isSafeInteger(Number(pendingOutboxProof.cursor.remoteHeadRevision))&&
-       typeof pendingOutboxProof.cursor.snapshotUpdatedAt==='string'&&
-       typeof pendingOutboxProof.cursor.requiresPull==='boolean');
+        Number(pendingOutboxProof.cursor.remoteHeadRevision)>=Number(pendingOutboxProof.cursor.publishRevision)&&
+       typeof pendingOutboxProof.cursor.snapshotUpdatedAt==='string'&&!!pendingOutboxProof.cursor.snapshotUpdatedAt&&
+       typeof pendingOutboxProof.cursor.requiresPull==='boolean'&&
+        pendingOutboxProof.cursor.requiresPull===
+          (Number(pendingOutboxProof.cursor.remoteHeadRevision)>Number(pendingOutboxProof.cursor.publishRevision)));
     if(!validPendingProof||!intentId||intentId.length>160||!/^[a-f0-9]{64}$/i.test(candidateDigest)||!baseUpdatedAt||
        !Number.isSafeInteger(expectedHeadRevision)||expectedHeadRevision<0||
        !Number.isSafeInteger(snapshotRevision)||snapshotRevision<0||snapshotRevision>expectedHeadRevision||
