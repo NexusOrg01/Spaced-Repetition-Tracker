@@ -1905,6 +1905,50 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'a cursor with structural corruption beyond its generation must not be repaired');
   migrationMeta.set(deltaCursorKey,repairedStoredCursor);
 
+  // A cursor whose generation field alone is stale may be rebound only after the
+  // active projection, snapshot baseline, revisions and complete outbox are verified.
+  const deltaCursorKey='workspace-entity-delta-cursor:'+encodeURIComponent(owner);
+  const migrationMeta=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  const originalCursor=clone(migrationMeta.get(deltaCursorKey));
+  assert.ok(originalCursor,'the cursor-generation recovery fixture must have a durable cursor');
+  migrationMeta.set(deltaCursorKey,{...originalCursor,generation:'dla09-stale-generation'});
+  const staleGenerationRead=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(staleGenerationRead.ok,false);
+  assert.equal(staleGenerationRead.reason,'local_delta_cursor_mismatch',
+    'a stale generation must be reported rather than silently accepted');
+  const generationRepair=await loaded.api.repairWorkspaceEntityDeltaCursorGeneration(owner,{
+    snapshotUpdatedAt:'verified-remote-snapshot-2026-11-14',
+    headRevision:3,
+    compactedThroughRevision:0
+  });
+  assert.equal(generationRepair.ok,true,
+    'a generation-only mismatch with a verified active projection and complete outbox must be repairable');
+  assert.equal(generationRepair.repaired,true);
+  assert.equal(generationRepair.cursor.generation,generationRepair.generation);
+  assert.notEqual(generationRepair.cursor.generation,'dla09-stale-generation');
+  const outboxAfterGenerationRepair=await loaded.api.readWorkspaceEntityOutboxGroups(
+    owner,Number(generationRepair.cursor.acknowledgedSequence),1000,4096);
+  assert.equal(outboxAfterGenerationRepair.groups.length,1,
+    'generation repair must preserve the unacknowledged local operation');
+  assert.equal(outboxAfterGenerationRepair.groups[0].operationId,'local-operation-pending');
+  const wrongBaselineRepair=await loaded.api.repairWorkspaceEntityDeltaCursorGeneration(owner,{
+    snapshotUpdatedAt:'wrong-snapshot-baseline',
+    headRevision:3,
+    compactedThroughRevision:0
+  });
+  assert.equal(wrongBaselineRepair.ok,false,
+    'a cursor repair must reject a remote snapshot baseline mismatch');
+  const repairedStoredCursor=clone(migrationMeta.get(deltaCursorKey));
+  migrationMeta.set(deltaCursorKey,{...repairedStoredCursor,protocolVersion:2});
+  const invalidCursorRepair=await loaded.api.repairWorkspaceEntityDeltaCursorGeneration(owner,{
+    snapshotUpdatedAt:'verified-remote-snapshot-2026-11-14',
+    headRevision:3,
+    compactedThroughRevision:0
+  });
+  assert.equal(invalidCursorRepair.ok,false,
+    'a cursor with structural corruption beyond its generation must not be repaired');
+  migrationMeta.set(deltaCursorKey,repairedStoredCursor);
+
   const blocked=await loaded.api.applyWorkspaceEntityDeltaGroup(owner,{
     revision:4,operation_id:'remote-operation-four',
     changes:[{collection:'topics',id:'apply-local-pending',operation:'put',position:0,
