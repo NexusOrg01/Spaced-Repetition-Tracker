@@ -1291,11 +1291,23 @@
             proof.baseServerVersion===pendingAtStartIdentity.baseServerVersion&&
             proof.payloadDigest===pendingAtStartDigest;
         };
-        const preparedContainsPending=targetPrepared=>!pendingAtStartIdentity||
-          !!(targetPrepared&&targetPrepared.pendingSnapshotIncluded===true&&
-            targetPrepared.pendingSnapshotDigest===pendingAtStartDigest&&
-            targetPrepared.pendingOperationId===pendingAtStartIdentity.operationId&&
-            Number(targetPrepared.pendingLocalSequence)===pendingAtStartIdentity.localSequence);
+        const pendingOutboxProofMatchesIntent=(targetIntent,targetPrepared)=>{
+          const stored=targetIntent&&targetIntent.pendingOutboxProof||null;
+          const preparedProof=targetPrepared&&targetPrepared.pendingOutboxProof||null;
+          if(!stored&&!preparedProof)return true;
+          return !!stored&&!!preparedProof&&stableJson(stored)===stableJson(preparedProof);
+        };
+        const preparedContainsPending=targetPrepared=>{
+          const compatibilityIncluded=!pendingAtStartIdentity||
+            !!(targetPrepared&&targetPrepared.pendingSnapshotIncluded===true&&
+              targetPrepared.pendingSnapshotDigest===pendingAtStartDigest&&
+              targetPrepared.pendingOperationId===pendingAtStartIdentity.operationId&&
+              Number(targetPrepared.pendingLocalSequence)===pendingAtStartIdentity.localSequence);
+          const outboxIncluded=!!(targetPrepared&&targetPrepared.pendingOutboxIncluded===true)
+            ?!!targetPrepared.pendingOutboxProof
+            :!targetPrepared?.pendingOutboxProof;
+          return compatibilityIncluded&&outboxIncluded;
+        };
         let recovery=await runRecoveryStep('read-journal',()=>storage.readWorkspaceEntityRecovery(owner));
         intent=recovery&&recovery.intent||null;
         if(intent&&!pendingProofMatchesIntent(intent)){
@@ -1322,9 +1334,10 @@
         if(!intent||intent.phase==='prepared'){
           prepared=await runRecoveryStep('prepare-candidate',()=>prepareConflictRecovery(owner,recoveryOptions));
           if(!prepared||prepared.ok!==true)return prepared||unavailable('recovery_preparation_unavailable');
-          if(!preparedContainsPending(prepared)){
+          if(!preparedContainsPending(prepared)||
+             (intent&&!pendingOutboxProofMatchesIntent(intent,prepared))){
             return {ok:false,retryable:true,snapshotRequired:true,
-              reason:'pending_snapshot_not_in_recovery_candidate'};
+              reason:intent?'pending_outbox_recovery_proof_mismatch':'pending_snapshot_not_in_recovery_candidate'};
           }
           // Three-way merge normalizes export metadata (including exportedAt) on
           // every reconstruction. A prepared journal already owns the canonical
@@ -1366,7 +1379,8 @@
                 localSequence:pendingAtStartIdentity.localSequence,
                 baseServerVersion:pendingAtStartIdentity.baseServerVersion,
                 payloadDigest:pendingAtStartDigest
-              }:null
+              }:null,
+              pendingOutboxProof:prepared.pendingOutboxProof||null
               });
               if(result&&result.ok===true&&result.intent)intent=result.intent;
               return result;
@@ -1410,9 +1424,10 @@
           if(!prepared||prepared.ok!==true)return prepared||{
             ok:false,retryable:true,snapshotRequired:true,reason:'staged_recovery_reconstruction_unavailable'
           };
-          if(!preparedContainsPending(prepared)){
+          if(!preparedContainsPending(prepared)||
+             !pendingOutboxProofMatchesIntent(intent,prepared)){
             return {ok:false,retryable:true,snapshotRequired:true,
-              reason:'pending_snapshot_not_in_recovery_candidate'};
+              reason:'pending_outbox_recovery_proof_mismatch',intentId:intent.intentId};
           }
           const metadata=intent.payloadMetadata&&typeof intent.payloadMetadata==='object'?intent.payloadMetadata:{};
           candidate={
@@ -1437,6 +1452,19 @@
         }
         if(!staged||staged.ownerId!==owner||staged.pending!==true)
           return {ok:false,retryable:true,snapshotRequired:true,reason:'staged_recovery_generation_unavailable'};
+        if(intent.pendingOutboxProof&&!prepared){
+          prepared=await runRecoveryStep('verify-pending-outbox-proof',()=>prepareConflictRecovery(owner,recoveryOptions));
+          if(!prepared||prepared.ok!==true||!preparedContainsPending(prepared)||
+             !pendingOutboxProofMatchesIntent(intent,prepared)){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'pending_outbox_recovery_proof_mismatch',intentId:intent.intentId};
+          }
+        }
+        if(intent.pendingOutboxProof&&
+           !(await verifyPendingOutboxProof(owner,intent.pendingOutboxProof))){
+          return {ok:false,retryable:true,snapshotRequired:true,
+            reason:'pending_outbox_changed_before_recovery_publication',intentId:intent.intentId};
+        }
         const metadata=intent.payloadMetadata&&typeof intent.payloadMetadata==='object'?intent.payloadMetadata:{};
         candidate={...metadata,__nexusDeltaSync:'entity-delta-v1',state:staged.state,featureState:staged.featureState};
         const digest=await workspaceDigest(candidate);
@@ -1497,16 +1525,26 @@
         await assertOwner(owner);
         const pendingBeforeCommit=typeof getPendingSnapshot==='function'
           ?await getPendingSnapshot(owner):null;
-        if(pendingAtStartIdentity){
+        if(pendingAtStartIdentity||intent.pendingOutboxProof){
           if(!pendingProofMatchesIntent(intent)||!preparedContainsPending(prepared)||
-             !pendingBeforeCommit||pendingBeforeCommit.status!==pendingAtStartIdentity.status||
+             !pendingOutboxProofMatchesIntent(intent,prepared)||
+             (pendingAtStartIdentity&&(!pendingBeforeCommit||pendingBeforeCommit.status!==pendingAtStartIdentity.status||
              pendingBeforeCommit.ownerUserId!==pendingAtStartIdentity.ownerUserId||
              pendingBeforeCommit.operationId!==pendingAtStartIdentity.operationId||
              pendingBeforeCommit.baseServerVersion!==pendingAtStartIdentity.baseServerVersion||
              Number(pendingBeforeCommit.localSequence)!==pendingAtStartIdentity.localSequence||
-             await workspaceDigest(pendingBeforeCommit.payload)!==pendingAtStartDigest){
+             await workspaceDigest(pendingBeforeCommit.payload)!==pendingAtStartDigest))){
             return {ok:false,retryable:true,snapshotRequired:true,
               reason:'pending_snapshot_changed_before_recovery_commit',intentId:intent.intentId};
+          }
+          if(!pendingAtStartIdentity&&pendingBeforeCommit){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'pending_snapshot_appeared_before_recovery_commit',intentId:intent.intentId};
+          }
+          if(intent.pendingOutboxProof&&
+             !(await verifyPendingOutboxProof(owner,intent.pendingOutboxProof))){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'pending_outbox_changed_before_recovery_commit',intentId:intent.intentId};
           }
           if(typeof readRemoteSnapshot!=='function'||typeof sameWorkspace!=='function'){
             return {ok:false,retryable:true,snapshotRequired:true,
@@ -1527,7 +1565,8 @@
           }catch(error){
             reportProgress('verify-pending-snapshot-readback','failed',{
               durationMs:Math.max(0,Date.now()-readbackStartedAt),ok:false,
-              pendingLocalSequence:pendingAtStartIdentity.localSequence
+              pendingLocalSequence:pendingAtStartIdentity
+                ?pendingAtStartIdentity.localSequence:intent.pendingOutboxProof?.throughSequence??null
             });
             return unavailable('pending_snapshot_remote_readback_failed',{
               retryable:true,snapshotRequired:true,errorCode:String(error&&error.code||'unknown')
@@ -1571,19 +1610,29 @@
               reason:!remotePayloadMatches?'pending_snapshot_remote_readback_mismatch':
                 'remote_state_changed_before_pending_acknowledgement',intentId:intent.intentId};
           }
-          const latestPending=await getPendingSnapshot(owner);
-          if(!latestPending||latestPending.status!==pendingAtStartIdentity.status||
-             latestPending.ownerUserId!==pendingAtStartIdentity.ownerUserId||
-             latestPending.operationId!==pendingAtStartIdentity.operationId||
-             latestPending.baseServerVersion!==pendingAtStartIdentity.baseServerVersion||
-             Number(latestPending.localSequence)!==pendingAtStartIdentity.localSequence||
-             await workspaceDigest(latestPending.payload)!==pendingAtStartDigest){
-            reportProgress('verify-pending-snapshot-readback','failed',{
-              durationMs:Math.max(0,Date.now()-readbackStartedAt),ok:false,
-              pendingLocalSequence:pendingAtStartIdentity.localSequence
-            });
+          if(pendingAtStartIdentity){
+            const latestPending=await getPendingSnapshot(owner);
+            if(!latestPending||latestPending.status!==pendingAtStartIdentity.status||
+               latestPending.ownerUserId!==pendingAtStartIdentity.ownerUserId||
+               latestPending.operationId!==pendingAtStartIdentity.operationId||
+               latestPending.baseServerVersion!==pendingAtStartIdentity.baseServerVersion||
+               Number(latestPending.localSequence)!==pendingAtStartIdentity.localSequence||
+               await workspaceDigest(latestPending.payload)!==pendingAtStartDigest){
+              reportProgress('verify-pending-snapshot-readback','failed',{
+                durationMs:Math.max(0,Date.now()-readbackStartedAt),ok:false,
+                pendingLocalSequence:pendingAtStartIdentity.localSequence
+              });
+              return {ok:false,retryable:true,snapshotRequired:true,
+                reason:'pending_snapshot_changed_before_remote_acknowledgement',intentId:intent.intentId};
+            }
+          }else if(await getPendingSnapshot(owner)){
             return {ok:false,retryable:true,snapshotRequired:true,
-              reason:'pending_snapshot_changed_before_remote_acknowledgement',intentId:intent.intentId};
+              reason:'pending_snapshot_appeared_before_remote_acknowledgement',intentId:intent.intentId};
+          }
+          if(intent.pendingOutboxProof&&
+             !(await verifyPendingOutboxProof(owner,intent.pendingOutboxProof))){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'pending_outbox_changed_after_remote_readback',intentId:intent.intentId};
           }
           await assertOwner(owner);
           reportProgress('verify-pending-snapshot-readback','completed',{
