@@ -2473,7 +2473,36 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(staged.staged,true);
   const publication={verified:true,updated_at:'proven-outbox-published',
     snapshotRevision:0,headRevision:0,compactedThroughRevision:0,storageMode:'jsonb'};
-  const marked=await loaded.api.markWorkspaceEntityRecoveryPublished(owner,intentId,publication);
+  const missingReadback=await loaded.api.markWorkspaceEntityRecoveryPublished(owner,intentId,publication);
+  assert.equal(missingReadback.ok,false,
+    'a pending outbox must not advance its recovery journal on publication/RPC success alone');
+  assert.equal(missingReadback.reason,'recovery_remote_readback_proof_required');
+  const stagedIntent=await loaded.api.readWorkspaceEntityRecovery(owner);
+  assert.ok(stagedIntent&&stagedIntent.intent&&stagedIntent.intent.key);
+  const migrationMetaForProof=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  migrationMetaForProof.set(stagedIntent.intent.key,{...stagedIntent.intent,phase:'published',publication});
+  await assert.rejects(()=>loaded.api.commitWorkspaceEntityRecovery(owner,intentId,entries,digest),
+    /exact remote snapshot read-back proof is missing or invalid/,
+    'the atomic commit must independently reject a journal advanced without exact read-back proof');
+  migrationMetaForProof.set(stagedIntent.intent.key,stagedIntent.intent);
+  const falsePreservationPublication={...publication,remoteReadbackProof:{
+    proofVersion:1,remoteReadbackVerified:true,pendingLocalChangesPreserved:false,
+    pendingLocalChangeCount:0,ownerId:owner,candidateDigest:digest,remotePayloadDigest:digest,
+    snapshotUpdatedAt:publication.updated_at,snapshotRevision:0,headRevision:0,
+    compactedThroughRevision:0,pendingSnapshotProof:null,pendingOutboxProof:proof
+  }};
+  const falsePreservation=await loaded.api.markWorkspaceEntityRecoveryPublished(
+    owner,intentId,falsePreservationPublication
+  );
+  assert.equal(falsePreservation.ok,false,
+    'a remote read-back without exact pending-change preservation must not advance the journal');
+  const verifiedPublication={...publication,remoteReadbackProof:{
+    proofVersion:1,remoteReadbackVerified:true,pendingLocalChangesPreserved:true,
+    pendingLocalChangeCount:1,ownerId:owner,candidateDigest:digest,remotePayloadDigest:digest,
+    snapshotUpdatedAt:publication.updated_at,snapshotRevision:0,headRevision:0,
+    compactedThroughRevision:0,pendingSnapshotProof:null,pendingOutboxProof:proof
+  }};
+  const marked=await loaded.api.markWorkspaceEntityRecoveryPublished(owner,intentId,verifiedPublication);
   assert.equal(marked.ok,true);
   const entries=[
     {key:'recall.study.tracker.v1',value:JSON.stringify(active.state)},
