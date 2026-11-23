@@ -1705,6 +1705,10 @@ function makeStagingRuntimeHarness({
           },
           async publishConflictRecovery(owner,recoveryOptions){
             calls.recovery={owner,options:recoveryOptions};
+            // A successful recovery result represents the production journal's
+            // verified remote read-back plus local commit, which consumes the
+            // compatibility snapshot before the coordinator's post-recovery check.
+            if(recoveryResult&&recoveryResult.ok===true)pendingSnapshot=null;
             return recoveryResult;
           }
         };
@@ -1997,7 +2001,7 @@ const hostedCursorMismatchRecovery=makeStagingRuntimeHarness({
 });
 const hostedCursorMismatchRecoveryResult=await hostedCursorMismatchRecovery.run('account-A',stagingSignal);
 assert.equal(hostedCursorMismatchRecoveryResult.ok,true,
-  'a local Delta cursor/manifest mismatch must enter snapshot recovery and verify its replacement cursor');
+  'a local Delta cursor/manifest mismatch must enter snapshot recovery and verify its replacement cursor: '+JSON.stringify(hostedCursorMismatchRecoveryResult));
 assert.equal(hostedCursorMismatchRecoveryResult.recovered,true);
 assert.equal(hostedCursorMismatchRecoveryResult.recoveryTriggerReason,'local_delta_cursor_mismatch');
 assert.equal(hostedCursorMismatchRecovery.calls.recovery.owner,'account-A');
