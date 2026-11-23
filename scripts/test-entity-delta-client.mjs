@@ -1322,9 +1322,16 @@ function coordinatorHarness(options={}){
   assert.equal(second.ok,true,'a retry should verify the exact already-published snapshot and finish locally: '+JSON.stringify(second));
   assert.equal(second.recovered,true);
   assert.equal(second.snapshotRevision,1);
-  assert.deepEqual(second.compaction,{
-    ok:true,complete:true,pending:false,alreadyCompacted:true,compactedThroughRevision:1,rounds:0
-  },'the retry must verify and reuse the exact snapshot already published before the lost response');
+  assert.equal(second.compaction?.ok,true,
+    'the exact already-published snapshot must be reported as verified');
+  assert.equal(second.compaction?.complete,true);
+  assert.equal(second.compaction?.pending,false);
+  assert.equal(second.compaction?.alreadyCompacted,true);
+  assert.equal(second.compaction?.compactedThroughRevision,1);
+  assert.equal(second.compaction?.rounds,0);
+  assert.deepEqual(Object.keys(second.compaction||{}).sort(),
+    ['alreadyCompacted','complete','compactedThroughRevision','ok','pending','rounds'].sort(),
+    'the retry must return only the exact already-compacted snapshot evidence');
   assert.equal(migrations,3,'a missing staged generation must be reconstructed exactly once from the same digest-bound candidate');
   assert.ok(recoveryProgress.some(event=>
     event.recoveryStep==='restage-generation'&&event.progressPhase==='completed'&&event.journalPhase==='staged'),
