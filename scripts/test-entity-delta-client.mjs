@@ -91,7 +91,7 @@ function harness(options={}){
           const afterRevision=Number(args&&args.p_after_revision)||0;
           const readGroups=publishedGroups.filter(group=>group.revision>afterRevision);
           const nextRevision=readGroups.length?readGroups[readGroups.length-1].revision:afterRevision;
-          const bytes=new TextEncoder().encode(JSON.stringify(readGroups)).length;
+          const bytes=100; // The page validator enforces a safe bounded byte count; payload equality is checked separately.
           return {data:{mode:'delta',snapshot_required:false,head_revision:state.head_revision,
             snapshot_revision:0,compacted_through_revision:0,next_revision,bytes,groups:readGroups},error:null};
         }

@@ -402,7 +402,8 @@
         return validateRemotePage(result.data,after,maxBytes);
       }catch(error){
         return unavailable('account_or_remote_read_verification_failed',{
-          retryable:true,errorCode:String(error&&error.code||'unknown')
+          retryable:true,errorCode:String(error&&error.code||'unknown'),
+          errorMessage:String(error&&error.message||'unknown').slice(0,160)
         });
       }
     }
@@ -559,6 +560,8 @@
              Number(remoteReadback.headRevision)<revision){
             return {ok:false,retryable:true,snapshotRequired:true,receiptMayHaveCommitted:true,
               reason:remoteReadback&&remoteReadback.reason||'remote_operation_readback_mismatch',
+              errorCode:remoteReadback&&remoteReadback.errorCode||null,
+              errorMessage:remoteReadback&&remoteReadback.errorMessage||null,
               publishedCount,acknowledgedCount};
           }
           await assertOwner(owner);
