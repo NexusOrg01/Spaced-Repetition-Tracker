@@ -120,7 +120,7 @@ function harness(options={}){
         change_count:args.p_changes.length,head_revision:revision};
       receipts.set(operationId,{hash,receipt});
       state.head_revision=revision;
-      publishedGroups.push({revision,operation_id:operationId,changes:args.p_changes});
+      publishedGroups.push({revision,operation_id:operationId,changes:args.p_changes.map((change,index)=>({...change,ordinal:index}))});
       if(changeOwnerOnPublish)activeOwner='account-B';
       if(ambiguousOnce){ambiguousOnce=false;return {data:null,error:{code:'network_lost_after_commit'}};}
       return {data:receipt,error:null};
@@ -2388,7 +2388,8 @@ function makeParkedRecoveryFixture(options={}){
   });
   return {client,h,state,pending:()=>currentPending,committed:()=>committed,
     intent:()=>intent,publishedCandidate:()=>publishedCandidate,
-    proofAtCommit:()=>proofAtCommit,readSnapshotCount:()=>readSnapshotCount};
+    proofAtCommit:()=>proofAtCommit,readSnapshotCount:()=>readSnapshotCount,
+    setReadbackMode:value=>{options.readbackMode=value;}};
 }
 
 // The stale same-stamp local base must never be accepted as the three-way merge
@@ -2441,6 +2442,23 @@ for(const failure of [
   assert.notEqual(result.ok,true,'unsafe recovery must not be committed: '+JSON.stringify(failure));
   assert.equal(fixture.committed(),false,'pending state must not be archived without exact remote proof: '+JSON.stringify(failure));
   assert.equal(fixture.pending().status,'pending','the parked snapshot must remain pending after failed verification');
+}
+
+
+{
+  const fixture=makeParkedRecoveryFixture({readbackMode:'missing'});
+  const first=await fixture.client.publishConflictRecovery('account-A');
+  assert.notEqual(first.ok,true,
+    'a missing remote read-back must leave the durable staged recovery and pending edit intact');
+  assert.equal(fixture.committed(),false);
+  assert.equal(fixture.intent().phase,'staged');
+  assert.equal(fixture.intent().pendingSnapshotProof.operationId,'parked-op-1');
+  fixture.setReadbackMode('match');
+  const retry=await fixture.client.publishConflictRecovery('account-A');
+  assert.equal(retry.ok,true,
+    'a restarted recovery must reuse its owner-bound pending proof and finish only after exact read-back: '+JSON.stringify(retry));
+  assert.equal(fixture.committed(),true);
+  assert.equal(fixture.proofAtCommit().candidate.state.topics[0].name,'PARKED-EDIT');
 }
 
 console.log('Nexus entity-delta client and cloud-sync integration tests passed: feature gate, baseline verification, stable receipt retry, owner checks, conflict safety, and strict remote-page validation and bounded three-way recovery preparation.');

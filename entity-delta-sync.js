@@ -1139,10 +1139,12 @@
             proof.payloadDigest===pendingAtStartDigest;
         };
         const preparedContainsPending=targetPrepared=>!pendingAtStartIdentity||
-          !!(targetPrepared&&targetPrepared.pendingSnapshotIncluded===true&&
-            targetPrepared.pendingSnapshotDigest===pendingAtStartDigest&&
-            targetPrepared.pendingOperationId===pendingAtStartIdentity.operationId&&
-            Number(targetPrepared.pendingLocalSequence)===pendingAtStartIdentity.localSequence);
+          (targetPrepared
+            ?targetPrepared.pendingSnapshotIncluded===true&&
+              targetPrepared.pendingSnapshotDigest===pendingAtStartDigest&&
+              targetPrepared.pendingOperationId===pendingAtStartIdentity.operationId&&
+              Number(targetPrepared.pendingLocalSequence)===pendingAtStartIdentity.localSequence
+            :pendingProofMatchesIntent(intent));
         let recovery=await runRecoveryStep('read-journal',()=>storage.readWorkspaceEntityRecovery(owner));
         intent=recovery&&recovery.intent||null;
         if(intent&&!pendingProofMatchesIntent(intent)){
