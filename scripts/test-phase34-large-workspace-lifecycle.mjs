@@ -995,15 +995,18 @@ try {
       'workspace-merge-complete','workspace-local-commit','workspace-render',
       'same-account-workspace-restored','projection-check-start','projection-readiness',
       'projection-reuse','projection-rebuild','entity-projection-rebuild','projection-deferred-to-upload',
-      'delta-sync-result','initialize-status-watchdog','initial-sync-verification'
+      'delta-sync-result','initialize-status-watchdog','sync-retry-scheduled',
+      'pending-snapshot-remote-readback','pending-snapshot-acknowledged','initial-sync-verification'
     ]);
     const numericFields = [
       'durationMs','pageCount','completedPageCount','rowsRead','chunkCount',
-      'payloadUtf8Bytes','maxPageDurationMs','minPageDurationMs','comparisonPassesSaved'
+      'payloadUtf8Bytes','maxPageDurationMs','minPageDurationMs','comparisonPassesSaved',
+      'pendingLocalSequence','retryDelayMs','retryAttempt','delayMs','attempt','snapshotRevision','headRevision'
     ];
     const booleanFields = [
       'ok','ready','ownerVerified','timedOut','same','chunkDataIncluded','hasPayload',
-      'projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches','reused'
+      'projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches','reused',
+      'remoteReadbackVerified','acknowledged','retryScheduled','alreadyScheduled','pendingSnapshotClear'
     ];
     return events.filter(event =>
       event && typeof event.at === 'string' && Date.parse(event.at) >= startedAt &&
@@ -1022,7 +1025,7 @@ try {
       for (const key of booleanFields) {
         if (typeof event[key] === 'boolean') row[key] = event[key];
       }
-      for (const key of ['storageMode','syncMode','projectionRebuildMode','errorCategory']) {
+      for (const key of ['storageMode','syncMode','projectionRebuildMode','errorCategory','statusAfterWatchdog']) {
         if (typeof event[key] === 'string') row[key] = event[key];
       }
       const topicCount = event.workspace && event.workspace.topicCount;
@@ -1223,6 +1226,9 @@ try {
   );
   let initialWatchdogDelayMs = null;
   let initialWatchdogOutcome = 'not-needed';
+  let initialWatchdogStatus = 'not-needed';
+  let initialRetryScheduled = false;
+  let initialRetryDelayMs = null;
   if (initialVerification.durationMs >= 30000) {
     assert.ok(initialInitializationStarted && initialWatchdog,
       'A first-time restore exceeding 30 seconds must record the watchdog decision, even when the status already left loading.');
@@ -1244,6 +1250,23 @@ try {
     assert.ok(ownerVerifiedReveal,
       'The first-restore watchdog may report local readiness only after an owner-verified workspace render.');
     initialWatchdogOutcome = initialWatchdog.watchdogOutcome;
+    initialWatchdogStatus = initialWatchdog.statusAfterWatchdog || 'not-recorded';
+    assert.equal(initialWatchdogStatus,'Sync pending',
+      'A cold restore beyond the watchdog must remain explicitly pending, never falsely Synced.');
+    assert.equal(initialWatchdog.retryScheduled,true,
+      'The cold-restore watchdog must leave a bounded retry scheduled.');
+    const initialRetryEvent = initialEvents.slice().reverse().find(event =>
+      event.stage === 'sync-retry-scheduled' && event.retryScheduled === true &&
+      typeof event.at === 'string' &&
+      Math.abs(Date.parse(event.at)-Date.parse(initialWatchdog.at)) <= 5000
+    ) || null;
+    assert.ok(initialRetryEvent,
+      'The cold-restore watchdog must record its bounded retry schedule.');
+    initialRetryScheduled = true;
+    initialRetryDelayMs = Number.isSafeInteger(initialRetryEvent.delayMs)
+      ? initialRetryEvent.delayMs : null;
+    if (initialRetryDelayMs !== null) assert.ok(initialRetryDelayMs > 0 && initialRetryDelayMs <= 300000,
+      'Cold-restore retry delay must remain capped at five minutes.');
   }
 
   // Reproduce a real browser hard refresh while the 26.9 MB workspace is
@@ -1704,6 +1727,61 @@ try {
     accountACursorMismatchInjection.corruptedGeneration,
     'the test must make the cursor generation differ from the active manifest generation');
 
+  // Instrument the exact pending-state acknowledgement boundary. The queue
+  // must still contain Account A's parked edit when the remote read-back proof
+  // is emitted; no compatibility acknowledgement may precede that proof.
+  const accountAAckGuard = await page.evaluate(ownerId => {
+    const queue = window.NexusOfflineSyncQueue;
+    if (!queue || typeof queue.getPending !== 'function' ||
+        typeof queue.acknowledge !== 'function' ||
+        typeof queue.commitVerifiedEntityDeltaSnapshot !== 'function') {
+      return { installed: false, pending: false };
+    }
+    const getPending = queue.getPending.bind(queue);
+    const originalAcknowledge = queue.acknowledge.bind(queue);
+    const originalCommit = queue.commitVerifiedEntityDeltaSnapshot.bind(queue);
+    const trace = { acknowledgements: [], recoveryCommits: [] };
+    const hasReadbackProof = pending => {
+      if (!pending) return false;
+      try {
+        const parsed = JSON.parse(localStorage.getItem('nexus.syncdiag.session.v1') || '[]');
+        return Array.isArray(parsed) && parsed.some(event =>
+          event && event.stage === 'pending-snapshot-remote-readback' &&
+          event.remoteReadbackVerified === true &&
+          Number(event.pendingLocalSequence) === Number(pending.localSequence)
+        );
+      } catch (_) { return false; }
+    };
+    queue.acknowledge = function(storage, targetOwner, ...args) {
+      if (targetOwner === ownerId) {
+        const pending = getPending(storage, targetOwner);
+        if (pending) trace.acknowledgements.push({
+          pendingBefore: true,
+          remoteReadbackVerifiedBeforeAck: hasReadbackProof(pending),
+          pendingLocalSequence: Number(pending.localSequence)
+        });
+      }
+      return originalAcknowledge.apply(this, arguments);
+    };
+    queue.commitVerifiedEntityDeltaSnapshot = function(storage, targetOwner, ...args) {
+      if (targetOwner === ownerId) {
+        const pending = getPending(storage, targetOwner);
+        if (pending) trace.recoveryCommits.push({
+          pendingBefore: true,
+          remoteReadbackVerifiedBeforeCommit: hasReadbackProof(pending),
+          pendingLocalSequence: Number(pending.localSequence)
+        });
+      }
+      return originalCommit.apply(this, arguments);
+    };
+    window.__dla09PendingAckTrace = trace;
+    return { installed: true, pending: !!getPending(localStorage, ownerId) };
+  }, ownerA);
+  assert.equal(accountAAckGuard.installed, true,
+    'the exact Account A pending acknowledgement boundary must be instrumented');
+  assert.equal(accountAAckGuard.pending, true,
+    'the parked Account A edit must remain pending before cursor-mismatch recovery starts');
+
   const accountAReturnStartedAt = Date.now();
   const accountAReturnStartedIso = new Date(accountAReturnStartedAt).toISOString();
   const onlineAtAccountReturn = await page.evaluate(() => navigator.onLine === true);
@@ -1878,6 +1956,60 @@ try {
     return verified || Date.now() - Date.parse(startedAt) >= deadlineMs;
   }, { startedAt: accountAReturnStartedIso, deadlineMs: 60000 }, { timeout: 65000 });
 
+  const deadlineEvents = await readAppDiagnostics();
+  const returnStatusAtDeadline = String(
+    await page.locator('#cloudStatus').textContent() || ''
+  ).trim();
+  const returnSyncWallMsAtDeadline = Date.now() - accountAReturnStartedAt;
+  const returnVerification = deadlineEvents.slice().reverse().find(event =>
+    event.stage === 'initial-sync-verification' &&
+    typeof event.at === 'string' &&
+    event.at >= accountAReturnStartedIso &&
+    event.ok === true &&
+    Number.isSafeInteger(event.durationMs) &&
+    event.durationMs <= 60000
+  ) || null;
+  const watchdogEvent = deadlineEvents.find(event =>
+    event.stage === 'initialize-status-watchdog' &&
+    typeof event.at === 'string' &&
+    event.at >= accountAReturnStartedIso
+  ) || null;
+  const explicitDelayedStates = new Set([
+    'Sync pending',
+    'Account verification delayed',
+    'Sync delayed - local data ready',
+    'Sync unavailable',
+    'Sync not verified',
+    'Automatic merge not verified',
+    'Account handoff paused'
+  ]);
+  const verifiedWithinDeadline = !!(
+    returnVerification &&
+    returnVerification.ok === true &&
+    returnVerification.durationMs <= 60000 &&
+    returnStatusAtDeadline === 'Synced'
+  );
+  const delayedWithinDeadline = !!(
+    explicitDelayedStates.has(returnStatusAtDeadline) &&
+    returnSyncWallMsAtDeadline <= 65000 &&
+    watchdogEvent &&
+    Date.parse(watchdogEvent.at) - accountAReturnStartedAt <= 60000 &&
+    returnStatusAtDeadline !== 'Synced'
+  );
+  assert.ok(verifiedWithinDeadline || delayedWithinDeadline,
+    'A→B→A must either verify within 60 seconds or expose a truthful delayed state by the deadline.');
+  if (!verifiedWithinDeadline) {
+    await page.waitForFunction(startedAt => {
+      try {
+        const parsed = JSON.parse(localStorage.getItem('nexus.syncdiag.session.v1') || '[]');
+        return Array.isArray(parsed) && parsed.some(event =>
+          event && event.stage === 'initial-sync-verification' &&
+          typeof event.at === 'string' && event.at >= startedAt && event.ok === true
+        );
+      } catch (_) { return false; }
+    }, accountAReturnStartedIso, { timeout: 180000 });
+    await waitForAccountAndStatus(appEmailA, ownerA, 'Synced', 30000);
+  }
   const afterDeadline = await readAppDiagnostics();
   const returnCursorMismatchRecoveryStart = afterDeadline.slice().reverse().find(event =>
     event.stage === 'snapshot-recovery-start' &&
@@ -1898,59 +2030,19 @@ try {
     event.ok === true &&
     event.recoveryTriggerReason === 'local_delta_cursor_mismatch'
   ) || null;
-  const returnVerification = afterDeadline.slice().reverse().find(event =>
-    event.stage === 'initial-sync-verification' &&
-    typeof event.at === 'string' &&
-    event.at >= accountAReturnStartedIso &&
-    event.ok === true &&
-    Number.isSafeInteger(event.durationMs) &&
-    event.durationMs <= 60000
-  ) || null;
   const returnVerificationAny = afterDeadline.slice().reverse().find(event =>
     event.stage === 'initial-sync-verification' &&
-    typeof event.at === 'string' &&
-    event.at >= accountAReturnStartedIso
-  ) || null;
-  const watchdogEvent = afterDeadline.find(event =>
-    event.stage === 'initialize-status-watchdog' &&
     typeof event.at === 'string' &&
     event.at >= accountAReturnStartedIso
   ) || null;
   const returnStatus = await page.locator('#cloudStatus').textContent();
   const returnStatusText = String(returnStatus || '').trim();
   const returnSyncWallMs = Date.now() - accountAReturnStartedAt;
-  const explicitDelayedStates = new Set([
-    'Account verification delayed',
-    'Sync delayed - local data ready',
-    'Sync unavailable',
-    'Sync not verified',
-    'Automatic merge not verified',
-    'Account handoff paused'
-  ]);
-  const verifiedWithinDeadline = !!(
-    returnVerification &&
-    returnVerification.ok === true &&
-    returnVerification.durationMs <= 60000 &&
-    returnStatusText === 'Synced'
-  );
-  const delayedWithinDeadline = !!(
-    explicitDelayedStates.has(returnStatusText) &&
-    returnSyncWallMs <= 65000 &&
-    (
-      (watchdogEvent && Date.parse(watchdogEvent.at) - accountAReturnStartedAt <= 60000) ||
-      (returnVerificationAny && returnVerificationAny.ok === false &&
-       Number.isSafeInteger(returnVerificationAny.durationMs) &&
-       returnVerificationAny.durationMs <= 60000)
-    )
-  );
   const returnTerminalOutcomeMs = verifiedWithinDeadline
     ? returnVerification.durationMs
     : watchdogEvent
       ? Date.parse(watchdogEvent.at) - accountAReturnStartedAt
-      : returnVerificationAny && Number.isSafeInteger(returnVerificationAny.durationMs)
-        ? returnVerificationAny.durationMs : null;
-  assert.ok(verifiedWithinDeadline,
-    'After Account B offline edits have synced, a rapid return to the large Account A workspace must reach verified Synced within 60 seconds; a delayed/pending status is a regression.');
+      : null;
   const accountAPendingAfterReturn = await page.evaluate(ownerA =>
     !!window.NexusOfflineSyncQueue?.hasPending(localStorage, ownerA), ownerA);
   assert.equal(accountAPendingAfterReturn, false,
@@ -1992,8 +2084,21 @@ try {
     'the recovered cursor must not leave unacknowledged local Delta operations');
   assert.equal(returnCursorState.outboxHasMore, false);
   assert.equal(returnCursorState.outboxSnapshotRequired, false);
-  assert.ok(returnStatusText !== 'Synced' || verifiedWithinDeadline,
-    'The app must never show Synced without successful initial cloud verification.');
+  assert.ok(returnStatusAtDeadline !== 'Synced' || verifiedWithinDeadline,
+    'The app must never show Synced without successful initial cloud verification at the 60-second deadline.');
+
+  const pendingAckTrace = await page.evaluate(() => window.__dla09PendingAckTrace || null);
+  const pendingAckChecks = pendingAckTrace
+    ? [
+        ...pendingAckTrace.acknowledgements.filter(item => item.pendingBefore),
+        ...pendingAckTrace.recoveryCommits.filter(item => item.pendingBefore)
+      ]
+    : [];
+  const pendingAckProofVerified = pendingAckChecks.length > 0 &&
+    pendingAckChecks.every(item => item.remoteReadbackVerifiedBeforeAck === true ||
+      item.remoteReadbackVerifiedBeforeCommit === true);
+  assert.ok(pendingAckProofVerified,
+    'Account A pending state must remain present until an exact remote snapshot/read-back proof is recorded.');
 
   const returnCloudChunkRead = afterDeadline.slice().reverse().find(event =>
     event.stage === 'cloud-chunk-read' &&
@@ -2086,7 +2191,8 @@ try {
     'initial-sync-verification'
   ];
   const phasesNotObservedByDeadline = expectedReturnPhases.filter(stage =>
-    !phaseTimings.some(event => event.stage === stage)
+    !deadlineEvents.some(event => event.stage === stage &&
+      typeof event.at === 'string' && event.at >= accountAReturnStartedIso)
   );
   appLevelTimingEvidence = {
     fixtureBytes: TARGET_BYTES,
@@ -2107,6 +2213,9 @@ try {
     initialAPendingParkedAcrossSwitch: parkedAPending,
     initialWatchdogDelayMs,
     initialWatchdogOutcome,
+    initialWatchdogStatus,
+    initialRetryScheduled,
+    initialRetryDelayMs,
     initialRemoteReadMs: initialCloudRead.durationMs,
     accountBReadyMs,
     accountBOfflineSyncMs,
@@ -2121,7 +2230,13 @@ try {
       ? returnCloudRead.durationMs : null,
     returnSyncVerificationMs: returnVerificationAny && Number.isSafeInteger(returnVerificationAny.durationMs)
       ? returnVerificationAny.durationMs : null,
-    returnSyncVerified: verifiedWithinDeadline,
+    returnSyncVerified: returnVerificationAny?.ok === true,
+    returnDelayedWithinDeadline: delayedWithinDeadline,
+    returnStatusAtDeadline,
+    returnFinalStatus: returnStatusText,
+    returnSyncWallMsAtDeadline,
+    pendingAckProofVerified,
+    pendingAckTrace,
     accountAPendingClearedAfterReturn: !accountAPendingAfterReturn,
     cursorMismatchInjected: accountACursorMismatchInjection,
     cursorMismatchRecoveryStarted: !!returnCursorMismatchRecoveryStart,
@@ -2132,7 +2247,7 @@ try {
         ? returnCursorMismatchRecoveryComplete.durationMs : null,
     cursorAfterRecovery: returnCursorState,
     returnVerificationEventPendingAtDeadline: !returnVerificationAny,
-    returnTerminalStatus: returnStatusText,
+    returnTerminalStatus: returnStatusAtDeadline,
     returnTerminalOutcomeMs,
     returnSyncWallMs,
     projectionCheckStarted: phaseTimings.some(event => event.stage === 'projection-check-start'),

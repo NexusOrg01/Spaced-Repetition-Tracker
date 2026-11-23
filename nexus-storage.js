@@ -1882,6 +1882,10 @@
        !Array.isArray(outbox.groups)||outbox.hasMore===true){
       return fail(outbox&&outbox.reason||'cursor_repair_outbox_not_verified');
     }
+    // Never rebind a cursor while an unacknowledged local operation exists.
+    // The caller must use full owner/revision/manifest-fenced recovery so the
+    // operation is merged and remotely read back before any local acknowledgement.
+    if(outbox.groups.length>0)return fail('cursor_repair_outbox_pending');
     if(outbox.groups.length===0&&Number(cursor.workspaceRevision)!==workspaceRevision){
       return fail('cursor_repair_workspace_revision_mismatch');
     }

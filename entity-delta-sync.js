@@ -370,11 +370,19 @@
       }
       return {ok:true,pending};
     }
-    async function acknowledgeShadowCompatibilitySnapshot(owner,pending,serverVersion){
+    async function acknowledgeShadowCompatibilitySnapshot(owner,pending,serverVersion,proof){
       if(!pending)return true;
-      if(!acknowledgePendingSnapshot)return false;
+      if(!acknowledgePendingSnapshot||!proof||proof.remoteReadbackVerified!==true||
+         proof.ownerId!==owner||proof.pendingOperationId!==pending.operationId||
+         Number(proof.pendingLocalSequence)!==Number(pending.localSequence)||
+         proof.snapshotUpdatedAt!==serverVersion||
+         !Number.isSafeInteger(Number(proof.snapshotRevision))||
+         !Number.isSafeInteger(Number(proof.headRevision))||
+         !Number.isSafeInteger(Number(proof.compactedThroughRevision))||
+         Number(proof.snapshotRevision)>Number(proof.headRevision)||
+         Number(proof.compactedThroughRevision)>Number(proof.snapshotRevision))return false;
       await assertOwner(owner);
-      const acknowledged=await acknowledgePendingSnapshot(owner,pending,serverVersion);
+      const acknowledged=await acknowledgePendingSnapshot(owner,pending,serverVersion,proof);
       await assertOwner(owner);
       return acknowledged===true||!!(acknowledged&&acknowledged.ok===true);
     }
@@ -535,6 +543,25 @@
             return {ok:false,snapshotRequired:true,receiptMayHaveCommitted:true,
               reason:'invalid_server_operation_receipt',publishedCount,acknowledgedCount};
           }
+          const remoteReadback=await readRemotePage(owner,Number(cursor.publishRevision),{
+            limitGroups:1,maxBytes:Math.min(MAX_BYTES-1024,
+              Number(publishOptions.maxBytes)||921600)
+          });
+          const readbackGroup=remoteReadback&&Array.isArray(remoteReadback.groups)
+            ?remoteReadback.groups[0]:null;
+          if(!remoteReadback||remoteReadback.ok!==true||remoteReadback.mode!=='delta'||
+             Number(remoteReadback.snapshotRevision)!==snapshot||
+             Number(remoteReadback.compactedThroughRevision)>snapshot||
+             !readbackGroup||readbackGroup.operation_id!==group.operationId||
+             Number(readbackGroup.revision)!==revision||
+             stableJson(readbackGroup.changes)!==stableJson(changes)||
+             Number(remoteReadback.nextRevision)!==revision||
+             Number(remoteReadback.headRevision)<revision){
+            return {ok:false,retryable:true,snapshotRequired:true,receiptMayHaveCommitted:true,
+              reason:remoteReadback&&remoteReadback.reason||'remote_operation_readback_mismatch',
+              publishedCount,acknowledgedCount};
+          }
+          await assertOwner(owner);
           const ack=await storage.acknowledgeWorkspaceEntityOutboxGroup(
             owner,batch,group,Number(cursor.publishRevision),receipt);
           if(!ack||ack.ok!==true){
@@ -598,57 +625,16 @@
         let pendingOutboxHasChanges=false,cursorRecovery=null;
         let cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
         if(!cursorResult||cursorResult.ok!==true){
-          if(cursorResult&&cursorResult.reason==='local_delta_cursor_mismatch'&&
-             typeof storage.repairWorkspaceEntityDeltaCursorGeneration==='function'){
-            const recoveryStartedAt=Date.now();
-            const reportRecoveryProgress=(progressPhase,details={})=>{
-              if(typeof readOptions.onRecoveryProgress!=='function')return;
-              try{
-                readOptions.onRecoveryProgress({
-                  recoveryStep:'rebind-cursor-generation',progressPhase,journalPhase:'none',...details
-                });
-              }catch(_){}
-            };
-            reportRecoveryProgress('started',{ownerVerified:true});
-            const repaired=await storage.repairWorkspaceEntityDeltaCursorGeneration(owner,{
-              snapshotUpdatedAt:state.snapshot_updated_at,
-              headRevision:head,
-              compactedThroughRevision:floor
-            });
-            await assertOwner(owner);
-            if(repaired&&repaired.ok===true){
-              cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
-              if(cursorResult&&cursorResult.ok===true&&cursorResult.cursor&&
-                 cursorResult.cursor.generation===cursorResult.generation){
-                cursorRecovery={
-                  repaired:repaired.repaired===true,projectionReused:true,
-                  reason:'local_delta_cursor_mismatch',snapshotRevision:snapshot,headRevision:head
-                };
-                reportRecoveryProgress('completed',{
-                  durationMs:Math.max(0,Date.now()-recoveryStartedAt),ok:true,
-                  ownerVerified:true,projectionReused:true,snapshotRevision:snapshot,headRevision:head
-                });
-              }else{
-                reportRecoveryProgress('failed',{
-                  durationMs:Math.max(0,Date.now()-recoveryStartedAt),ok:false,
-                  reason:'cursor_repair_readback_failed'
-                });
-                return {ok:false,retryable:true,snapshotRequired:true,
-                  reason:cursorResult&&cursorResult.reason||'cursor_repair_readback_failed'};
-              }
-            }else{
-              reportRecoveryProgress('failed',{
-                durationMs:Math.max(0,Date.now()-recoveryStartedAt),ok:false,
-                reason:repaired&&repaired.reason||cursorResult.reason||'cursor_repair_unavailable'
-              });
-              return {ok:false,retryable:true,snapshotRequired:true,
-                reason:repaired&&repaired.reason||cursorResult.reason||'cursor_repair_unavailable'};
-            }
+          if(cursorResult&&cursorResult.reason==='local_delta_cursor_mismatch'){
+            // A generation mismatch is not safe to repair in place while any
+            // compatibility snapshot or Delta outbox may contain parked local work.
+            // Route it through owner/revision/manifest-fenced three-way recovery,
+            // which publishes and reads back the merged snapshot before local ack.
+            return {ok:false,retryable:true,snapshotRequired:true,
+              requiresSnapshotReconciliation:true,reason:'local_delta_cursor_mismatch'};
           }
-          if(!cursorResult||cursorResult.ok!==true){
-            return {ok:false,snapshotRequired:!!(cursorResult&&cursorResult.snapshotRequired),
-              reason:cursorResult&&cursorResult.reason||'local_delta_cursor_unavailable'};
-          }
+          return {ok:false,snapshotRequired:!!(cursorResult&&cursorResult.snapshotRequired),
+            reason:cursorResult&&cursorResult.reason||'local_delta_cursor_unavailable'};
         }
         let cursor;
         if(!cursorResult.exists){
@@ -719,9 +705,21 @@
           // only an empty outbox must match the cursor revision exactly.
           pendingOutboxHasChanges=outbox.groups.length>0||outbox.hasMore===true;
           if(outbox.groups.length===0&&outbox.hasMore!==true){
+            const remoteProof=await verifyPendingSnapshotRemote(owner,pendingCheck.pending,{
+              signal:readOptions.signal||null,
+              maxGroups:readOptions.maxGroups,
+              maxBytes:readOptions.maxBytes
+            });
+            if(!remoteProof||remoteProof.ok!==true){
+              return {ok:false,retryable:!remoteProof||remoteProof.retryable!==false,
+                snapshotRequired:true,requiresSnapshotReconciliation:true,
+                reason:remoteProof&&remoteProof.reason||
+                  'compatibility_snapshot_not_represented_by_remote_state'};
+            }
             const cleared=await acknowledgeShadowCompatibilitySnapshot(
-              owner,pendingCheck.pending,state.snapshot_updated_at);
+              owner,pendingCheck.pending,state.snapshot_updated_at,remoteProof.proof);
             if(!cleared)return {ok:false,retryable:true,snapshotRequired:true,
+              requiresSnapshotReconciliation:true,
               reason:'compatibility_snapshot_shadow_acknowledgement_failed'};
           }
         }
@@ -839,6 +837,13 @@
           ].join('|');
         };
         const pendingIdentity=pendingToken(pendingBefore);
+        if(pendingBefore&&(pendingBefore.status!=='pending'||pendingBefore.ownerUserId!==owner||
+           !isRecord(pendingBefore.payload)||!isRecord(pendingBefore.payload.state)||
+           !isRecord(pendingBefore.payload.featureState)||
+           !(await sameWorkspace(pendingBefore.payload,local)))){
+          return {ok:false,snapshotRequired:true,
+            reason:'compatibility_snapshot_not_represented_by_delta_projection'};
+        }
         const storedBase=await getLocalBase(owner);
         let base=storedBase,remoteBasePayload=storedBase,baselineReconstructed=false;
         const validBase=!!(base&&typeof base.serverVersion==='string'&&base.serverVersion&&
@@ -969,10 +974,79 @@
           baselineAdvanced:!baselineMatches,baselineReconstructed,
           expectedHeadRevision:head,snapshotRevision:snapshot,
           compactedThroughRevision:floor,pagesRead:pages,
+          pendingSnapshotPresent:!!pendingBefore,
+          pendingLocalSequence:pendingBefore&&Number.isSafeInteger(Number(pendingBefore.localSequence))
+            ?Number(pendingBefore.localSequence):null,
           requiresSnapshotPublication:true,requiresLocalRebase:true};
       }catch(error){
         return unavailable('account_or_snapshot_reconciliation_verification_failed',{
           retryable:true,errorCode:String(error&&error.code||'unknown')
+        });
+      }
+    }
+
+    async function verifyPendingSnapshotRemote(ownerId,pending,recoveryOptions={}){
+      const owner=String(ownerId||'').trim();
+      if(!owner||!pending||pending.status!=='pending'||pending.ownerUserId!==owner||
+         !pending.operationId||!Number.isSafeInteger(Number(pending.localSequence))||
+         typeof getPendingSnapshot!=='function'){
+        return {ok:false,snapshotRequired:true,reason:'invalid_pending_compatibility_snapshot'};
+      }
+      try{
+        const startedAt=Date.now();
+        const pendingDigest=await workspaceDigest(pending.payload);
+        const prepared=await prepareConflictRecovery(owner,recoveryOptions);
+        if(!prepared||prepared.ok!==true||prepared.skipped===true){
+          return {...(prepared||{}),ok:false,retryable:!prepared||prepared.retryable!==false,
+            snapshotRequired:true,reason:prepared&&prepared.reason||'remote_pending_snapshot_reconstruction_unavailable'};
+        }
+        const remoteIncludesPending=await sameWorkspace(prepared.payload,prepared.remotePayload);
+        if(!remoteIncludesPending){
+          return {ok:false,retryable:false,snapshotRequired:true,
+            requiresSnapshotReconciliation:true,
+            reason:'compatibility_snapshot_not_represented_by_remote_state',
+            snapshotRevision:prepared.snapshotRevision,headRevision:prepared.expectedHeadRevision};
+        }
+        await assertOwner(owner);
+        const stateResult=await client.rpc('nexus_get_entity_sync_state');
+        if(stateResult.error)return unavailable('remote_state_recheck_failed',{
+          retryable:true,snapshotRequired:true,errorCode:String(stateResult.error.code||'unknown')
+        });
+        await assertOwner(owner);
+        const state=stateResult.data;
+        if(!state||state.mode!=='delta'||
+           state.snapshot_updated_at!==prepared.snapshotUpdatedAt||
+           Number(state.snapshot_revision)!==Number(prepared.snapshotRevision)||
+           Number(state.head_revision)!==Number(prepared.expectedHeadRevision)||
+           Number(state.compacted_through_revision)!==Number(prepared.compactedThroughRevision)){
+          return {ok:false,retryable:true,snapshotRequired:true,
+            reason:'remote_state_changed_before_pending_acknowledgement'};
+        }
+        const latestPending=await getPendingSnapshot(owner);
+        if(!latestPending||latestPending.status!=='pending'||latestPending.ownerUserId!==owner||
+           latestPending.operationId!==pending.operationId||
+           Number(latestPending.localSequence)!==Number(pending.localSequence)||
+           latestPending.baseServerVersion!==pending.baseServerVersion||
+           await workspaceDigest(latestPending.payload)!==pendingDigest){
+          return {ok:false,retryable:true,snapshotRequired:true,
+            reason:'pending_snapshot_changed_before_remote_acknowledgement'};
+        }
+        return {
+          ok:true,
+          durationMs:Math.max(0,Date.now()-startedAt),
+          proof:{
+            remoteReadbackVerified:true,ownerId:owner,
+            pendingOperationId:pending.operationId,
+            pendingLocalSequence:Number(pending.localSequence),
+            snapshotUpdatedAt:state.snapshot_updated_at,
+            snapshotRevision:Number(state.snapshot_revision),
+            headRevision:Number(state.head_revision),
+            compactedThroughRevision:Number(state.compacted_through_revision)
+          }
+        };
+      }catch(error){
+        return unavailable('remote_pending_snapshot_verification_failed',{
+          retryable:true,snapshotRequired:true,errorCode:String(error&&error.code||'unknown')
         });
       }
     }
@@ -1020,6 +1094,17 @@
       };
       try{
         await assertOwner(owner);
+        const pendingAtStart=typeof getPendingSnapshot==='function'
+          ?await getPendingSnapshot(owner):null;
+        const pendingAtStartDigest=pendingAtStart&&pendingAtStart.payload
+          ?await workspaceDigest(pendingAtStart.payload):null;
+        const pendingAtStartIdentity=pendingAtStart?{
+          operationId:pendingAtStart.operationId,
+          ownerUserId:pendingAtStart.ownerUserId,
+          baseServerVersion:pendingAtStart.baseServerVersion,
+          localSequence:Number(pendingAtStart.localSequence),
+          status:pendingAtStart.status
+        }:null;
         let recovery=await runRecoveryStep('read-journal',()=>storage.readWorkspaceEntityRecovery(owner));
         intent=recovery&&recovery.intent||null;
         let prepared=null,candidate=null,staged=null;
@@ -1204,6 +1289,28 @@
         if(!marked||marked.ok!==true)
           return {ok:false,retryable:true,snapshotRequired:true,
             reason:marked&&marked.reason||'recovery_publication_journal_failed',intentId:intent.intentId};
+        const pendingBeforeCommit=typeof getPendingSnapshot==='function'
+          ?await getPendingSnapshot(owner):null;
+        if(pendingAtStartIdentity){
+          if(!pendingBeforeCommit||pendingBeforeCommit.status!==pendingAtStartIdentity.status||
+             pendingBeforeCommit.ownerUserId!==pendingAtStartIdentity.ownerUserId||
+             pendingBeforeCommit.operationId!==pendingAtStartIdentity.operationId||
+             pendingBeforeCommit.baseServerVersion!==pendingAtStartIdentity.baseServerVersion||
+             Number(pendingBeforeCommit.localSequence)!==pendingAtStartIdentity.localSequence||
+             await workspaceDigest(pendingBeforeCommit.payload)!==pendingAtStartDigest){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'pending_snapshot_changed_before_recovery_commit',intentId:intent.intentId};
+          }
+          reportProgress('verify-pending-snapshot-readback','completed',{
+            ok:true,remoteReadbackVerified:true,
+            pendingLocalSequence:pendingAtStartIdentity.localSequence,
+            snapshotRevision:publication.snapshotRevision,
+            headRevision:publication.headRevision
+          });
+        }else if(pendingBeforeCommit){
+          return {ok:false,retryable:true,snapshotRequired:true,
+            reason:'pending_snapshot_appeared_before_recovery_commit',intentId:intent.intentId};
+        }
         const committed=await runRecoveryStep('commit-local-recovery',()=>
           localCommit(owner,candidate,publication,intent.conflicts||[],{
             intentId:intent.intentId,candidateDigest:intent.candidateDigest,
@@ -1615,7 +1722,9 @@
       let appliedCount=0,publishedCount=0,acknowledgedCount=0,cursorRecovery=null;
       for(let round=0;round<maxRounds;round++){
         const pull=await applyRemotePage(owner,{
-          limitGroups:1,maxBytes,onRecoveryProgress:syncOptions.onRecoveryProgress
+          limitGroups:1,maxBytes,signal:syncOptions.signal||null,
+          maxGroups:syncOptions.maxGroups,maxBytes:syncOptions.maxBytes,
+          onRecoveryProgress:syncOptions.onRecoveryProgress
         });
         if(pull&&pull.cursorRecovery)cursorRecovery=pull.cursorRecovery;
         if(pull&&pull.skipped)return {...pull,rounds:round+1,cursorRecovery};
@@ -1675,7 +1784,7 @@
     }
 
     return Object.freeze({readRemotePage,applyRemotePage,publishPending,prepareConflictRecovery,
-      publishConflictRecovery,downgradeToSnapshot,synchronize});
+      verifyPendingSnapshotRemote,publishConflictRecovery,downgradeToSnapshot,synchronize});
   }
 
   root.NexusEntityDeltaSync=Object.freeze({createClient,validateRemotePage,reconstructRemoteSnapshot,

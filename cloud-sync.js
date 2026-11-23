@@ -121,7 +121,7 @@ const SYNC_DIAG_STAGES=new Set([
  'local-save-queued','local-storage-flush','offline-account-base-unavailable','offline-account-pending-unavailable',
  'offline-account-queue-rebuilt','offline-account-recovery-error','offline-account-workspace-restored',
  'offline-account-workspace-unavailable','offline-queue-rebuilt-after-size-limit','snapshot-recovery-complete',
- 'snapshot-recovery-progress','snapshot-recovery-start','upload-error','upload-payload-selected','upload-skipped-cloud-already-matches',
+ 'snapshot-recovery-progress','snapshot-recovery-start','pending-snapshot-remote-readback','pending-snapshot-acknowledged','sync-retry-scheduled','upload-error','upload-payload-selected','upload-skipped-cloud-already-matches',
  'upload-start','upload-verification-readback','workspace-comparison-failed','workspace-comparison-slow','workspace-comparison-reuse','workspace-merge-commit-complete','workspace-merge-commit-error',
  'workspace-merge-commit-start','workspace-merge-complete','workspace-merge-error',
  'workspace-merge-normalize-complete','workspace-merge-normalize-error','workspace-merge-normalize-start',
@@ -143,27 +143,31 @@ function sanitizeSyncDiagEvent(event){
   for(const key of flags){if(typeof input[key]==='boolean')workspace[key]=input[key];}
   if(Object.keys(workspace).length)safe.workspace=workspace;
  }
- const countFields=['durationMs','chunkCount','payloadUtf8Bytes','pageCount','completedPageCount','rowsRead','maxPageDurationMs','minPageDurationMs','comparisonPassesSaved','cleanupDeletedCount','baseTopicCount','localTopicCount','remoteTopicCount','conflictCount','payloadCharacters','appliedCount','publishedCount','acknowledgedCount','rounds','batchCount','topicCount','workspaceRevision','projectionWorkspaceRevision','snapshotRevision','headRevision','cursorPublishRevision','cursorRemoteHeadRevision','cursorAcknowledgedSequence','recoverySnapshotRevision','recoveryHeadRevision','projectionBatchCount','projectionRowsWritten','projectionWriteDurationMs','projectionPruneDurationMs','projectionPruneRowsScanned','projectionPruneRowsRemoved','projectionOutboxPruneDurationMs','projectionOutboxPruneRowsRemoved'];
+ const countFields=['durationMs','chunkCount','payloadUtf8Bytes','pageCount','completedPageCount','rowsRead','maxPageDurationMs','minPageDurationMs','comparisonPassesSaved','cleanupDeletedCount','baseTopicCount','localTopicCount','remoteTopicCount','conflictCount','payloadCharacters','appliedCount','publishedCount','acknowledgedCount','rounds','batchCount','topicCount','workspaceRevision','projectionWorkspaceRevision','snapshotRevision','headRevision','cursorPublishRevision','cursorRemoteHeadRevision','cursorAcknowledgedSequence','recoverySnapshotRevision','recoveryHeadRevision','projectionBatchCount','projectionRowsWritten','projectionWriteDurationMs','projectionPruneDurationMs','projectionPruneRowsScanned','projectionPruneRowsRemoved','projectionOutboxPruneDurationMs','projectionOutboxPruneRowsRemoved','pendingLocalSequence','retryDelayMs','retryAttempt','delayMs','attempt'];
  for(const key of countFields){
   if(!Object.prototype.hasOwnProperty.call(event,key))continue;
   const value=event[key];
   if(value===null)safe[key]=null;
   else if(Number.isSafeInteger(value)&&value>=0)safe[key]=Math.min(value,100000000);
  }
- const booleanFields=['hasPayload','hasUpdatedAt','chunkDataIncluded','activeAccountPresent','ownerMatches','chunkStorageUnavailable','cleanupBacklogMayRemain','cleanupFailed','priorQueueRetainedForRecovery','storageEnabled','cooperative','queueRebuilt','ready','remoteHadPayload','remoteHasPayload','hasSession','ownerPresent','ownerVerified','ok','resumed','hasQueue','skipped','fromPending','hasPending','matchesAttempted','readbackHasPayload','hadPending','compactionPending','cleanupPending','projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches','baselineRestored','recovered','cloudVerificationPending','triggerConflict','triggerSnapshotRequired','triggerRequiresSnapshotReconciliation','cursorRequiresPull','projectionReused','timedOut','same','reused'];
+ const booleanFields=['hasPayload','hasUpdatedAt','chunkDataIncluded','activeAccountPresent','ownerMatches','chunkStorageUnavailable','cleanupBacklogMayRemain','cleanupFailed','priorQueueRetainedForRecovery','storageEnabled','cooperative','queueRebuilt','ready','remoteHadPayload','remoteHasPayload','hasSession','ownerPresent','ownerVerified','ok','resumed','hasQueue','skipped','fromPending','hasPending','matchesAttempted','readbackHasPayload','hadPending','compactionPending','cleanupPending','projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches','baselineRestored','recovered','cloudVerificationPending','triggerConflict','triggerSnapshotRequired','triggerRequiresSnapshotReconciliation','cursorRequiresPull','projectionReused','timedOut','same','reused','remoteReadbackVerified','acknowledged','retryScheduled','alreadyScheduled','pendingSnapshotClear'];
  for(const key of booleanFields){if(typeof event[key]==='boolean')safe[key]=event[key];}
+ if(typeof event.statusAfterWatchdog==='string'&&
+    ['Sync pending','Account verification delayed','Synced'].includes(event.statusAfterWatchdog)){
+  safe.statusAfterWatchdog=event.statusAfterWatchdog;
+ }
  const enums={
   watchdogOutcome:['local-ready-unverified','account-verification-delayed','already-terminal'],
   storageMode:['chunked','legacy-schema-compatibility','legacy','empty'],
   syncMode:['delta','snapshot','unknown'],
-  reason:['local-save','curriculum-install','sync','resume-existing-journal','conflict-or-snapshot-required','local-outbox-changed-during-merge','compatibility_snapshot_not_represented_by_delta_projection','entity_projection_unavailable','stale_entity_projection','entity_projection_owner_unavailable','entity_projection_rebuild_failed','staging_delta_gate_closed','staging_recovery_journal_pending','server_snapshot_mode','server_sync_state_missing','post_recovery_delta_sync_failed','local_snapshot_baseline_mismatch','compatibility_snapshot_still_pending','local_workspace_differs_from_verified_snapshot','remote_delta_history_precedes_local_baseline','local_delta_cursor_unavailable','local_delta_cursor_snapshot_baseline_mismatch','local_delta_cursor_generation_mismatch','local_delta_cursor_outside_retention','remote_changes_must_be_applied_first','local_outbox_requires_snapshot','local_outbox_pending','local_outbox_unavailable','local_and_remote_changes_overlap','local_and_remote_changes_overlap_after_partial_publish','invalid_remote_sync_state','unsupported_remote_sync_state','remote_state_changed_during_reconciliation','remote_pull_made_no_progress','local_publish_made_no_progress','delta_sync_round_limit','remote_snapshot_baseline_unverified','remote_read_failed','remote_reconciliation_page_unavailable','remote_reconciliation_made_no_progress','remote_reconciliation_incomplete','remote_reconciliation_group_limit','remote_reconciliation_byte_limit','remote_snapshot_reconstruction_failed','workspace_three_way_merge_unavailable','workspace_three_way_merge_failed','account_or_snapshot_reconciliation_verification_failed','conflict_recovery_commit_failed','delta_snapshot_publication_unverified','local_recovery_revision_unavailable','local_recovery_generation_not_staged','staged_recovery_generation_unavailable','staged_recovery_candidate_digest_mismatch','verified_snapshot_waiting_for_local_recovery_commit','local_recovery_post_commit_verification_failed','queued-base-version-matches-remote-snapshot','verified_local_baseline_matches_remote_manifest','local_entity_outbox_unavailable','local_outbox_sequence_gap','invalid_local_outbox_row','local_outbox_generation_mismatch','local_outbox_reader_unavailable','local_outbox_changed_before_acknowledgement','local_outbox_group_mismatch','invalid_local_outbox_high_watermark','local_publish_unavailable','remote_pull_unavailable','operation_publish_failed','snapshot_compaction_local_outbox_not_empty','workspace-removal-locked','indexeddb-unavailable','owner-mismatch','recovery-locked','manifest-not-ready','stale-workspace-revision','active-generation-roots-invalid','projection-changed-during-readiness-check','other'],
-  recoveryStep:['read-journal','prepare-candidate','write-prepared-intent','reuse-active-generation','stage-generation','restage-generation','read-staged-generation','reconstruct-candidate','verify-candidate-digest','verify-existing-snapshot','publish-snapshot','mark-journal-published','commit-local-recovery','verify-active-generation','apply-recovered-workspace','other'],
+  reason:['local-save','curriculum-install','sync','resume-existing-journal','conflict-or-snapshot-required','local-outbox-changed-during-merge','compatibility_snapshot_not_represented_by_delta_projection','compatibility_snapshot_not_represented_by_remote_state','remote_operation_readback_mismatch','remote_state_changed_before_pending_acknowledgement','pending_snapshot_changed_before_remote_acknowledgement','pending_snapshot_changed_before_recovery_commit','pending_snapshot_appeared_before_recovery_commit','compatibility_snapshot_not_acknowledged_after_remote_readback','entity_projection_unavailable','stale_entity_projection','entity_projection_owner_unavailable','entity_projection_rebuild_failed','staging_delta_gate_closed','staging_recovery_journal_pending','server_snapshot_mode','server_sync_state_missing','post_recovery_delta_sync_failed','local_snapshot_baseline_mismatch','compatibility_snapshot_still_pending','local_workspace_differs_from_verified_snapshot','remote_delta_history_precedes_local_baseline','local_delta_cursor_unavailable','local_delta_cursor_snapshot_baseline_mismatch','local_delta_cursor_generation_mismatch','local_delta_cursor_outside_retention','remote_changes_must_be_applied_first','local_outbox_requires_snapshot','local_outbox_pending','local_outbox_unavailable','local_and_remote_changes_overlap','local_and_remote_changes_overlap_after_partial_publish','invalid_remote_sync_state','unsupported_remote_sync_state','remote_state_changed_during_reconciliation','remote_pull_made_no_progress','local_publish_made_no_progress','delta_sync_round_limit','remote_snapshot_baseline_unverified','remote_read_failed','remote_reconciliation_page_unavailable','remote_reconciliation_made_no_progress','remote_reconciliation_incomplete','remote_reconciliation_group_limit','remote_reconciliation_byte_limit','remote_snapshot_reconstruction_failed','workspace_three_way_merge_unavailable','workspace_three_way_merge_failed','account_or_snapshot_reconciliation_verification_failed','conflict_recovery_commit_failed','delta_snapshot_publication_unverified','local_recovery_revision_unavailable','local_recovery_generation_not_staged','staged_recovery_generation_unavailable','staged_recovery_candidate_digest_mismatch','verified_snapshot_waiting_for_local_recovery_commit','local_recovery_post_commit_verification_failed','queued-base-version-matches-remote-snapshot','verified_local_baseline_matches_remote_manifest','local_entity_outbox_unavailable','local_outbox_sequence_gap','invalid_local_outbox_row','local_outbox_generation_mismatch','local_outbox_reader_unavailable','local_outbox_changed_before_acknowledgement','local_outbox_group_mismatch','invalid_local_outbox_high_watermark','local_publish_unavailable','remote_pull_unavailable','operation_publish_failed','snapshot_compaction_local_outbox_not_empty','workspace-removal-locked','indexeddb-unavailable','owner-mismatch','recovery-locked','manifest-not-ready','stale-workspace-revision','active-generation-roots-invalid','projection-changed-during-readiness-check','other'],
+  recoveryStep:['read-journal','prepare-candidate','write-prepared-intent','reuse-active-generation','stage-generation','restage-generation','read-staged-generation','reconstruct-candidate','verify-candidate-digest','verify-existing-snapshot','verify-pending-snapshot-readback','publish-snapshot','mark-journal-published','commit-local-recovery','verify-active-generation','apply-recovered-workspace','other'],
   progressPhase:['started','completed','failed'],
   journalPhase:['prepared','staged','published','none'],
   recoveryReason:['local_snapshot_baseline_mismatch','remote_snapshot_baseline_unverified','remote_read_failed','remote_reconciliation_page_unavailable','remote_reconciliation_made_no_progress','remote_reconciliation_incomplete','remote_reconciliation_group_limit','remote_reconciliation_byte_limit','remote_snapshot_reconstruction_failed','workspace_three_way_merge_unavailable','workspace_three_way_merge_failed','account_or_snapshot_reconciliation_verification_failed','conflict_recovery_commit_failed','delta_snapshot_publication_unverified','local_recovery_revision_unavailable','local_recovery_generation_not_staged','staged_recovery_generation_unavailable','staged_recovery_candidate_digest_mismatch','verified_snapshot_waiting_for_local_recovery_commit','local_recovery_post_commit_verification_failed','remote_state_changed_during_reconciliation','local_workspace_changed_during_reconciliation','recovery_intent_create_failed','other'],
   triggerReason:['local_snapshot_baseline_mismatch','compatibility_snapshot_still_pending','compatibility_snapshot_not_represented_by_delta_projection','local_workspace_differs_from_verified_snapshot','remote_delta_history_precedes_local_baseline','local_delta_cursor_unavailable','local_delta_cursor_snapshot_baseline_mismatch','local_delta_cursor_generation_mismatch','local_delta_cursor_outside_retention','remote_changes_must_be_applied_first','local_outbox_requires_snapshot','local_outbox_pending','local_outbox_unavailable','local_and_remote_changes_overlap','local_and_remote_changes_overlap_after_partial_publish','invalid_remote_sync_state','unsupported_remote_sync_state','remote_state_changed_during_reconciliation','remote_pull_made_no_progress','local_publish_made_no_progress','delta_sync_round_limit','resume-existing-journal','entity_projection_unavailable','stale_entity_projection','entity_projection_owner_unavailable','entity_projection_rebuild_failed','local_entity_outbox_unavailable','other','active_entity_generation_unavailable','active_entity_owner_changed','active_entity_owner_changed_after_commit','active_entity_owner_unavailable','another_entity_recovery_is_pending','compatibility_snapshot_rebase_failed','compatibility_snapshot_rebase_unavailable','compatibility_snapshot_refresh_failed','compatibility_snapshot_shadow_acknowledgement_failed','delta_checkpoint_marker_missing','delta_snapshot_publication_unverified','downgrade_snapshot_readback_mismatch','downgraded_snapshot_compatibility_queue_pending','downgraded_snapshot_cursor_not_verified','downgraded_snapshot_outbox_not_empty','downgraded_snapshot_recovery_journal_pending','empty_remote_page_before_server_head','entity_generation_changed_during_outbox_read','feature_disabled','in_memory_workspace_apply_failed','incomplete_local_operation_group','indexeddb-unavailable','invalid_local_acknowledgement','invalid_local_cursor','invalid_local_delete_change','invalid_local_operation_change','invalid_local_operation_group','invalid_local_operation_marker','invalid_local_outbox_high_watermark','invalid_local_outbox_row','invalid_local_put_change','invalid_local_reconciliation_snapshot','invalid_owner','invalid_reconciliation_snapshot_inputs','invalid_remote_changes','invalid_remote_cursor','invalid_remote_group_encoding','invalid_remote_operation_group','invalid_remote_ordinals','invalid_remote_page','invalid_remote_page_shape','invalid_remote_revision_bounds','invalid_server_operation_receipt','invalid_server_receipt','invalid_snapshot_baseline','invalid_workspace_three_way_merge_result','key_range_unavailable','local_delta_cursor_mismatch','local_operation_sequence_gap','local_outbox_changed_before_acknowledgement','local_outbox_generation_mismatch','local_outbox_group_mismatch','local_outbox_reader_unavailable','local_outbox_sequence_gap','local_recovery_commit_precondition_failed','local_recovery_generation_not_staged','local_recovery_post_commit_verification_failed','local_workspace_changed_during_reconciliation','local_workspace_differs_from_verified_checkpoint','local_workspace_unavailable','missing_local_operation_marker','newer-compatibility-snapshot','operation_group_exceeds_batch','operation_group_exceeds_byte_limit','prepared_recovery_intent_is_stale','recovered_workspace_in_memory_apply_failed','recovery_commit_pending','recovery_generation_not_staged','recovery_generation_restage_not_verified','recovery_intent_id_reused','recovery_publication_does_not_match_staged_generation','recovery_publication_mismatch','remote_apply_commit_failed','remote_apply_post_commit_verification_failed','remote_cursor_mismatch','remote_page_byte_limit','remote_page_group_limit','remote_reconciliation_byte_limit','remote_reconciliation_change_limit','remote_reconciliation_group_limit','remote_reconciliation_incomplete','remote_reconciliation_made_no_progress','remote_revision_gap','remote_snapshot_baseline_unverified','remote_snapshot_changed_before_reuse','remote_snapshot_position_collision','snapshot_baseline_not_verified','snapshot_compaction_cursor_unavailable','snapshot_compaction_dependencies_unavailable','snapshot_compaction_failed','snapshot_compaction_local_generation_changed','snapshot_compaction_local_outbox_not_empty','snapshot_compaction_local_snapshot_pending','snapshot_compaction_not_in_delta_mode','snapshot_compaction_remote_state_invalid','snapshot_compaction_requires_fully_reconciled_cursor','snapshot_compaction_state_read_failed','snapshot_compaction_threshold_not_reached','snapshot_mode','snapshot_mode_marker_still_present','staged_recovery_candidate_changed','staged_recovery_candidate_digest_mismatch','staged_recovery_generation_unavailable','staged_recovery_reconstruction_unavailable','unassigned-workspace','unsupported_remote_protocol','verified_snapshot_waiting_for_local_recovery_commit','workspace_three_way_merge_failed','workspace_three_way_merge_unavailable'],
   recoveryTriggerReason:['local_snapshot_baseline_mismatch','compatibility_snapshot_still_pending','compatibility_snapshot_not_represented_by_delta_projection','local_workspace_differs_from_verified_snapshot','remote_delta_history_precedes_local_baseline','local_delta_cursor_unavailable','local_delta_cursor_snapshot_baseline_mismatch','local_delta_cursor_generation_mismatch','local_delta_cursor_outside_retention','remote_changes_must_be_applied_first','local_outbox_requires_snapshot','local_outbox_pending','local_outbox_unavailable','local_and_remote_changes_overlap','local_and_remote_changes_overlap_after_partial_publish','invalid_remote_sync_state','unsupported_remote_sync_state','remote_state_changed_during_reconciliation','remote_pull_made_no_progress','local_publish_made_no_progress','delta_sync_round_limit','resume-existing-journal','entity_projection_unavailable','stale_entity_projection','entity_projection_owner_unavailable','entity_projection_rebuild_failed','local_entity_outbox_unavailable','other'],
-  verificationReason:['local_snapshot_baseline_mismatch','compatibility_snapshot_still_pending','local_workspace_differs_from_verified_snapshot','remote_delta_history_precedes_local_baseline','local_delta_cursor_unavailable','local_delta_cursor_snapshot_baseline_mismatch','local_delta_cursor_generation_mismatch','local_delta_cursor_outside_retention','remote_changes_must_be_applied_first','local_outbox_requires_snapshot','local_outbox_pending','remote_pull_made_no_progress','local_publish_made_no_progress','delta_sync_round_limit','account_or_remote_apply_verification_failed','account_or_publisher_verification_failed','delta_sync_not_verified','delta_sync_skipped','cursor_not_current','outbox_not_clear','entity_projection_unavailable','stale_entity_projection','entity_projection_owner_unavailable','entity_projection_rebuild_failed','local_entity_outbox_unavailable','local_outbox_unavailable','other'],
+  verificationReason:['local_snapshot_baseline_mismatch','compatibility_snapshot_still_pending','local_workspace_differs_from_verified_snapshot','remote_delta_history_precedes_local_baseline','local_delta_cursor_unavailable','local_delta_cursor_snapshot_baseline_mismatch','local_delta_cursor_generation_mismatch','local_delta_cursor_outside_retention','remote_changes_must_be_applied_first','local_outbox_requires_snapshot','local_outbox_pending','remote_pull_made_no_progress','local_publish_made_no_progress','delta_sync_round_limit','account_or_remote_apply_verification_failed','account_or_publisher_verification_failed','delta_sync_not_verified','delta_sync_skipped','cursor_not_current','outbox_not_clear','compatibility_snapshot_not_acknowledged_after_remote_readback','entity_projection_unavailable','stale_entity_projection','entity_projection_owner_unavailable','entity_projection_rebuild_failed','local_entity_outbox_unavailable','local_outbox_unavailable','other'],
   source:['active-local-workspace'],
   event:['INITIAL_SESSION','SIGNED_IN','SIGNED_OUT','TOKEN_REFRESHED','USER_UPDATED'],
   errorCategory:['conflict','timeout','queue-limit','queue-unavailable','other'],
@@ -366,7 +370,37 @@ function downloadConflictRecovery(){
  }catch(error){status('Conflict recovery download failed');say('The conflict archive remains in this browser but could not be downloaded. Make a normal JSON backup and try again.');console.error('Nexus conflict recovery download failed',error);}
 }
 function clearRetry(){if(retryTimer){clearTimeout(retryTimer);retryTimer=null;}retryAttempt=0;}
-function scheduleRetry(){if(authSessionVerificationPending){verifyCurrentAuthSessionAfterMismatch();return;}if(retryTimer||isUnsafeCloudOrigin()||(typeof navigator!=='undefined'&&!navigator.onLine))return;const text=el('cloudStatus')?el('cloudStatus').textContent:'';const policy=window.NexusCloudSyncRecovery;if(policy&&!policy.shouldRetry(text))return;if(!policy&&/(cloud conflict|data choice required|account queue paused|not signed in)/i.test(text))return;const delay=policy?policy.retryDelay(retryAttempt):Math.min(300000,1500*Math.pow(2,Math.min(retryAttempt,8)));retryAttempt=Math.min(retryAttempt+1,8);retryTimer=setTimeout(()=>{retryTimer=null;if(typeof navigator!=='undefined'&&!navigator.onLine)return;if(syncing||initializing){scheduleRetry();return;}const activeUserId=session&&session.user&&session.user.id,ownerMatches=!!activeUserId&&localStorage.getItem(OWNER_KEY)===activeUserId;if(ready&&ownerMatches){upload();return;}connect();},delay);}
+function scheduleRetry(){
+ if(authSessionVerificationPending){verifyCurrentAuthSessionAfterMismatch();return {scheduled:false};}
+ if(retryTimer){
+  syncDiag('sync-retry-scheduled',diagnosticWorkspace(),{
+   retryScheduled:true,alreadyScheduled:true,attempt:retryAttempt
+  });
+  return {scheduled:true,alreadyScheduled:true,attempt:retryAttempt};
+ }
+ if(isUnsafeCloudOrigin()||(typeof navigator!=='undefined'&&!navigator.onLine))return {scheduled:false};
+ const text=el('cloudStatus')?el('cloudStatus').textContent:'';
+ const policy=window.NexusCloudSyncRecovery;
+ if(policy&&!policy.shouldRetry(text))return {scheduled:false};
+ if(!policy&&/(cloud conflict|data choice required|account queue paused|not signed in)/i.test(text))
+  return {scheduled:false};
+ const delay=policy?policy.retryDelay(retryAttempt):Math.min(300000,1500*Math.pow(2,Math.min(retryAttempt,8)));
+ const attempt=retryAttempt;
+ retryAttempt=Math.min(retryAttempt+1,8);
+ retryTimer=setTimeout(()=>{
+  retryTimer=null;
+  if(typeof navigator!=='undefined'&&!navigator.onLine)return;
+  if(syncing||initializing){scheduleRetry();return;}
+  const activeUserId=session&&session.user&&session.user.id,
+   ownerMatches=!!activeUserId&&localStorage.getItem(OWNER_KEY)===activeUserId;
+  if(ready&&ownerMatches){upload();return;}
+  connect();
+ },delay);
+ syncDiag('sync-retry-scheduled',diagnosticWorkspace(),{
+  retryScheduled:true,alreadyScheduled:false,delayMs:delay,attempt
+ });
+ return {scheduled:true,delayMs:delay,attempt};
+}
 function clearDeltaRemotePoll(){if(remoteDeltaPollTimer){clearTimeout(remoteDeltaPollTimer);remoteDeltaPollTimer=null;}}
 function scheduleDeltaRemotePoll(){
  const statusText=el('cloudStatus')?el('cloudStatus').textContent:'';
@@ -1244,7 +1278,8 @@ async function initializeSession(s){
   const ownerMatches=localStorage.getItem(OWNER_KEY)===requestedUserId;
   if(!isTransientInitializationStatus(currentStatus)){
    syncDiag('initialize-status-watchdog',diagnosticWorkspace(),{
-    ready:!!ready,ownerMatches,watchdogOutcome:'already-terminal'
+    ready:!!ready,ownerMatches,watchdogOutcome:'already-terminal',
+    statusAfterWatchdog:String(currentStatus||'').trim(),retryScheduled:!!retryTimer
    });
    return;
   }
@@ -1255,11 +1290,15 @@ async function initializeSession(s){
    status('Account verification delayed');
    say('Account verification is taking longer than expected. The previous account remains isolated; Nexus will continue retrying safely.');
   }
+  const retry=scheduleRetry();
+  const statusAfterWatchdog=ready&&ownerMatches?'Sync pending':'Account verification delayed';
   syncDiag('initialize-status-watchdog',diagnosticWorkspace(),{
    previousStatus:currentStatus,ready:!!ready,ownerMatches,
-   watchdogOutcome:ready&&ownerMatches?'local-ready-unverified':'account-verification-delayed'
+   watchdogOutcome:ready&&ownerMatches?'local-ready-unverified':'account-verification-delayed',
+   statusAfterWatchdog,retryScheduled:!!(retry&&retry.scheduled),
+   retryDelayMs:retry&&Number.isSafeInteger(retry.delayMs)?retry.delayMs:null,
+   retryAttempt:retry&&Number.isSafeInteger(retry.attempt)?retry.attempt:null
   });
-  scheduleRetry();
  },30000);
  if(requestedUserId!==lastUserId){hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();}
  try{
@@ -1729,20 +1768,47 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
  const operationEpoch=sessionEpoch;
  if(signal&&signal.aborted)throw syncCancelledError();
  const queue=window.NexusOfflineSyncQueue,storage=window.NexusStorage;
- async function acknowledgeDeltaShadowSnapshot(queue,userId,pending,serverVersion){
+ async function acknowledgeDeltaShadowSnapshot(queue,userId,pending,serverVersion,proof){
   if(!queue||typeof queue.getPending!=='function'||typeof queue.acknowledge!=='function'||
      !pending||pending.ownerUserId!==userId||pending.status!=='pending'||
-     pending.baseServerVersion!==serverVersion||localStorage.getItem(OWNER_KEY)!==userId)return false;
+     pending.baseServerVersion!==serverVersion||localStorage.getItem(OWNER_KEY)!==userId||
+     !proof||proof.remoteReadbackVerified!==true||proof.ownerId!==userId||
+     proof.pendingOperationId!==pending.operationId||
+     Number(proof.pendingLocalSequence)!==Number(pending.localSequence)||
+     proof.snapshotUpdatedAt!==serverVersion||
+     !Number.isSafeInteger(Number(proof.snapshotRevision))||
+     !Number.isSafeInteger(Number(proof.headRevision))||
+     !Number.isSafeInteger(Number(proof.compactedThroughRevision)))return false;
   await assertActiveUser(userId);
+  const remoteStateRead=await client.rpc('nexus_get_entity_sync_state');
+  if(remoteStateRead.error)return false;
+  await assertActiveUser(userId);
+  const remoteState=remoteStateRead.data;
+  if(!remoteState||remoteState.mode!=='delta'||
+     remoteState.snapshot_updated_at!==proof.snapshotUpdatedAt||
+     Number(remoteState.snapshot_revision)!==Number(proof.snapshotRevision)||
+     Number(remoteState.head_revision)!==Number(proof.headRevision)||
+     Number(remoteState.compacted_through_revision)!==Number(proof.compactedThroughRevision)||
+     localStorage.getItem(OWNER_KEY)!==userId)return false;
   const current=queue.getPending(localStorage,userId);
   if(!current||current.status!=='pending'||current.ownerUserId!==userId||
-     current.operationId!==pending.operationId||current.baseServerVersion!==serverVersion||
+     current.operationId!==pending.operationId||current.localSequence!==pending.localSequence||
+     current.baseServerVersion!==serverVersion||
      !(await sameWorkspace(current.payload,snapshot(),signal)))return false;
   await assertActiveUser(userId);
+  syncDiag('pending-snapshot-remote-readback',null,{
+   ok:true,remoteReadbackVerified:true,pendingLocalSequence:Number(current.localSequence),
+   snapshotRevision:Number(proof.snapshotRevision),headRevision:Number(proof.headRevision)
+  });
   const acknowledgement=queue.acknowledge(localStorage,userId,current.operationId,
     current.baseServerVersion,serverVersion);
-  return !!(acknowledgement&&acknowledgement.acknowledged===true)&&
+  const acknowledged=!!(acknowledgement&&acknowledgement.acknowledged===true)&&
     localStorage.getItem(OWNER_KEY)===userId;
+  if(acknowledged)syncDiag('pending-snapshot-acknowledged',null,{
+   ok:true,acknowledged:true,pendingLocalSequence:Number(current.localSequence),
+   snapshotRevision:Number(proof.snapshotRevision),headRevision:Number(proof.headRevision)
+  });
+  return acknowledged;
  }
  async function rebaseDeltaShadowSnapshot(queue,userId,pending,serverVersion){
   if(!queue||typeof queue.getPending!=='function'||typeof queue.rebase!=='function'||
@@ -2028,8 +2094,8 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   getLocalBase:userId=>queue.getBase(localStorage,userId),
   getLocalWorkspace:()=>snapshot(),
   getPendingSnapshot:userId=>queue.getPending(localStorage,userId),
-  acknowledgePendingSnapshot:(userId,pending,serverVersion)=>
-   acknowledgeDeltaShadowSnapshot(queue,userId,pending,serverVersion),
+  acknowledgePendingSnapshot:(userId,pending,serverVersion,proof)=>
+   acknowledgeDeltaShadowSnapshot(queue,userId,pending,serverVersion,proof),
   rebasePendingSnapshot:(userId,pending,serverVersion)=>
    rebaseDeltaShadowSnapshot(queue,userId,pending,serverVersion),
   readRemoteSnapshot:async(userId,requestSignal)=>{
@@ -2072,6 +2138,20 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
     conflicts,{baseServerVersion:metadata.baseServerVersion},
     {intentId:metadata.intentId,candidateDigest:metadata.candidateDigest})
  });
+ const recordRecoveryProgress=progress=>{
+  if(typeof syncDiag!=='function'||!progress)return;
+  if(progress.recoveryStep==='verify-pending-snapshot-readback'&&
+     progress.progressPhase==='completed'&&progress.remoteReadbackVerified===true){
+   syncDiag('pending-snapshot-remote-readback',null,{
+    ok:true,remoteReadbackVerified:true,
+    pendingLocalSequence:Number.isSafeInteger(progress.pendingLocalSequence)
+     ?progress.pendingLocalSequence:null,
+    snapshotRevision:Number.isSafeInteger(progress.snapshotRevision)?progress.snapshotRevision:null,
+    headRevision:Number.isSafeInteger(progress.headRevision)?progress.headRevision:null
+   });
+  }
+  syncDiag('snapshot-recovery-progress',null,progress);
+ };
  const verifyRecoveredDelta=async(recovered,triggerReason,resumed)=>{
   const verification=await makeClient.synchronize(ownerId,{
    signal,maxRounds:20,maxGroups:20,maxBytes:1048576
@@ -2093,17 +2173,22 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    outbox.ownerId===ownerId&&outbox.generation===cursor.generation&&
    Number(outbox.workspaceRevision)===Number(cursor.workspaceRevision)&&
    Array.isArray(outbox.groups)&&outbox.groups.length===0&&outbox.hasMore!==true);
+  const pendingAfterVerification=queue&&typeof queue.getPending==='function'
+   ?queue.getPending(localStorage,ownerId):null;
+  const pendingSnapshotClear=!pendingAfterVerification;
   const verified=!!(verification&&verification.ok===true&&verification.skipped!==true&&
-   cursorCurrent&&outboxCurrent);
+   cursorCurrent&&outboxCurrent&&pendingSnapshotClear);
   const verificationReason=verification&&typeof verification.reason==='string'?verification.reason:
    (!verification||verification.ok!==true?'delta_sync_not_verified':
     verification.skipped===true?'delta_sync_skipped':
-    !cursorCurrent?'cursor_not_current':!outboxCurrent?'outbox_not_clear':'other');
+    !cursorCurrent?'cursor_not_current':!outboxCurrent?'outbox_not_clear':
+    !pendingSnapshotClear?'compatibility_snapshot_not_acknowledged_after_remote_readback':'other');
   if(typeof syncDiag==='function')syncDiag('delta-recovery-verification',null,{
    ok:verified,reason:verified?null:'post_recovery_delta_sync_failed',
    recoveryTriggerReason:triggerReason||'other',
    verificationReason,
    outboxPending:!!(outbox&&((Array.isArray(outbox.groups)&&outbox.groups.length>0)||outbox.hasMore===true)),
+   pendingSnapshotClear,
    appliedCount:Number.isSafeInteger(verification&&verification.appliedCount)?verification.appliedCount:null,
    publishedCount:Number.isSafeInteger(verification&&verification.publishedCount)?verification.publishedCount:null,
    acknowledgedCount:Number.isSafeInteger(verification&&verification.acknowledgedCount)?verification.acknowledgedCount:null,
@@ -2138,7 +2223,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    const recoveryStartedAt=Date.now();
    const resumed=await makeClient.publishConflictRecovery(ownerId,{
     signal,maxGroups:100,maxBytes:8*1048576,
-    onProgress:progress=>{if(typeof syncDiag==='function')syncDiag('snapshot-recovery-progress',null,progress);}
+    onProgress:recordRecoveryProgress
    });
    if(typeof syncDiag==='function')syncDiag('snapshot-recovery-complete',null,{
     durationMs:Math.max(0,Date.now()-recoveryStartedAt),
@@ -2218,11 +2303,26 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   const pendingAfterDelta=queue&&typeof queue.getPending==='function'
    ?queue.getPending(localStorage,ownerId):null;
   if(pendingAfterDelta){
-   const acknowledged=await acknowledgeDeltaShadowSnapshot(queue,ownerId,pendingAfterDelta,cursor.snapshotUpdatedAt);
-   if(!acknowledged)return {ok:false,retryable:true,snapshotRequired:true,
-    reason:'compatibility_snapshot_acknowledgement_failed'};
+   const proofResult=typeof makeClient.verifyPendingSnapshotRemote==='function'
+    ?await makeClient.verifyPendingSnapshotRemote(ownerId,pendingAfterDelta,{
+      signal,maxGroups:100,maxBytes:8*1048576
+     }):null;
+   if(!proofResult||proofResult.ok!==true){
+    result={...(proofResult||{}),ok:false,retryable:true,snapshotRequired:true,
+     requiresSnapshotReconciliation:true,
+     reason:proofResult&&proofResult.reason||
+      'compatibility_snapshot_not_represented_by_remote_state'};
+   }else{
+    const acknowledged=await acknowledgeDeltaShadowSnapshot(
+     queue,ownerId,pendingAfterDelta,cursor.snapshotUpdatedAt,proofResult.proof);
+    if(!acknowledged){
+     result={ok:false,retryable:true,snapshotRequired:true,
+      requiresSnapshotReconciliation:true,
+      reason:'compatibility_snapshot_acknowledgement_failed'};
+    }
+   }
   }
-  return {...result,cursor};
+  if(result&&result.ok===true)return {...result,cursor};
  }
  const needsRecovery=!!(result&&(result.conflict||result.snapshotRequired||
    result.requiresSnapshotReconciliation||
@@ -2244,7 +2344,7 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   const recoveryStartedAt=Date.now();
   const recovered=await makeClient.publishConflictRecovery(ownerId,{
    signal,maxGroups:100,maxBytes:8*1048576,
-   onProgress:progress=>{if(typeof syncDiag==='function')syncDiag('snapshot-recovery-progress',null,progress);}
+   onProgress:recordRecoveryProgress
   });
   if(typeof syncDiag==='function')syncDiag('snapshot-recovery-complete',null,{
    durationMs:Math.max(0,Date.now()-recoveryStartedAt),
