@@ -2899,7 +2899,8 @@
     const owner=entityOwnerKey(ownerId),intentId=String(input&&input.intentId||'').trim(),
       candidateDigest=String(input&&input.candidateDigest||''),baseUpdatedAt=String(input&&input.baseUpdatedAt||''),
       expectedHeadRevision=Number(input&&input.expectedHeadRevision),snapshotRevision=Number(input&&input.snapshotRevision),
-      pendingSnapshotProof=input&&input.pendingSnapshotProof;
+      pendingSnapshotProof=input&&input.pendingSnapshotProof,
+      pendingOutboxProof=input&&input.pendingOutboxProof;
     if(!input||typeof input!=='object'||entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner)
       throw new Error('The active account is not available for local recovery staging.');
     const validPendingProof=pendingSnapshotProof===undefined||pendingSnapshotProof===null||
@@ -2908,6 +2909,21 @@
        !!pendingSnapshotProof.operationId&&Number.isSafeInteger(Number(pendingSnapshotProof.localSequence))&&
        typeof pendingSnapshotProof.baseServerVersion==='string'&&!!pendingSnapshotProof.baseServerVersion&&
        typeof pendingSnapshotProof.payloadDigest==='string'&&/^[a-f0-9]{64}$/i.test(pendingSnapshotProof.payloadDigest));
+    const validPendingOutboxProof=pendingOutboxProof===undefined||pendingOutboxProof===null||
+      (!!pendingOutboxProof&&typeof pendingOutboxProof==='object'&&!Array.isArray(pendingOutboxProof)&&
+       pendingOutboxProof.ownerId===owner&&typeof pendingOutboxProof.activeGeneration==='string'&&
+       !!pendingOutboxProof.activeGeneration&&Number.isSafeInteger(Number(pendingOutboxProof.workspaceRevision))&&
+       Number.isSafeInteger(Number(pendingOutboxProof.throughSequence))&&
+       Number.isSafeInteger(Number(pendingOutboxProof.groupCount))&&Number(pendingOutboxProof.groupCount)>=0&&
+       Number.isSafeInteger(Number(pendingOutboxProof.changeCount))&&Number(pendingOutboxProof.changeCount)>=0&&
+       typeof pendingOutboxProof.digest==='string'&&/^[a-f0-9]{64}$/i.test(pendingOutboxProof.digest)&&
+       pendingOutboxProof.cursor&&typeof pendingOutboxProof.cursor==='object'&&
+       typeof pendingOutboxProof.cursor.generation==='string'&&
+       Number.isSafeInteger(Number(pendingOutboxProof.cursor.publishRevision))&&
+       Number.isSafeInteger(Number(pendingOutboxProof.cursor.acknowledgedSequence))&&
+       Number.isSafeInteger(Number(pendingOutboxProof.cursor.remoteHeadRevision))&&
+       typeof pendingOutboxProof.cursor.snapshotUpdatedAt==='string'&&
+       typeof pendingOutboxProof.cursor.requiresPull==='boolean');
     if(!validPendingProof||!intentId||intentId.length>160||!/^[a-f0-9]{64}$/i.test(candidateDigest)||!baseUpdatedAt||
        !Number.isSafeInteger(expectedHeadRevision)||expectedHeadRevision<0||
        !Number.isSafeInteger(snapshotRevision)||snapshotRevision<0||snapshotRevision>expectedHeadRevision||
@@ -2915,8 +2931,10 @@
        (input.payloadMetadata!==undefined&&(!input.payloadMetadata||typeof input.payloadMetadata!=='object'||Array.isArray(input.payloadMetadata))))
       throw new Error('The entity-delta recovery intent is invalid. The pending snapshot proof must remain owner- and revision-bound.');
     const conflictsJson=JSON.stringify(input.conflicts),payloadMetadata=JSON.stringify(input.payloadMetadata||{}),
-      pendingSnapshotProofJson=JSON.stringify(pendingSnapshotProof||null);
-    if(conflictsJson.length>5*1024*1024||payloadMetadata.length>64*1024||pendingSnapshotProofJson.length>8192)
+      pendingSnapshotProofJson=JSON.stringify(pendingSnapshotProof||null),
+      pendingOutboxProofJson=JSON.stringify(pendingOutboxProof||null);
+    if(conflictsJson.length>5*1024*1024||payloadMetadata.length>64*1024||
+       pendingSnapshotProofJson.length>8192||pendingOutboxProofJson.length>8192)
       throw new Error('The recovery intent metadata exceeds the safe size limit.');
     // Acquire the account write lock before yielding. Existing serialized
     // entity tasks are drained below; all new compatibility/entity mutations
@@ -2945,6 +2963,7 @@
           baseUpdatedAt,expectedHeadRevision,snapshotRevision,candidateDigest,
           conflicts:JSON.parse(conflictsJson),payloadMetadata:JSON.parse(payloadMetadata),
           pendingSnapshotProof:JSON.parse(pendingSnapshotProofJson),
+          pendingOutboxProof:JSON.parse(pendingOutboxProofJson),
           createdAt:timestamp(),updatedAt:timestamp()};
         store.put(intent);set({ok:true,created:true,intent});
       };
