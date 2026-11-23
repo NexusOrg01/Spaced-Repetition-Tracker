@@ -5,7 +5,7 @@
 **Repository:** `NexusOrg01/Spaced-Repetition-Tracker`  
 **PR:** [#147](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/pull/147)  
 **Branch:** `fix/sync-account-handoff-reliability`  
-**Current PR head:** `741236d7b5a12ecd54db195c3392e59dc0c47c45` (DLA-09E test-only commit; DLA-09C/D application implementation unchanged)  
+**Code/test head validated:** `741236d7b5a12ecd54db195c3392e59dc0c47c45` (DLA-09E test-only commit; DLA-09C/D application implementation unchanged). The report-only commit is `e37125cbbc3b9d073d8411b9f5082a027a0d7aa9`.  
 **PR state at audit:** open, draft, unmerged  
 **Original scope:** Sections 1–7 record DLA-09A evidence reconciliation and DLA-09B cold/warm restore profiling. Later append-only Sections 8–10 record DLA-09C/D implementation and DLA-09E lifecycle acceptance.
 
@@ -389,7 +389,8 @@ Both run #522 and run #539 use the same controlled fixture and reported environm
 - Repository: `NexusOrg01/Spaced-Repetition-Tracker`
 - PR: [#147](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/pull/147) — open, draft, unmerged.
 - Branch: `fix/sync-account-handoff-reliability`
-- Current PR head at this report update: `741236d7b5a12ecd54db195c3392e59dc0c47c45`.
+- Code/test head validated by runs #2055 and #541: `741236d7b5a12ecd54db195c3392e59dc0c47c45`.
+- Report-only commit: `e37125cbbc3b9d073d8411b9f5082a027a0d7aa9`.
 - DLA-09E test-only commit: [`741236d`](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/commit/741236d7b5a12ecd54db195c3392e59dc0c47c45), modifying only `scripts/test-phase34-large-workspace-lifecycle.mjs`.
 - [Validation run #2055](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45095150029): **PASS** on the test commit. Build, security, storage, backup/restore, cloud-sync runtime, comparison cancellation, navigation-performance, and broad regression checks passed.
 - [Authenticated local Supabase + Chromium run #541](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45095150137): **PASS** on the test commit. Twenty authenticated local integration assertions and 28 large-workspace two-device lifecycle assertions passed. The cleanup step verified disposable users, Delta rows, allowlist/downgrade receipts and temporary RPC grants were removed/revoked, and the local database was clean.
