@@ -1589,7 +1589,7 @@
           }catch(error){
             reportProgress('verify-pending-snapshot-readback','failed',{
               durationMs:Math.max(0,Date.now()-readbackStartedAt),ok:false,
-              pendingLocalSequence:pendingAtStartIdentity.localSequence
+              pendingLocalSequence:pendingAtStartIdentity?pendingAtStartIdentity.localSequence:intent.pendingOutboxProof?.throughSequence??null
             });
             return unavailable('pending_snapshot_remote_payload_comparison_failed',{
               retryable:true,snapshotRequired:true,errorCode:String(error&&error.code||'unknown')
@@ -1604,7 +1604,7 @@
           if(!remotePayloadMatches||!remoteStateMatches){
             reportProgress('verify-pending-snapshot-readback','failed',{
               durationMs:Math.max(0,Date.now()-readbackStartedAt),ok:false,
-              pendingLocalSequence:pendingAtStartIdentity.localSequence
+              pendingLocalSequence:pendingAtStartIdentity?pendingAtStartIdentity.localSequence:intent.pendingOutboxProof?.throughSequence??null
             });
             return {ok:false,retryable:true,snapshotRequired:true,
               reason:!remotePayloadMatches?'pending_snapshot_remote_readback_mismatch':
@@ -1620,7 +1620,7 @@
                await workspaceDigest(latestPending.payload)!==pendingAtStartDigest){
               reportProgress('verify-pending-snapshot-readback','failed',{
                 durationMs:Math.max(0,Date.now()-readbackStartedAt),ok:false,
-                pendingLocalSequence:pendingAtStartIdentity.localSequence
+                pendingLocalSequence:pendingAtStartIdentity?pendingAtStartIdentity.localSequence:intent.pendingOutboxProof?.throughSequence??null
               });
               return {ok:false,retryable:true,snapshotRequired:true,
                 reason:'pending_snapshot_changed_before_remote_acknowledgement',intentId:intent.intentId};
@@ -1638,7 +1638,7 @@
           reportProgress('verify-pending-snapshot-readback','completed',{
             durationMs:Math.max(0,Date.now()-readbackStartedAt),ok:true,
             remoteReadbackVerified:true,
-            pendingLocalSequence:pendingAtStartIdentity.localSequence,
+            pendingLocalSequence:pendingAtStartIdentity?pendingAtStartIdentity.localSequence:intent.pendingOutboxProof?.throughSequence??null,
             snapshotRevision:remoteSnapshotRevision,
             headRevision:remoteHeadRevision,
             compactedThroughRevision:remoteCompactedThrough
