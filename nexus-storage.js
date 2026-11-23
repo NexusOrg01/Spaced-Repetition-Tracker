@@ -1767,6 +1767,138 @@
     });
   }
 
+  // Rebind a stale cursor generation only when the active projection, remote
+  // snapshot baseline, and every currently queued local operation are independently
+  // verified. This repairs generation metadata without discarding or rebuilding rows.
+  async function repairWorkspaceEntityDeltaCursorGeneration(ownerId,expectedRemoteState={}){
+    const owner=entityOwnerKey(ownerId),key=entityDeltaCursorKey(owner),
+      snapshotUpdatedAt=String(expectedRemoteState&&expectedRemoteState.snapshotUpdatedAt||''),
+      head=Number(expectedRemoteState&&expectedRemoteState.headRevision),
+      floor=Number(expectedRemoteState&&expectedRemoteState.compactedThroughRevision);
+    const fail=reason=>({ok:false,snapshotRequired:true,reason});
+    if(!owner||!snapshotUpdatedAt||!Number.isSafeInteger(head)||head<0||
+       !Number.isSafeInteger(floor)||floor<0||floor>head){
+      return fail('invalid_cursor_repair_state');
+    }
+    if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner||
+       entityRecoveryLockedOwners.has(owner)){
+      return fail('cursor_repair_owner_unavailable');
+    }
+    await entitySyncSerial.catch(()=>undefined);
+    await serial.catch(()=>undefined);
+    await persistPending();
+    if(!enabled||committedOwnerId!==owner||entityRemovalOwners.has(owner)||
+       entityRecoveryLockedOwners.has(owner)||pending.size){
+      return fail('cursor_repair_local_writes_pending');
+    }
+    const initial=await transaction([WORKSPACES,'migrationMeta'],'readonly',(tx,set)=>{
+      const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta');
+      const values={manifest:null,workspace:null,cursor:null,intent:null};let remaining=4;
+      const finish=()=>{remaining--;if(remaining===0)set(values);};
+      const manifestRequest=meta.get(entityManifestKey(owner));
+      const workspaceRequest=entities.get(workspaceKey(owner));
+      const cursorRequest=meta.get(key);
+      const intentRequest=meta.get(entityDeltaRecoveryKey(owner));
+      manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;finish();};
+      workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;finish();};
+      cursorRequest.onsuccess=()=>{values.cursor=cursorRequest.result||null;finish();};
+      intentRequest.onsuccess=()=>{values.intent=intentRequest.result||null;finish();};
+    });
+    const manifest=initial&&initial.manifest,workspace=initial&&initial.workspace,
+      cursor=initial&&initial.cursor,intent=initial&&initial.intent;
+    const workspaceRevision=workspace&&Number.isSafeInteger(Number(workspace.workspaceRevision))
+      ?Number(workspace.workspaceRevision)
+      :(workspace&&Number.isSafeInteger(Number(workspace.revision))?Number(workspace.revision):null);
+    const activeGeneration=manifest&&manifest.activeGeneration;
+    if(!manifest||manifest.ownerId!==owner||manifest.status!=='ready'||manifest.formatVersion!==1||
+       typeof activeGeneration!=='string'||!activeGeneration||manifest.pendingGeneration||
+       manifest.pendingRecoveryIntentId||intent||!validWorkspaceRow(workspace,owner)||
+       !Number.isSafeInteger(workspaceRevision)||
+       Number(manifest.sourceWorkspaceRevision)!==workspaceRevision){
+      return fail('cursor_repair_projection_not_ready');
+    }
+    const cursorValid=!!(cursor&&cursor.key===key&&cursor.ownerId===owner&&
+      cursor.protocolVersion===1&&typeof cursor.generation==='string'&&cursor.generation.length>0&&
+      Number.isSafeInteger(Number(cursor.workspaceRevision))&&
+      Number(cursor.workspaceRevision)<=workspaceRevision&&
+      Number.isSafeInteger(Number(cursor.publishRevision))&&
+      Number(cursor.publishRevision)>=floor&&Number(cursor.publishRevision)<=head&&
+      Number.isSafeInteger(Number(cursor.acknowledgedSequence))&&
+      Number(cursor.acknowledgedSequence)>=0&&
+      Number.isSafeInteger(Number(cursor.remoteHeadRevision))&&
+      Number(cursor.remoteHeadRevision)>=Number(cursor.publishRevision)&&
+      Number(cursor.remoteHeadRevision)<=head&&
+      cursor.snapshotUpdatedAt===snapshotUpdatedAt&&
+      typeof cursor.requiresPull==='boolean'&&
+      cursor.requiresPull===(Number(cursor.remoteHeadRevision)>Number(cursor.publishRevision)));
+    if(!cursorValid)return fail('cursor_repair_cursor_not_compatible');
+    const readiness=await getWorkspaceEntityProjectionReadiness(owner);
+    if(!readiness||readiness.ready!==true||readiness.generation!==activeGeneration||
+       Number(readiness.workspaceRevision)!==workspaceRevision){
+      return fail('cursor_repair_projection_not_verified');
+    }
+    const outbox=await readWorkspaceEntityOutboxGroups(
+      owner,Number(cursor.acknowledgedSequence),1000,1048576);
+    if(!outbox||outbox.unavailable||outbox.snapshotRequired||outbox.ownerId!==owner||
+       outbox.generation!==activeGeneration||Number(outbox.workspaceRevision)!==workspaceRevision||
+       !Array.isArray(outbox.groups)||outbox.hasMore===true){
+      return fail(outbox&&outbox.reason||'cursor_repair_outbox_not_verified');
+    }
+    if(outbox.groups.length===0&&Number(cursor.workspaceRevision)!==workspaceRevision){
+      return fail('cursor_repair_workspace_revision_mismatch');
+    }
+    if(cursor.generation===activeGeneration){
+      return {ok:true,repaired:false,cursor:{...cursor},generation:activeGeneration,workspaceRevision};
+    }
+    const cursorWithoutGeneration=value=>JSON.stringify({...value,generation:''});
+    const expectedCursor=cursorWithoutGeneration(cursor);
+    const committed=await transaction([WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
+      const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta');
+      const values={manifest:null,workspace:null,cursor:null,intent:null};
+      let remaining=4,finished=false;
+      const finish=()=>{
+        remaining--;if(remaining!==0||finished)return;finished=true;
+        const currentManifest=values.manifest,currentWorkspace=values.workspace,
+          currentCursor=values.cursor;
+        const currentWorkspaceRevision=currentWorkspace&&Number.isSafeInteger(Number(currentWorkspace.workspaceRevision))
+          ?Number(currentWorkspace.workspaceRevision)
+          :(currentWorkspace&&Number.isSafeInteger(Number(currentWorkspace.revision))
+            ?Number(currentWorkspace.revision):null);
+        const currentReady=!!(enabled&&committedOwnerId===owner&&!entityRemovalOwners.has(owner)&&
+          !entityRecoveryLockedOwners.has(owner)&&pending.size===0&&
+          currentManifest&&currentManifest.ownerId===owner&&currentManifest.status==='ready'&&
+          currentManifest.formatVersion===1&&currentManifest.activeGeneration===activeGeneration&&
+          !currentManifest.pendingGeneration&&!currentManifest.pendingRecoveryIntentId&&
+          !values.intent&&validWorkspaceRow(currentWorkspace,owner)&&
+          currentWorkspaceRevision===workspaceRevision&&
+          Number(currentManifest.sourceWorkspaceRevision)===workspaceRevision&&
+          currentCursor&&cursorWithoutGeneration(currentCursor)===expectedCursor);
+        if(!currentReady){set(fail('cursor_generation_changed_during_repair'));return;}
+        if(currentCursor.generation===activeGeneration){
+          set({ok:true,repaired:false,cursor:{...currentCursor},generation:activeGeneration,
+            workspaceRevision:currentWorkspaceRevision});
+          return;
+        }
+        if(currentCursor.generation!==cursor.generation){
+          set(fail('cursor_generation_changed_during_repair'));return;
+        }
+        const next={...currentCursor,generation:activeGeneration};
+        meta.put(next);
+        set({ok:true,repaired:true,cursor:next,generation:activeGeneration,
+          workspaceRevision:currentWorkspaceRevision});
+      };
+      const manifestRequest=meta.get(entityManifestKey(owner));
+      const workspaceRequest=entities.get(workspaceKey(owner));
+      const cursorRequest=meta.get(key);
+      const intentRequest=meta.get(entityDeltaRecoveryKey(owner));
+      manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;finish();};
+      workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;finish();};
+      cursorRequest.onsuccess=()=>{values.cursor=cursorRequest.result||null;finish();};
+      intentRequest.onsuccess=()=>{values.intent=intentRequest.result||null;finish();};
+    });
+    return committed||fail('cursor_generation_changed_during_repair');
+  }
+
   async function initializeWorkspaceEntityDeltaCursor(ownerId,expectedServerRevision,snapshotUpdatedAt,baselineVerified){
     const owner=entityOwnerKey(ownerId),key=entityDeltaCursorKey(owner),
       expected=Number(expectedServerRevision);
@@ -3543,6 +3675,7 @@
     readWorkspaceEntityOutboxGroups,
     acknowledgeWorkspaceEntityOutbox,
     readWorkspaceEntityDeltaCursor,
+    repairWorkspaceEntityDeltaCursorGeneration,
     initializeWorkspaceEntityDeltaCursor,
     acknowledgeWorkspaceEntityOutboxGroup,
     applyWorkspaceEntityDeltaGroup,
