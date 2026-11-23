@@ -1054,7 +1054,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     schema:3,
     streams:[{id:'projection-stream',name:'Commerce'}],
     subjects:[{id:'projection-subject',streamId:'projection-stream',name:'Accounting'}],
-    topics:Array.from({length:401},(_,index)=>({
+    topics:Array.from({length:8200},(_,index)=>({
       id:'projection-topic-'+index,subjectId:'projection-subject',name:'Projection topic '+index
     })),
     history:[],exams:[],settings:{theme:'dark'}
@@ -1081,7 +1081,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'a null change list with replace:true must perform a complete entity backfill');
   const firstWorkspace=await loaded.api.readWorkspaceEntities(owner);
   assert.ok(firstWorkspace,'the null-triggered backfill must publish a readable generation');
-  assert.equal(firstWorkspace.state.topics.length,401);
+  assert.equal(firstWorkspace.state.topics.length,8200);
   assert.equal(firstWorkspace.featureState.journal.length,1);
   assert.equal((await loaded.api.readWorkspaceEntityOutbox(owner,0,20)).length,0,
     'a snapshot projection rebuild must not manufacture incremental outbox operations');
@@ -1116,7 +1116,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.ok(rebuiltWorkspace,'the replacement generation must remain readable after the unrelated write');
   assert.notEqual(rebuiltWorkspace.generation,firstWorkspace.generation,
     'replace:true must publish a new complete generation rather than silently keeping the old one');
-  assert.equal(rebuiltWorkspace.state.topics.length,401);
+  assert.equal(rebuiltWorkspace.state.topics.length,8200);
   assert.equal(rebuiltWorkspace.featureState.journal[0].id,'projection-journal');
   assert.equal((await loaded.api.readWorkspaceEntityOutbox(owner,0,20)).length,0);
 
@@ -1191,7 +1191,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'a retry must rebuild from the latest committed compatibility snapshot');
   const finalWorkspace=await loaded.api.readWorkspaceEntities(owner);
   assert.ok(finalWorkspace,'the retry must publish a verified entity generation');
-  assert.equal(finalWorkspace.state.topics.length,2202);
+  assert.equal(finalWorkspace.state.topics.length,10001);
   assert.equal(finalWorkspace.state.topics.at(-1).id,changedTopic.id);
 }
 
