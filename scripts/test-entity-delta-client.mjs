@@ -1794,6 +1794,28 @@ assert.equal(hostedCursorMismatchResult.ok,false,
   'a successful coordinator response must not mask a missing or invalid durable cursor');
 assert.equal(hostedCursorMismatchResult.reason,'local_delta_cursor_mismatch');
 
+const hostedCursorMismatchRecovery=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
+  hostedQaGate:true,hostedQaOrigin,browserOrigin:hostedQaOrigin,
+  syncResult:[
+    {ok:false,snapshotRequired:true,reason:'local_delta_cursor_mismatch'},
+    {ok:true,publishedCount:0,acknowledgedCount:0,appliedCount:0}
+  ],
+  recoveryResult:{ok:true,recovered:true,snapshotRevision:3,headRevision:3}
+});
+const hostedCursorMismatchRecoveryResult=await hostedCursorMismatchRecovery.run('account-A',stagingSignal);
+assert.equal(hostedCursorMismatchRecoveryResult.ok,true,
+  'a local Delta cursor/manifest mismatch must enter snapshot recovery and verify its replacement cursor');
+assert.equal(hostedCursorMismatchRecoveryResult.recovered,true);
+assert.equal(hostedCursorMismatchRecoveryResult.recoveryTriggerReason,'local_delta_cursor_mismatch');
+assert.equal(hostedCursorMismatchRecovery.calls.recovery.owner,'account-A');
+assert.equal(hostedCursorMismatchRecovery.calls.synchronizeCount,2,
+  'cursor mismatch recovery must be followed by a fresh authenticated Delta verification');
+assert.ok(hostedCursorMismatchRecovery.calls.projectionDiagnostics.some(event =>
+  event.stage==='delta-recovery-verification' && event.details?.ok===true &&
+  event.details?.recoveryTriggerReason==='local_delta_cursor_mismatch'),
+  'recovery must not report success until its replacement cursor and outbox are verified');
+
 const hostedOutboxPending=makeStagingRuntimeHarness({
   gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
   hostedQaGate:true,hostedQaOrigin,browserOrigin:hostedQaOrigin,

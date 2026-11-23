@@ -1658,6 +1658,52 @@ try {
   assert.ok(accountBOfflineVerified?.state?.topics?.some(topic => topic.id === accountBOfflineEditId),
     'Account B offline edit must be present in the verified cloud snapshot after reconnect');
 
+  // Reproduce the outstanding DLA-09A case: a durable cursor from an older
+  // projection generation must trigger snapshot recovery, not be silently reset.
+  // This is an isolated browser IndexedDB mutation; the remote fixture is disposable.
+  const accountACursorMismatchInjection = await page.evaluate(async ownerId => {
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open('nexus-workspace-v1');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error('Could not open Nexus IndexedDB for the cursor-mismatch regression.'));
+      request.onblocked = () => reject(new Error('Nexus IndexedDB is blocked during the cursor-mismatch regression.'));
+    });
+    const key = 'workspace-entity-delta-cursor:' + encodeURIComponent(ownerId);
+    try {
+      return await new Promise((resolve, reject) => {
+        const transaction = database.transaction(['migrationMeta'], 'readwrite');
+        const store = transaction.objectStore('migrationMeta');
+        const request = store.get(key);
+        let result = null;
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (!cursor || cursor.ownerId !== ownerId || typeof cursor.generation !== 'string') {
+            try { transaction.abort(); } catch (_) {}
+            return;
+          }
+          const corruptedGeneration = 'dla09-stale-generation-' + Date.now();
+          store.put({ ...cursor, generation: corruptedGeneration });
+          result = {
+            ownerId,
+            originalGeneration: cursor.generation,
+            corruptedGeneration
+          };
+        };
+        request.onerror = () => { try { transaction.abort(); } catch (_) {} };
+        transaction.oncomplete = () => resolve(result);
+        transaction.onerror = () => reject(transaction.error || new Error('The cursor-mismatch transaction failed.'));
+        transaction.onabort = () => reject(transaction.error || new Error('The cursor-mismatch transaction was aborted.'));
+      });
+    } finally {
+      database.close();
+    }
+  }, ownerA);
+  assert.equal(accountACursorMismatchInjection.ownerId, ownerA,
+    'the returning Account A must have a durable Delta cursor before the mismatch is injected');
+  assert.notEqual(accountACursorMismatchInjection.originalGeneration,
+    accountACursorMismatchInjection.corruptedGeneration,
+    'the test must make the cursor generation differ from the active manifest generation');
+
   const accountAReturnStartedAt = Date.now();
   const accountAReturnStartedIso = new Date(accountAReturnStartedAt).toISOString();
   const onlineAtAccountReturn = await page.evaluate(() => navigator.onLine === true);
@@ -1728,6 +1774,21 @@ try {
     for (let i = 0; i < 400 && !returnAReadHeld; i++) await page.waitForTimeout(25);
     assert.equal(returnAReadHeld, true,
       'the returning Account A sync must reach the deliberately held authenticated remote-read boundary');
+    const mismatchRecoveryStarted = await page.evaluate(({ ownerId, startedAt }) => {
+      let events = [];
+      try {
+        const parsed = JSON.parse(localStorage.getItem('nexus.syncdiag.session.v1') || '[]');
+        events = Array.isArray(parsed) ? parsed : [];
+      } catch (_) {}
+      return events.some(event =>
+        event.stage === 'snapshot-recovery-start' &&
+        typeof event.at === 'string' &&
+        event.at >= startedAt &&
+        event.triggerReason === 'local_delta_cursor_mismatch'
+      );
+    }, { ownerId: ownerA, startedAt: accountAReturnStartedIso });
+    assert.equal(mismatchRecoveryStarted, true,
+      'a stale-generation cursor must enter the explicit snapshot-recovery path before the held remote read is released');
     const statusBeforeNavigation = String(await page.locator('#cloudStatus').textContent() || '').trim();
     assert.notEqual(statusBeforeNavigation, 'Synced',
       'holding the returning account remote read must keep the UI from claiming cloud verification');
@@ -1818,6 +1879,25 @@ try {
   }, { startedAt: accountAReturnStartedIso, deadlineMs: 60000 }, { timeout: 65000 });
 
   const afterDeadline = await readAppDiagnostics();
+  const returnCursorMismatchRecoveryStart = afterDeadline.slice().reverse().find(event =>
+    event.stage === 'snapshot-recovery-start' &&
+    typeof event.at === 'string' &&
+    event.at >= accountAReturnStartedIso &&
+    event.triggerReason === 'local_delta_cursor_mismatch'
+  ) || null;
+  const returnCursorMismatchRecoveryComplete = afterDeadline.slice().reverse().find(event =>
+    event.stage === 'snapshot-recovery-complete' &&
+    typeof event.at === 'string' &&
+    event.at >= accountAReturnStartedIso &&
+    event.ok === true
+  ) || null;
+  const returnCursorMismatchRecoveryVerification = afterDeadline.slice().reverse().find(event =>
+    event.stage === 'delta-recovery-verification' &&
+    typeof event.at === 'string' &&
+    event.at >= accountAReturnStartedIso &&
+    event.ok === true &&
+    event.recoveryTriggerReason === 'local_delta_cursor_mismatch'
+  ) || null;
   const returnVerification = afterDeadline.slice().reverse().find(event =>
     event.stage === 'initial-sync-verification' &&
     typeof event.at === 'string' &&
@@ -1875,6 +1955,43 @@ try {
     !!window.NexusOfflineSyncQueue?.hasPending(localStorage, ownerA), ownerA);
   assert.equal(accountAPendingAfterReturn, false,
     'Account A pending verification must be acknowledged only after its returning cloud snapshot is verified');
+  const returnCursorState = await page.evaluate(async ownerId => {
+    const cursorResult = await window.NexusStorage.readWorkspaceEntityDeltaCursor(ownerId);
+    if (!cursorResult || cursorResult.ok !== true || !cursorResult.cursor) {
+      return { ok: false, reason: cursorResult && cursorResult.reason || 'cursor-unavailable' };
+    }
+    const outbox = await window.NexusStorage.readWorkspaceEntityOutboxGroups(
+      ownerId, Number(cursorResult.cursor.acknowledgedSequence), 1000, 1048576
+    );
+    return {
+      ok: true,
+      generation: cursorResult.generation,
+      cursorGeneration: cursorResult.cursor.generation,
+      generationMatches: cursorResult.cursor.generation === cursorResult.generation,
+      publishRevision: Number(cursorResult.cursor.publishRevision),
+      remoteHeadRevision: Number(cursorResult.cursor.remoteHeadRevision),
+      requiresPull: cursorResult.cursor.requiresPull,
+      outboxOwner: outbox && outbox.ownerId || null,
+      outboxGeneration: outbox && outbox.generation || null,
+      outboxGroups: outbox && Array.isArray(outbox.groups) ? outbox.groups.length : null,
+      outboxHasMore: !!(outbox && outbox.hasMore === true),
+      outboxSnapshotRequired: !!(outbox && outbox.snapshotRequired === true)
+    };
+  }, ownerA);
+  assert.equal(returnCursorState.ok, true,
+    'cursor mismatch recovery must publish a readable replacement cursor');
+  assert.equal(returnCursorState.generationMatches, true,
+    'the recovered cursor must be bound to the active manifest generation');
+  assert.equal(returnCursorState.publishRevision, returnCursorState.remoteHeadRevision,
+    'the recovered cursor must reach the verified remote head');
+  assert.equal(returnCursorState.requiresPull, false,
+    'the recovered cursor must not retain an unprocessed remote tail');
+  assert.equal(returnCursorState.outboxOwner, ownerA);
+  assert.equal(returnCursorState.outboxGeneration, returnCursorState.generation);
+  assert.equal(returnCursorState.outboxGroups, 0,
+    'the recovered cursor must not leave unacknowledged local Delta operations');
+  assert.equal(returnCursorState.outboxHasMore, false);
+  assert.equal(returnCursorState.outboxSnapshotRequired, false);
   assert.ok(returnStatusText !== 'Synced' || verifiedWithinDeadline,
     'The app must never show Synced without successful initial cloud verification.');
 
@@ -1929,6 +2046,9 @@ try {
     'projection-deferred-to-upload',
     'delta-sync-result',
     'workspace-render',
+    'snapshot-recovery-start',
+    'snapshot-recovery-complete',
+    'delta-recovery-verification',
     'initialize-status-watchdog',
     'initial-sync-verification'
   ]);
@@ -1952,10 +2072,16 @@ try {
     same: typeof event.same === 'boolean' ? event.same : null,
     reused: typeof event.reused === 'boolean' ? event.reused : null,
     comparisonPassesSaved: Number.isSafeInteger(event.comparisonPassesSaved) ? event.comparisonPassesSaved : null,
-    reason: typeof event.reason === 'string' ? event.reason : null
+    reason: typeof event.reason === 'string' ? event.reason : null,
+    triggerReason: typeof event.triggerReason === 'string' ? event.triggerReason : null,
+    recoveryTriggerReason: typeof event.recoveryTriggerReason === 'string' ? event.recoveryTriggerReason : null,
+    verificationReason: typeof event.verificationReason === 'string' ? event.verificationReason : null
   }));
   const expectedReturnPhases = [
     'workspace-render',
+    'snapshot-recovery-start',
+    'snapshot-recovery-complete',
+    'delta-recovery-verification',
     'delta-sync-result',
     'initial-sync-verification'
   ];
@@ -1997,6 +2123,14 @@ try {
       ? returnVerificationAny.durationMs : null,
     returnSyncVerified: verifiedWithinDeadline,
     accountAPendingClearedAfterReturn: !accountAPendingAfterReturn,
+    cursorMismatchInjected: accountACursorMismatchInjection,
+    cursorMismatchRecoveryStarted: !!returnCursorMismatchRecoveryStart,
+    cursorMismatchRecoveryCompleted: !!returnCursorMismatchRecoveryComplete,
+    cursorMismatchRecoveryVerified: !!returnCursorMismatchRecoveryVerification,
+    cursorMismatchRecoveryDurationMs: returnCursorMismatchRecoveryComplete &&
+      Number.isSafeInteger(returnCursorMismatchRecoveryComplete.durationMs)
+        ? returnCursorMismatchRecoveryComplete.durationMs : null,
+    cursorAfterRecovery: returnCursorState,
     returnVerificationEventPendingAtDeadline: !returnVerificationAny,
     returnTerminalStatus: returnStatusText,
     returnTerminalOutcomeMs,
@@ -2039,6 +2173,39 @@ try {
     'Account A must retain its complete 72,001-row review history after Account B’s offline sync');
   assert.equal(accountAPayloadAfterReturn.state.topics.some(topic => topic.id === accountBOfflineEditId), false,
     'Account B’s offline edit must never appear in Account A’s cloud workspace');
+  const accountALocalEditedTopicAfterReturn = accountAPayloadAfterReturn.state.topics.find(topic =>
+    topic && topic.id === initialAPendingResult.editedTopicId
+  );
+  const accountARemoteEditedTopicAfterReturn = accountAPayloadAfterReturn.state.topics.find(topic =>
+    topic && topic.id === remoteReadTopic.id
+  );
+  assert.ok(accountALocalEditedTopicAfterReturn,
+    'cursor mismatch recovery must preserve Account A’s parked local edit');
+  assert.equal(accountALocalEditedTopicAfterReturn.notes, 'x' + 'n'.repeat(99),
+    'cursor mismatch recovery must publish Account A’s exact local edit');
+  assert.ok(accountARemoteEditedTopicAfterReturn,
+    'cursor mismatch recovery must preserve the independent remote Account A operation');
+  assert.equal(accountARemoteEditedTopicAfterReturn.notes, changedRemoteReadTopicNotes,
+    'cursor mismatch recovery must retain the remote Account A change while merging the parked local edit');
+  check('DLA-09A cursor-generation mismatch recovery preserves local and remote Account A edits',
+    !!returnCursorMismatchRecoveryStart &&
+    !!returnCursorMismatchRecoveryComplete &&
+    !!returnCursorMismatchRecoveryVerification &&
+    returnCursorState.generationMatches === true &&
+    returnCursorState.publishRevision === returnCursorState.remoteHeadRevision &&
+    returnCursorState.outboxGroups === 0 &&
+    accountALocalEditedTopicAfterReturn.notes === 'x' + 'n'.repeat(99) &&
+    accountARemoteEditedTopicAfterReturn.notes === changedRemoteReadTopicNotes);
+  console.log('DLA-09A_CURSOR_MISMATCH_RECOVERY=' + JSON.stringify({
+    injected: accountACursorMismatchInjection,
+    recoveryStarted: !!returnCursorMismatchRecoveryStart,
+    recoveryCompleted: !!returnCursorMismatchRecoveryComplete,
+    recoveryVerified: !!returnCursorMismatchRecoveryVerification,
+    recoveryDurationMs: returnCursorMismatchRecoveryComplete && returnCursorMismatchRecoveryComplete.durationMs || null,
+    cursor: returnCursorState,
+    localEditPreserved: accountALocalEditedTopicAfterReturn.notes === 'x' + 'n'.repeat(99),
+    remoteEditPreserved: accountARemoteEditedTopicAfterReturn.notes === changedRemoteReadTopicNotes
+  }));
   check('DLA-08E app-level Delta handoff leaves Account A in Delta and Account B snapshot-only with isolated workspaces',
     accountASyncStateAfterReturn.mode === 'delta' &&
     accountBSyncStateAfterReturn.mode === 'snapshot' &&
