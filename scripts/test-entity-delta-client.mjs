@@ -2524,4 +2524,47 @@ for(const failure of [
   assert.equal(fixture.proofAtCommit().candidate.state.topics[0].name,'PARKED-EDIT');
 }
 
-console.log('Nexus entity-delta client and cloud-sync integration tests passed: feature gate, baseline verification, stable receipt retry, owner checks, conflict safety, and strict remote-page validation and bounded three-way recovery preparation.');
+// A stale cursor generation must reconstruct the parked edit from the durable
+// owner-scoped Delta outbox, prove the active projection matches those operations,
+// and read the exact published candidate back before the storage layer may advance
+// the acknowledged sequence and prune the outbox.
+{
+  const fixture=makeParkedRecoveryFixture({outboxOnly:true});
+  const prepared=await fixture.client.prepareConflictRecovery('account-A');
+  assert.equal(prepared.ok,true,
+    'cursor-mismatch recovery should reconstruct the parked outbox edit: '+JSON.stringify(prepared));
+  assert.equal(prepared.pendingSnapshotIncluded,false);
+  assert.equal(prepared.pendingOutboxIncluded,true);
+  assert.equal(prepared.pendingOutboxProof.groupCount,1);
+  assert.equal(prepared.pendingOutboxProof.throughSequence,1);
+  assert.equal(prepared.payload.state.topics[0].name,'PARKED-EDIT');
+  const result=await fixture.client.publishConflictRecovery('account-A');
+  assert.equal(result.ok,true,
+    'the exact outbox-backed edit should be published and read back before local commit: '+JSON.stringify(result));
+  assert.equal(fixture.publishedCandidate().state.topics[0].name,'PARKED-EDIT');
+  assert.equal(fixture.proofAtCommit().candidate.state.topics[0].name,'PARKED-EDIT');
+  assert.equal(fixture.proofAtCommit().pendingOutboxProof.digest,'d'.repeat(64));
+  assert.equal(fixture.intent().pendingOutboxProof.throughSequence,1);
+  assert.equal(fixture.outbox().length,0,
+    'the outbox may be cleared only after exact remote read-back and successful local commit');
+  assert.equal(fixture.committed(),true);
+}
+
+// If the outbox changes while the remote snapshot is being read back, recovery
+// must stop with the parked rows intact rather than acknowledge a stale proof.
+for(const failure of [
+  {outboxOnly:true,mutateOutboxOnReadback:true},
+  {outboxOnly:true,readbackMode:'missing-edit'}
+]){
+  const fixture=makeParkedRecoveryFixture(failure);
+  const result=await fixture.client.publishConflictRecovery('account-A');
+  assert.notEqual(result.ok,true,
+    'changed or incomplete outbox-backed remote content must not be reported as recovered: '+JSON.stringify(failure));
+  assert.equal(fixture.committed(),false);
+  assert.equal(fixture.outbox().length,1,
+    'failed outbox proof must retain the local pending operation');
+  assert.equal(fixture.intent().pendingOutboxProof.digest,'d'.repeat(64),
+    'the durable recovery journal must retain the original proof for a safe retry');
+}
+
+console.log('Nexus entity-delta client and cloud-sync integration tests passed: feature gate, baseline verification, stable receipt retry, owner checks, conflict safety, strict remote-page validation, and outbox-backed recovery proof/read-back.'); feature gate, baseline verification, stable receipt retry, owner checks, conflict safety, and strict remote-page validation and bounded three-way recovery preparation.');
