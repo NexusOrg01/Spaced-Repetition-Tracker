@@ -2533,7 +2533,7 @@ function makeParkedRecoveryFixture(options={}){
         return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_mismatch'};
       }
       return {ok:true,cursor:{generation:'generation-B',publishRevision:0,
-        acknowledgedSequence:outboxCommitted?1:0,snapshotUpdatedAt:outboxCommitted
+        acknowledgedSequence:outboxCommitted?1:0,snapshotUpdatedAt:committed
           ?'snapshot-stamp-2':'snapshot-stamp',remoteHeadRevision:0,requiresPull:false},
         generation:'generation-B'};
     },
@@ -2543,7 +2543,7 @@ function makeParkedRecoveryFixture(options={}){
         ?{generation:'generation-A',publishRevision:0,acknowledgedSequence:0,
           remoteHeadRevision:0,snapshotUpdatedAt:'snapshot-stamp',requiresPull:false}
         :{generation:'generation-B',publishRevision:0,acknowledgedSequence:outboxCommitted?1:0,
-          remoteHeadRevision:0,snapshotUpdatedAt:outboxCommitted?'snapshot-stamp-2':'snapshot-stamp',
+          remoteHeadRevision:0,snapshotUpdatedAt:committed?'snapshot-stamp-2':'snapshot-stamp',
           requiresPull:false};
       const groups=recoveryActive?outboxGroups:[];
       return {ok:true,ownerId:owner,activeGeneration:'generation-B',
