@@ -3193,10 +3193,31 @@
       if(!outboxBeforeCommit||outboxBeforeCommit.ok!==true){
         throw new Error('The local Delta outbox could not be verified before recovery commit; pending changes remain preserved.');
       }
-      if(outboxBeforeCommit.outbox.groups.length||outboxBeforeCommit.outbox.hasMore===true){
+      const pendingOutboxProof=recoveryBeforeCommit.intent.pendingOutboxProof||null,
+        proofCursor=pendingOutboxProof&&pendingOutboxProof.cursor||null;
+      if(pendingOutboxProof){
+        const cursor=outboxBeforeCommit.cursor,outbox=outboxBeforeCommit.outbox;
+        if(pendingOutboxProof.ownerId!==owner||
+           outboxBeforeCommit.activeGeneration!==pendingOutboxProof.activeGeneration||
+           outboxBeforeCommit.workspaceRevision!==Number(pendingOutboxProof.workspaceRevision)||
+           outbox.highWatermark!==Number(pendingOutboxProof.throughSequence)||
+           outbox.throughSequence!==Number(pendingOutboxProof.throughSequence)||
+           outbox.groupCount!==Number(pendingOutboxProof.groupCount)||
+           outbox.changeCount!==Number(pendingOutboxProof.changeCount)||
+           outbox.digest!==pendingOutboxProof.digest||
+           !proofCursor||cursor.generation!==proofCursor.generation||
+           Number(cursor.publishRevision)!==Number(proofCursor.publishRevision)||
+           Number(cursor.acknowledgedSequence)!==Number(proofCursor.acknowledgedSequence)||
+           Number(cursor.remoteHeadRevision)!==Number(proofCursor.remoteHeadRevision)||
+           cursor.snapshotUpdatedAt!==proofCursor.snapshotUpdatedAt||
+           cursor.requiresPull!==proofCursor.requiresPull){
+          throw new Error('The pending Delta outbox changed after verified recovery preparation; local changes remain preserved.');
+        }
+      }else if(outboxBeforeCommit.outbox.groups.length||outboxBeforeCommit.outbox.hasMore===true){
         throw new Error('Pending local Delta outbox entries have no exact verified recovery proof; local recovery commit was blocked.');
       }
-      const capturedWriteSequence=writeSequence,manifestKey=entityManifestKey(owner),
+      const expectedOutboxHighWatermark=outboxBeforeCommit.outbox.highWatermark,
+        capturedWriteSequence=writeSequence,manifestKey=entityManifestKey(owner),
         intentKey=entityDeltaRecoveryKey(owner),cursorKey=entityDeltaCursorKey(owner),
         sequenceKey=entitySequenceKey(owner),completedKey=entityDeltaRecoveryCompletedKey(owner);
       const result=await transaction([RECORDS,META,WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
@@ -3240,6 +3261,12 @@
             highWatermark=values.sequence?Number(values.sequence.value):0;
           if(!Number.isSafeInteger(highWatermark)||highWatermark<0){
             set({ok:false,reason:'invalid_local_outbox_high_watermark'});return;
+          }
+          if(highWatermark!==expectedOutboxHighWatermark||
+             (pendingOutboxProof&&(manifest.activeGeneration!==pendingOutboxProof.activeGeneration||
+               workspaceRevision!==Number(pendingOutboxProof.workspaceRevision)||
+               highWatermark!==Number(pendingOutboxProof.throughSequence)))){
+            set({ok:false,reason:'pending_outbox_changed_before_recovery_commit'});return;
           }
           for(const entry of normalized)records.put({key:entry.key,value:entry.value,
             deleted:entry.value===null,revision:nextRevision,updatedAt:timestamp()});
