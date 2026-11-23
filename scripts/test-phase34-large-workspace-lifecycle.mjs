@@ -995,13 +995,13 @@ try {
       'workspace-merge-complete','workspace-local-commit','workspace-render',
       'same-account-workspace-restored','projection-check-start','projection-readiness',
       'projection-reuse','projection-rebuild','entity-projection-rebuild','projection-deferred-to-upload',
-      'delta-sync-result','initialize-status-watchdog','sync-retry-scheduled',
+      'delta-sync-result','initialize-status-watchdog','sync-retry-scheduled','snapshot-recovery-progress',
       'pending-snapshot-remote-readback','pending-snapshot-acknowledged','initial-sync-verification'
     ]);
     const numericFields = [
       'durationMs','pageCount','completedPageCount','rowsRead','chunkCount',
       'payloadUtf8Bytes','maxPageDurationMs','minPageDurationMs','comparisonPassesSaved',
-      'pendingLocalSequence','retryDelayMs','retryAttempt','delayMs','attempt','snapshotRevision','headRevision',
+      'pendingLocalSequence','pendingLocalChangeCount','retryDelayMs','retryAttempt','delayMs','attempt','snapshotRevision','headRevision',
       'projectionBatchCount','projectionRowsWritten','projectionWriteDurationMs',
       'projectionPruneDurationMs','projectionPruneRowsScanned','projectionPruneRowsRemoved',
       'projectionOutboxPruneDurationMs','projectionOutboxPruneRowsRemoved'
@@ -1009,7 +1009,7 @@ try {
     const booleanFields = [
       'ok','ready','ownerVerified','timedOut','same','chunkDataIncluded','hasPayload',
       'projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches','reused',
-      'remoteReadbackVerified','acknowledged','retryScheduled','alreadyScheduled','pendingSnapshotClear'
+      'remoteReadbackVerified','pendingLocalChangesPreserved','acknowledged','retryScheduled','alreadyScheduled','pendingSnapshotClear'
     ];
     return events.filter(event =>
       event && typeof event.at === 'string' && Date.parse(event.at) >= startedAt &&
@@ -1028,7 +1028,7 @@ try {
       for (const key of booleanFields) {
         if (typeof event[key] === 'boolean') row[key] = event[key];
       }
-      for (const key of ['storageMode','syncMode','projectionRebuildMode','errorCategory','statusAfterWatchdog']) {
+      for (const key of ['storageMode','syncMode','projectionRebuildMode','errorCategory','statusAfterWatchdog','recoveryStep','progressPhase']) {
         if (typeof event[key] === 'string') row[key] = event[key];
       }
       const topicCount = event.workspace && event.workspace.topicCount;
@@ -1829,37 +1829,58 @@ try {
     const getPending = queue.getPending.bind(queue);
     const originalAcknowledge = queue.acknowledge.bind(queue);
     const originalCommit = queue.commitVerifiedEntityDeltaSnapshot.bind(queue);
+    const proofStartedAt = new Date().toISOString();
     const trace = { acknowledgements: [], recoveryCommits: [] };
-    const hasReadbackProof = pending => {
-      if (!pending) return false;
+    const readbackProof = pending => {
+      if (!pending) return null;
       try {
         const parsed = JSON.parse(localStorage.getItem('nexus.syncdiag.session.v1') || '[]');
-        return Array.isArray(parsed) && parsed.some(event =>
-          event && event.stage === 'pending-snapshot-remote-readback' &&
+        const event = Array.isArray(parsed) ? parsed.slice().reverse().find(event =>
+          event && event.at >= proofStartedAt &&
+          (event.stage === 'pending-snapshot-remote-readback' ||
+            (event.stage === 'snapshot-recovery-progress' &&
+             event.recoveryStep === 'verify-pending-snapshot-readback' &&
+             event.progressPhase === 'completed')) &&
           event.remoteReadbackVerified === true &&
-          Number(event.pendingLocalSequence) === Number(pending.localSequence)
-        );
-      } catch (_) { return false; }
+          event.pendingLocalChangesPreserved === true &&
+          Number(event.pendingLocalSequence) === Number(pending.localSequence) &&
+          Number.isSafeInteger(Number(event.pendingLocalChangeCount))
+        ) : null;
+        return event ? {
+          pendingLocalChangesPreserved: true,
+          pendingLocalChangeCount: Number(event.pendingLocalChangeCount)
+        } : null;
+      } catch (_) { return null; }
     };
     queue.acknowledge = function(storage, targetOwner, ...args) {
       if (targetOwner === ownerId) {
         const pending = getPending(storage, targetOwner);
-        if (pending) trace.acknowledgements.push({
-          pendingBefore: true,
-          remoteReadbackVerifiedBeforeAck: hasReadbackProof(pending),
-          pendingLocalSequence: Number(pending.localSequence)
-        });
+        if (pending) {
+          const proof = readbackProof(pending);
+          trace.acknowledgements.push({
+            pendingBefore: true,
+            remoteReadbackVerifiedBeforeAck: !!proof,
+            pendingLocalChangesPreservedBeforeAck: !!proof?.pendingLocalChangesPreserved,
+            pendingLocalChangeCountBeforeAck: proof?.pendingLocalChangeCount ?? null,
+            pendingLocalSequence: Number(pending.localSequence)
+          });
+        }
       }
       return originalAcknowledge.apply(this, arguments);
     };
     queue.commitVerifiedEntityDeltaSnapshot = function(storage, targetOwner, ...args) {
       if (targetOwner === ownerId) {
         const pending = getPending(storage, targetOwner);
-        if (pending) trace.recoveryCommits.push({
-          pendingBefore: true,
-          remoteReadbackVerifiedBeforeCommit: hasReadbackProof(pending),
-          pendingLocalSequence: Number(pending.localSequence)
-        });
+        if (pending) {
+          const proof = readbackProof(pending);
+          trace.recoveryCommits.push({
+            pendingBefore: true,
+            remoteReadbackVerifiedBeforeCommit: !!proof,
+            pendingLocalChangesPreservedBeforeCommit: !!proof?.pendingLocalChangesPreserved,
+            pendingLocalChangeCountBeforeCommit: proof?.pendingLocalChangeCount ?? null,
+            pendingLocalSequence: Number(pending.localSequence)
+          });
+        }
       }
       return originalCommit.apply(this, arguments);
     };
@@ -2184,8 +2205,12 @@ try {
       ]
     : [];
   const pendingAckProofVerified = pendingAckChecks.length > 0 &&
-    pendingAckChecks.every(item => item.remoteReadbackVerifiedBeforeAck === true ||
-      item.remoteReadbackVerifiedBeforeCommit === true);
+    pendingAckChecks.every(item =>
+      (item.remoteReadbackVerifiedBeforeAck === true || item.remoteReadbackVerifiedBeforeCommit === true) &&
+      (item.pendingLocalChangesPreservedBeforeAck === true || item.pendingLocalChangesPreservedBeforeCommit === true) &&
+      Number.isSafeInteger(Number(item.pendingLocalChangeCountBeforeAck ?? item.pendingLocalChangeCountBeforeCommit)) &&
+      Number(item.pendingLocalChangeCountBeforeAck ?? item.pendingLocalChangeCountBeforeCommit) > 0
+    );
   assert.ok(pendingAckProofVerified,
     'Account A pending state must remain present until an exact remote snapshot/read-back proof is recorded.');
 
@@ -2241,6 +2266,7 @@ try {
     'delta-sync-result',
     'workspace-render',
     'snapshot-recovery-start',
+    'snapshot-recovery-progress',
     'snapshot-recovery-complete',
     'delta-recovery-verification',
     'initialize-status-watchdog',
