@@ -279,6 +279,129 @@
       changeCount:totalChanges,bytes:totalBytes};
   }
 
+  function verifyPendingLocalChangesPreserved(basePayload,localPayload,candidatePayload,groups,conflicts){
+    if(!isRecord(basePayload)||!isRecord(basePayload.state)||!isRecord(basePayload.featureState)||
+       !isRecord(localPayload)||!isRecord(localPayload.state)||!isRecord(localPayload.featureState)||
+       !isRecord(candidatePayload)||!isRecord(candidatePayload.state)||!isRecord(candidatePayload.featureState)){
+      return {ok:false,changeCount:0};
+    }
+    const owns=(value,key)=>Object.prototype.hasOwnProperty.call(value,key);
+    const sameValue=(left,right)=>stableJson(left)===stableJson(right);
+    const remoteEditConflict=suffix=>Array.isArray(conflicts)&&conflicts.some(conflict=>
+      conflict&&conflict.resolution==='remote-edit'&&conflict.localPresent===false&&
+      typeof conflict.path==='string'&&(conflict.path===suffix||conflict.path.endsWith(suffix)));
+    const mapCache={base:new Map(),local:new Map(),candidate:new Map()};
+    const rowsById=(which,payload,rootName,collection)=>{
+      const cache=mapCache[which],key=rootName+'\u0000'+collection;
+      if(!cache.has(key)){
+        const root=payload[rootName],rows=root&&Array.isArray(root[collection])?root[collection]:[];
+        cache.set(key,new Map(rows.filter(isRecord).map(row=>[String(row.id),row])));
+      }
+      return cache.get(key);
+    };
+    const touched=new Map(),groupList=Array.isArray(groups)?groups:[];
+    const hasOutboxChanges=groupList.some(group=>group&&Array.isArray(group.changes)&&group.changes.length>0);
+    if(hasOutboxChanges){
+      for(const group of groupList){
+        if(!group||!Array.isArray(group.changes))return {ok:false,changeCount:0};
+        for(const change of group.changes){
+          if(!change||typeof change.collection!=='string'||typeof change.id!=='string'||!change.id)
+            return {ok:false,changeCount:0};
+          if(change.collection==='trackerMeta'||change.collection==='featureMeta'){
+            if(change.operation!=='put')return {ok:false,changeCount:0};
+          }else if((!TRACKER_RECORD_COLLECTIONS.has(change.collection)&&
+                    !FEATURE_RECORD_COLLECTIONS.has(change.collection))||
+                   !['put','delete'].includes(change.operation)){
+            return {ok:false,changeCount:0};
+          }
+          touched.set(change.collection+'\u0000'+change.id,change);
+        }
+      }
+    }else{
+      for(const collection of TRACKER_RECORD_COLLECTIONS){
+        const baseRows=rowsById('base',basePayload,'state',collection);
+        const localRows=rowsById('local',localPayload,'state',collection);
+        for(const id of new Set([...baseRows.keys(),...localRows.keys()])){
+          touched.set(collection+'\u0000'+id,{collection,id,operation:localRows.has(id)?'put':'delete'});
+        }
+      }
+      for(const collection of FEATURE_RECORD_COLLECTIONS){
+        const baseRows=rowsById('base',basePayload,'featureState',collection);
+        const localRows=rowsById('local',localPayload,'featureState',collection);
+        for(const id of new Set([...baseRows.keys(),...localRows.keys()])){
+          touched.set(collection+'\u0000'+id,{collection,id,operation:localRows.has(id)?'put':'delete'});
+        }
+      }
+      const metadataChanged=(baseRoot,localRoot,excluded)=>{
+        const fields=new Set([...Object.keys(baseRoot),...Object.keys(localRoot)]);
+        for(const field of fields){
+          if(excluded.has(field))continue;
+          const baseHas=owns(baseRoot,field),localHas=owns(localRoot,field);
+          if(baseHas!==localHas||(baseHas&&localHas&&!sameValue(baseRoot[field],localRoot[field])))return true;
+        }
+        return false;
+      };
+      if(metadataChanged(basePayload.state,localPayload.state,TRACKER_RECORD_COLLECTIONS))
+        touched.set('trackerMeta\u0000tracker',{collection:'trackerMeta',id:'tracker',operation:'put'});
+      if(metadataChanged(basePayload.featureState,localPayload.featureState,FEATURE_RECORD_COLLECTIONS))
+        touched.set('featureMeta\u0000features',{collection:'featureMeta',id:'features',operation:'put'});
+    }
+    const verifyField=(baseObject,localObject,candidateObject,field,pathSuffix)=>{
+      const baseHas=owns(baseObject,field),localHas=owns(localObject,field),
+        candidateHas=owns(candidateObject,field);
+      const changed=baseHas!==localHas||
+        (baseHas&&localHas&&!sameValue(baseObject[field],localObject[field]));
+      if(!changed)return {ok:true,changed:false};
+      const candidateMatches=candidateHas===localHas&&
+        (!localHas||sameValue(localObject[field],candidateObject[field]));
+      return {ok:candidateMatches||remoteEditConflict(pathSuffix),changed:true};
+    };
+    let changeCount=0;
+    for(const change of touched.values()){
+      const collection=change.collection,id=change.id;
+      if(collection==='trackerMeta'||collection==='featureMeta'){
+        const rootName=collection==='trackerMeta'?'state':'featureState';
+        const excluded=collection==='trackerMeta'?TRACKER_RECORD_COLLECTIONS:FEATURE_RECORD_COLLECTIONS;
+        const baseRoot=basePayload[rootName],localRoot=localPayload[rootName],
+          candidateRoot=candidatePayload[rootName];
+        if(!isRecord(baseRoot)||!isRecord(localRoot)||!isRecord(candidateRoot))return {ok:false,changeCount};
+        let entityChanged=false;
+        const fields=new Set([...Object.keys(baseRoot),...Object.keys(localRoot)]);
+        for(const field of fields){
+          if(excluded.has(field))continue;
+          const result=verifyField(baseRoot,localRoot,candidateRoot,field,field);
+          if(!result.ok)return {ok:false,changeCount};
+          entityChanged=entityChanged||result.changed;
+        }
+        if(entityChanged)changeCount++;
+        continue;
+      }
+      const rootName=TRACKER_RECORD_COLLECTIONS.has(collection)?'state':
+        FEATURE_RECORD_COLLECTIONS.has(collection)?'featureState':null;
+      if(!rootName)return {ok:false,changeCount};
+      const baseRow=rowsById('base',basePayload,rootName,collection).get(id)||null;
+      const localRow=rowsById('local',localPayload,rootName,collection).get(id)||null;
+      const candidateRow=rowsById('candidate',candidatePayload,rootName,collection).get(id)||null;
+      const recordPath=collection+'['+id+']';
+      if(change.operation==='delete'){
+        if(localRow)return {ok:false,changeCount};
+        if(baseRow&&candidateRow&&!remoteEditConflict(recordPath))return {ok:false,changeCount};
+        if(baseRow&&!localRow)changeCount++;
+        continue;
+      }
+      if(change.operation!=='put'||!localRow||!candidateRow)return {ok:false,changeCount};
+      let entityChanged=false;
+      const fields=new Set([...Object.keys(baseRow||{}),...Object.keys(localRow)]);
+      for(const field of fields){
+        const result=verifyField(baseRow||{},localRow,candidateRow,field,recordPath+'.'+field);
+        if(!result.ok)return {ok:false,changeCount};
+        entityChanged=entityChanged||result.changed;
+      }
+      if(entityChanged)changeCount++;
+    }
+    return {ok:true,changeCount};
+  }
+
   async function prepareSnapshotReconciliationFromBases(mergeBasePayload,localPayload,
       remoteBasePayload,groups,snapshotRevision,headRevision,mergeWorkspace,limits={}){
     if(!isRecord(mergeBasePayload)||!isRecord(mergeBasePayload.state)||
@@ -946,16 +1069,37 @@
           return currentSnapshot;
         };
         if(outboxRecovery){
-          // A stale cursor generation must not cause the durable local outbox to be
-          // ignored. Rebuild its exact local projection from the remote state at the
-          // cursor's last published revision; the candidate is not eligible to clear
-          // these rows unless that reconstruction matches the active generation.
+          // The current verified snapshot is the remote reconstruction base. The
+          // three-way merge ancestor must remain the exact base captured by the
+          // parked compatibility snapshot, when one exists. cursor.publishRevision
+          // can already include a parked outbox operation whose local acknowledgement
+          // was interrupted; using that cursor checkpoint as the merge base would make
+          // the pending edit look unchanged and allow a later remote value to win.
           const currentSnapshot=await readVerifiedRemoteBase();
           if(!currentSnapshot)return {ok:false,retryable:true,snapshotRequired:true,
             reason:'remote_snapshot_baseline_unverified'};
-          base={...currentSnapshot.payload,serverVersion:currentSnapshot.updated_at};
           remoteBasePayload=currentSnapshot.payload;
-          baselineReconstructed=true;
+          if(pendingBefore){
+            const pendingBaseVersion=pendingBefore.baseServerVersion;
+            if(pendingBaseVersion===state.snapshot_updated_at){
+              const storedBaseMatchesRemote=!!(validBase&&base.serverVersion===state.snapshot_updated_at&&
+                await sameWorkspace(base,currentSnapshot.payload));
+              if(!storedBaseMatchesRemote){
+                base={...currentSnapshot.payload,serverVersion:currentSnapshot.updated_at};
+                baselineReconstructed=true;
+              }
+            }else if(validBase&&pendingBaseVersion===base.serverVersion){
+              // Preserve the exact older owner-bound ancestor associated with the
+              // parked snapshot; the verified current snapshot is used only to
+              // reconstruct the remote side of the merge.
+            }else{
+              return {ok:false,snapshotRequired:true,
+                reason:'pending_snapshot_base_version_mismatch'};
+            }
+          }else{
+            base={...currentSnapshot.payload,serverVersion:currentSnapshot.updated_at};
+            baselineReconstructed=true;
+          }
         }else if(pendingBefore){
           // The compatibility snapshot's base revision is part of its identity.
           // A timestamp match alone is not enough: the locally cached base may
@@ -1067,7 +1211,10 @@
             return {ok:false,retryable:true,snapshotRequired:true,
               reason:'pending_outbox_does_not_reconstruct_active_projection'};
           }
-          mergeBasePayload=commonBase.payload;
+          // commonBase proves that the owner-bound outbox reconstructs the active
+          // projection at cursor.publishRevision. It is not the merge ancestor: it
+          // may already contain the parked operation and mask that local change.
+          mergeBasePayload=base;
           mergeLocalPayload=local;
           const localPayloadDigest=await workspaceDigest({
             state:local.state,featureState:local.featureState
@@ -1129,6 +1276,15 @@
         const prepared=await prepareSnapshotReconciliationFromBases(mergeBasePayload,mergeLocalPayload,
           remoteBasePayload,groups,snapshot,head,mergeWorkspace,recoveryOptions);
         if(!prepared.ok)return prepared;
+        const pendingLocalPreservation=(pendingBefore||outboxRecovery)
+          ?verifyPendingLocalChangesPreserved(mergeBasePayload,mergeLocalPayload,prepared.payload,
+            outboxRecovery?outboxRecovery.state.outbox.groups:[],prepared.conflicts)
+          :{ok:true,changeCount:0};
+        if(!pendingLocalPreservation.ok){
+          return {ok:false,retryable:true,snapshotRequired:true,
+            reason:'pending_local_changes_not_preserved',
+            pendingLocalChangeCount:pendingLocalPreservation.changeCount};
+        }
         await assertOwner(owner);
         const finalStateResult=await client.rpc('nexus_get_entity_sync_state');
         if(finalStateResult.error)return unavailable('remote_state_final_check_failed',{
@@ -1148,6 +1304,8 @@
           compactedThroughRevision:floor,pagesRead:pages,
           pendingSnapshotPresent:!!pendingBefore,
           pendingSnapshotIncluded:!!pendingBefore,
+          pendingLocalChangesPreserved:pendingLocalPreservation.ok===true,
+          pendingLocalChangeCount:pendingLocalPreservation.changeCount,
           pendingSnapshotDigest:pendingDigest,
           pendingOperationId:pendingBefore&&pendingBefore.operationId||null,
           pendingLocalSequence:pendingBefore&&Number.isSafeInteger(Number(pendingBefore.localSequence))
@@ -1176,6 +1334,11 @@
         if(!prepared||prepared.ok!==true||prepared.skipped===true){
           return {...(prepared||{}),ok:false,retryable:!prepared||prepared.retryable!==false,
             snapshotRequired:true,reason:prepared&&prepared.reason||'remote_pending_snapshot_reconstruction_unavailable'};
+        }
+        if(prepared.pendingLocalChangesPreserved!==true){
+          return {ok:false,retryable:false,snapshotRequired:true,
+            reason:'pending_local_changes_not_preserved',
+            snapshotRevision:prepared.snapshotRevision,headRevision:prepared.expectedHeadRevision};
         }
         const remoteIncludesPending=await sameWorkspace(prepared.payload,prepared.remotePayload);
         if(!remoteIncludesPending){
@@ -1212,13 +1375,16 @@
           ok:true,
           durationMs:Math.max(0,Date.now()-startedAt),
           proof:{
-            remoteReadbackVerified:true,ownerId:owner,
+            remoteReadbackVerified:true,
+            pendingLocalChangesPreserved:prepared.pendingLocalChangesPreserved===true,
+            pendingLocalChangeCount:Number(prepared.pendingLocalChangeCount)||0,
+            ownerId:owner,
             pendingOperationId:pending.operationId,
             pendingLocalSequence:Number(pending.localSequence),
             snapshotUpdatedAt:state.snapshot_updated_at,
             snapshotRevision:Number(state.snapshot_revision),
             headRevision:Number(state.head_revision),
-            compactedThroughRevision:Number(state.compacted_through_revision)
+            compactedThroughRevision:Number(state.compactedThroughRevision)
           }
         };
       }catch(error){
@@ -1300,11 +1466,12 @@
         const preparedContainsPending=targetPrepared=>{
           const compatibilityIncluded=!pendingAtStartIdentity||
             !!(targetPrepared&&targetPrepared.pendingSnapshotIncluded===true&&
+              targetPrepared.pendingLocalChangesPreserved===true&&
               targetPrepared.pendingSnapshotDigest===pendingAtStartDigest&&
               targetPrepared.pendingOperationId===pendingAtStartIdentity.operationId&&
               Number(targetPrepared.pendingLocalSequence)===pendingAtStartIdentity.localSequence);
           const outboxIncluded=!!(targetPrepared&&targetPrepared.pendingOutboxIncluded===true)
-            ?!!targetPrepared.pendingOutboxProof
+            ?!!targetPrepared.pendingOutboxProof&&targetPrepared.pendingLocalChangesPreserved===true
             :!targetPrepared?.pendingOutboxProof;
           return compatibilityIncluded&&outboxIncluded;
         };
@@ -1666,6 +1833,8 @@
           reportProgress('verify-pending-snapshot-readback','completed',{
             durationMs:Math.max(0,Date.now()-readbackStartedAt),ok:true,
             remoteReadbackVerified:true,
+            pendingLocalChangesPreserved:prepared.pendingLocalChangesPreserved===true,
+            pendingLocalChangeCount:Number(prepared.pendingLocalChangeCount)||0,
             pendingLocalSequence:pendingAtStartIdentity?pendingAtStartIdentity.localSequence:intent.pendingOutboxProof?.throughSequence??null,
             snapshotRevision:remoteSnapshotRevision,
             headRevision:remoteHeadRevision,
