@@ -1452,12 +1452,13 @@
         }
         if(!staged||staged.ownerId!==owner||staged.pending!==true)
           return {ok:false,retryable:true,snapshotRequired:true,reason:'staged_recovery_generation_unavailable'};
-        if(intent.pendingOutboxProof&&!prepared){
-          prepared=await runRecoveryStep('verify-pending-outbox-proof',()=>prepareConflictRecovery(owner,recoveryOptions));
+        if((intent.pendingOutboxProof||pendingAtStartIdentity)&&!prepared){
+          prepared=await runRecoveryStep('verify-pending-recovery-proof',()=>prepareConflictRecovery(owner,recoveryOptions));
           if(!prepared||prepared.ok!==true||!preparedContainsPending(prepared)||
+             !pendingProofMatchesIntent(intent)||
              !pendingOutboxProofMatchesIntent(intent,prepared)){
             return {ok:false,retryable:true,snapshotRequired:true,
-              reason:'pending_outbox_recovery_proof_mismatch',intentId:intent.intentId};
+              reason:'pending_recovery_proof_mismatch',intentId:intent.intentId};
           }
         }
         if(intent.pendingOutboxProof&&
