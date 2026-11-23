@@ -1001,7 +1001,10 @@ try {
     const numericFields = [
       'durationMs','pageCount','completedPageCount','rowsRead','chunkCount',
       'payloadUtf8Bytes','maxPageDurationMs','minPageDurationMs','comparisonPassesSaved',
-      'pendingLocalSequence','retryDelayMs','retryAttempt','delayMs','attempt','snapshotRevision','headRevision'
+      'pendingLocalSequence','retryDelayMs','retryAttempt','delayMs','attempt','snapshotRevision','headRevision',
+      'projectionBatchCount','projectionRowsWritten','projectionWriteDurationMs',
+      'projectionPruneDurationMs','projectionPruneRowsScanned','projectionPruneRowsRemoved',
+      'projectionOutboxPruneDurationMs','projectionOutboxPruneRowsRemoved'
     ];
     const booleanFields = [
       'ok','ready','ownerVerified','timedOut','same','chunkDataIncluded','hasPayload',
@@ -1188,6 +1191,16 @@ try {
   const initialProjectionRebuild = initialEvents.slice().reverse().find(event =>
     event.stage === 'entity-projection-rebuild' && Number.isSafeInteger(event.durationMs)
   ) || null;
+  if(initialProjectionRebuild){
+    for(const field of [
+      'projectionBatchCount','projectionRowsWritten','projectionWriteDurationMs',
+      'projectionPruneDurationMs','projectionPruneRowsScanned','projectionPruneRowsRemoved',
+      'projectionOutboxPruneDurationMs','projectionOutboxPruneRowsRemoved'
+    ]){
+      assert.ok(Number.isSafeInteger(initialProjectionRebuild[field])&&initialProjectionRebuild[field]>=0,
+        'the cold restore must serialize the projection rebuild subphase metric '+field);
+    }
+  }
   const initialDeltaSyncResult = initialEvents.slice().reverse().find(event =>
     event.stage === 'delta-sync-result' && event.ok === true &&
     Number.isSafeInteger(event.durationMs) && initialInitializationStarted &&
