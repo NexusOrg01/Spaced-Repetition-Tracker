@@ -3128,6 +3128,18 @@
       await persistPending();
       if(!enabled||committedOwnerId!==owner||pending.size)
         throw new Error('Local workspace writes could not be quiesced for recovery commit.');
+      const recoveryBeforeCommit=await readWorkspaceEntityRecovery(owner);
+      if(!recoveryBeforeCommit||!recoveryBeforeCommit.intent||
+         recoveryBeforeCommit.intent.intentId!==id){
+        throw new Error('The owner-bound recovery intent could not be verified before local commit.');
+      }
+      const outboxBeforeCommit=await readWorkspaceEntityDeltaRecoveryState(owner);
+      if(!outboxBeforeCommit||outboxBeforeCommit.ok!==true){
+        throw new Error('The local Delta outbox could not be verified before recovery commit; pending changes remain preserved.');
+      }
+      if(outboxBeforeCommit.outbox.groups.length||outboxBeforeCommit.outbox.hasMore===true){
+        throw new Error('Pending local Delta outbox entries have no exact verified recovery proof; local recovery commit was blocked.');
+      }
       const capturedWriteSequence=writeSequence,manifestKey=entityManifestKey(owner),
         intentKey=entityDeltaRecoveryKey(owner),cursorKey=entityDeltaCursorKey(owner),
         sequenceKey=entitySequenceKey(owner),completedKey=entityDeltaRecoveryCompletedKey(owner);
