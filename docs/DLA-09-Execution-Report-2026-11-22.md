@@ -1,11 +1,11 @@
 # DLA-09 Execution Report — 22–23 November 2026
 
-**Latest update (23 November 2026):** DLA-09C and DLA-09D are verified complete; DLA-09E is substantially complete after the current-head lifecycle matrix in Section 10. The original 22 November status table and earlier NOT STARTED statements in Sections 1, 8.5, and 9 are historical snapshots superseded by the later addenda.
+**Latest update (23 November 2026, final execution reconciliation):** DLA-09C and DLA-09D remain complete. DLA-09B has a targeted cleanup optimization but cold restore still exceeds 60 seconds and no app-level improvement is demonstrated. DLA-09A and DLA-09E are BLOCKED after two current-head disposable integration runs reproduced loss of Account A's parked local edit during cursor-generation mismatch recovery. Section 11 supersedes the earlier Section 10 completion claim.
 
 **Repository:** `NexusOrg01/Spaced-Repetition-Tracker`  
 **PR:** [#147](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/pull/147)  
 **Branch:** `fix/sync-account-handoff-reliability`  
-**Code/test head validated:** `741236d7b5a12ecd54db195c3392e59dc0c47c45` (DLA-09E test-only commit; DLA-09C/D application implementation unchanged). The report-only commit is `e37125cbbc3b9d073d8411b9f5082a027a0d7aa9`.  
+**Latest application/test head:** `8a365753983668c4050fe6536fd6ce029b699285`. Validation run #2074 passed on this head; authenticated local Supabase/Chromium run #560 failed on the Account A parked-edit preservation assertion. Earlier report-only and test-only commits remain historical evidence.  
 **PR state at audit:** open, draft, unmerged  
 **Original scope:** Sections 1–7 record DLA-09A evidence reconciliation and DLA-09B cold/warm restore profiling. Later append-only Sections 8–10 record DLA-09C/D implementation and DLA-09E lifecycle acceptance.
 
@@ -15,11 +15,11 @@
 
 | Codename | Status | Closure basis |
 |---|---|---|
-| DLA-09A | **COMPLETED — evidence reconciled on current head** | Historical authenticated run #514 remains valid for its recorded commit. The original timing gap was remeasured on the current PR head in run #522, so the evidence-only current-head gap is closed. |
-| DLA-09B | **COMPLETED — current-head profiling passed** | Run #522 measured the controlled cold and warm restore paths, attributed the previously unaccounted cold interval to entity-projection rebuild, and passed all authenticated/lifecycle assertions. |
-| DLA-09C | **COMPLETED** | Section 8 authentication-verification recovery implementation and current-head regression evidence. |
-| DLA-09D | **COMPLETED** | Section 9 revision-fenced comparison reuse and same-fixture before/after evidence. |
-| DLA-09E | **SUBSTANTIALLY COMPLETE — performance qualification remains** | Section 10 current-head lifecycle matrix passed; first-time cold restore remains above 60 seconds. |
+| DLA-09A | **BLOCKED — critical pending-edit loss reproduced** | Runs #559 and #560 complete cursor-mismatch recovery and report verified sync, but the exact parked Account A edit is absent from the resulting cloud snapshot. |
+| DLA-09B | **PARTIAL — cleanup optimization tested; cold target unmet** | Commit `8a36575` excludes the active generation from stale-row cleanup scans and passes storage/diagnostic tests; run #560 still measured an 86.367-second projection rebuild and 95.143-second cold restore. |
+| DLA-09C | **COMPLETED** | Current-head validation #2074 passed the getSession error/rejection/timeout, 15-second retry, late-result and eventual same-owner recovery regressions. |
+| DLA-09D | **COMPLETED — same-owner comparison reuse** | Current-head validation #2074 passed comparison/cancellation suites; run #560 measured 8.870 seconds for two warm deep passes with one revision-fenced pass saved. |
+| DLA-09E | **BLOCKED — lifecycle acceptance stopped** | Run #560 passed cold restore, B offline reconnect, cached reveal, return verification and navigation assertions, then failed the critical Account A pending-edit preservation assertion. |
 
 ## 2. DLA-09A — evidence reconciliation
 
@@ -445,7 +445,7 @@ The new browser assertion is recorded as `DLA-09E_NAVIGATION_DURING_SYNC` in run
 
 ### 10.5 Safety and cleanup
 
-- No cross-account workspace exposure, stale-session write, lost pending local edit, premature `Synced`, or manifest corruption was observed in the current-head lifecycle run.
+- Historical run #541 did not observe a pending-edit loss. The later current-head runs #559 and #560 did reproduce a lost Account A local edit after cursor-mismatch recovery reported success; see Section 11. No production/live account or data was involved.
 - Account A's pending snapshot/outbox was not acknowledged or discarded during B's session; it was cleared only after A returned and cloud verification succeeded.
 - Account B's offline edit remained in B's cloud snapshot after returning to A.
 - Concurrent CAS conflict handling preserved the losing device's local edit and journal entry; stale-device reconstruction recovered the compacted snapshot plus contiguous tail groups.
@@ -453,7 +453,7 @@ The new browser assertion is recorded as `DLA-09E_NAVIGATION_DURING_SYNC` in run
 
 ### 10.6 Remaining qualification
 
-1. **First-time cold restore exceeds 60 seconds.** Current-head run #541 took 107.736 seconds to verified restore, with a 99.007-second entity-projection rebuild. The owner-verified local workspace appeared in 1.393 seconds; the 30-second watchdog reported `local-ready-unverified`; final verification later succeeded. If the 60-second verified-sync target is intended to apply to first-time cold restore as well as returning accounts, that target remains open.
+1. **First-time cold restore exceeds 60 seconds.** Run #559 measured 82.620 seconds total and a 74.561-second projection rebuild; current-head run #560 measured 95.143 seconds total and an 86.367-second projection rebuild. The owner-verified workspace appeared in 1.363 seconds and the 30-second watchdog fired at 30.002 seconds. The exact cold path remains over target; the runtime harness separately verifies delayed/error and retry behavior, but a cold-fixture terminal state after the 60-second deadline is not yet fully qualified.
 2. **Cross-account A→B→A still performs three deep comparisons.** It used 13.039 seconds of comparison time but remained within the 60-second end-to-end verified-sync target. The measured DLA-09D one-pass reuse is the same-owner warm-refresh path.
 3. **Auth failure/retry coverage is deterministic rather than a deliberately induced hosted Supabase outage.** The local authenticated integration exercises real account handoff and sync; the getSession timeout/rejection/retry sequence is covered by the current-head runtime regression harness.
 4. The uploaded Project roadmap still has no authorized raw-byte materialization path. This section records the explicit acceptance criteria supplied in the execution request and the available PR code/CI evidence; no unseen source-only requirement is assumed.
@@ -462,10 +462,82 @@ The new browser assertion is recorded as `DLA-09E_NAVIGATION_DURING_SYNC` in run
 
 | Codename | Current status | Evidence |
 |---|---|---|
-| DLA-09A | **COMPLETED** | Historical evidence retained; current-head restore profile reconciled |
-| DLA-09B | **COMPLETED** | Controlled cold/warm restore profiling; Section 10 current-head measurements |
-| DLA-09C | **COMPLETED** | Section 8 implementation and current-head authentication recovery/isolation regressions |
-| DLA-09D | **COMPLETED** | Section 9 revision-fenced comparison reuse, concurrent-edit and cancellation tests, same-fixture before/after evidence |
-| DLA-09E | **SUBSTANTIALLY COMPLETE — cold-restore performance qualification remains** | Run #541 passed 28 lifecycle assertions; all requested lifecycle scenarios covered; first-time cold restore remains above 60 s |
+| DLA-09A | **BLOCKED — STOP CONDITION** | Runs #559 and #560 both show the Account A cursor-mismatch recovery loses the exact parked local edit even though the cursor is current, the outbox is empty, and the app reports verified `Synced`. |
+| DLA-09B | **PARTIAL** | Active-generation scan avoidance is implemented and unit-tested; app-level projection rebuild remains 86.367 s / cold verified restore 95.143 s on run #560. |
+| DLA-09C | **COMPLETED** | Current-head run #2074 passed repeated getSession failures, rejection, timeout, retry, stale-result rejection and eventual same-owner recovery tests. |
+| DLA-09D | **COMPLETED — scoped** | Current-head run #2074 passed comparison/cancellation regressions; run #560 warm comparison was 8.870 s with one pass saved. Cross-account recovery still incurs several deep comparisons. |
+| DLA-09E | **BLOCKED — STOP CONDITION** | Run #560 passed other measured lifecycle checks but failed the parked Account A edit preservation assertion; do not close the lifecycle matrix. |
 
 **Safety boundary:** only PR #147's existing branch and its Deploy Preview were updated. No production/live Nexus deployment, production Supabase configuration/schema/policy/data change, production account operation, promotion, or merge was performed. PR #147 remains open, draft, and unmerged.
+
+
+## 11. Latest execution reconciliation and stop condition — 23 November 2026
+
+**Disposition: DLA-09 is NOT CLOSED.** The latest current-head integration run reproduced a critical pending-change loss in a disposable local environment. Per the execution safety rule, work on the affected cursor-mismatch recovery path was stopped immediately after the same failure reproduced on two consecutive heads. No further recovery-code changes or further A→B→A lifecycle attempts were made after that confirmation.
+
+### 11.1 Current branch, head and preview
+
+- Repository: \`NexusOrg01/Spaced-Repetition-Tracker\`
+- Existing PR: [#147](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/pull/147), branch \`fix/sync-account-handoff-reliability\`
+- Application/test commit under validation: [\`8a365753983668c4050fe6536fd6ce029b699285\`](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/commit/8a365753983668c4050fe6536fd6ce029b699285)
+- PR remains open, draft, and unmerged. No new PR was created.
+- **Current-head Cloudflare preview:** https://ca02fd91.spaced-repetition-tracker.pages.dev
+- **Branch preview:** https://fix-sync-account-handoff-rel.spaced-repetition-tracker.pages.dev
+- The current-head Cloudflare Pages check passed for commit \`8a36575\`. The existing Netlify PR preview URL is https://deploy-preview-147--nexussrt.netlify.app; the Cloudflare URL is the preview explicitly tied to the latest commit.
+- No production/live Nexus data was inspected or changed; no production Supabase schema, policy, configuration or data was changed; no production deployment/promotion, merge, or paid service was used.
+
+### 11.2 Reconciled cold/warm measurements
+
+All four records below use the same synthetic fixture and reported environment: 26,900,000-byte payload, 103 chunks, 77,144 topics, 72,001 history rows; online Linux x64 runner, Chromium 141.0.7390.37, four hardware threads, 8 GB reported device memory. These are individual controlled runs, not a statistical distribution.
+
+| Run | Head / result | Cold restore to verified | Projection rebuild | Cached/warm comparison |
+|---|---|---:|---:|---:|
+| [#541](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45095150137) | Earlier passing lifecycle head | 107.736 s | 99.007 s | 8.839 s same-owner comparison; one pass saved |
+| [#543](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45096115261) | Earlier passing lifecycle head | 131.979 s | 116.984 s | 8.964 s; one pass saved |
+| [#559](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45172026578) | Head \`6c507a7\`; integration failed on local-edit preservation | 82.620 s | 74.561 s | 8.781 s; one pass saved |
+| [#560](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45173911844) | Head \`8a36575\`; integration failed on the same local-edit preservation assertion | 95.143 s | 86.367 s | 8.870 s; one pass saved |
+
+Additional current-head run #560 cold timings: sign-in to verified 96.558 s; owner-verified workspace reveal 1.363 s; manifest read 27 ms; seven chunk pages / 818 ms aggregate chunk read; validation 222 ms; SHA-256 192 ms; JSON parse 53 ms; watchdog 30.002 s; final verification 96.534 s. The cold path did not meet 60 seconds. The workspace was owner-verified and rendered promptly, but the 60-second cold-fixture terminal delayed/error-plus-retry behavior is not yet demonstrated end-to-end on this exact fixture.
+
+Run #543 remains applicable as historical evidence: it completed the lifecycle assertions, but its first verification attempt timed out at 120.002 s; projection rebuild completed at 116.984 s and the subsequent retry reached verified sync at 131.979 s. Its warm path was 16.834 s with 8.964 s in two deep comparisons and one revision-fenced reuse.
+
+### 11.3 DLA-09B targeted cleanup optimization and outcome
+
+Commit \`8a36575\` changes \`pruneInactiveWorkspaceEntityGenerations()\` to read two bounded key ranges around the active generation prefix instead of scanning the full owner prefix, which previously included every newly written active row only to discard it. It also exposes privacy-safe aggregate counters/timings for projection batches, write duration, stale rows scanned/removed, and outbox pruning.
+
+- The updated IndexedDB storage regression asserts that first-time projection cleanup scans **zero active-generation rows**, and that stale-generation cleanup never queries the newly published active prefix.
+- The diagnostics privacy regression asserts that only aggregate counts and timings survive sanitization; account/workspace values are stripped.
+- [Validation run #2074](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45173912000): **PASS** on head \`8a36575\`. It includes the new storage and diagnostics tests, cloud-sync runtime tests, getSession retry/timeout regressions, comparison cancellation, 77,144-record structural equality, backup/restore and security checks.
+- This optimization did **not** produce a demonstrated app-level cold-restore improvement: run #560 measured 86.367 s projection rebuild versus 74.561 s in run #559. The per-write/per-prune metrics are emitted by the app diagnostics but the current lifecycle timing serializer did not include those fields in its printed run JSON. Therefore the reason the app-level projection remains this slow is not yet phase-attributed below the total rebuild interval, and DLA-09B remains partial.
+
+### 11.4 Critical DLA-09A failure — pending Account A edit lost
+
+The current-head authenticated integration run [#560](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45173911844) failed the assertion:
+
+\`cursor mismatch recovery must publish Account A’s exact local edit\`
+
+The same failure occurred in [run #559](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45172026578) on the preceding head. In both runs:
+
+1. Account A's cursor generation was deliberately changed to a stale generation in its isolated browser IndexedDB.
+2. The app entered snapshot recovery; recovery completion and \`delta-recovery-verification\` both reported success.
+3. Initial sync verification reported success and the UI status was \`Synced\`.
+4. The recovered cursor matched the active manifest generation, publish revision equalled remote head revision, and the Account A outbox had zero groups.
+5. The final remote Account A snapshot contained the edited topic, but its notes were \`n\` repeated 100 times rather than the expected local edit \`x\` followed by 99 \`n\` characters. The parked local edit was therefore lost/overwritten and the queue had already been cleared.
+
+Account B's independent offline edit remained in B's cloud state, and no cross-account exposure was observed. Nevertheless, loss of A's pending local change is a critical data-integrity failure. A successful verification status does not make this acceptable.
+
+**Stop applied:** no further edits were made to cursor mismatch recovery, recovery merge ordering, outbox acknowledgement, or the affected A→B→A scenario after the repeat failure. Do not merge or treat DLA-09A/E as closed until this exact local edit is preserved and the current-head authenticated test passes.
+
+### 11.5 Current A–E ledger and remaining scope
+
+| Subtask | Evidence-backed status | Remaining requirement |
+|---|---|---|
+| DLA-09A | **BLOCKED — critical pending-edit loss** | Diagnose and correct the cursor-mismatch recovery path so the parked local edit survives merge/publication and is not acknowledged before it is represented in the verified remote state. |
+| DLA-09B | **PARTIAL — optimization tested, cold target unmet** | Capture write-vs-prune phase timings from the app-level cold fixture; safely reduce the 86.367 s projection rebuild or verify the exact cold-path terminal delayed/error and retry behavior after 60 s. |
+| DLA-09C | **COMPLETED** | Deterministic getSession error/rejection/timeout, repeated 15-second retry, stale late result and eventual same-owner recovery tests passed in run #2074. A hosted Supabase Auth outage was not induced. |
+| DLA-09D | **COMPLETED — same-owner warm path** | Revision-fenced reuse saved one deep pass: 8.870 s versus the 13.094 s three-pass baseline (32.3% lower). Structural equality and cooperative cancellation passed in run #2074. Cross-account cursor recovery still performs several deep comparisons. |
+| DLA-09E | **BLOCKED — lifecycle stop condition** | The other current-head checks progressed (B offline reconnect, A cached reveal within the 30 s assertion, A return verification in 31.386 s, and navigation in 360 ms), but the exact A pending edit was lost. The lifecycle matrix cannot be signed off. |
+
+Authenticated local Supabase cleanup passed in both runs #559 and #560: disposable users and Delta/receipt/allowlist rows were removed, temporary RPC grants revoked, and the local database verified clean. The failures above are confined to disposable test fixtures; they are not evidence of production data access or mutation.
+
+**Final safety disposition:** PR #147 remains open/draft/unmerged. Only its existing branch and preview were changed. No production/live Nexus or Supabase changes, production deployment/promotion, merge, or additional PR occurred. DLA-09 cannot be declared complete while the Account A pending-edit loss is reproducible.
