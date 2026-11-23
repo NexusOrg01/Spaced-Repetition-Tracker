@@ -2138,7 +2138,33 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
    if(!resumed||resumed.ok!==true)return resumed||{ok:false,retryable:true,reason:'staging_recovery_resume_failed'};
    return verifyRecoveredDelta(resumed,'resume-existing-journal',true);
   }
-  let result=await makeClient.synchronize(ownerId,{signal,maxRounds:20,maxGroups:20,maxBytes:1048576});
+  let cursorRecoveryStartedAt=null;
+  const onRecoveryProgress=progress=>{
+   if(!progress||progress.recoveryStep!=='rebind-cursor-generation')return;
+   if(progress.progressPhase==='started'){
+    cursorRecoveryStartedAt=Date.now();
+    if(typeof syncDiag==='function')syncDiag('snapshot-recovery-start',null,{
+     reason:'local_delta_cursor_mismatch',triggerReason:'local_delta_cursor_mismatch'
+    });
+   }
+   if(typeof syncDiag==='function')syncDiag('snapshot-recovery-progress',null,progress);
+   if(progress.progressPhase==='completed'||progress.progressPhase==='failed'){
+    if(typeof syncDiag==='function')syncDiag('snapshot-recovery-complete',null,{
+     durationMs:Math.max(0,Date.now()-(cursorRecoveryStartedAt||Date.now())),
+     ok:progress.progressPhase==='completed',resumed:false,
+     projectionReused:progress.progressPhase==='completed',
+     recoveryReason:'other',
+     snapshotRevision:Number.isSafeInteger(Number(progress.snapshotRevision))?Number(progress.snapshotRevision):null,
+     headRevision:Number.isSafeInteger(Number(progress.headRevision))?Number(progress.headRevision):null
+    });
+   }
+  };
+  let result=await makeClient.synchronize(ownerId,{
+   signal,maxRounds:20,maxGroups:20,maxBytes:1048576,onRecoveryProgress
+  });
+  if(result&&result.ok===true&&result.cursorRecovery){
+   return verifyRecoveredDelta(result.cursorRecovery,'local_delta_cursor_mismatch',false);
+  }
  if(result&&result.skipped&&result.mode==='snapshot')return {skipped:true,reason:'legacy_snapshot_server'};
  if(result&&result.ok===true){
   await assertActiveUser(ownerId,operationEpoch);
