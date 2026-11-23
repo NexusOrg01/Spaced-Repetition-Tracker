@@ -1165,6 +1165,12 @@ try {
     Date.parse(event.at) >= Date.parse(initialInitializationStarted.at) &&
     (!initialVerification || Date.parse(event.at) <= Date.parse(initialVerification.at))
   ) || null;
+  const initialColdDeadline = initialEvents.find(event =>
+    event.stage === 'initialize-sync-deadline' &&
+    initialInitializationStarted &&
+    Date.parse(event.at) >= Date.parse(initialInitializationStarted.at) &&
+    (!initialVerification || Date.parse(event.at) <= Date.parse(initialVerification.at))
+  ) || null;
   const initialRetryDeltaVerification = initialVerification && initialVerification.ok !== true
     ? initialEvents.find(event =>
         event.stage === 'delta-sync-result' &&
@@ -1211,6 +1217,21 @@ try {
     'The real Nexus app must record the authenticated Account A initialization start.');
   assert.ok(initialVerification && Number.isSafeInteger(initialVerification.durationMs),
     'The real Nexus app must record the terminal outcome and duration of Account A initial verification.');
+  if(initialVerification&&initialVerification.durationMs>=60000){
+    assert.ok(initialColdDeadline,
+      'A cold restore exceeding 60 seconds must record its explicit delayed/error deadline.');
+    assert.equal(initialColdDeadline.delayMs,60000);
+    assert.equal(initialColdDeadline.statusAfterWatchdog,'Sync pending',
+      'an owner-verified local workspace must remain explicitly pending beyond 60 seconds');
+    assert.equal(initialColdDeadline.ownerMatches,true);
+    assert.equal(initialColdDeadline.retryScheduled,true,
+      'the 60-second cold-restore deadline must retain a bounded retry');
+    assert.ok(initialColdDeadline.retryDelayMs===null||
+      (initialColdDeadline.retryDelayMs>0&&initialColdDeadline.retryDelayMs<=300000),
+      'the 60-second retry must remain capped at five minutes');
+    assert.notEqual(initialColdDeadline.statusAfterWatchdog,'Synced',
+      'the 60-second deadline must never claim unverified cloud convergence');
+  }
   assert.ok(initialProjectionReadiness,
     'The cold restore must separately time the owner-scoped entity projection readiness check.');
   assert.ok(initialProjectionReuse || initialProjectionRebuild,
@@ -2171,6 +2192,14 @@ try {
     timedOut: typeof event.timedOut === 'boolean' ? event.timedOut : null,
     chunkCount: Number.isSafeInteger(event.chunkCount) ? event.chunkCount : null,
     payloadUtf8Bytes: Number.isSafeInteger(event.payloadUtf8Bytes) ? event.payloadUtf8Bytes : null,
+    projectionBatchCount: Number.isSafeInteger(event.projectionBatchCount) ? event.projectionBatchCount : null,
+    projectionRowsWritten: Number.isSafeInteger(event.projectionRowsWritten) ? event.projectionRowsWritten : null,
+    projectionWriteDurationMs: Number.isSafeInteger(event.projectionWriteDurationMs) ? event.projectionWriteDurationMs : null,
+    projectionPruneDurationMs: Number.isSafeInteger(event.projectionPruneDurationMs) ? event.projectionPruneDurationMs : null,
+    projectionPruneRowsScanned: Number.isSafeInteger(event.projectionPruneRowsScanned) ? event.projectionPruneRowsScanned : null,
+    projectionPruneRowsRemoved: Number.isSafeInteger(event.projectionPruneRowsRemoved) ? event.projectionPruneRowsRemoved : null,
+    projectionOutboxPruneDurationMs: Number.isSafeInteger(event.projectionOutboxPruneDurationMs) ? event.projectionOutboxPruneDurationMs : null,
+    projectionOutboxPruneRowsRemoved: Number.isSafeInteger(event.projectionOutboxPruneRowsRemoved) ? event.projectionOutboxPruneRowsRemoved : null,
     topicCount: Number.isSafeInteger(event.workspace?.topicCount) ? event.workspace.topicCount : null,
     historyRows: Number.isSafeInteger(event.workspace?.reviewHistoryCount) ? event.workspace.reviewHistoryCount : null,
     projectionRebuildMode: typeof event.projectionRebuildMode === 'string' ? event.projectionRebuildMode : null,

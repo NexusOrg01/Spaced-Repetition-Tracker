@@ -32,7 +32,7 @@ function harness(options={}){
   let cursor=options.initialCursor?{...options.initialCursor}:null,
     cursorGeneration=options.initialCursor?.generation||'generation-A',
     ambiguousOnce=!!options.ambiguousOnce,changeOwnerOnPublish=!!options.changeOwnerOnPublish;
-  const receipts=new Map(),calls=[],acknowledgements=[];
+  const receipts=new Map(),calls=[],acknowledgements=[],publishedGroups=[];
   const storage={
     async readWorkspaceEntityDeltaCursor(){
       return cursor?{ok:true,exists:true,cursor:{...cursor},generation:cursor.generation,workspaceRevision:cursor.workspaceRevision}:
@@ -84,14 +84,26 @@ function harness(options={}){
     async rpc(name,args){
       calls.push({name,args:args?JSON.parse(JSON.stringify(args)):null});
       if(name==='nexus_get_entity_sync_state')return {data:{...state},error:null};
-      if(name==='nexus_read_entity_operations')return {data:options.readPage||{
-        mode:'delta',snapshot_required:false,head_revision:2,snapshot_revision:0,
-        compacted_through_revision:0,next_revision:1,bytes:100,
-        groups:[{revision:1,operation_id:'remote-op-one',changes:[
-          {ordinal:0,collection:'topics',id:'topic-remote',operation:'put',position:0,
-            value:{id:'topic-remote',name:'Remote topic'}}
-        ]}]
-      },error:null};
+      if(name==='nexus_read_entity_operations'){
+        if(options.changeOwnerOnReadback)activeOwner='account-B';
+        if(options.readPage)return {data:options.readPage,error:null};
+        if(publishedGroups.length){
+          const afterRevision=Number(args&&args.p_after_revision)||0;
+          const readGroups=publishedGroups.filter(group=>group.revision>afterRevision);
+          const nextRevision=readGroups.length?readGroups[readGroups.length-1].revision:afterRevision;
+          const bytes=new TextEncoder().encode(JSON.stringify(readGroups)).length;
+          return {data:{mode:'delta',snapshot_required:false,head_revision:state.head_revision,
+            snapshot_revision:0,compacted_through_revision:0,next_revision,bytes,groups:readGroups},error:null};
+        }
+        return {data:{
+          mode:'delta',snapshot_required:false,head_revision:2,snapshot_revision:0,
+          compacted_through_revision:0,next_revision:1,bytes:100,
+          groups:[{revision:1,operation_id:'remote-op-one',changes:[
+            {ordinal:0,collection:'topics',id:'topic-remote',operation:'put',position:0,
+              value:{id:'topic-remote',name:'Remote topic'}}
+          ]}]
+        },error:null};
+      }
       if(name!=='nexus_publish_entity_operation')return {data:null,error:{code:'unknown_rpc'}};
       const operationId=args.p_operation_id;
       const hash=JSON.stringify({expected_revision:args.p_expected_revision,changes:args.p_changes});
@@ -108,6 +120,7 @@ function harness(options={}){
         change_count:args.p_changes.length,head_revision:revision};
       receipts.set(operationId,{hash,receipt});
       state.head_revision=revision;
+      publishedGroups.push({revision,operation_id:operationId,changes:args.p_changes});
       if(changeOwnerOnPublish)activeOwner='account-B';
       if(ambiguousOnce){ambiguousOnce=false;return {data:null,error:{code:'network_lost_after_commit'}};}
       return {data:receipt,error:null};
@@ -129,7 +142,7 @@ function harness(options={}){
       JSON.stringify(a.featureState)===JSON.stringify(b.featureState),
     ...overrides
   });
-  return {state,groups,cursor:()=>cursor,client:clientFactory(),calls,acknowledgements,
+  return {state,groups,cursor:()=>cursor,client:clientFactory(),createClient:clientFactory,calls,acknowledgements,
     shadowAcknowledgements,setActiveOwner:value=>{activeOwner=value;},setLocalOwner:value=>{localOwner=value;},
     receipts};
 }
@@ -2265,6 +2278,169 @@ assert.ok(cloudSyncSource.indexOf('writeRemoteSnapshot(',legacyQueueStart)>legac
   const result = await api.downgradeToSnapshot('account-A');
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'compatibility_snapshot_still_pending');
+}
+
+
+function makeParkedRecoveryFixture(options={}){
+  const owner='account-A';
+  const parkedPayload={
+    app:'Nexus Spaced Repetition Tracker',
+    schema:4,
+    __nexusDeltaSync:'entity-delta-v1',
+    state:{streams:[],subjects:[],topics:[{id:'parked-topic',name:'PARKED-EDIT'}],history:[],exams:[]},
+    featureState:{journal:[],papers:[],goals:[],studyLogs:[]}
+  };
+  // Reproduce the defect: the local base has the same server stamp but already
+  // contains the parked edit. The authoritative remote snapshot at that stamp does not.
+  const staleLocalBase={...parkedPayload,serverVersion:'snapshot-stamp'};
+  const remoteBaseline={
+    ...payload,
+    __nexusDeltaSync:'entity-delta-v1',
+    state:{...payload.state,topics:[{id:'parked-topic',name:'original'}]}
+  };
+  const pending={
+    status:'pending',ownerUserId:owner,operationId:'parked-op-1',
+    localSequence:11,baseServerVersion:'snapshot-stamp',payload:parkedPayload
+  };
+  const state={mode:'delta',protocol_version:1,head_revision:0,snapshot_revision:0,
+    compacted_through_revision:0,snapshot_updated_at:'snapshot-stamp'};
+  let remoteSnapshot={payload:remoteBaseline,updated_at:'snapshot-stamp'};
+  let currentPending=pending,staged=null,active=null,intent=null,committed=false;
+  let publishedCandidate=null,readSnapshotCount=0,proofAtCommit=null;
+  const storage={
+    async readWorkspaceEntityRecovery(){return {intent:intent?{...intent}:null};},
+    async beginWorkspaceEntityRecovery(targetOwner,input){
+      intent={ownerId:targetOwner,intentId:input.intentId,phase:'prepared',
+        activeGeneration:'generation-A',baseUpdatedAt:input.baseUpdatedAt,
+        expectedHeadRevision:input.expectedHeadRevision,snapshotRevision:input.snapshotRevision,
+        candidateDigest:input.candidateDigest,conflicts:input.conflicts,
+        payloadMetadata:input.payloadMetadata,pendingSnapshotProof:input.pendingSnapshotProof};
+      return {ok:true,intent:{...intent}};
+    },
+    getStatus(){return {revision:1};},
+    async migrateWorkspaceEntities(targetOwner,nextState,nextFeatureState){
+      staged={ownerId:targetOwner,generation:'generation-B',state:nextState,
+        featureState:nextFeatureState,pending:true};
+      intent={...intent,phase:'staged',pendingGeneration:'generation-B'};
+      return {ok:true};
+    },
+    async readWorkspaceEntities(targetOwner,readOptions={}){
+      if(readOptions.pending)return staged;
+      return active|| (staged?{...staged,pending:false}:null);
+    },
+    async markWorkspaceEntityRecoveryPublished(targetOwner,intentId,publication){
+      if(!intent||intent.intentId!==intentId)return {ok:false,reason:'intent_missing'};
+      intent={...intent,phase:'published',publication};
+      return {ok:true,intent};
+    },
+    async commitWorkspaceEntityRecovery(){return {ok:true};},
+    async readWorkspaceEntityDeltaCursor(){
+      return {ok:true,cursor:{publishRevision:0,snapshotUpdatedAt:'snapshot-stamp-2',
+        remoteHeadRevision:0},generation:'generation-B'};
+    }
+  };
+  const h=harness({state,pendingSnapshot:pending});
+  const client=h.createClient({
+    storage,
+    getLocalBase:async()=>staleLocalBase,
+    getLocalWorkspace:async()=>parkedPayload,
+    getPendingSnapshot:async()=>currentPending,
+    readRemoteSnapshot:async()=>{
+      readSnapshotCount++;
+      if(readSnapshotCount===2&&options.mutatePendingOnReadback){
+        currentPending={...currentPending,payload:{...currentPending.payload,
+          state:{...currentPending.payload.state,topics:[{id:'parked-topic',name:'CHANGED-DURING-READBACK'}]}}};
+      }
+      if(readSnapshotCount>1&&options.readbackMode==='missing')return null;
+      if(readSnapshotCount>1&&options.readbackMode==='missing-edit'){
+        return {payload:{...publishedCandidate,state:{...publishedCandidate.state,
+          topics:[{id:'parked-topic',name:'original'}]}},updated_at:'snapshot-stamp-2'};
+      }
+      if(readSnapshotCount>1&&options.readbackMode==='wrong-stamp')
+        return {payload:publishedCandidate,updated_at:'wrong-stamp'};
+      return remoteSnapshot;
+    },
+    publishSnapshot:async(targetOwner,candidate,expectedHead,expectedStamp)=>{
+      publishedCandidate=candidate;
+      if(options.staleOwner)h.setActiveOwner('account-B');
+      if(options.staleRevision){
+        state.snapshot_revision=1;state.head_revision=1;state.compacted_through_revision=1;
+      }else{
+        state.snapshot_revision=0;state.head_revision=0;state.compacted_through_revision=0;
+      }
+      state.snapshot_updated_at='snapshot-stamp-2';
+      if(options.readbackMode==='missing')remoteSnapshot=null;
+      else if(options.readbackMode==='missing-edit')remoteSnapshot={
+        payload:{...candidate,state:{...candidate.state,topics:[{id:'parked-topic',name:'original'}]}},
+        updated_at:'snapshot-stamp-2'
+      };
+      else if(options.readbackMode==='wrong-stamp')remoteSnapshot={payload:candidate,updated_at:'wrong-stamp'};
+      else remoteSnapshot={payload:candidate,updated_at:'snapshot-stamp-2'};
+      return {verified:true,updated_at:'snapshot-stamp-2',snapshotRevision:0,
+        headRevision:0,compactedThroughRevision:0};
+    },
+    commitLocalRecovery:async(targetOwner,candidate,publication,conflicts,metadata)=>{
+      proofAtCommit={owner:targetOwner,candidate,publication,metadata,
+        pending:currentPending?{...currentPending}:null};
+      committed=true;active={...staged,pending:false};
+      return {ok:true,generation:'generation-B'};
+    }
+  });
+  return {client,h,state,pending:()=>currentPending,committed:()=>committed,
+    intent:()=>intent,publishedCandidate:()=>publishedCandidate,
+    proofAtCommit:()=>proofAtCommit,readSnapshotCount:()=>readSnapshotCount};
+}
+
+// The stale same-stamp local base must never be accepted as the three-way merge
+// ancestor when it already contains the parked edit. Reconstruct the exact remote
+// baseline and merge the owner-bound pending snapshot as the local side.
+{
+  const fixture=makeParkedRecoveryFixture();
+  const prepared=await fixture.client.prepareConflictRecovery('account-A');
+  assert.equal(prepared.ok,true,'the exact remote baseline should permit safe pending recovery: '+JSON.stringify(prepared));
+  assert.equal(prepared.pendingSnapshotIncluded,true);
+  assert.equal(prepared.pendingOperationId,'parked-op-1');
+  assert.equal(prepared.pendingLocalSequence,11);
+  assert.equal(prepared.payload.state.topics[0].name,'PARKED-EDIT',
+    'the exact parked edit must survive merge even when the cached same-stamp base contains it');
+  assert.equal(prepared.remotePayload.state.topics[0].name,'original',
+    'the remote reconstruction must remain a distinct verified input to the merge');
+}
+
+// A successful recovery records the exact pending identity in its durable intent,
+// reads the exact published snapshot back, verifies its revision tuple, and only
+// then commits/archives the parked local queue item.
+{
+  const fixture=makeParkedRecoveryFixture();
+  const progress=[];
+  const result=await fixture.client.publishConflictRecovery('account-A',{onProgress:event=>progress.push(event)});
+  assert.equal(result.ok,true,'the exact pending edit should recover only after remote read-back: '+JSON.stringify(result));
+  assert.equal(fixture.publishedCandidate().state.topics[0].name,'PARKED-EDIT');
+  assert.equal(fixture.proofAtCommit().candidate.state.topics[0].name,'PARKED-EDIT');
+  assert.equal(fixture.proofAtCommit().pending.operationId,'parked-op-1');
+  assert.equal(fixture.intent().pendingSnapshotProof.operationId,'parked-op-1');
+  assert.equal(fixture.intent().pendingSnapshotProof.payloadDigest.length,64);
+  assert.equal(progress.some(event=>event.recoveryStep==='verify-pending-snapshot-readback'&&
+    event.progressPhase==='completed'&&event.remoteReadbackVerified===true),true);
+  assert.equal(fixture.committed(),true);
+}
+
+// A missing parked edit, missing read-back, wrong snapshot stamp, stale owner,
+// changed pending payload, or stale remote revision must all leave the pending
+// item untouched and prevent the local recovery commit.
+for(const failure of [
+  {readbackMode:'missing-edit'},
+  {readbackMode:'missing'},
+  {readbackMode:'wrong-stamp'},
+  {staleOwner:true},
+  {staleRevision:true},
+  {mutatePendingOnReadback:true}
+]){
+  const fixture=makeParkedRecoveryFixture(failure);
+  const result=await fixture.client.publishConflictRecovery('account-A');
+  assert.notEqual(result.ok,true,'unsafe recovery must not be committed: '+JSON.stringify(failure));
+  assert.equal(fixture.committed(),false,'pending state must not be archived without exact remote proof: '+JSON.stringify(failure));
+  assert.equal(fixture.pending().status,'pending','the parked snapshot must remain pending after failed verification');
 }
 
 console.log('Nexus entity-delta client and cloud-sync integration tests passed: feature gate, baseline verification, stable receipt retry, owner checks, conflict safety, and strict remote-page validation and bounded three-way recovery preparation.');

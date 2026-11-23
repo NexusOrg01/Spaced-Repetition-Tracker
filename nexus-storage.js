@@ -2742,17 +2742,25 @@
   async function beginWorkspaceEntityRecovery(ownerId,input){
     const owner=entityOwnerKey(ownerId),intentId=String(input&&input.intentId||'').trim(),
       candidateDigest=String(input&&input.candidateDigest||''),baseUpdatedAt=String(input&&input.baseUpdatedAt||''),
-      expectedHeadRevision=Number(input&&input.expectedHeadRevision),snapshotRevision=Number(input&&input.snapshotRevision);
+      expectedHeadRevision=Number(input&&input.expectedHeadRevision),snapshotRevision=Number(input&&input.snapshotRevision),
+      pendingSnapshotProof=input&&input.pendingSnapshotProof;
     if(!input||typeof input!=='object'||entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner)
       throw new Error('The active account is not available for local recovery staging.');
-    if(!intentId||intentId.length>160||!/^[a-f0-9]{64}$/i.test(candidateDigest)||!baseUpdatedAt||
+    const validPendingProof=pendingSnapshotProof===undefined||pendingSnapshotProof===null||
+      (!!pendingSnapshotProof&&typeof pendingSnapshotProof==='object'&&!Array.isArray(pendingSnapshotProof)&&
+       pendingSnapshotProof.ownerId===owner&&typeof pendingSnapshotProof.operationId==='string'&&
+       !!pendingSnapshotProof.operationId&&Number.isSafeInteger(Number(pendingSnapshotProof.localSequence))&&
+       typeof pendingSnapshotProof.baseServerVersion==='string'&&!!pendingSnapshotProof.baseServerVersion&&
+       typeof pendingSnapshotProof.payloadDigest==='string'&&/^[a-f0-9]{64}$/i.test(pendingSnapshotProof.payloadDigest));
+    if(!validPendingProof||!intentId||intentId.length>160||!/^[a-f0-9]{64}$/i.test(candidateDigest)||!baseUpdatedAt||
        !Number.isSafeInteger(expectedHeadRevision)||expectedHeadRevision<0||
        !Number.isSafeInteger(snapshotRevision)||snapshotRevision<0||snapshotRevision>expectedHeadRevision||
        !Array.isArray(input.conflicts)||input.conflicts.length>10000||
        (input.payloadMetadata!==undefined&&(!input.payloadMetadata||typeof input.payloadMetadata!=='object'||Array.isArray(input.payloadMetadata))))
-      throw new Error('The entity-delta recovery intent is invalid.');
-    const conflictsJson=JSON.stringify(input.conflicts),payloadMetadata=JSON.stringify(input.payloadMetadata||{});
-    if(conflictsJson.length>5*1024*1024||payloadMetadata.length>64*1024)
+      throw new Error('The entity-delta recovery intent is invalid. The pending snapshot proof must remain owner- and revision-bound.');
+    const conflictsJson=JSON.stringify(input.conflicts),payloadMetadata=JSON.stringify(input.payloadMetadata||{}),
+      pendingSnapshotProofJson=JSON.stringify(pendingSnapshotProof||null);
+    if(conflictsJson.length>5*1024*1024||payloadMetadata.length>64*1024||pendingSnapshotProofJson.length>8192)
       throw new Error('The recovery intent metadata exceeds the safe size limit.');
     // Acquire the account write lock before yielding. Existing serialized
     // entity tasks are drained below; all new compatibility/entity mutations
@@ -2780,6 +2788,7 @@
         const intent={key:intentKey,ownerId:owner,intentId,phase:'prepared',activeGeneration:manifest.activeGeneration,
           baseUpdatedAt,expectedHeadRevision,snapshotRevision,candidateDigest,
           conflicts:JSON.parse(conflictsJson),payloadMetadata:JSON.parse(payloadMetadata),
+          pendingSnapshotProof:JSON.parse(pendingSnapshotProofJson),
           createdAt:timestamp(),updatedAt:timestamp()};
         store.put(intent);set({ok:true,created:true,intent});
       };

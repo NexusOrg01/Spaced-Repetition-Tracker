@@ -18,6 +18,7 @@ const SYNC_DIAG_KEY='nexus.syncdiag.session.v1';
 const SYNC_REQUEST_TIMEOUT_MS=180000,SESSION_INITIALIZATION_TIMEOUT_MS=120000,
  SUPABASE_AUTH_REQUEST_TIMEOUT_MS=15000,SUPABASE_DATA_REQUEST_TIMEOUT_MS=60000,
  WORKSPACE_COMPARE_TIMEOUT_MS=60000,LOCAL_RECOVERY_TIMEOUT_MS=45000,
+ COLD_RESTORE_SYNC_DEADLINE_MS=60000,
  REMOTE_DELTA_POLL_INTERVAL_MS=15000,
  AUTH_SESSION_VERIFICATION_TIMEOUT_MS=15000,AUTH_SESSION_VERIFICATION_RETRY_MS=15000;
 let hostedDeltaPollingEnabled=false,remoteDeltaPollTimer=null;
@@ -116,7 +117,7 @@ function syncDiagSummary(payload){
 const SYNC_DIAG_STAGES=new Set([
  'auth-event','baseline-restored-from-remote','cloud-chunk-read','cloud-chunk-read-error','cloud-chunk-read-skipped','cloud-chunk-pages-read','cloud-chunk-validation','cloud-snapshot-assembly','cloud-snapshot-hash','cloud-snapshot-parse','cloud-manifest-read','cloud-sync-mode-read','cloud-read','cloud-read-error','cloud-write-complete','cloud-write-error',
  'curriculum-install-save-requested','delta-auto-downgrade-result','delta-snapshot-downgrade-result','delta-sync-result','delta-recovery-verification','diagnostics-enabled','entity-projection-rebuild','entity-sync-result','initialize-after-cloud-read',
- 'initialize-error','initialize-finished','initialize-local-fallback','initialize-settled','initialize-start','initialize-status-watchdog','initialize-stale-status-recovered',
+ 'initialize-error','initialize-finished','initialize-local-fallback','initialize-settled','initialize-start','initialize-status-watchdog','initialize-sync-deadline','initialize-stale-status-recovered',
  'account-handoff-checkpoint-failed','account-handoff-outgoing-checkpoint','online-account-workspace-restored','local-save-queue-error',
  'local-save-queued','local-storage-flush','offline-account-base-unavailable','offline-account-pending-unavailable',
  'offline-account-queue-rebuilt','offline-account-recovery-error','offline-account-workspace-restored',
@@ -1300,6 +1301,29 @@ async function initializeSession(s){
    retryAttempt:retry&&Number.isSafeInteger(retry.attempt)?retry.attempt:null
   });
  },30000);
+ const syncDeadlineWatchdog=setTimeout(()=>{
+  if(activeInitializationScope!==initScope||sessionEpoch!==requestedEpoch||
+     !session||!session.user||session.user.id!==requestedUserId)return;
+  const ownerMatches=localStorage.getItem(OWNER_KEY)===requestedUserId;
+  const verified=normalizeSyncUiText(el('cloudStatus')?el('cloudStatus').textContent:'')==='Synced';
+  if(verified)return;
+  if(ready&&ownerMatches){
+   status('Sync pending');
+   say('This workspace is available locally, but cloud verification has exceeded 60 seconds. Your changes and pending edits remain preserved; Nexus will retry automatically. Keep this browser’s data.');
+  }else{
+   status('Account verification delayed');
+   say('Account verification has exceeded 60 seconds. The previous account remains isolated; Nexus will retry safely without exposing unverified workspace data.');
+  }
+  const retry=scheduleRetry();
+  syncDiag('initialize-sync-deadline',diagnosticWorkspace(),{
+   delayMs:COLD_RESTORE_SYNC_DEADLINE_MS,ready:!!ready,ownerMatches,
+   ownerVerified:!!(ready&&ownerMatches),
+   statusAfterWatchdog:ready&&ownerMatches?'Sync pending':'Account verification delayed',
+   retryScheduled:!!(retry&&retry.scheduled),
+   retryDelayMs:retry&&Number.isSafeInteger(retry.delayMs)?retry.delayMs:null,
+   retryAttempt:retry&&Number.isSafeInteger(retry.attempt)?retry.attempt:null
+  });
+ },COLD_RESTORE_SYNC_DEADLINE_MS);
  if(requestedUserId!==lastUserId){hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();}
  try{
   const newSession=requestedSession,newUserId=requestedUserId;
@@ -1705,7 +1729,7 @@ if(ready){await flushDurableLocalWrites();status('Synced');}syncDiag('initialize
  }
  console.error('Nexus account initialization failed',e);scheduleRetry();
 }finally{
- clearTimeout(statusWatchdog);initScope.clear();if(activeInitializationScope===initScope)activeInitializationScope=null;
+ clearTimeout(statusWatchdog);clearTimeout(syncDeadlineWatchdog);initScope.clear();if(activeInitializationScope===initScope)activeInitializationScope=null;
  syncDiag('initialize-settled',diagnosticWorkspace(),{hasSession:!!(session&&session.user),ready,ownerPresent:!!localStorage.getItem(OWNER_KEY)});
  initializing=false;initializingUserId=null;
  // Never leave a completed initialization displaying a transient loading status.

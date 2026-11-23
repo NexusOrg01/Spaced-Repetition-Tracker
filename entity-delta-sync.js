@@ -837,7 +837,12 @@
           ].join('|');
         };
         const pendingIdentity=pendingToken(pendingBefore);
+        const pendingDigest=pendingBefore&&pendingBefore.payload
+          ?await workspaceDigest(pendingBefore.payload):null;
         if(pendingBefore&&(pendingBefore.status!=='pending'||pendingBefore.ownerUserId!==owner||
+           typeof pendingBefore.operationId!=='string'||!pendingBefore.operationId||
+           !Number.isSafeInteger(Number(pendingBefore.localSequence))||
+           typeof pendingBefore.baseServerVersion!=='string'||!pendingBefore.baseServerVersion||
            !isRecord(pendingBefore.payload)||!isRecord(pendingBefore.payload.state)||
            !isRecord(pendingBefore.payload.featureState)||
            !(await sameWorkspace(pendingBefore.payload,local)))){
@@ -848,46 +853,59 @@
         let base=storedBase,remoteBasePayload=storedBase,baselineReconstructed=false;
         const validBase=!!(base&&typeof base.serverVersion==='string'&&base.serverVersion&&
           isRecord(base.state)&&isRecord(base.featureState));
-        if(!validBase){
-          const pendingIsExactOwnerBaseline=!!(pendingBefore&&pendingBefore.status==='pending'&&
-            pendingBefore.ownerUserId===owner&&
-            pendingBefore.baseServerVersion===state.snapshot_updated_at&&
-            isRecord(pendingBefore.payload)&&isRecord(pendingBefore.payload.state)&&
-            isRecord(pendingBefore.payload.featureState));
-          if(!pendingIsExactOwnerBaseline||typeof readRemoteSnapshot!=='function'){
-            return {ok:false,snapshotRequired:true,reason:'local_snapshot_baseline_mismatch'};
-          }
+        const storedBaseDigest=validBase?await workspaceDigest(storedBase):null;
+        const readVerifiedRemoteBase=async()=>{
+          if(typeof readRemoteSnapshot!=='function')return null;
           await assertOwner(owner);
           const currentSnapshot=await readRemoteSnapshot(owner,recoveryOptions.signal||null);
           await assertOwner(owner);
           if(!currentSnapshot||currentSnapshot.updated_at!==state.snapshot_updated_at||
              !isRecord(currentSnapshot.payload)||!isRecord(currentSnapshot.payload.state)||
              !isRecord(currentSnapshot.payload.featureState)||
-             currentSnapshot.payload.__nexusDeltaSync!=='entity-delta-v1'){
-            return {ok:false,retryable:true,snapshotRequired:true,
+             currentSnapshot.payload.__nexusDeltaSync!=='entity-delta-v1')return null;
+          return currentSnapshot;
+        };
+        if(pendingBefore){
+          // The compatibility snapshot's base revision is part of its identity.
+          // A timestamp match alone is not enough: the locally cached base may
+          // contain the parked edit itself, which would make a three-way merge
+          // incorrectly treat that edit as unchanged and let the remote value win.
+          const pendingBaseVersion=pendingBefore.baseServerVersion;
+          if(pendingBaseVersion===state.snapshot_updated_at){
+            const currentSnapshot=await readVerifiedRemoteBase();
+            if(!currentSnapshot)return {ok:false,retryable:true,snapshotRequired:true,
               reason:'remote_snapshot_baseline_unverified'};
+            const storedBaseMatchesRemote=!!(validBase&&base.serverVersion===state.snapshot_updated_at&&
+              await sameWorkspace(base,currentSnapshot.payload));
+            if(!storedBaseMatchesRemote){
+              base={...currentSnapshot.payload,serverVersion:currentSnapshot.updated_at};
+              baselineReconstructed=true;
+            }
+            remoteBasePayload=currentSnapshot.payload;
+          }else if(validBase&&pendingBaseVersion===base.serverVersion){
+            // The pending edit was based on an older, owner-bound local checkpoint.
+            // Keep that exact ancestor and reconstruct the current remote side from
+            // its verified snapshot plus the contiguous Delta tail.
+            const currentSnapshot=await readVerifiedRemoteBase();
+            if(!currentSnapshot)return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'remote_snapshot_baseline_unverified'};
+            remoteBasePayload=currentSnapshot.payload;
+          }else{
+            return {ok:false,snapshotRequired:true,
+              reason:'pending_snapshot_base_version_mismatch'};
           }
-          base={...currentSnapshot.payload,serverVersion:currentSnapshot.updated_at};
-          remoteBasePayload=currentSnapshot.payload;
-          baselineReconstructed=true;
+        }else{
+          if(!validBase)return {ok:false,snapshotRequired:true,
+            reason:'local_snapshot_baseline_mismatch'};
+          if(base.serverVersion!==state.snapshot_updated_at){
+            const currentSnapshot=await readVerifiedRemoteBase();
+            if(!currentSnapshot)return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'remote_snapshot_baseline_unverified'};
+            remoteBasePayload=currentSnapshot.payload;
+          }
         }
         const baselineMatches=base.serverVersion===state.snapshot_updated_at;
-        if(!baselineMatches){
-          if(typeof readRemoteSnapshot!=='function'){
-            return {ok:false,snapshotRequired:true,reason:'local_snapshot_baseline_mismatch'};
-          }
-          await assertOwner(owner);
-          const currentSnapshot=await readRemoteSnapshot(owner,recoveryOptions.signal||null);
-          await assertOwner(owner);
-          if(!currentSnapshot||currentSnapshot.updated_at!==state.snapshot_updated_at||
-             !isRecord(currentSnapshot.payload)||!isRecord(currentSnapshot.payload.state)||
-             !isRecord(currentSnapshot.payload.featureState)||
-             currentSnapshot.payload.__nexusDeltaSync!=='entity-delta-v1'){
-            return {ok:false,retryable:true,snapshotRequired:true,
-              reason:'remote_snapshot_baseline_unverified'};
-          }
-          remoteBasePayload=currentSnapshot.payload;
-        }
+        const mergeLocalPayload=pendingBefore?pendingBefore.payload:local;
         const maxGroups=boundedLimit(recoveryOptions.maxGroups,MAX_RECONCILIATION_GROUPS,MAX_RECONCILIATION_GROUPS);
         const maxBytes=boundedLimit(recoveryOptions.maxBytes,MAX_RECONCILIATION_BYTES,MAX_RECONCILIATION_BYTES,1024);
         const groups=[];
@@ -946,15 +964,18 @@
         const latestBase=await getLocalBase(owner);
         const latestLocal=await getLocalWorkspace(owner);
         const latestPending=await getPendingSnapshot(owner);
-        const baselineStillStable=baselineReconstructed
-          ?(!latestBase||(latestBase.serverVersion===state.snapshot_updated_at&&
-            isRecord(latestBase.state)&&isRecord(latestBase.featureState)))
-          :!!latestBase&&latestBase.serverVersion===base.serverVersion;
+        const latestPendingDigest=latestPending&&latestPending.payload
+          ?await workspaceDigest(latestPending.payload):null;
+        const latestBaseDigest=latestBase?await workspaceDigest(latestBase):null;
+        const baselineStillStable=validBase
+          ?!!latestBase&&latestBase.serverVersion===storedBase.serverVersion&&
+            latestBaseDigest===storedBaseDigest
+          :!latestBase;
         if(!baselineStillStable||!(await sameWorkspace(local,latestLocal))||
-           pendingToken(latestPending)!==pendingIdentity){
+           pendingToken(latestPending)!==pendingIdentity||latestPendingDigest!==pendingDigest){
           return {ok:false,retryable:true,reason:'local_workspace_changed_during_reconciliation'};
         }
-        const prepared=await prepareSnapshotReconciliationFromBases(base,local,
+        const prepared=await prepareSnapshotReconciliationFromBases(base,mergeLocalPayload,
           remoteBasePayload,groups,snapshot,head,mergeWorkspace,recoveryOptions);
         if(!prepared.ok)return prepared;
         await assertOwner(owner);
@@ -971,10 +992,13 @@
             expectedHeadRevision:head,actualHeadRevision:safeInteger(finalState&&finalState.head_revision)};
         }
         return {...prepared,ownerId:owner,snapshotUpdatedAt:state.snapshot_updated_at,
-          baselineAdvanced:!baselineMatches,baselineReconstructed,
+          baselineAdvanced:baselineReconstructed||!baselineMatches,baselineReconstructed,
           expectedHeadRevision:head,snapshotRevision:snapshot,
           compactedThroughRevision:floor,pagesRead:pages,
           pendingSnapshotPresent:!!pendingBefore,
+          pendingSnapshotIncluded:!!pendingBefore,
+          pendingSnapshotDigest:pendingDigest,
+          pendingOperationId:pendingBefore&&pendingBefore.operationId||null,
           pendingLocalSequence:pendingBefore&&Number.isSafeInteger(Number(pendingBefore.localSequence))
             ?Number(pendingBefore.localSequence):null,
           requiresSnapshotPublication:true,requiresLocalRebase:true};
@@ -1105,8 +1129,26 @@
           localSequence:Number(pendingAtStart.localSequence),
           status:pendingAtStart.status
         }:null;
+        const pendingProofMatchesIntent=targetIntent=>{
+          if(!pendingAtStartIdentity)return !targetIntent?.pendingSnapshotProof;
+          const proof=targetIntent&&targetIntent.pendingSnapshotProof;
+          return !!proof&&proof.ownerId===pendingAtStartIdentity.ownerUserId&&
+            proof.operationId===pendingAtStartIdentity.operationId&&
+            Number(proof.localSequence)===pendingAtStartIdentity.localSequence&&
+            proof.baseServerVersion===pendingAtStartIdentity.baseServerVersion&&
+            proof.payloadDigest===pendingAtStartDigest;
+        };
+        const preparedContainsPending=targetPrepared=>!pendingAtStartIdentity||
+          !!(targetPrepared&&targetPrepared.pendingSnapshotIncluded===true&&
+            targetPrepared.pendingSnapshotDigest===pendingAtStartDigest&&
+            targetPrepared.pendingOperationId===pendingAtStartIdentity.operationId&&
+            Number(targetPrepared.pendingLocalSequence)===pendingAtStartIdentity.localSequence);
         let recovery=await runRecoveryStep('read-journal',()=>storage.readWorkspaceEntityRecovery(owner));
         intent=recovery&&recovery.intent||null;
+        if(intent&&!pendingProofMatchesIntent(intent)){
+          return {ok:false,retryable:true,snapshotRequired:true,
+            reason:'pending_snapshot_recovery_proof_mismatch',intentId:intent.intentId};
+        }
         let prepared=null,candidate=null,staged=null;
         let projectionReused=!!(intent&&intent.reusedActiveGeneration===true);
         const stageRecoveryCandidate=async(nextCandidate,digest,restage)=>{
@@ -1127,6 +1169,10 @@
         if(!intent||intent.phase==='prepared'){
           prepared=await runRecoveryStep('prepare-candidate',()=>prepareConflictRecovery(owner,recoveryOptions));
           if(!prepared||prepared.ok!==true)return prepared||unavailable('recovery_preparation_unavailable');
+          if(!preparedContainsPending(prepared)){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'pending_snapshot_not_in_recovery_candidate'};
+          }
           // Three-way merge normalizes export metadata (including exportedAt) on
           // every reconstruction. A prepared journal already owns the canonical
           // metadata for its candidate, so reuse that metadata while always taking
@@ -1160,7 +1206,14 @@
               baseUpdatedAt:prepared.snapshotUpdatedAt,
               expectedHeadRevision:prepared.expectedHeadRevision,
               snapshotRevision:prepared.snapshotRevision,
-              conflicts:prepared.conflicts,payloadMetadata:metadata
+              conflicts:prepared.conflicts,payloadMetadata:metadata,
+              pendingSnapshotProof:pendingAtStartIdentity?{
+                ownerId:pendingAtStartIdentity.ownerUserId,
+                operationId:pendingAtStartIdentity.operationId,
+                localSequence:pendingAtStartIdentity.localSequence,
+                baseServerVersion:pendingAtStartIdentity.baseServerVersion,
+                payloadDigest:pendingAtStartDigest
+              }:null
               });
               if(result&&result.ok===true&&result.intent)intent=result.intent;
               return result;
@@ -1204,6 +1257,10 @@
           if(!prepared||prepared.ok!==true)return prepared||{
             ok:false,retryable:true,snapshotRequired:true,reason:'staged_recovery_reconstruction_unavailable'
           };
+          if(!preparedContainsPending(prepared)){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'pending_snapshot_not_in_recovery_candidate'};
+          }
           const metadata=intent.payloadMetadata&&typeof intent.payloadMetadata==='object'?intent.payloadMetadata:{};
           candidate={
             ...prepared.payload,...metadata,
@@ -1280,19 +1337,16 @@
         }
         if(!publication||publication.verified!==true||
            Number(publication.snapshotRevision)!==Number(intent.expectedHeadRevision)||
+           !Number.isSafeInteger(Number(publication.headRevision))||
            typeof publication.updated_at!=='string'||!publication.updated_at)
           return {ok:false,retryable:true,snapshotRequired:true,
             reason:'delta_snapshot_publication_unverified',intentId:intent.intentId};
         await assertOwner(owner);
-        const marked=await runRecoveryStep('mark-journal-published',()=>
-          storage.markWorkspaceEntityRecoveryPublished(owner,intent.intentId,publication));
-        if(!marked||marked.ok!==true)
-          return {ok:false,retryable:true,snapshotRequired:true,
-            reason:marked&&marked.reason||'recovery_publication_journal_failed',intentId:intent.intentId};
         const pendingBeforeCommit=typeof getPendingSnapshot==='function'
           ?await getPendingSnapshot(owner):null;
         if(pendingAtStartIdentity){
-          if(!pendingBeforeCommit||pendingBeforeCommit.status!==pendingAtStartIdentity.status||
+          if(!pendingProofMatchesIntent(intent)||!preparedContainsPending(prepared)||
+             !pendingBeforeCommit||pendingBeforeCommit.status!==pendingAtStartIdentity.status||
              pendingBeforeCommit.ownerUserId!==pendingAtStartIdentity.ownerUserId||
              pendingBeforeCommit.operationId!==pendingAtStartIdentity.operationId||
              pendingBeforeCommit.baseServerVersion!==pendingAtStartIdentity.baseServerVersion||
@@ -1301,16 +1355,101 @@
             return {ok:false,retryable:true,snapshotRequired:true,
               reason:'pending_snapshot_changed_before_recovery_commit',intentId:intent.intentId};
           }
+          if(typeof readRemoteSnapshot!=='function'||typeof sameWorkspace!=='function'){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'pending_snapshot_remote_readback_unavailable',intentId:intent.intentId};
+          }
+          const readbackStartedAt=Date.now();
+          reportProgress('verify-pending-snapshot-readback','started');
+          let remoteReadback=null,remoteStateResult=null;
+          try{
+            await assertOwner(owner);
+            remoteReadback=await readRemoteSnapshot(owner,recoveryOptions.signal||null);
+            await assertOwner(owner);
+            remoteStateResult=await client.rpc('nexus_get_entity_sync_state');
+            if(remoteStateResult.error)throw Object.assign(new Error('Remote sync state read-back failed.'),{
+              code:String(remoteStateResult.error.code||'unknown')
+            });
+            await assertOwner(owner);
+          }catch(error){
+            reportProgress('verify-pending-snapshot-readback','failed',{
+              durationMs:Math.max(0,Date.now()-readbackStartedAt),ok:false,
+              pendingLocalSequence:pendingAtStartIdentity.localSequence
+            });
+            return unavailable('pending_snapshot_remote_readback_failed',{
+              retryable:true,snapshotRequired:true,errorCode:String(error&&error.code||'unknown')
+            });
+          }
+          const remoteState=remoteStateResult&&remoteStateResult.data;
+          const remoteSnapshotRevision=safeInteger(remoteState&&remoteState.snapshot_revision);
+          const remoteHeadRevision=safeInteger(remoteState&&remoteState.head_revision);
+          const remoteCompactedThrough=safeInteger(remoteState&&remoteState.compacted_through_revision);
+          const publicationSnapshotRevision=safeInteger(publication.snapshotRevision);
+          const publicationHeadRevision=safeInteger(publication.headRevision);
+          const publicationCompactedThrough=safeInteger(publication.compactedThroughRevision);
+          let remotePayloadMatches=false;
+          try{
+            remotePayloadMatches=!!(remoteReadback&&remoteReadback.updated_at===publication.updated_at&&
+              isRecord(remoteReadback.payload)&&
+              remoteReadback.payload.__nexusDeltaSync==='entity-delta-v1'&&
+              await sameWorkspace(remoteReadback.payload,candidate));
+            await assertOwner(owner);
+          }catch(error){
+            reportProgress('verify-pending-snapshot-readback','failed',{
+              durationMs:Math.max(0,Date.now()-readbackStartedAt),ok:false,
+              pendingLocalSequence:pendingAtStartIdentity.localSequence
+            });
+            return unavailable('pending_snapshot_remote_payload_comparison_failed',{
+              retryable:true,snapshotRequired:true,errorCode:String(error&&error.code||'unknown')
+            });
+          }
+          const remoteStateMatches=!!(remoteState&&remoteState.mode==='delta'&&
+            remoteState.snapshot_updated_at===publication.updated_at&&
+            remoteSnapshotRevision!==null&&remoteSnapshotRevision===publicationSnapshotRevision&&
+            remoteHeadRevision!==null&&remoteHeadRevision===publicationHeadRevision&&
+            remoteCompactedThrough!==null&&remoteCompactedThrough>=remoteSnapshotRevision&&
+            publicationCompactedThrough!==null&&remoteCompactedThrough===publicationCompactedThrough);
+          if(!remotePayloadMatches||!remoteStateMatches){
+            reportProgress('verify-pending-snapshot-readback','failed',{
+              durationMs:Math.max(0,Date.now()-readbackStartedAt),ok:false,
+              pendingLocalSequence:pendingAtStartIdentity.localSequence
+            });
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:!remotePayloadMatches?'pending_snapshot_remote_readback_mismatch':
+                'remote_state_changed_before_pending_acknowledgement',intentId:intent.intentId};
+          }
+          const latestPending=await getPendingSnapshot(owner);
+          if(!latestPending||latestPending.status!==pendingAtStartIdentity.status||
+             latestPending.ownerUserId!==pendingAtStartIdentity.ownerUserId||
+             latestPending.operationId!==pendingAtStartIdentity.operationId||
+             latestPending.baseServerVersion!==pendingAtStartIdentity.baseServerVersion||
+             Number(latestPending.localSequence)!==pendingAtStartIdentity.localSequence||
+             await workspaceDigest(latestPending.payload)!==pendingAtStartDigest){
+            reportProgress('verify-pending-snapshot-readback','failed',{
+              durationMs:Math.max(0,Date.now()-readbackStartedAt),ok:false,
+              pendingLocalSequence:pendingAtStartIdentity.localSequence
+            });
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'pending_snapshot_changed_before_remote_acknowledgement',intentId:intent.intentId};
+          }
+          await assertOwner(owner);
           reportProgress('verify-pending-snapshot-readback','completed',{
-            ok:true,remoteReadbackVerified:true,
+            durationMs:Math.max(0,Date.now()-readbackStartedAt),ok:true,
+            remoteReadbackVerified:true,
             pendingLocalSequence:pendingAtStartIdentity.localSequence,
-            snapshotRevision:publication.snapshotRevision,
-            headRevision:publication.headRevision
+            snapshotRevision:remoteSnapshotRevision,
+            headRevision:remoteHeadRevision,
+            compactedThroughRevision:remoteCompactedThrough
           });
         }else if(pendingBeforeCommit){
           return {ok:false,retryable:true,snapshotRequired:true,
             reason:'pending_snapshot_appeared_before_recovery_commit',intentId:intent.intentId};
         }
+        const marked=await runRecoveryStep('mark-journal-published',()=>
+          storage.markWorkspaceEntityRecoveryPublished(owner,intent.intentId,publication));
+        if(!marked||marked.ok!==true)
+          return {ok:false,retryable:true,snapshotRequired:true,
+            reason:marked&&marked.reason||'recovery_publication_journal_failed',intentId:intent.intentId};
         const committed=await runRecoveryStep('commit-local-recovery',()=>
           localCommit(owner,candidate,publication,intent.conflicts||[],{
             intentId:intent.intentId,candidateDigest:intent.candidateDigest,
