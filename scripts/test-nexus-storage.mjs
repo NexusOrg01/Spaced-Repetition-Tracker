@@ -2180,6 +2180,11 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(replay.ok,true);
   assert.equal(replay.alreadyCommitted,true,
     'a retry after local commit must confirm the completion receipt without applying a second transaction');
+  await assert.rejects(
+    ()=>publishedRestarted.api.commitWorkspaceEntityRecovery(owner,intentId,entries,'d'.repeat(64)),
+    /recovery_intent_id_reused/,
+    'a completion receipt must not authorize the same intent ID with a different candidate digest'
+  );
 
   const secondIntent=await publishedRestarted.api.beginWorkspaceEntityRecovery(owner,{
     intentId:'nexus-recovery-delete-pending-test',candidateDigest:'b'.repeat(64),
