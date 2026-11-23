@@ -2294,6 +2294,73 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(await loaded.api.readWorkspaceEntityRecovery(owner),null);
 }
 
+// A published snapshot must not clear an unacknowledged Delta outbox unless the
+// exact local outbox content was included in and proven by that remote snapshot.
+{
+  const owner='entity-delta-recovery-pending-outbox-owner';
+  const state={schema:3,streams:[{id:'outbox-recovery-stream',name:'Commerce'}],
+    subjects:[{id:'outbox-recovery-subject',streamId:'outbox-recovery-stream',name:'Accounting'}],
+    topics:[{id:'outbox-recovery-topic',subjectId:'outbox-recovery-subject',name:'Remote baseline'}],
+    history:[],exams:[],settings:{}};
+  const features={version:1,journal:[],papers:[],goals:[],studyLogs:[]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true);
+  await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+  const cursor=await loaded.api.initializeWorkspaceEntityDeltaCursor(owner,0,'outbox-recovery-baseline',true);
+  assert.equal(cursor.ok,true);
+  const pending=await loaded.api.writeWorkspaceEntityChanges(owner,[
+    {collection:'topics',id:'outbox-recovery-topic',operation:'put',position:0,
+      value:{id:'outbox-recovery-topic',subjectId:'outbox-recovery-subject',name:'PARKED LOCAL EDIT'}}
+  ],{operationId:'parked-edit-operation'});
+  assert.equal(pending.count,1);
+  const active=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(active.state.topics[0].name,'PARKED LOCAL EDIT');
+  const intentId='nexus-recovery-pending-outbox-guard';
+  const digest='e'.repeat(64);
+  const begun=await loaded.api.beginWorkspaceEntityRecovery(owner,{
+    intentId,candidateDigest:digest,baseUpdatedAt:'outbox-recovery-baseline',
+    expectedHeadRevision:0,snapshotRevision:0,conflicts:[],payloadMetadata:{schema:4}
+  });
+  assert.equal(begun.ok,true);
+  const staged=await loaded.api.migrateWorkspaceEntities(owner,active.state,active.featureState,{
+    expectedRevision:loaded.api.getStatus().revision,
+    deferActivation:true,recoveryIntentId:intentId,recoveryCandidateDigest:digest
+  });
+  assert.equal(staged.staged,true);
+  const publication={verified:true,updated_at:'outbox-recovery-published',
+    snapshotRevision:0,headRevision:0,compactedThroughRevision:0,storageMode:'jsonb'};
+  const marked=await loaded.api.markWorkspaceEntityRecoveryPublished(owner,intentId,publication);
+  assert.equal(marked.ok,true);
+  const entries=[
+    {key:'recall.study.tracker.v1',value:JSON.stringify(active.state)},
+    {key:'recall.study.features.v1',value:JSON.stringify(active.featureState)},
+    {key:'nexus.test.recovery.queue',value:JSON.stringify({pending:{}})},
+    {key:'nexus.test.recovery.base',value:JSON.stringify({[owner]:{
+      state:active.state,featureState:active.featureState,serverVersion:publication.updated_at}})},
+    {key:'nexus.test.recovery.stamp',value:JSON.stringify({[owner]:publication.updated_at})},
+    {key:'nexus.test.recovery.conflicts',value:JSON.stringify({[owner]:[]})}
+  ];
+  await assert.rejects(()=>loaded.api.commitWorkspaceEntityRecovery(owner,intentId,entries,digest),
+    /Pending local Delta outbox entries have no exact verified recovery proof/,
+    'a recovery commit must stop rather than acknowledge outbox rows that were not proven in the published candidate');
+  const remaining=await loaded.api.readWorkspaceEntityOutboxGroups(owner,0,1000,4096);
+  assert.equal(remaining.groups.length,1,
+    'a blocked recovery commit must retain the parked local operation in IndexedDB');
+  assert.equal(remaining.groups[0].operationId,'parked-edit-operation');
+  const afterBlockedCommit=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(afterBlockedCommit.state.topics[0].name,'PARKED LOCAL EDIT',
+    'a blocked recovery commit must leave the active projection unchanged');
+  assert.equal(loaded.api.getStatus().entityRecoveryLocked,true,
+    'the recovery lock must remain held while pending outbox content is unresolved');
+  await loaded.api.deleteWorkspaceEntities(owner);
+}
+
 // Waiting for entity synchronization must drain tasks appended while the
 // caller is suspended on an earlier task. Otherwise Delta startup can observe a
 // transient projection state and incorrectly rebuild it before the incremental
