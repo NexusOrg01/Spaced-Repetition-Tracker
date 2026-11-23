@@ -604,3 +604,10 @@ This is a separate unresolved prepared/staged recovery metadata mismatch. It is 
 **Required stop retained:** do not edit cursor-mismatch recovery, recovery merge ordering, snapshot publication, or outbox acknowledgement while the stop condition remains active. Do not launch another A→B→A lifecycle attempt to try to turn the failing result green. Resume only with a safe, evidence-backed correction plan that preserves all owner/session-epoch/revision/manifest/integrity/cancellation/conflict fences, then run focused regressions before one controlled lifecycle acceptance.
 
 No production/live Nexus or Supabase data was inspected or changed. No production schema, policy, configuration or data was changed. No production deployment/promotion, merge, new PR, or paid service was used.
+
+
+## 11.7 Documentation-only report commit
+
+This follow-up was recorded in commit [`aacfaabd18952d6998591d879b14cdd464bbbb49`](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/commit/aacfaabd18952d6998591d879b14cdd464bbbb49). It changes only this execution report; no application source, tests, recovery behavior, workflow configuration, or deployment configuration changed. The commit message includes `[skip ci]`; no new workflow run was created for the documentation update.
+
+Accordingly, the **current PR head after the report update** is `aacfaabd18952d6998591d879b14cdd464bbbb49`, while the last application-code head evaluated by the failed current-head checks remains `8b45404cf22e80bd8b453a4082ef77599550b0f8`. The existing Netlify Deploy Preview URL remains https://deploy-preview-147--nexussrt.netlify.app; this documentation-only commit does not alter the app preview payload.
