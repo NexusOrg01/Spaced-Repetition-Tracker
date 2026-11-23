@@ -419,14 +419,18 @@ function harness(options={}){
       return {data:null,error:{code:'unexpected_rpc'}};
     }
   };
-  const pending={status:'pending',ownerUserId:'account-A',baseServerVersion:'snapshot-stamp',payload:localPayload};
+  const pending={status:'pending',ownerUserId:'account-A',operationId:'shadow-snapshot-1',
+    localSequence:11,baseServerVersion:'snapshot-stamp',payload:localPayload};
+  const remoteSnapshotPayload={...localPayload,__nexusDeltaSync:'entity-delta-v1'};
   const api=factory({enabled:true,client,storage,
     getActiveOwner:()=>activeOwner,getLocalOwner:()=>activeOwner,
-    getLocalBase:async()=>({serverVersion:'snapshot-stamp',...payload}),
+    getLocalBase:async()=>({serverVersion:'snapshot-stamp',...remoteSnapshotPayload}),
     getLocalWorkspace:async()=>localPayload,getPendingSnapshot:async()=>pending,
+    readRemoteSnapshot:async()=>({payload:remoteSnapshotPayload,updated_at:'snapshot-stamp'}),
     acknowledgePendingSnapshot:async(owner,item,version)=>{
       events.push('acknowledge-shadow');
-      assert.equal(owner,'account-A');assert.equal(item.operationId,undefined);
+      assert.equal(owner,'account-A');assert.equal(item.operationId,'shadow-snapshot-1');
+      assert.equal(item.localSequence,11);
       assert.equal(version,'snapshot-stamp');return true;
     },
     sameWorkspace:async(a,b)=>JSON.stringify(a.state)===JSON.stringify(b.state)&&
@@ -434,10 +438,15 @@ function harness(options={}){
     applyWorkspace:async workspace=>events.push('render-deleted-workspace-'+workspace.state.topics.length)
   });
   const result=await api.applyRemotePage('account-A');
-  assert.equal(result.ok,true,'a verified shadow snapshot with no pending Delta outbox must not force a false conflict recovery');
+  assert.equal(result.ok,true,'a verified shadow snapshot with no pending Delta outbox must not force a false conflict recovery: '+JSON.stringify(result));
   assert.equal(result.appliedCount,1,'the remote tombstone must be applied as a normal Delta group');
-  assert.deepEqual(events.slice(0,3),['nexus_get_entity_sync_state','read-local-outbox','acknowledge-shadow'],
-    'the exact compatibility shadow must be acknowledged before applying the remote delete');
+  const shadowAckIndex=events.indexOf('acknowledge-shadow');
+  const remoteReadIndex=events.indexOf('nexus_read_entity_operations');
+  const remoteDeleteIndex=events.indexOf('apply-remote-delete');
+  assert.ok(remoteReadIndex>=0&&remoteReadIndex<shadowAckIndex,
+    'the exact remote snapshot/Delta read-back must be verified before the compatibility shadow is acknowledged');
+  assert.ok(shadowAckIndex>=0&&shadowAckIndex<remoteDeleteIndex,
+    'the verified compatibility shadow must be acknowledged before applying the remote delete');
   assert.ok(events.includes('render-deleted-workspace-0'),'the deleted workspace must be applied to the live app view');
 }
 {
