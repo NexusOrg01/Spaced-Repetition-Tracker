@@ -143,7 +143,7 @@ function sanitizeSyncDiagEvent(event){
   for(const key of flags){if(typeof input[key]==='boolean')workspace[key]=input[key];}
   if(Object.keys(workspace).length)safe.workspace=workspace;
  }
- const countFields=['durationMs','chunkCount','payloadUtf8Bytes','pageCount','completedPageCount','rowsRead','maxPageDurationMs','minPageDurationMs','comparisonPassesSaved','cleanupDeletedCount','baseTopicCount','localTopicCount','remoteTopicCount','conflictCount','payloadCharacters','appliedCount','publishedCount','acknowledgedCount','rounds','batchCount','topicCount','workspaceRevision','projectionWorkspaceRevision','snapshotRevision','headRevision','cursorPublishRevision','cursorRemoteHeadRevision','cursorAcknowledgedSequence','recoverySnapshotRevision','recoveryHeadRevision'];
+ const countFields=['durationMs','chunkCount','payloadUtf8Bytes','pageCount','completedPageCount','rowsRead','maxPageDurationMs','minPageDurationMs','comparisonPassesSaved','cleanupDeletedCount','baseTopicCount','localTopicCount','remoteTopicCount','conflictCount','payloadCharacters','appliedCount','publishedCount','acknowledgedCount','rounds','batchCount','topicCount','workspaceRevision','projectionWorkspaceRevision','snapshotRevision','headRevision','cursorPublishRevision','cursorRemoteHeadRevision','cursorAcknowledgedSequence','recoverySnapshotRevision','recoveryHeadRevision','projectionBatchCount','projectionRowsWritten','projectionWriteDurationMs','projectionPruneDurationMs','projectionPruneRowsScanned','projectionPruneRowsRemoved','projectionOutboxPruneDurationMs','projectionOutboxPruneRowsRemoved'];
  for(const key of countFields){
   if(!Object.prototype.hasOwnProperty.call(event,key))continue;
   const value=event[key];
@@ -1926,7 +1926,8 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
   let projectionRebuildAttempted=false,projectionRebuildOk=false,
       projectionRebuildMode='other',projectionRebuildErrorCategory='other',
       projectionRebuildFailureStage='other',projectionRebuildFailureReason='other',
-      projectionRebuildStartedAt=null,projectionRebuildDurationMs=null;
+      projectionRebuildStartedAt=null,projectionRebuildDurationMs=null,
+      projectionRebuildMetrics=null;
   if(projection&&projection.ok===true&&typeof syncDiag==='function'){
     syncDiag('projection-reuse',null,{
      durationMs:projectionReadinessDurationMs,ready:true,
@@ -1944,6 +1945,17 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
     }
     projectionRebuildStartedAt=Date.now();
      const rebuilt=await storage.syncWorkspaceEntities(ownerId,null,{replace:true});
+     const safeProjectionMetric=value=>Number.isSafeInteger(value)&&value>=0?value:null;
+     projectionRebuildMetrics={
+      projectionBatchCount:safeProjectionMetric(rebuilt&&rebuilt.batchCount),
+      projectionRowsWritten:safeProjectionMetric(rebuilt&&rebuilt.rowCount),
+      projectionWriteDurationMs:safeProjectionMetric(rebuilt&&rebuilt.writeDurationMs),
+      projectionPruneDurationMs:safeProjectionMetric(rebuilt&&rebuilt.pruneDurationMs),
+      projectionPruneRowsScanned:safeProjectionMetric(rebuilt&&rebuilt.pruneRowsScanned),
+      projectionPruneRowsRemoved:safeProjectionMetric(rebuilt&&rebuilt.prunedRows),
+      projectionOutboxPruneDurationMs:safeProjectionMetric(rebuilt&&rebuilt.outboxPruneDurationMs),
+      projectionOutboxPruneRowsRemoved:safeProjectionMetric(rebuilt&&rebuilt.prunedOutboxRows)
+     };
     await assertActiveUser(ownerId,operationEpoch);
     if(localStorage.getItem(OWNER_KEY)!==ownerId||!rebuilt||
        rebuilt.skipped===true||rebuilt.ok===false){
@@ -1993,7 +2005,8 @@ async function runStagingEntityDeltaSync(ownerId,signal,action={}){
      (projection&&projection.reason||'entity_projection_rebuild_failed'),
     workspaceRevision:projection&&projection.workspaceRevision,
     projectionWorkspaceRevision:projection&&projection.projectionWorkspaceRevision,
-    projectionRevisionMatches:!!(projection&&projection.ok===true)
+    projectionRevisionMatches:!!(projection&&projection.ok===true),
+    ...(projectionRebuildMetrics||{})
    });
   }
   if(!projection||projection.ok!==true){

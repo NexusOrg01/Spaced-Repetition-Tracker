@@ -656,6 +656,16 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'inactive entity-generation cleanup must continue through multiple bounded pages');
   assert.ok(pruneQueries.every(query=>query.count===400),
     'every inactive-generation cleanup page must cap materialized IndexedDB rows at 400');
+  const resumedActivePrefix='workspace-entity:entity-owner-a:'+encodeURIComponent(resumedMigration.generation)+':';
+  assert.ok(pruneQueries.every(query=>query.upper<=resumedActivePrefix||
+    query.lower>=resumedActivePrefix+'\uffff'),
+    'inactive-generation cleanup must never scan the newly published active generation');
+  assert.ok(resumedMigration.pruneRowsScanned>=resumedMigration.prunedRows,
+    'cleanup diagnostics must count at least every row that was removed');
+  assert.ok(resumedMigration.pruneDurationMs>=0&&resumedMigration.writeDurationMs>=0,
+    'projection write and cleanup phase timings must be finite non-negative durations');
+  assert.ok(resumedMigration.batchCount>=2,
+    'the migration report must count its bounded 8,000-row write batches');
   assert.ok(resumedMigration.prunedRows>=400,
     'a successful replacement must prune the interrupted hidden generation in bounded batches');
   assert.ok(resumedMigration.prunedOutboxRows>=3,
@@ -1507,15 +1517,28 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   large.context.window.setTimeout=(callback,delay)=>originalScheduler(()=>{
     cooperativeBatches++;callback();
   },delay);
+  const largePruneQueryStart=idb.rangeQueries.length;
   const migration=await large.api.migrateWorkspaceEntities('large-workspace-owner',largeState,largeFeatures,
     {expectedRevision:large.api.getStatus().revision});
+  const largeActivePrefix='workspace-entity:large-workspace-owner:'+encodeURIComponent(migration.generation)+':';
+  const largePruneQueries=idb.rangeQueries.slice(largePruneQueryStart).filter(query=>
+    query.store==='workspaces'&&query.lower&&query.lower.startsWith('workspace-entity:large-workspace-owner:'));
+  assert.ok(largePruneQueries.length>=2,
+    'first-time cleanup must inspect both bounded stale-generation key ranges');
+  assert.ok(largePruneQueries.every(query=>query.upper<=largeActivePrefix||
+    query.lower>=largeActivePrefix+'\uffff'),
+    'first-time cleanup ranges must exclude every row in the active generation');
   large.context.window.setTimeout=originalScheduler;
   assert.equal(migration.counts.topics,totalTopics,'large migration must preserve every topic');
   assert.equal(migration.counts.history,totalHistory,'large migration must preserve every review-history row');
   assert.equal(migration.counts.studyLogs,totalStudyLogs,'large migration must preserve every study log');
   assert.equal(migration.rowCount,149148,'large manifest must publish exact metadata-plus-record row count');
-  assert.ok(cooperativeBatches>=Math.ceil(migration.rowCount/400)-1,
-    'large migration must yield after each bounded 400-row batch');
+  assert.ok(cooperativeBatches>=Math.ceil(migration.rowCount/8000)-1,
+    'large migration must yield after each bounded 8,000-row write batch');
+  assert.equal(migration.pruneRowsScanned,0,
+    'first-time projection cleanup must not scan the generation it just published');
+  assert.equal(migration.prunedRows,0,
+    'first-time projection cleanup must leave its complete active generation untouched');
   const hydrationQueryStart=idb.rangeQueries.length;
   const restored=await large.api.readWorkspaceEntities('large-workspace-owner');
   const hydrationQueries=idb.rangeQueries.slice(hydrationQueryStart)

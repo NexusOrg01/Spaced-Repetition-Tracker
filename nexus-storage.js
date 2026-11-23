@@ -708,61 +708,72 @@
   }
   async function pruneInactiveWorkspaceEntityGenerations(ownerId,activeGeneration){
     const owner=entityOwnerKey(ownerId);
-    if(committedOwnerId!==owner||!enabled||!database)return 0;
+    if(committedOwnerId!==owner||!enabled||!database)return {removed:0,scanned:0};
     const prefix=entityOwnerRecordPrefix(owner);
+    const activePrefix=entityRecordPrefix(owner,activeGeneration);
     const keyRanges=root&&root.IDBKeyRange;
     // Entity cleanup is best-effort. If key ranges are unavailable, retain stale
     // generations instead of materialising an unbounded owner-wide row set.
-    if(!keyRanges||typeof keyRanges.bound!=='function')return 0;
+    if(!keyRanges||typeof keyRanges.bound!=='function')return {removed:0,scanned:0};
     const upper=prefix+'\uffff';
-    let removed=0,afterKey=null;
-    while(true){
-      if(committedOwnerId!==owner||!enabled||!database)return removed;
-      const range=afterKey
-        ?keyRanges.bound(afterKey+'\u0000',upper)
-        :entityPrefixRange(prefix);
-      if(!range)return removed;
-      const rows=await transaction([WORKSPACES],'readonly',(tx,set)=>{
-        const request=tx.objectStore(WORKSPACES).getAll(range,ENTITY_BATCH_SIZE);
-        request.onsuccess=()=>set(request.result||[]);
-      });
-      if(!rows.length)break;
-      const last=rows[rows.length-1];
-      if(!last||typeof last.key!=='string'||!last.key.startsWith(prefix)){
-        throw new Error('IndexedDB returned an invalid row while pruning inactive entity generations.');
-      }
-      const staleKeys=[];
-      for(const row of rows){
-        if(!row||row.ownerId!==owner||typeof row.key!=='string'||!row.key.startsWith(prefix)){
-          throw new Error('Owner-scoped entity cleanup encountered a row outside the requested account prefix.');
-        }
-        if(row.entityRow===true&&row.generation!==activeGeneration)staleKeys.push(row.key);
-      }
-      if(staleKeys.length){
-        const count=await transaction([WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
-          const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta');
-          const request=meta.get(entityManifestKey(owner));
-          request.onsuccess=()=>{
-            const manifest=request.result;
-            // Never prune the pending generation or race a concurrent replacement.
-            if(committedOwnerId!==owner||!manifest||manifest.status!=='ready'||
-               manifest.activeGeneration!==activeGeneration||manifest.pendingGeneration){
-              set(0);return;
-            }
-            for(const key of staleKeys)entities.delete(key);
-            set(staleKeys.length);
-          };
+    // Do not scan the generation just published. A full owner-prefix sweep reads
+    // every new entity row only to discard it, turning first-time cold restore cleanup
+    // into an O(active-workspace-size) pass. These two bounded ranges cover every
+    // other generation on either side of the active generation's key prefix.
+    const ranges=[
+      {lower:prefix,upper:activePrefix},
+      {lower:activePrefix+'\uffff',upper}
+    ];
+    let removed=0,scanned=0;
+    for(const bounds of ranges){
+      let afterKey=null;
+      while(true){
+        if(committedOwnerId!==owner||!enabled||!database)return {removed,scanned};
+        const range=keyRanges.bound(afterKey?afterKey+'\u0000':bounds.lower,bounds.upper);
+        if(!range)return {removed,scanned};
+        const rows=await transaction([WORKSPACES],'readonly',(tx,set)=>{
+          const request=tx.objectStore(WORKSPACES).getAll(range,ENTITY_BATCH_SIZE);
+          request.onsuccess=()=>set(request.result||[]);
         });
-        removed+=count;
-        if(count===0)break;
+        scanned+=rows.length;
+        if(!rows.length)break;
+        const last=rows[rows.length-1];
+        if(!last||typeof last.key!=='string'||!last.key.startsWith(prefix)){
+          throw new Error('IndexedDB returned an invalid row while pruning inactive entity generations.');
+        }
+        const staleKeys=[];
+        for(const row of rows){
+          if(!row||row.ownerId!==owner||typeof row.key!=='string'||!row.key.startsWith(prefix)){
+            throw new Error('Owner-scoped entity cleanup encountered a row outside the requested account prefix.');
+          }
+          if(row.entityRow===true&&row.generation!==activeGeneration)staleKeys.push(row.key);
+        }
+        if(staleKeys.length){
+          const count=await transaction([WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
+            const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta');
+            const request=meta.get(entityManifestKey(owner));
+            request.onsuccess=()=>{
+              const manifest=request.result;
+              // Never prune the pending generation or race a concurrent replacement.
+              if(committedOwnerId!==owner||!manifest||manifest.status!=='ready'||
+                 manifest.activeGeneration!==activeGeneration||manifest.pendingGeneration){
+                set(0);return;
+              }
+              for(const key of staleKeys)entities.delete(key);
+              set(staleKeys.length);
+            };
+          });
+          removed+=count;
+          if(count===0)return {removed,scanned};
+        }
+        if(rows.length<ENTITY_BATCH_SIZE)break;
+        // Continue after the last key read, not the last key deleted. The next bounded
+        // range therefore advances even when the entire page contained stale rows.
+        afterKey=last.key;
+        await new Promise(resolve=>root.setTimeout(resolve,0));
       }
-      if(rows.length<ENTITY_BATCH_SIZE)break;
-      // Continue after the last key read, not the last key deleted. The next bounded
-      // range therefore advances even when the entire page contained stale rows.
-      afterKey=last.key;
-      await new Promise(resolve=>root.setTimeout(resolve,0));
     }
-    return removed;
+    return {removed,scanned};
   }
   async function migrateWorkspaceEntities(ownerId,stateSnapshot,featureSnapshot,options={}){
     const owner=entityOwnerKey(ownerId),signal=options.signal||null;
@@ -841,7 +852,15 @@
       throw new Error('A verified active entity generation and recovery intent are required before staging snapshot recovery.');
     }
     const counts={},positionBounds={},batch=[];
-    let rowCount=0,failureStage='stage-manifest',publicationFailureReason=null;
+    let rowCount=0,batchCount=0,writeDurationMs=0,
+      failureStage='stage-manifest',publicationFailureReason=null;
+    const writeBatch=async()=>{
+      if(!batch.length)return;
+      const rows=batch.splice(0,batch.length),startedAt=Date.now();
+      await writeWorkspaceEntityBatch(rows);
+      writeDurationMs+=Math.max(0,Date.now()-startedAt);
+      batchCount++;
+    };
     try{
     throwIfAborted();
     await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
@@ -876,7 +895,7 @@
         }
         if(batch.length>=ENTITY_MIGRATION_BATCH_SIZE){
           failureStage='write-row-batch';
-          await writeWorkspaceEntityBatch(batch.splice(0,batch.length));
+          await writeBatch();
           throwIfAborted();
           failureStage='generate-rows';
           if(!(await sourceWorkspaceIsCurrent())){
@@ -890,7 +909,7 @@
       }
       if(batch.length){
         failureStage='write-row-batch';
-        await writeWorkspaceEntityBatch(batch.splice(0,batch.length));
+        await writeBatch();
         throwIfAborted();
       }
       failureStage='verify-publication';
@@ -995,7 +1014,8 @@
       }
       throwIfAborted();
       failureStage='verify-publication';
-      let prunedRows=0,prunedOutboxRows=0;
+      let prunedRows=0,prunedOutboxRows=0,pruneRowsScanned=0,
+        pruneDurationMs=0,outboxPruneDurationMs=0;
       if(deferActivation){
         const intent=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
           const request=tx.objectStore('migrationMeta').get(entityDeltaRecoveryKey(owner));
@@ -1005,14 +1025,27 @@
           throw new Error('The staged recovery generation could not be verified.');
         }
         return {ownerId:owner,generation,rowCount,counts,sourceRevision:revision,
-          sourceWorkspaceRevision,staged:true,prunedRows:0,prunedOutboxRows:0};
+          sourceWorkspaceRevision,staged:true,prunedRows:0,prunedOutboxRows:0,
+          batchCount,writeDurationMs,pruneRowsScanned:0,pruneDurationMs:0,
+          outboxPruneDurationMs:0};
       }
-      try{prunedRows=await pruneInactiveWorkspaceEntityGenerations(owner,generation);}
-      catch(error){console.warn('Inactive Nexus entity generations could not be fully pruned; the active generation remains safe.',error);}
+      const pruneStartedAt=Date.now();
+      try{
+        const pruneResult=await pruneInactiveWorkspaceEntityGenerations(owner,generation);
+        prunedRows=pruneResult.removed;
+        pruneRowsScanned=pruneResult.scanned;
+      }catch(error){
+        console.warn('Inactive Nexus entity generations could not be fully pruned; the active generation remains safe.',error);
+      }finally{
+        pruneDurationMs=Math.max(0,Date.now()-pruneStartedAt);
+      }
+      const outboxPruneStartedAt=Date.now();
       try{prunedOutboxRows=await pruneWorkspaceEntityOutbox(owner);}
       catch(error){console.warn('Superseded Nexus entity outbox records could not be fully pruned; the active generation remains safe.',error);}
+      finally{outboxPruneDurationMs=Math.max(0,Date.now()-outboxPruneStartedAt);}
       return {ownerId:owner,generation,rowCount,counts,sourceRevision:revision,
-        sourceWorkspaceRevision,prunedRows,prunedOutboxRows};
+        sourceWorkspaceRevision,prunedRows,prunedOutboxRows,batchCount,writeDurationMs,
+        pruneRowsScanned,pruneDurationMs,outboxPruneDurationMs};
     }catch(error){
       if(signal&&signal.aborted){
         const reason=signal.reason;

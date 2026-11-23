@@ -265,6 +265,27 @@ vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(localOutboxFailur
 assert.equal(JSON.parse(JSON.stringify(sanitizerSandbox.result)).reason,'local_entity_outbox_unavailable',
  'Delta diagnostics must preserve the storage layer outbox failure reason');
 
+const projectionRebuildTimingEvent={
+ at:'2026-11-23T12:00:00.000Z',stage:'entity-projection-rebuild',durationMs:110000,
+ projectionRebuildAttempted:true,projectionRebuildOk:true,projectionRebuildMode:'snapshot-backfill',
+ projectionBatchCount:19,projectionRowsWritten:149148,projectionWriteDurationMs:42000,
+ projectionPruneDurationMs:3,projectionPruneRowsScanned:2,projectionPruneRowsRemoved:2,
+ projectionOutboxPruneDurationMs:1,projectionOutboxPruneRowsRemoved:0,
+ ownerId:'PRIVATE_OWNER',workspacePayload:'PRIVATE_WORKSPACE'
+};
+vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(projectionRebuildTimingEvent)+')',sanitizerSandbox,
+ {filename:'sync-diagnostic-projection-rebuild-timing-test.js'});
+const safeProjectionRebuildTiming=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.deepEqual(safeProjectionRebuildTiming,{
+ at:projectionRebuildTimingEvent.at,stage:'entity-projection-rebuild',durationMs:110000,
+ projectionRebuildAttempted:true,projectionRebuildOk:true,projectionRebuildMode:'snapshot-backfill',
+ projectionBatchCount:19,projectionRowsWritten:149148,projectionWriteDurationMs:42000,
+ projectionPruneDurationMs:3,projectionPruneRowsScanned:2,projectionPruneRowsRemoved:2,
+ projectionOutboxPruneDurationMs:1,projectionOutboxPruneRowsRemoved:0
+},'projection diagnostics must expose only aggregate build/prune timings and bounded row counts');
+assert.equal(JSON.stringify(safeProjectionRebuildTiming).includes('PRIVATE'),false,
+ 'projection performance diagnostics must exclude account and workspace payload data');
+
 const collectorStart=source.indexOf('async function collectSyncOperationalDiagnostics(){');
 const collectorEnd=source.indexOf('\nasync function downloadSyncDiagnostics()',collectorStart);
 assert.ok(collectorStart>0&&collectorEnd>collectorStart,'diagnostic collector must be present');
