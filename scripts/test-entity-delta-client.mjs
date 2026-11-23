@@ -24,6 +24,113 @@ const makeGroup=(operationId,firstSequence,changes)=>({
 const putChange=(collection,id)=>({
   collection,id,operation:'put',position:0,value:{id,name:id}
 });
+
+{
+  const baseTopic={id:'topic-cursor-mismatch',name:'Cursor mismatch topic',notes:'n'.repeat(100)};
+  const localTopic={...baseTopic,notes:'x'+'n'.repeat(99)};
+  const basePayload={
+    __nexusDeltaSync:'entity-delta-v1',
+    state:{streams:[],subjects:[],topics:[baseTopic],history:[],exams:[]},
+    featureState:{journal:[],papers:[],goals:[],studyLogs:[]}
+  };
+  const localPayload={...basePayload,state:{...basePayload.state,topics:[localTopic]}};
+  const pendingSnapshot={
+    status:'pending',ownerUserId:'account-A',operationId:'parked-local-edit',
+    localSequence:1,baseServerVersion:'snapshot-stamp',payload:localPayload
+  };
+  const outboxGroup={
+    operationId:'parked-local-edit',firstSequence:1,lastSequence:1,changeCount:1,
+    changes:[{collection:'topics',id:localTopic.id,operation:'put',position:0,value:localTopic}]
+  };
+  const recoveryState={
+    ok:true,ownerId:'account-A',activeGeneration:'active-generation',
+    generationMismatch:true,workspaceRevision:1,
+    cursor:{
+      generation:'stale-generation',workspaceRevision:1,publishRevision:1,
+      acknowledgedSequence:0,remoteHeadRevision:2,snapshotUpdatedAt:'snapshot-stamp',
+      requiresPull:true
+    },
+    outbox:{
+      throughSequence:1,highWatermark:1,groupCount:1,changeCount:1,
+      digest:'parked-outbox-digest',groups:[outboxGroup]
+    }
+  };
+  const projection={
+    ownerId:'account-A',generation:'active-generation',pending:false,
+    state:localPayload.state,featureState:localPayload.featureState
+  };
+  const stableJsonForFixture=value=>{
+    if(Array.isArray(value))return '['+value.map(stableJsonForFixture).join(',')+']';
+    if(value&&typeof value==='object')return '{'+Object.keys(value).sort()
+      .map(key=>JSON.stringify(key)+':'+stableJsonForFixture(value[key])).join(',')+'}';
+    return JSON.stringify(value);
+  };
+  const digestBytes=await webcrypto.subtle.digest('SHA-256',
+    new TextEncoder().encode(stableJsonForFixture({
+      state:projection.state,featureState:projection.featureState,
+      __nexusDeltaSync:'entity-delta-v1'
+    })));
+  const localPayloadDigest=Array.from(new Uint8Array(digestBytes),
+    byte=>byte.toString(16).padStart(2,'0')).join('');
+  const remoteState={
+    mode:'delta',protocol_version:1,head_revision:2,snapshot_revision:0,
+    compacted_through_revision:0,snapshot_updated_at:'snapshot-stamp'
+  };
+  const remoteGroups=[
+    {revision:1,operation_id:'parked-local-edit',changes:[{
+      ordinal:0,collection:'topics',id:localTopic.id,operation:'put',position:0,value:localTopic
+    }]},
+    {revision:2,operation_id:'remote-overwrite-after-park',changes:[{
+      ordinal:0,collection:'topics',id:baseTopic.id,operation:'put',position:0,value:baseTopic
+    }]}
+  ];
+  const storage={
+    async readWorkspaceEntityDeltaCursor(){return {ok:false,reason:'local_delta_cursor_mismatch'};},
+    async readWorkspaceEntityDeltaRecoveryState(){return recoveryState;},
+    async readWorkspaceEntities(){return projection;}
+  };
+  const client={
+    auth:{async getUser(){return {data:{user:{id:'account-A'}},error:null};}},
+    async rpc(name,args){
+      if(name==='nexus_get_entity_sync_state')return {data:remoteState,error:null};
+      if(name==='nexus_read_entity_operations'){
+        const after=Number(args&&args.p_after_revision)||0;
+        const groups=remoteGroups.filter(group=>group.revision>after);
+        const nextRevision=groups.length?groups[groups.length-1].revision:after;
+        const bytes=new TextEncoder().encode(JSON.stringify(groups)).length;
+        return {data:{
+          mode:'delta',snapshot_required:false,head_revision:2,snapshot_revision:0,
+          compacted_through_revision:0,next_revision:nextRevision,bytes,groups
+        },error:null};
+      }
+      return {data:null,error:{code:'unexpected_cursor_recovery_rpc'}};
+    }
+  };
+  const recoveryClient=factory({
+    enabled:true,client,storage,
+    getActiveOwner:()=> 'account-A',getLocalOwner:()=> 'account-A',
+    getLocalBase:async()=>({...basePayload,serverVersion:'snapshot-stamp'}),
+    getLocalWorkspace:async()=>localPayload,
+    getPendingSnapshot:async()=>pendingSnapshot,
+    readRemoteSnapshot:async()=>({payload:basePayload,updated_at:'snapshot-stamp'}),
+    sameWorkspace:async(left,right)=>JSON.stringify(left.state)===JSON.stringify(right.state)&&
+      JSON.stringify(left.featureState)===JSON.stringify(right.featureState),
+    mergeWorkspace:window.NexusWorkspaceSyncMerge.mergeAsync
+  });
+  const prepared=await recoveryClient.prepareConflictRecovery('account-A',{maxGroups:100,maxBytes:8*1024*1024});
+  assert.equal(prepared.ok,true,
+    'cursor-mismatch recovery must prepare a candidate from the parked snapshot base: '+JSON.stringify(prepared));
+  assert.equal(prepared.pendingLocalChangesPreserved,true,
+    'the candidate must carry a content-level proof that parked local changes survived the merge');
+  assert.equal(prepared.pendingLocalChangeCount,1);
+  assert.equal(prepared.payload.state.topics[0].notes,localTopic.notes,
+    'the exact parked topic note must survive even when its operation is already in the cursor history and a later remote operation overwrites it');
+  assert.equal(prepared.remotePayload.state.topics[0].notes,baseTopic.notes,
+    'the test must prove the remote tail independently overwrote the parked edit before reconciliation');
+  assert.ok(prepared.conflicts.length>0,
+    'the three-way merge must preserve the local side of the overlapping edit');
+}
+
 function harness(options={}){
   let activeOwner='account-A',localOwner='account-A';
   const state={mode:'delta',protocol_version:1,head_revision:0,snapshot_revision:0,
@@ -1466,7 +1573,7 @@ function makeStagingRuntimeHarness({
   productionGate=false,browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/sync-account-handoff-reliability',
   remoteState={mode:'delta',protocol_version:1},remoteStateError=null,
   productionEnableResult={ok:true,mode:'delta'},productionEnableError=null,
-  changeLocalOwnerOnEnable=false,
+  pendingProofResult=null,changeLocalOwnerOnEnable=false,
   snapshotTimestamp='production-snapshot-stamp',snapshotReadError=null,
   cursorReadResult=null,outboxReadResult=null,
   projectionResults=[{ok:true,workspaceRevision:4,projectionWorkspaceRevision:4}],
@@ -1478,7 +1585,10 @@ function makeStagingRuntimeHarness({
     localBaseOwner:null,pendingOwner:null,chunkWrite:null,localCommit:null,
     stateRead:null,rpc:null,rpcCount:0,projectionOwners:[],projectionRebuild:0,projectionDiagnostics:[],
     renderCount:0,hubRenderCount:0,featureUpdate:null,fsrsSettings:null};
-  let currentRemoteState=remoteState;
+  let currentRemoteState={
+    snapshot_updated_at:'verified-snapshot-stamp',snapshot_revision:3,
+    head_revision:3,compacted_through_revision:3,...remoteState
+  };
   const stateQuery={
     select(columns){calls.stateRead={...calls.stateRead,columns};return this;},
     eq(column,value){calls.stateRead={...calls.stateRead,filterColumn:column,filterValue:value};return this;},
@@ -1497,11 +1607,17 @@ function makeStagingRuntimeHarness({
     from(table){calls.stateRead={table,columns:null,filterColumn:null,filterValue:null};return stateQuery;},
     async rpc(name,args){
       calls.rpcCount++;
+      if(name==='nexus_get_entity_sync_state'){
+        return {data:currentRemoteState,error:remoteStateError};
+      }
       calls.rpc={name,args};
-      if(changeLocalOwnerOnEnable)currentLocalOwner='account-B';
-      if(productionEnableError)return {data:null,error:productionEnableError};
-      if(productionEnableResult&&productionEnableResult.ok===true&&productionEnableResult.mode==='delta'){
-        currentRemoteState={mode:'delta',protocol_version:1};
+      if(name==='nexus_enable_entity_delta'){
+        if(changeLocalOwnerOnEnable)currentLocalOwner='account-B';
+        if(productionEnableError)return {data:null,error:productionEnableError};
+        if(productionEnableResult&&productionEnableResult.ok===true&&productionEnableResult.mode==='delta'){
+          currentRemoteState={...currentRemoteState,mode:'delta',protocol_version:1};
+        }
+        return {data:productionEnableResult,error:null};
       }
       return {data:productionEnableResult,error:null};
     }
@@ -1513,7 +1629,7 @@ function makeStagingRuntimeHarness({
     snapshotUpdatedAt:'verified-snapshot-stamp',publishRevision:3,
     remoteHeadRevision:3,acknowledgedSequence:0,requiresPull:false};
   let pendingSnapshot={ownerUserId:sessionUser,status:'pending',operationId:'shadow-snapshot-operation',
-    baseServerVersion:'verified-snapshot-stamp',payload};
+    localSequence:1,baseServerVersion:'verified-snapshot-stamp',payload};
   const queue={
     getBase(_local,owner){calls.localBaseOwner=owner;return {baseServerVersion:'base-stamp'};},
     getPending(_local,owner){calls.pendingOwner=owner;return pendingSnapshot;},
@@ -1575,6 +1691,19 @@ function makeStagingRuntimeHarness({
             const result=Array.isArray(syncResult)
               ?syncResult[Math.min(synchronizeIndex++,syncResult.length-1)]:syncResult;
             return result;
+          },
+          async verifyPendingSnapshotRemote(owner,pending){
+            if(pendingProofResult)return pendingProofResult;
+            return {ok:true,proof:{
+              remoteReadbackVerified:true,pendingLocalChangesPreserved:true,
+              pendingLocalChangeCount:0,ownerId:owner,
+              pendingOperationId:pending.operationId,
+              pendingLocalSequence:Number(pending.localSequence),
+              snapshotUpdatedAt:currentRemoteState.snapshot_updated_at,
+              snapshotRevision:Number(currentRemoteState.snapshot_revision),
+              headRevision:Number(currentRemoteState.head_revision),
+              compactedThroughRevision:Number(currentRemoteState.compacted_through_revision)
+            }};
           },
           async publishConflictRecovery(owner,recoveryOptions){
             calls.recovery={owner,options:recoveryOptions};
@@ -1693,6 +1822,23 @@ assert.deepEqual(activeHostedQa.calls.shadowSnapshotAcknowledgement,{
   owner:'account-A',operationId:'shadow-snapshot-operation',
   baseVersion:'verified-snapshot-stamp',serverVersion:'verified-snapshot-stamp'
 },'a clean Delta cursor and empty outbox must acknowledge the matching compatibility shadow');
+
+const unprovenPendingEdit=makeStagingRuntimeHarness({
+  gate:false,localOrigin:false,stagingUrl:hostedQaSupabaseUrl,
+  hostedQaGate:true,hostedQaOrigin,browserOrigin:hostedQaOrigin,
+  remoteState:{mode:'delta',protocol_version:1},
+  pendingProofResult:{ok:true,proof:{
+    remoteReadbackVerified:true,pendingLocalChangesPreserved:false,pendingLocalChangeCount:0,
+    ownerId:'account-A',pendingOperationId:'shadow-snapshot-operation',
+    pendingLocalSequence:1,snapshotUpdatedAt:'verified-snapshot-stamp',
+    snapshotRevision:3,headRevision:3,compactedThroughRevision:3
+  }}
+});
+const unprovenPendingEditResult=await unprovenPendingEdit.run('account-A',stagingSignal);
+assert.equal(unprovenPendingEditResult.ok,false,
+  'a remote revision readback without the exact pending-local-change proof must not be reported as synced');
+assert.equal(unprovenPendingEdit.calls.shadowSnapshotAcknowledgement,undefined,
+  'the compatibility shadow must remain pending when its exact edit is not proven in the remote snapshot');
 
 assert.equal(cloudSyncSource.includes('NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_IDS'),false,
   'the production runtime must not embed or consult a selected-owner UUID list');
