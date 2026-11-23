@@ -289,7 +289,7 @@
     const sameValue=(left,right)=>stableJson(left)===stableJson(right);
     const remoteEditConflict=suffix=>Array.isArray(conflicts)&&conflicts.some(conflict=>
       conflict&&conflict.resolution==='remote-edit'&&conflict.localPresent===false&&
-      typeof conflict.path==='string'&&(conflict.path===suffix||conflict.path.endsWith(suffix)));
+      typeof conflict.path==='string'&&(conflict.path===suffix||conflict.path.endsWith(suffix)||conflict.path.startsWith(suffix+'.')));
     const mapCache={base:new Map(),local:new Map(),candidate:new Map()};
     const rowsById=(which,payload,rootName,collection)=>{
       const cache=mapCache[which],key=rootName+'\u0000'+collection;
@@ -369,7 +369,7 @@
         const fields=new Set([...Object.keys(baseRoot),...Object.keys(localRoot)]);
         for(const field of fields){
           if(excluded.has(field))continue;
-          const result=verifyField(baseRoot,localRoot,candidateRoot,field,field);
+          const result=verifyField(baseRoot,localRoot,candidateRoot,field,rootName+'.'+field);
           if(!result.ok)return {ok:false,changeCount};
           entityChanged=entityChanged||result.changed;
         }
@@ -1384,7 +1384,7 @@
             snapshotUpdatedAt:state.snapshot_updated_at,
             snapshotRevision:Number(state.snapshot_revision),
             headRevision:Number(state.head_revision),
-            compactedThroughRevision:Number(state.compactedThroughRevision)
+            compactedThroughRevision:Number(state.compacted_through_revision)
           }
         };
       }catch(error){
