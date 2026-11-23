@@ -1440,12 +1440,32 @@
             candidateDigestMatches:intent.candidateDigest===digest,
             expectedHeadRevisionMatches:Number(intent.expectedHeadRevision)===Number(prepared.expectedHeadRevision),
             snapshotRevisionMatches:Number(intent.snapshotRevision)===Number(prepared.snapshotRevision),
-            baseUpdatedAtMatches:intent.baseUpdatedAt===prepared.snapshotUpdatedAt
+            baseUpdatedAtMatches:intent.baseUpdatedAt===prepared.snapshotUpdatedAt,
+            exactAlreadyPublishedSnapshotMatches:false
           };
-          if(!recoveryCandidateDiagnostics.candidateDigestMatches||
-             !recoveryCandidateDiagnostics.expectedHeadRevisionMatches||
-             !recoveryCandidateDiagnostics.snapshotRevisionMatches||
-             !recoveryCandidateDiagnostics.baseUpdatedAtMatches){
+          // A previous attempt can successfully publish the candidate but lose its
+          // response before the local journal advances from "staged" to "published".
+          // On retry, the newly read snapshot revision and updated_at are then the
+          // publication result, not the original pre-publication baseline stored in
+          // the staged intent. Permit that metadata transition only when the exact
+          // digest-bound candidate is already the fully compacted remote snapshot at
+          // the expected head. Ownership, pending-outbox proof, current remote-state
+          // checks and the later exact snapshot/read-back checks remain mandatory.
+          const exactAlreadyPublishedSnapshot=!!(
+            recoveryCandidateDiagnostics.candidateDigestMatches&&
+            recoveryCandidateDiagnostics.expectedHeadRevisionMatches&&
+            Number(prepared.snapshotRevision)===Number(prepared.expectedHeadRevision)&&
+            Number(prepared.compactedThroughRevision)>=Number(prepared.snapshotRevision)&&
+            prepared.remotePayload&&typeof sameWorkspace==='function'&&
+            await sameWorkspace(candidate,prepared.remotePayload)
+          );
+          recoveryCandidateDiagnostics.exactAlreadyPublishedSnapshotMatches=exactAlreadyPublishedSnapshot;
+          await assertOwner(owner);
+          if((!recoveryCandidateDiagnostics.candidateDigestMatches||
+              !recoveryCandidateDiagnostics.expectedHeadRevisionMatches||
+              !recoveryCandidateDiagnostics.snapshotRevisionMatches||
+              !recoveryCandidateDiagnostics.baseUpdatedAtMatches)&&
+             !exactAlreadyPublishedSnapshot){
             return {ok:false,retryable:true,snapshotRequired:true,
               reason:'staged_recovery_candidate_changed',intentId:intent.intentId,
               diagnostics:recoveryCandidateDiagnostics};
