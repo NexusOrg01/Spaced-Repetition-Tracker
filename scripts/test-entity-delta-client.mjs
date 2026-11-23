@@ -1571,7 +1571,7 @@ function makeStagingRuntimeHarness({
   productionGate=false,browserOrigin=null,sessionUser='account-A',localOwner='account-A',hostedQaRef='fix/sync-account-handoff-reliability',
   remoteState={mode:'delta',protocol_version:1},remoteStateError=null,
   productionEnableResult={ok:true,mode:'delta'},productionEnableError=null,
-  pendingProofResult=null,changeLocalOwnerOnEnable=false,
+  pendingProofResult=null,pendingSnapshotEnabled=true,changeLocalOwnerOnEnable=false,
   snapshotTimestamp='production-snapshot-stamp',snapshotReadError=null,
   cursorReadResult=null,outboxReadResult=null,
   projectionResults=[{ok:true,workspaceRevision:4,projectionWorkspaceRevision:4}],
@@ -1626,8 +1626,8 @@ function makeStagingRuntimeHarness({
   const cursor={ownerId:sessionUser,generation:'projection-generation-a',workspaceRevision:0,
     snapshotUpdatedAt:'verified-snapshot-stamp',publishRevision:3,
     remoteHeadRevision:3,acknowledgedSequence:0,requiresPull:false};
-  let pendingSnapshot={ownerUserId:sessionUser,status:'pending',operationId:'shadow-snapshot-operation',
-    localSequence:1,baseServerVersion:'verified-snapshot-stamp',payload};
+  let pendingSnapshot=pendingSnapshotEnabled?{ownerUserId:sessionUser,status:'pending',operationId:'shadow-snapshot-operation',
+    localSequence:1,baseServerVersion:'verified-snapshot-stamp',payload}:null;
   const queue={
     getBase(_local,owner){calls.localBaseOwner=owner;return {baseServerVersion:'base-stamp'};},
     getPending(_local,owner){calls.pendingOwner=owner;return pendingSnapshot;},
@@ -1705,10 +1705,6 @@ function makeStagingRuntimeHarness({
           },
           async publishConflictRecovery(owner,recoveryOptions){
             calls.recovery={owner,options:recoveryOptions};
-            // A successful recovery result represents the production journal's
-            // verified remote read-back plus local commit, which consumes the
-            // compatibility snapshot before the coordinator's post-recovery check.
-            if(recoveryResult&&recoveryResult.ok===true)pendingSnapshot=null;
             return recoveryResult;
           }
         };
@@ -1997,6 +1993,7 @@ const hostedCursorMismatchRecovery=makeStagingRuntimeHarness({
     {ok:false,snapshotRequired:true,reason:'local_delta_cursor_mismatch'},
     {ok:true,publishedCount:0,acknowledgedCount:0,appliedCount:0}
   ],
+  pendingSnapshotEnabled:false,
   recoveryResult:{ok:true,recovered:true,snapshotRevision:3,headRevision:3}
 });
 const hostedCursorMismatchRecoveryResult=await hostedCursorMismatchRecovery.run('account-A',stagingSignal);
