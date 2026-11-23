@@ -16,9 +16,14 @@
   const OWNER_KEY = 'nexus.cloud.last-user-id';
   const ENTITY_REVISION_PREFIX = 'nexus.workspace.entity-revision:';
   const FALLBACK_JOURNAL_KEY = 'nexus.storage.internal.fallback-journal.v1';
+  const DIAGNOSTIC_KEY = 'nexus.syncdiag.session.v1';
   const APP_KEY = /^(?:recall\.|nexus\.|alSrsTrackerV2$|alTrackerData$|alHistoryLog$)/;
   const INTERNAL_KEY = /^nexus\.storage\.internal\./;
-  const isManagedKey = key => typeof key === 'string' && APP_KEY.test(key) && !INTERNAL_KEY.test(key);
+  // Session diagnostics are ephemeral telemetry, not workspace state. Keep them
+  // in native localStorage so recording a recovery event cannot enqueue a managed
+  // write that blocks the recovery operation currently trying to emit that event.
+  const isManagedKey = key => typeof key === 'string' && APP_KEY.test(key) &&
+    !INTERNAL_KEY.test(key) && key !== DIAGNOSTIC_KEY;
   const timestamp = () => new Date().toISOString();
 
   let nativeStorage = null;
