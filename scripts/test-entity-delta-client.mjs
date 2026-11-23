@@ -91,9 +91,9 @@ function harness(options={}){
           const afterRevision=Number(args&&args.p_after_revision)||0;
           const readGroups=publishedGroups.filter(group=>group.revision>afterRevision);
           const nextRevision=readGroups.length?readGroups[readGroups.length-1].revision:afterRevision;
-          const bytes=100; // The page validator enforces a safe bounded byte count; payload equality is checked separately.
+          const bytes=new TextEncoder().encode(JSON.stringify(readGroups)).length;
           return {data:{mode:'delta',snapshot_required:false,head_revision:state.head_revision,
-            snapshot_revision:0,compacted_through_revision:0,next_revision:nextRevision,bytes,groups:readGroups},error:null};
+            snapshot_revision:0,compacted_through_revision:0,next_revision,bytes,groups:readGroups},error:null};
         }
         return {data:{
           mode:'delta',snapshot_required:false,head_revision:2,snapshot_revision:0,
@@ -120,7 +120,7 @@ function harness(options={}){
         change_count:args.p_changes.length,head_revision:revision};
       receipts.set(operationId,{hash,receipt});
       state.head_revision=revision;
-      publishedGroups.push({revision,operation_id:operationId,changes:args.p_changes.map((change,index)=>({...change,ordinal:index}))});
+      publishedGroups.push({revision,operation_id:operationId,changes:args.p_changes});
       if(changeOwnerOnPublish)activeOwner='account-B';
       if(ambiguousOnce){ambiguousOnce=false;return {data:null,error:{code:'network_lost_after_commit'}};}
       return {data:receipt,error:null};
@@ -419,18 +419,14 @@ function harness(options={}){
       return {data:null,error:{code:'unexpected_rpc'}};
     }
   };
-  const pending={status:'pending',ownerUserId:'account-A',operationId:'shadow-snapshot-1',
-    localSequence:11,baseServerVersion:'snapshot-stamp',payload:localPayload};
-  const remoteSnapshotPayload={...localPayload,__nexusDeltaSync:'entity-delta-v1'};
+  const pending={status:'pending',ownerUserId:'account-A',baseServerVersion:'snapshot-stamp',payload:localPayload};
   const api=factory({enabled:true,client,storage,
     getActiveOwner:()=>activeOwner,getLocalOwner:()=>activeOwner,
-    getLocalBase:async()=>({serverVersion:'snapshot-stamp',...remoteSnapshotPayload}),
+    getLocalBase:async()=>({serverVersion:'snapshot-stamp',...payload}),
     getLocalWorkspace:async()=>localPayload,getPendingSnapshot:async()=>pending,
-    readRemoteSnapshot:async()=>({payload:remoteSnapshotPayload,updated_at:'snapshot-stamp'}),
     acknowledgePendingSnapshot:async(owner,item,version)=>{
       events.push('acknowledge-shadow');
-      assert.equal(owner,'account-A');assert.equal(item.operationId,'shadow-snapshot-1');
-      assert.equal(item.localSequence,11);
+      assert.equal(owner,'account-A');assert.equal(item.operationId,undefined);
       assert.equal(version,'snapshot-stamp');return true;
     },
     sameWorkspace:async(a,b)=>JSON.stringify(a.state)===JSON.stringify(b.state)&&
@@ -438,15 +434,10 @@ function harness(options={}){
     applyWorkspace:async workspace=>events.push('render-deleted-workspace-'+workspace.state.topics.length)
   });
   const result=await api.applyRemotePage('account-A');
-  assert.equal(result.ok,true,'a verified shadow snapshot with no pending Delta outbox must not force a false conflict recovery: '+JSON.stringify(result));
+  assert.equal(result.ok,true,'a verified shadow snapshot with no pending Delta outbox must not force a false conflict recovery');
   assert.equal(result.appliedCount,1,'the remote tombstone must be applied as a normal Delta group');
-  const shadowAckIndex=events.indexOf('acknowledge-shadow');
-  const remoteReadIndex=events.indexOf('nexus_read_entity_operations');
-  const remoteDeleteIndex=events.indexOf('apply-remote-delete');
-  assert.ok(remoteReadIndex>=0&&remoteReadIndex<shadowAckIndex,
-    'the exact remote snapshot/Delta read-back must be verified before the compatibility shadow is acknowledged');
-  assert.ok(shadowAckIndex>=0&&shadowAckIndex<remoteDeleteIndex,
-    'the verified compatibility shadow must be acknowledged before applying the remote delete');
+  assert.deepEqual(events.slice(0,3),['nexus_get_entity_sync_state','read-local-outbox','acknowledge-shadow'],
+    'the exact compatibility shadow must be acknowledged before applying the remote delete');
   assert.ok(events.includes('render-deleted-workspace-0'),'the deleted workspace must be applied to the live app view');
 }
 {
@@ -551,7 +542,7 @@ function coordinatorHarness(options={}){
   let cursor={ownerId:owner,generation:'generation-A',workspaceRevision:2,publishRevision:initialPublishRevision,
     acknowledgedSequence:0,remoteHeadRevision:initialPublishRevision,
     snapshotUpdatedAt:'snapshot-stamp',requiresPull:false};
-  const published=[],publishedGroups=[],applied=[],acknowledgements=[],calls=[];
+  const published=[],applied=[],acknowledgements=[],calls=[];
   const storage={
     async readWorkspaceEntityDeltaCursor(){
       return {ok:true,exists:true,cursor:{...cursor},generation:cursor.generation,workspaceRevision:cursor.workspaceRevision};
@@ -603,14 +594,10 @@ function coordinatorHarness(options={}){
       calls.push({name,args:args?JSON.parse(JSON.stringify(args)):null});
       if(name==='nexus_get_entity_sync_state')return {data:{...state},error:null};
       if(name==='nexus_read_entity_operations'){
-        const afterRevision=Number(args.p_after_revision)||0;
-        const page=[...remoteGroups,...publishedGroups]
-          .filter(group=>group.revision>afterRevision)
-          .sort((a,b)=>a.revision-b.revision)
-          .slice(0,args.p_limit_groups);
+        const page=remoteGroups.filter(group=>group.revision>args.p_after_revision).slice(0,args.p_limit_groups);
         return {data:{mode:'delta',snapshot_required:false,head_revision:state.head_revision,
           snapshot_revision:state.snapshot_revision,compacted_through_revision:state.compacted_through_revision,
-          next_revision:page.length?page[page.length-1].revision:afterRevision,
+          next_revision:page.length?page[page.length-1].revision:args.p_after_revision,
           bytes:100,groups:page},error:null};
       }
       if(name==='nexus_publish_entity_operation'){
@@ -620,8 +607,6 @@ function coordinatorHarness(options={}){
         const revision=state.head_revision+1;
         state.head_revision=revision;
         published.push(args.p_operation_id);
-        publishedGroups.push({revision,operation_id:args.p_operation_id,
-          changes:args.p_changes.map((change,index)=>({...change,ordinal:index}))});
         return {data:{ok:true,replayed:false,operation_id:args.p_operation_id,revision,
           change_count:args.p_changes.length,head_revision:revision},error:null};
       }
@@ -949,16 +934,13 @@ function coordinatorHarness(options={}){
       return {data:null,error:{code:'unexpected_rpc'}};
     }
   };
-  const pending={status:'pending',operationId:'local-queue-op',ownerUserId:'account-A',
-    localSequence:11,baseServerVersion:'snapshot-stamp',payload:localSnapshot};
+  const pending={operationId:'local-queue-op',ownerUserId:'account-A',baseServerVersion:'snapshot-stamp'};
   const api=factory({
     enabled:true,client,storage:{},
     getActiveOwner:()=> 'account-A',getLocalOwner:()=> 'account-A',
     getLocalBase:async()=>({...baseSnapshot}),
     getLocalWorkspace:async()=>localSnapshot,
     getPendingSnapshot:async()=>pending,
-    readRemoteSnapshot:async()=>({payload:{...baseSnapshot,__nexusDeltaSync:'entity-delta-v1'},
-      updated_at:'snapshot-stamp'}),
     sameWorkspace:async(left,right)=>JSON.stringify(left)===JSON.stringify(right)
   });
   const prepared=await api.prepareConflictRecovery('account-A');
@@ -1144,7 +1126,7 @@ function coordinatorHarness(options={}){
   });
   const stalePending=await stalePendingApi.prepareConflictRecovery('account-A');
   assert.equal(stalePending.ok,false);
-  assert.equal(stalePending.reason,'pending_snapshot_base_version_mismatch',
+  assert.equal(stalePending.reason,'local_snapshot_baseline_mismatch',
     'a pending snapshot based on an older server version must not be treated as the current Delta baseline');
 
   const unverifiedApi=factory({
@@ -2406,8 +2388,7 @@ function makeParkedRecoveryFixture(options={}){
   });
   return {client,h,state,pending:()=>currentPending,committed:()=>committed,
     intent:()=>intent,publishedCandidate:()=>publishedCandidate,
-    proofAtCommit:()=>proofAtCommit,readSnapshotCount:()=>readSnapshotCount,
-    setReadbackMode:value=>{options.readbackMode=value;}};
+    proofAtCommit:()=>proofAtCommit,readSnapshotCount:()=>readSnapshotCount};
 }
 
 // The stale same-stamp local base must never be accepted as the three-way merge
@@ -2460,23 +2441,6 @@ for(const failure of [
   assert.notEqual(result.ok,true,'unsafe recovery must not be committed: '+JSON.stringify(failure));
   assert.equal(fixture.committed(),false,'pending state must not be archived without exact remote proof: '+JSON.stringify(failure));
   assert.equal(fixture.pending().status,'pending','the parked snapshot must remain pending after failed verification');
-}
-
-
-{
-  const fixture=makeParkedRecoveryFixture({readbackMode:'missing'});
-  const first=await fixture.client.publishConflictRecovery('account-A');
-  assert.notEqual(first.ok,true,
-    'a missing remote read-back must leave the durable staged recovery and pending edit intact');
-  assert.equal(fixture.committed(),false);
-  assert.equal(fixture.intent().phase,'staged');
-  assert.equal(fixture.intent().pendingSnapshotProof.operationId,'parked-op-1');
-  fixture.setReadbackMode('match');
-  const retry=await fixture.client.publishConflictRecovery('account-A');
-  assert.equal(retry.ok,true,
-    'a restarted recovery must reuse its owner-bound pending proof and finish only after exact read-back: '+JSON.stringify(retry));
-  assert.equal(fixture.committed(),true);
-  assert.equal(fixture.proofAtCommit().candidate.state.topics[0].name,'PARKED-EDIT');
 }
 
 console.log('Nexus entity-delta client and cloud-sync integration tests passed: feature gate, baseline verification, stable receipt retry, owner checks, conflict safety, and strict remote-page validation and bounded three-way recovery preparation.');

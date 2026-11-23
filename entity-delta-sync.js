@@ -992,7 +992,7 @@
             expectedHeadRevision:head,actualHeadRevision:safeInteger(finalState&&finalState.head_revision)};
         }
         return {...prepared,ownerId:owner,snapshotUpdatedAt:state.snapshot_updated_at,
-          baselineAdvanced:baselineReconstructed||!baselineMatches,baselineReconstructed,
+          baselineAdvanced:!baselineMatches,baselineReconstructed,
           expectedHeadRevision:head,snapshotRevision:snapshot,
           compactedThroughRevision:floor,pagesRead:pages,
           pendingSnapshotPresent:!!pendingBefore,
