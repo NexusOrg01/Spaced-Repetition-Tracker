@@ -2928,7 +2928,7 @@
        typeof pendingOutboxProof.cursor.requiresPull==='boolean'&&
         pendingOutboxProof.cursor.requiresPull===
           (Number(pendingOutboxProof.cursor.remoteHeadRevision)>Number(pendingOutboxProof.cursor.publishRevision)));
-    if(!validPendingProof||!intentId||intentId.length>160||!/^[a-f0-9]{64}$/i.test(candidateDigest)||!baseUpdatedAt||
+    if(!validPendingProof||!validPendingOutboxProof||!intentId||intentId.length>160||!/^[a-f0-9]{64}$/i.test(candidateDigest)||!baseUpdatedAt||
        !Number.isSafeInteger(expectedHeadRevision)||expectedHeadRevision<0||
        !Number.isSafeInteger(snapshotRevision)||snapshotRevision<0||snapshotRevision>expectedHeadRevision||
        !Array.isArray(input.conflicts)||input.conflicts.length>10000||
