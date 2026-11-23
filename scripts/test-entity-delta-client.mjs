@@ -949,13 +949,16 @@ function coordinatorHarness(options={}){
       return {data:null,error:{code:'unexpected_rpc'}};
     }
   };
-  const pending={operationId:'local-queue-op',ownerUserId:'account-A',baseServerVersion:'snapshot-stamp'};
+  const pending={status:'pending',operationId:'local-queue-op',ownerUserId:'account-A',
+    localSequence:11,baseServerVersion:'snapshot-stamp',payload:localSnapshot};
   const api=factory({
     enabled:true,client,storage:{},
     getActiveOwner:()=> 'account-A',getLocalOwner:()=> 'account-A',
     getLocalBase:async()=>({...baseSnapshot}),
     getLocalWorkspace:async()=>localSnapshot,
     getPendingSnapshot:async()=>pending,
+    readRemoteSnapshot:async()=>({payload:{...baseSnapshot,__nexusDeltaSync:'entity-delta-v1'},
+      updated_at:'snapshot-stamp'}),
     sameWorkspace:async(left,right)=>JSON.stringify(left)===JSON.stringify(right)
   });
   const prepared=await api.prepareConflictRecovery('account-A');
