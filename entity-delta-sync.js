@@ -392,17 +392,24 @@
         limit=Math.max(1,Math.min(MAX_GROUPS,Math.floor(Number(readOptions.limitGroups)||100))),
         maxBytes=Math.max(1024,Math.min(MAX_BYTES,Math.floor(Number(readOptions.maxBytes)||MAX_BYTES)));
       if(!owner||after===null)return {ok:false,snapshotRequired:true,reason:'invalid_remote_cursor'};
+      let failureStage='owner-verification-before-read';
       try{
         await assertOwner(owner);
+        failureStage='remote-operation-read';
         const result=await client.rpc('nexus_read_entity_operations',{
           p_after_revision:after,p_limit_groups:limit,p_max_bytes:maxBytes
         });
         if(result.error)return unavailable('remote_read_failed',{retryable:true,errorCode:String(result.error.code||'unknown')});
+        failureStage='owner-verification-after-read';
         await assertOwner(owner);
+        failureStage='remote-page-validation';
         return validateRemotePage(result.data,after,maxBytes);
       }catch(error){
         return unavailable('account_or_remote_read_verification_failed',{
-          retryable:true,errorCode:String(error&&error.code||'unknown')
+          retryable:true,errorCode:String(error&&error.code||'unknown'),
+          errorName:String(error&&error.name||'Error').slice(0,48),
+          errorStage:failureStage,
+          errorMessage:String(error&&error.message||'unknown').slice(0,160)
         });
       }
     }
