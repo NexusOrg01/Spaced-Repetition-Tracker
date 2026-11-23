@@ -1144,7 +1144,7 @@ function coordinatorHarness(options={}){
   });
   const stalePending=await stalePendingApi.prepareConflictRecovery('account-A');
   assert.equal(stalePending.ok,false);
-  assert.equal(stalePending.reason,'local_snapshot_baseline_mismatch',
+  assert.equal(stalePending.reason,'pending_snapshot_base_version_mismatch',
     'a pending snapshot based on an older server version must not be treated as the current Delta baseline');
 
   const unverifiedApi=factory({
