@@ -1894,8 +1894,11 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   });
   assert.equal(wrongBaselineRepair.ok,false,
     'a cursor repair must reject a remote snapshot baseline mismatch');
-  const repairedStoredCursor=clone(migrationMeta.get(deltaCursorKey));
-  migrationMeta.set(deltaCursorKey,{...repairedStoredCursor,protocolVersion:2});
+  // Fake IndexedDB commits replace the store Map, so reacquire it after the
+  // repair transaction before injecting a second, structurally invalid cursor.
+  const migrationMetaAfterRepair=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  const repairedStoredCursor=clone(migrationMetaAfterRepair.get(deltaCursorKey));
+  migrationMetaAfterRepair.set(deltaCursorKey,{...repairedStoredCursor,protocolVersion:2});
   const invalidCursorRepair=await loaded.api.repairWorkspaceEntityDeltaCursorGeneration(owner,{
     snapshotUpdatedAt:'verified-remote-snapshot-2026-11-14',
     headRevision:3,
@@ -1903,7 +1906,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   });
   assert.equal(invalidCursorRepair.ok,false,
     'a cursor with structural corruption beyond its generation must not be repaired');
-  migrationMeta.set(deltaCursorKey,repairedStoredCursor);
+  const migrationMetaAfterInvalidRepair=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  migrationMetaAfterInvalidRepair.set(deltaCursorKey,repairedStoredCursor);
 
   const blocked=await loaded.api.applyWorkspaceEntityDeltaGroup(owner,{
     revision:4,operation_id:'remote-operation-four',
