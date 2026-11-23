@@ -3354,7 +3354,11 @@
       entityRecoveryLockedOwners.delete(owner);
       return result;
     });
-    serial=task.then(()=>revision);task.catch(reportFailure);return task;
+    serial=task.then(()=>revision);
+    // Keep a failed task observable to its caller while marking the serial tail
+    // handled; the next queued operation already recovers from this rejection.
+    serial.catch(()=>undefined);
+    task.catch(reportFailure);return task;
   }
 
   async function deleteWorkspaceEntities(ownerId){
