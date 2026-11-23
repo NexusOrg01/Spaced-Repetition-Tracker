@@ -1784,9 +1784,9 @@
        entityRecoveryLockedOwners.has(owner)){
       return fail('cursor_repair_owner_unavailable');
     }
-    await entitySyncSerial.catch(()=>undefined);
-    await serial.catch(()=>undefined);
-    await persistPending();
+    // This repair can be invoked from inside the sync coordinator. Do not wait on
+    // entitySyncSerial/serial here: that can deadlock the very sync operation invoking it.
+    // A non-empty in-memory queue is not safe to rebind; let the caller use full recovery.
     if(!enabled||committedOwnerId!==owner||entityRemovalOwners.has(owner)||
        entityRecoveryLockedOwners.has(owner)||pending.size){
       return fail('cursor_repair_local_writes_pending');
