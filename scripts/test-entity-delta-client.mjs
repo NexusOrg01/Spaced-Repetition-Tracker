@@ -2468,11 +2468,14 @@ assert.ok(cloudSyncSource.indexOf('writeRemoteSnapshot(',legacyQueueStart)>legac
 
 function makeParkedRecoveryFixture(options={}){
   const owner='account-A';
+  const originalNotes='n'.repeat(100),expectedNotes='x'+'n'.repeat(99);
+  const originalTopic={id:'parked-topic',name:'original',notes:originalNotes};
+  const parkedTopic={...originalTopic,name:'PARKED-EDIT',notes:expectedNotes};
   const parkedPayload={
     app:'Nexus Spaced Repetition Tracker',
     schema:4,
     __nexusDeltaSync:'entity-delta-v1',
-    state:{streams:[],subjects:[],topics:[{id:'parked-topic',name:'PARKED-EDIT'}],history:[],exams:[]},
+    state:{streams:[],subjects:[],topics:[parkedTopic],history:[],exams:[]},
     featureState:{journal:[],papers:[],goals:[],studyLogs:[]}
   };
   // Reproduce the defect: the local base has the same server stamp but already
@@ -2481,7 +2484,7 @@ function makeParkedRecoveryFixture(options={}){
   const remoteBaseline={
     ...payload,
     __nexusDeltaSync:'entity-delta-v1',
-    state:{...payload.state,topics:[{id:'parked-topic',name:'original'}]}
+    state:{...payload.state,topics:[originalTopic]}
   };
   const pending=options.outboxOnly?null:{
     status:'pending',ownerUserId:owner,operationId:'parked-op-1',
@@ -2496,7 +2499,7 @@ function makeParkedRecoveryFixture(options={}){
     intent=null,completedIntent=null,committed=false,outboxCommitted=false;
   const parkedOutboxGroup={operationId:'parked-outbox-op-1',firstSequence:1,lastSequence:1,
     changeCount:1,changes:[{collection:'topics',id:'parked-topic',operation:'put',position:0,
-      value:{id:'parked-topic',name:'PARKED-EDIT'}}]};
+      value:parkedTopic}]};
   let outboxGroups=options.outboxOnly?[parkedOutboxGroup]:[];
   let outboxDigest='d'.repeat(64);
   let publishedCandidate=null,readSnapshotCount=0,proofAtCommit=null;
@@ -2524,6 +2527,21 @@ function makeParkedRecoveryFixture(options={}){
     },
     async markWorkspaceEntityRecoveryPublished(targetOwner,intentId,publication){
       if(!intent||intent.intentId!==intentId)return {ok:false,reason:'intent_missing'};
+      if(intent.pendingSnapshotProof||intent.pendingOutboxProof){
+        const proof=publication&&publication.remoteReadbackProof;
+        if(!proof||proof.proofVersion!==1||proof.remoteReadbackVerified!==true||
+           proof.pendingLocalChangesPreserved!==true||proof.ownerId!==targetOwner||
+           proof.candidateDigest!==intent.candidateDigest||
+           proof.remotePayloadDigest!==intent.candidateDigest||
+           proof.snapshotUpdatedAt!==publication.updated_at||
+           Number(proof.snapshotRevision)!==Number(publication.snapshotRevision)||
+           Number(proof.headRevision)!==Number(publication.headRevision)||
+           Number(proof.compactedThroughRevision)!==Number(publication.compactedThroughRevision)||
+           JSON.stringify(proof.pendingSnapshotProof||null)!==JSON.stringify(intent.pendingSnapshotProof||null)||
+           JSON.stringify(proof.pendingOutboxProof||null)!==JSON.stringify(intent.pendingOutboxProof||null)){
+          return {ok:false,reason:'recovery_remote_readback_proof_required'};
+        }
+      }
       intent={...intent,phase:'published',publication};
       return {ok:true,intent};
     },
@@ -2567,17 +2585,17 @@ function makeParkedRecoveryFixture(options={}){
       readSnapshotCount++;
       if(readSnapshotCount===2&&options.mutatePendingOnReadback&&currentPending){
         currentPending={...currentPending,payload:{...currentPending.payload,
-          state:{...currentPending.payload.state,topics:[{id:'parked-topic',name:'CHANGED-DURING-READBACK'}]}}};
+          state:{...currentPending.payload.state,topics:[{...parkedTopic,name:'CHANGED-DURING-READBACK'}]}}};
       }
       if(readSnapshotCount===2&&options.mutateOutboxOnReadback&&outboxGroups.length){
         outboxGroups=[{...parkedOutboxGroup,changes:[{...parkedOutboxGroup.changes[0],
-          value:{id:'parked-topic',name:'CHANGED-DURING-READBACK'}}]}];
+          value:{...parkedTopic,name:'CHANGED-DURING-READBACK'}}]}];
         outboxDigest='f'.repeat(64);
       }
       if(readSnapshotCount===2&&options.readbackMode==='missing')return null;
       if(readSnapshotCount>1&&options.readbackMode==='missing-edit'){
         return {payload:{...publishedCandidate,state:{...publishedCandidate.state,
-          topics:[{id:'parked-topic',name:'original'}]}},updated_at:'snapshot-stamp-2'};
+          topics:[originalTopic]}},updated_at:'snapshot-stamp-2'};
       }
       if(readSnapshotCount>1&&options.readbackMode==='wrong-stamp')
         return {payload:publishedCandidate,updated_at:'wrong-stamp'};
@@ -2596,7 +2614,7 @@ function makeParkedRecoveryFixture(options={}){
       // mirror the published revision tuple there before the mandatory read-back.
       Object.assign(h.state,state);
       if(options.readbackMode==='missing-edit')remoteSnapshot={
-        payload:{...candidate,state:{...candidate.state,topics:[{id:'parked-topic',name:'original'}]}},
+        payload:{...candidate,state:{...candidate.state,topics:[originalTopic]}},
         updated_at:'snapshot-stamp-2'
       };
       else if(options.readbackMode==='wrong-stamp')remoteSnapshot={payload:candidate,updated_at:'wrong-stamp'};
@@ -2609,7 +2627,8 @@ function makeParkedRecoveryFixture(options={}){
         pending:currentPending?{...currentPending}:null,
         pendingOutboxProof:intent&&intent.pendingOutboxProof||null};
       if(options.outboxOnly&&(!intent||!intent.pendingOutboxProof||
-         candidate.state.topics[0].name!=='PARKED-EDIT')){
+         candidate.state.topics[0].name!=='PARKED-EDIT'||
+         candidate.state.topics[0].notes!==expectedNotes)){
         return {ok:false,reason:'pending_outbox_candidate_or_proof_missing'};
       }
       committed=true;
@@ -2638,8 +2657,12 @@ function makeParkedRecoveryFixture(options={}){
   assert.equal(prepared.pendingLocalSequence,11);
   assert.equal(prepared.payload.state.topics[0].name,'PARKED-EDIT',
     'the exact parked edit must survive merge even when the cached same-stamp base contains it');
+  assert.equal(prepared.payload.state.topics[0].notes,'x'+'n'.repeat(99),
+    'the exact 100-character parked notes value must survive candidate reconstruction');
   assert.equal(prepared.remotePayload.state.topics[0].name,'original',
     'the remote reconstruction must remain a distinct verified input to the merge');
+  assert.equal(prepared.remotePayload.state.topics[0].notes,'n'.repeat(100),
+    'the remote tail must retain the exact original notes value before merge');
 }
 
 // A successful recovery records the exact pending identity in its durable intent,
@@ -2651,7 +2674,15 @@ function makeParkedRecoveryFixture(options={}){
   const result=await fixture.client.publishConflictRecovery('account-A',{onProgress:event=>progress.push(event)});
   assert.equal(result.ok,true,'the exact pending edit should recover only after remote read-back: '+JSON.stringify(result));
   assert.equal(fixture.publishedCandidate().state.topics[0].name,'PARKED-EDIT');
+  assert.equal(fixture.publishedCandidate().state.topics[0].notes,'x'+'n'.repeat(99),
+    'the published candidate must contain the exact parked notes, not the stale remote value');
   assert.equal(fixture.proofAtCommit().candidate.state.topics[0].name,'PARKED-EDIT');
+  assert.equal(fixture.proofAtCommit().candidate.state.topics[0].notes,'x'+'n'.repeat(99),
+    'the local commit must use the exact candidate proven by remote read-back');
+  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.remoteReadbackVerified,true);
+  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.pendingLocalChangesPreserved,true);
+  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.remotePayloadDigest,
+    fixture.intent().candidateDigest);
   assert.equal(fixture.proofAtCommit().pending.operationId,'parked-op-1');
   assert.equal(fixture.intent().pendingSnapshotProof.operationId,'parked-op-1');
   assert.equal(fixture.intent().pendingSnapshotProof.payloadDigest.length,64);
@@ -2693,6 +2724,8 @@ for(const failure of [
     'a restarted recovery must reuse its owner-bound pending proof and finish only after exact read-back: '+JSON.stringify(retry));
   assert.equal(fixture.committed(),true);
   assert.equal(fixture.proofAtCommit().candidate.state.topics[0].name,'PARKED-EDIT');
+  assert.equal(fixture.proofAtCommit().candidate.state.topics[0].notes,'x'+'n'.repeat(99),
+    'a retried publication must preserve the exact parked notes value');
 }
 
 // A stale cursor generation must reconstruct the parked edit from the durable
@@ -2713,7 +2746,10 @@ for(const failure of [
   assert.equal(result.ok,true,
     'the exact outbox-backed edit should be published and read back before local commit: '+JSON.stringify(result));
   assert.equal(fixture.publishedCandidate().state.topics[0].name,'PARKED-EDIT');
+  assert.equal(fixture.publishedCandidate().state.topics[0].notes,'x'+'n'.repeat(99));
   assert.equal(fixture.proofAtCommit().candidate.state.topics[0].name,'PARKED-EDIT');
+  assert.equal(fixture.proofAtCommit().candidate.state.topics[0].notes,'x'+'n'.repeat(99));
+  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.pendingOutboxProof.throughSequence,1);
   assert.equal(fixture.proofAtCommit().pendingOutboxProof.digest,'d'.repeat(64));
   assert.equal(fixture.intent().pendingOutboxProof.throughSequence,1);
   assert.equal(fixture.outbox().length,0,
