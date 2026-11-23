@@ -2567,4 +2567,4 @@ for(const failure of [
     'the durable recovery journal must retain the original proof for a safe retry');
 }
 
-console.log('Nexus entity-delta client and cloud-sync integration tests passed: feature gate, baseline verification, stable receipt retry, owner checks, conflict safety, strict remote-page validation, and outbox-backed recovery proof/read-back.'); feature gate, baseline verification, stable receipt retry, owner checks, conflict safety, and strict remote-page validation and bounded three-way recovery preparation.');
+console.log('Nexus entity-delta client and cloud-sync integration tests passed: feature gate, baseline verification, stable receipt retry, owner checks, conflict safety, strict remote-page validation, and outbox-backed recovery proof/read-back.');
