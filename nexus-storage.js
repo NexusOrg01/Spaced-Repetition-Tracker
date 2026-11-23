@@ -3165,7 +3165,7 @@
   }
 
   async function commitWorkspaceEntityRecovery(ownerId,intentId,entries,candidateDigest){
-    const owner=entityOwnerKey(ownerId),id=String(intentId||'');
+    const owner=entityOwnerKey(ownerId),id=String(intentId||''),completedKey=entityDeltaRecoveryCompletedKey(owner);
     if(!Array.isArray(entries)||entries.length<4)throw new Error('A complete local recovery transaction is required.');
     const seen=new Set(),normalized=entries.map(entry=>{
       if(!entry||typeof entry.key!=='string'||!(typeof entry.value==='string'||entry.value===null)||
@@ -3188,6 +3188,28 @@
       await persistPending();
       if(!enabled||committedOwnerId!==owner||pending.size)
         throw new Error('Local workspace writes could not be quiesced for recovery commit.');
+      // A completed recovery removes its live intent. Check the durable completion
+      // receipt first so a retry after a successful atomic commit is idempotent
+      // instead of being mistaken for an unowned/missing intent.
+      const completedReceipt=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
+        const request=tx.objectStore('migrationMeta').get(completedKey);
+        request.onsuccess=()=>set(request.result||null);
+      });
+      if(completedReceipt&&completedReceipt.ownerId===owner&&completedReceipt.intentId===id){
+        const receiptCursor=completedReceipt.cursor,receiptPublication=completedReceipt.publication||{};
+        if(completedReceipt.candidateDigest!==candidateDigest)
+          throw new Error('recovery_intent_id_reused');
+        if(!completedReceipt.generation||!receiptCursor||receiptCursor.key!==entityDeltaCursorKey(owner)||
+           receiptCursor.ownerId!==owner||receiptCursor.generation!==completedReceipt.generation||
+           receiptPublication.updated_at!==receiptCursor.snapshotUpdatedAt||
+           Number(receiptPublication.snapshotRevision)!==Number(receiptCursor.publishRevision)||
+           Number(receiptPublication.headRevision)!==Number(receiptCursor.remoteHeadRevision)||
+           receiptCursor.requiresPull!==(Number(receiptCursor.remoteHeadRevision)>Number(receiptCursor.publishRevision))){
+          throw new Error('recovery_completion_receipt_invalid');
+        }
+        return {ok:true,alreadyCommitted:true,revision,generation:completedReceipt.generation,
+          cursor:{...receiptCursor}};
+      }
       const recoveryBeforeCommit=await readWorkspaceEntityRecovery(owner);
       if(!recoveryBeforeCommit||!recoveryBeforeCommit.intent||
          recoveryBeforeCommit.intent.intentId!==id){
@@ -3223,7 +3245,7 @@
       const expectedOutboxHighWatermark=outboxBeforeCommit.outbox.highWatermark,
         capturedWriteSequence=writeSequence,manifestKey=entityManifestKey(owner),
         intentKey=entityDeltaRecoveryKey(owner),cursorKey=entityDeltaCursorKey(owner),
-        sequenceKey=entitySequenceKey(owner),completedKey=entityDeltaRecoveryCompletedKey(owner);
+        sequenceKey=entitySequenceKey(owner);
       const result=await transaction([RECORDS,META,WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
         const records=tx.objectStore(RECORDS),meta=tx.objectStore(META),workspaces=tx.objectStore(WORKSPACES),
           migration=tx.objectStore('migrationMeta');
