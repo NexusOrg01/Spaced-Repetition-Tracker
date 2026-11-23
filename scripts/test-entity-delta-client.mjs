@@ -1705,6 +1705,8 @@ function makeStagingRuntimeHarness({
           },
           async publishConflictRecovery(owner,recoveryOptions){
             calls.recovery={owner,options:recoveryOptions};
+            if(recoveryResult&&recoveryResult.ok===true&&recoveryResult.pendingSnapshotCommitted===true)
+              pendingSnapshot=null;
             return recoveryResult;
           }
         };
@@ -2272,7 +2274,8 @@ assert.equal(activeStaging.calls.localCommit[6].intentId,'recovery-intent-1');
 assert.equal(activeStaging.calls.localCommit[6].candidateDigest,'sha256-candidate');
 
 const pendingRecovery=makeStagingRuntimeHarness({
-  gate:true,recoveryIntent:{intentId:'recovery-intent-2',phase:'staged'}
+  gate:true,recoveryIntent:{intentId:'recovery-intent-2',phase:'staged'},
+  recoveryResult:{ok:true,recovered:true,pendingSnapshotCommitted:true}
 });
 const resumedRecovery=await pendingRecovery.run('account-A',stagingSignal);
 assert.equal(resumedRecovery.recovered,true,
@@ -2302,7 +2305,8 @@ const overlapRecovery=makeStagingRuntimeHarness({
       reason:'local_and_remote_changes_overlap',appliedCount:0,publishedCount:0,
       acknowledgedCount:0,rounds:1},
     {ok:true,appliedCount:0,publishedCount:0,acknowledgedCount:0,rounds:1}
-  ]
+  ],
+  recoveryResult:{ok:true,recovered:true,pendingSnapshotCommitted:true}
 });
 const overlapResult=await overlapRecovery.run('account-A',stagingSignal);
 assert.equal(overlapResult.recovered,true,
