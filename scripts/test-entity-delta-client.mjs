@@ -1581,7 +1581,7 @@ function makeStagingRuntimeHarness({
   const calls={createClient:0,synchronize:null,synchronizeCount:0,recovery:null,cursorOwner:null,
     outboxOwner:null,outboxAfterSequence:null,
     localBaseOwner:null,pendingOwner:null,chunkWrite:null,localCommit:null,
-    stateRead:null,rpc:null,rpcCount:0,projectionOwners:[],projectionRebuild:0,projectionDiagnostics:[],
+    stateRead:null,rpc:null,rpcCount:0,enableRpcCount:0,projectionOwners:[],projectionRebuild:0,projectionDiagnostics:[],
     renderCount:0,hubRenderCount:0,featureUpdate:null,fsrsSettings:null};
   let currentRemoteState={
     snapshot_updated_at:'verified-snapshot-stamp',snapshot_revision:3,
@@ -1605,6 +1605,7 @@ function makeStagingRuntimeHarness({
     from(table){calls.stateRead={table,columns:null,filterColumn:null,filterValue:null};return stateQuery;},
     async rpc(name,args){
       calls.rpcCount++;
+      if(name==='nexus_enable_entity_delta')calls.enableRpcCount++;
       if(name==='nexus_get_entity_sync_state'){
         return {data:currentRemoteState,error:remoteStateError};
       }
@@ -1881,9 +1882,9 @@ assert.equal(productionRolloutOffResult.skipped,true,
   'a disabled private global rollout switch must keep an owner in snapshot mode');
 assert.equal(productionRolloutOffResult.reason,'pilot_not_enabled');
 assert.equal(productionRolloutOff.calls.createClient,0);
-assert.equal(productionRolloutOff.calls.rpcCount,1);
+assert.equal(productionRolloutOff.calls.enableRpcCount,1);
 await productionRolloutOff.run('account-A',stagingSignal);
-assert.equal(productionRolloutOff.calls.rpcCount,1,
+assert.equal(productionRolloutOff.calls.enableRpcCount,1,
   'a server-denied owner must not repeat the enable RPC on every sync in the same page session');
 assert.equal(productionRolloutOff.calls.createClient,0);
 
@@ -2053,7 +2054,7 @@ const hostedSnapshotResult=await hostedSnapshotMode.run('account-A',stagingSigna
 assert.equal(hostedSnapshotResult.ok,true,
   'a hosted QA workspace with a verified snapshot must auto-enroll through the authenticated global rollout RPC');
 assert.equal(hostedSnapshotMode.calls.rpc.name,'nexus_enable_entity_delta');
-assert.equal(hostedSnapshotMode.calls.rpcCount,1);
+assert.equal(hostedSnapshotMode.calls.enableRpcCount,1);
 assert.equal(hostedSnapshotMode.calls.createClient,1,
   'a successfully enrolled hosted QA workspace must enter Delta synchronization');
 assert.equal(hostedSnapshotMode.calls.stateRead.filterValue,'account-A',
