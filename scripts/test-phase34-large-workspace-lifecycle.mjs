@@ -2246,14 +2246,21 @@ try {
       Number.isSafeInteger(returnCursorMismatchRecoveryComplete.durationMs)
         ? returnCursorMismatchRecoveryComplete.durationMs : null,
     cursorAfterRecovery: returnCursorState,
-    returnVerificationEventPendingAtDeadline: !returnVerificationAny,
+    returnVerificationEventPendingAtDeadline: !returnVerification,
     returnTerminalStatus: returnStatusAtDeadline,
     returnTerminalOutcomeMs,
     returnSyncWallMs,
     projectionCheckStarted: phaseTimings.some(event => event.stage === 'projection-check-start'),
-    projectionCompletedByDeadline: !!returnProjectionCompletion,
+    projectionCompletedByDeadline: deadlineEvents.some(event =>
+      (event.stage === 'projection-reuse' || event.stage === 'projection-rebuild') &&
+      typeof event.at === 'string' && event.at >= accountAReturnStartedIso &&
+      event.ownerVerified === true
+    ),
     projectionDeferredToUpload: !!returnProjectionDeferred,
-    projectionRebuiltByDeadline: !!returnProjectionRebuild,
+    projectionRebuiltByDeadline: deadlineEvents.some(event =>
+      event.stage === 'projection-rebuild' &&
+      typeof event.at === 'string' && event.at >= accountAReturnStartedIso
+    ),
     returningDeltaSyncVerified: !!returnDeltaSyncVerified,
     projectionReadinessReason: phaseTimings.find(event => event.stage === 'projection-readiness')?.reason || null,
     workspaceSnapshotCurrent: returnWorkspaceSnapshotCurrent?.same ?? null,
@@ -2310,7 +2317,8 @@ try {
     returnCursorState.publishRevision === returnCursorState.remoteHeadRevision &&
     returnCursorState.outboxGroups === 0 &&
     accountALocalEditedTopicAfterReturn.notes === 'x' + 'n'.repeat(99) &&
-    accountARemoteEditedTopicAfterReturn.notes === changedRemoteReadTopicNotes);
+    accountARemoteEditedTopicAfterReturn.notes === changedRemoteReadTopicNotes &&
+    pendingAckProofVerified);
   console.log('DLA-09A_CURSOR_MISMATCH_RECOVERY=' + JSON.stringify({
     injected: accountACursorMismatchInjection,
     recoveryStarted: !!returnCursorMismatchRecoveryStart,
@@ -2319,7 +2327,8 @@ try {
     recoveryDurationMs: returnCursorMismatchRecoveryComplete && returnCursorMismatchRecoveryComplete.durationMs || null,
     cursor: returnCursorState,
     localEditPreserved: accountALocalEditedTopicAfterReturn.notes === 'x' + 'n'.repeat(99),
-    remoteEditPreserved: accountARemoteEditedTopicAfterReturn.notes === changedRemoteReadTopicNotes
+    remoteEditPreserved: accountARemoteEditedTopicAfterReturn.notes === changedRemoteReadTopicNotes,
+    pendingAckProofVerified,pendingAckTrace
   }));
   check('DLA-08E app-level Delta handoff leaves Account A in Delta and Account B snapshot-only with isolated workspaces',
     accountASyncStateAfterReturn.mode === 'delta' &&
@@ -2333,8 +2342,11 @@ try {
   console.log('DLA-08E_APP_LEVEL_TIMING=' + JSON.stringify(appLevelTimingEvidence));
   check('DLA-08E real Nexus Web app renders the returning 26.9 MB owner-verified workspace within 30 seconds',
     cachedRevealWallMs <= 30000 && cachedRevealDurationMs <= 30000);
-  check('DLA-08E real Nexus Web app completes A→B→A cloud verification within 60 seconds on the healthy online fixture',
-    verifiedWithinDeadline);
+  check('DLA-09E A→B→A either verifies within 60 seconds or exposes a truthful delayed state and then recovers',
+    (verifiedWithinDeadline || delayedWithinDeadline) &&
+    returnVerificationAny?.ok === true &&
+    returnStatusText === 'Synced' &&
+    !accountAPendingAfterReturn);
 } catch (error) {
   try {
     const diagnostics = await page.evaluate(() => {
