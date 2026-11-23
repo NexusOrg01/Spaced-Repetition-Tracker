@@ -1570,14 +1570,29 @@ try {
     !!document.querySelector('#topicGrid button[data-action="edit-topic"]'),
   null, { timeout: 30000 });
 
+  // Do not let an older pending save or outbox group satisfy this regression.
+  // The test must start with a clean, already-verified Account A baseline.
+  await page.waitForFunction(async ownerId => {
+    const queue = window.NexusOfflineSyncQueue;
+    const storage = window.NexusStorage;
+    if (!queue || !storage || queue.hasPending(localStorage, ownerId)) return false;
+    const cursorResult = await storage.readWorkspaceEntityDeltaCursor(ownerId);
+    if (!cursorResult || cursorResult.ok !== true || !cursorResult.cursor) return false;
+    const outbox = await storage.readWorkspaceEntityOutboxGroups(
+      ownerId, Number(cursorResult.cursor.acknowledgedSequence), 1000, 1048576
+    );
+    return !!outbox && outbox.ownerId === ownerId && Array.isArray(outbox.groups) &&
+      outbox.groups.length === 0 && outbox.hasMore !== true && outbox.snapshotRequired !== true;
+  }, ownerA, { timeout: 90000 });
+
   const initialAPendingResult = await page.evaluate(async ({ ownerA, remoteReadTopicId }) => {
     const owner = localStorage.getItem('nexus.cloud.last-user-id');
     if (owner !== ownerA) throw new Error('Account A no longer owns the local workspace before the interrupted verification test.');
 
     // Exercise the real app save path. A durable, non-overlapping local topic edit
     // creates both the compatibility pending snapshot and its IndexedDB Delta
-    // outbox group. This prevents the compatibility snapshot from being mistaken
-    // for an unchanged shadow while the remote operation read is deliberately held.
+    // outbox group. Verify the exact edit in all three local representations before
+    // allowing the account handoff to begin.
     const state = JSON.parse(localStorage.getItem('recall.study.tracker.v1') || '{}');
     const candidates = Array.from(document.querySelectorAll(
       '#topicGrid button[data-action="edit-topic"]'
@@ -1604,7 +1619,8 @@ try {
       throw new Error('The local handoff edit must target a normal fixed-size fixture topic.');
     }
     // Change one ASCII byte only so the 26,900,000-byte return fixture remains exact.
-    notesInput.value = (originalLocalNotes[0] === 'x' ? 'y' : 'x') + originalLocalNotes.slice(1);
+    const expectedNotes = (originalLocalNotes[0] === 'x' ? 'y' : 'x') + originalLocalNotes.slice(1);
+    notesInput.value = expectedNotes;
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
 
     const projection = await window.NexusStorage.waitForWorkspaceEntitySync(ownerA);
@@ -1619,19 +1635,58 @@ try {
     const outbox = await window.NexusStorage.readWorkspaceEntityOutboxGroups(
       ownerA, Number(cursorResult.cursor.acknowledgedSequence), 1000, 1048576
     );
-    const localOutboxGroupCount = outbox && Array.isArray(outbox.groups) ? outbox.groups.length : 0;
+    const pending = window.NexusOfflineSyncQueue?.getPending(localStorage, ownerA) || null;
+    const localState = JSON.parse(localStorage.getItem('recall.study.tracker.v1') || '{}');
+    const localTopic = Array.isArray(localState.topics)
+      ? localState.topics.find(row => String(row.id) === String(editButton.dataset.id)) : null;
+    const pendingTopic = Array.isArray(pending?.payload?.state?.topics)
+      ? pending.payload.state.topics.find(row => String(row.id) === String(editButton.dataset.id)) : null;
+    const projectionTopic = Array.isArray(projection.state?.topics)
+      ? projection.state.topics.find(row => String(row.id) === String(editButton.dataset.id)) : null;
+    const changes = Array.isArray(outbox?.groups)
+      ? outbox.groups.flatMap(group => Array.isArray(group.changes) ? group.changes : []) : [];
+    const outboxChange = changes.find(change =>
+      change.collection === 'topics' && String(change.id) === String(editButton.dataset.id) &&
+      change.operation === 'put'
+    );
     return {
       owner,
       editedTopicId: editButton.dataset.id,
-      pending: !!window.NexusOfflineSyncQueue?.hasPending(localStorage, ownerA),
-      localOutboxGroupCount
+      expectedNotes,
+      localNotes: localTopic?.notes ?? null,
+      pendingNotes: pendingTopic?.notes ?? null,
+      projectionNotes: projectionTopic?.notes ?? null,
+      outboxNotes: outboxChange?.value?.notes ?? null,
+      outboxOperation: outboxChange?.operation || null,
+      pending: !!pending,
+      pendingOperationId: pending?.operationId || null,
+      pendingLocalSequence: Number.isSafeInteger(Number(pending?.localSequence)) ? Number(pending.localSequence) : null,
+      localOutboxGroupCount: Array.isArray(outbox?.groups) ? outbox.groups.length : 0,
+      outboxOwner: outbox?.ownerId || null,
+      outboxGeneration: outbox?.generation || null,
+      cursorGeneration: cursorResult.cursor.generation,
+      cursorPublishRevision: Number(cursorResult.cursor.publishRevision),
+      cursorRemoteHeadRevision: Number(cursorResult.cursor.remoteHeadRevision)
     };
   }, { ownerA, remoteReadTopicId: remoteReadTopic.id });
+  const expectedAccountANotes = 'x' + 'n'.repeat(99);
   assert.equal(initialAPendingResult.owner, ownerA);
   assert.equal(initialAPendingResult.pending, true,
     'the interrupted A verification must have a durable owner-bound pending snapshot');
   assert.ok(initialAPendingResult.localOutboxGroupCount > 0,
     'the interrupted A verification must also retain a real local Delta outbox group');
+  assert.equal(initialAPendingResult.localNotes, expectedAccountANotes,
+    'the exact local edit must be present in the compatibility workspace before handoff');
+  assert.equal(initialAPendingResult.pendingNotes, expectedAccountANotes,
+    'the exact local edit must be present in the pending compatibility snapshot before handoff');
+  assert.equal(initialAPendingResult.projectionNotes, expectedAccountANotes,
+    'the exact local edit must be present in the active owner-bound projection before handoff');
+  assert.equal(initialAPendingResult.outboxNotes, expectedAccountANotes,
+    'the exact local edit must be present in the durable Delta outbox before handoff');
+  assert.equal(initialAPendingResult.outboxOperation, 'put');
+  assert.equal(initialAPendingResult.outboxOwner, ownerA);
+  assert.equal(initialAPendingResult.outboxGeneration, initialAPendingResult.cursorGeneration,
+    'the parked edit must be tied to the active owner-bound manifest generation');
   await page.waitForFunction(() =>
     String(document.querySelector('#cloudStatus')?.textContent || '').trim() === 'Syncing...',
   null, { timeout: 30000 });
