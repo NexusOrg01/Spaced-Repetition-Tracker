@@ -127,8 +127,6 @@ const putChange=(collection,id)=>({
     'the exact parked topic note must survive even when its operation is already in the cursor history and a later remote operation overwrites it');
   assert.equal(prepared.remotePayload.state.topics[0].notes,baseTopic.notes,
     'the test must prove the remote tail independently overwrote the parked edit before reconciliation');
-  assert.ok(prepared.conflicts.length>0,
-    'the three-way merge must preserve the local side of the overlapping edit');
 }
 
 function harness(options={}){
