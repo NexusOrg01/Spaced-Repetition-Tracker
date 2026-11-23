@@ -1867,6 +1867,9 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const migrationMeta=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
   const originalCursor=clone(migrationMeta.get(deltaCursorKey));
   assert.ok(originalCursor,'the cursor-generation recovery fixture must have a durable cursor');
+  loaded.context.window.localStorage.setItem('nexus.syncdiag.session.v1','[]');
+  assert.equal(loaded.context.window.localStorage.getItem('nexus.syncdiag.session.v1'),'[]',
+    'session diagnostics must remain readable without entering the workspace persistence queue');
   migrationMeta.set(deltaCursorKey,{...originalCursor,generation:'dla09-stale-generation'});
   const staleGenerationRead=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
   assert.equal(staleGenerationRead.ok,false);
