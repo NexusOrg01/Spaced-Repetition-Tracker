@@ -1626,10 +1626,19 @@ try {
     notesInput.value = expectedNotes;
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
 
-    const projection = await window.NexusStorage.waitForWorkspaceEntitySync(ownerA);
-    if (!projection || projection.ok !== true) {
-      throw new Error('The local handoff edit did not reach the owner-bound IndexedDB projection: ' +
-        String(projection && projection.reason || 'unknown projection state'));
+    const projectionReady = await window.NexusStorage.waitForWorkspaceEntitySync(ownerA);
+    if (!projectionReady || projectionReady.ok !== true ||
+        projectionReady.workspaceRevision !== projectionReady.projectionWorkspaceRevision) {
+      throw new Error('The local handoff edit did not reach a revision-current owner-bound IndexedDB projection: ' +
+        String(projectionReady && projectionReady.reason || 'unknown projection readiness state'));
+    }
+    // waitForWorkspaceEntitySync returns readiness metadata only. Read the actual
+    // active generation separately so this assertion verifies stored record content,
+    // not a nonexistent state property on the readiness result.
+    const projection = await window.NexusStorage.readWorkspaceEntities(ownerA);
+    if (!projection || projection.ownerId !== ownerA || !projection.generation ||
+        !projection.state || typeof projection.state !== 'object') {
+      throw new Error('The active owner-bound IndexedDB projection could not be read after its readiness check.');
     }
     const cursorResult = await window.NexusStorage.readWorkspaceEntityDeltaCursor(ownerA);
     if (!cursorResult || cursorResult.ok !== true || !cursorResult.cursor) {
@@ -1656,6 +1665,11 @@ try {
       owner,
       editedTopicId: editButton.dataset.id,
       expectedNotes,
+      projectionOwnerId: projection.ownerId,
+      projectionGeneration: projection.generation,
+      projectionRevision: projection.revision,
+      projectionRowCount: projection.rowCount,
+      projectionWorkspaceRevision: projectionReady.projectionWorkspaceRevision,
       localNotes: localTopic?.notes ?? null,
       pendingNotes: pendingTopic?.notes ?? null,
       projectionNotes: projectionTopic?.notes ?? null,
@@ -1673,6 +1687,7 @@ try {
     };
   }, { ownerA, remoteReadTopicId: remoteReadTopic.id });
   const expectedAccountANotes = 'x' + 'n'.repeat(99);
+  console.log('DLA09E_PRE_HANDOFF_EDIT_PROOF=' + JSON.stringify(initialAPendingResult));
   assert.equal(initialAPendingResult.owner, ownerA);
   assert.equal(initialAPendingResult.pending, true,
     'the interrupted A verification must have a durable owner-bound pending snapshot');
