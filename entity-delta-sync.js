@@ -402,8 +402,7 @@
         return validateRemotePage(result.data,after,maxBytes);
       }catch(error){
         return unavailable('account_or_remote_read_verification_failed',{
-          retryable:true,errorCode:String(error&&error.code||'unknown'),
-          errorMessage:String(error&&error.message||'unknown').slice(0,160)
+          retryable:true,errorCode:String(error&&error.code||'unknown')
         });
       }
     }
@@ -560,8 +559,6 @@
              Number(remoteReadback.headRevision)<revision){
             return {ok:false,retryable:true,snapshotRequired:true,receiptMayHaveCommitted:true,
               reason:remoteReadback&&remoteReadback.reason||'remote_operation_readback_mismatch',
-              errorCode:remoteReadback&&remoteReadback.errorCode||null,
-              errorMessage:remoteReadback&&remoteReadback.errorMessage||null,
               publishedCount,acknowledgedCount};
           }
           await assertOwner(owner);
@@ -1142,12 +1139,10 @@
             proof.payloadDigest===pendingAtStartDigest;
         };
         const preparedContainsPending=targetPrepared=>!pendingAtStartIdentity||
-          (targetPrepared
-            ?targetPrepared.pendingSnapshotIncluded===true&&
-              targetPrepared.pendingSnapshotDigest===pendingAtStartDigest&&
-              targetPrepared.pendingOperationId===pendingAtStartIdentity.operationId&&
-              Number(targetPrepared.pendingLocalSequence)===pendingAtStartIdentity.localSequence
-            :pendingProofMatchesIntent(intent));
+          !!(targetPrepared&&targetPrepared.pendingSnapshotIncluded===true&&
+            targetPrepared.pendingSnapshotDigest===pendingAtStartDigest&&
+            targetPrepared.pendingOperationId===pendingAtStartIdentity.operationId&&
+            Number(targetPrepared.pendingLocalSequence)===pendingAtStartIdentity.localSequence);
         let recovery=await runRecoveryStep('read-journal',()=>storage.readWorkspaceEntityRecovery(owner));
         intent=recovery&&recovery.intent||null;
         if(intent&&!pendingProofMatchesIntent(intent)){
