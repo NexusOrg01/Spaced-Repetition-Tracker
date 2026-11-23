@@ -1177,6 +1177,8 @@ function coordinatorHarness(options={}){
   }]};
   const state={mode:'delta',protocol_version:1,head_revision:1,snapshot_revision:0,
     compacted_through_revision:0,snapshot_updated_at:'snapshot-stamp'};
+  let remoteSnapshot={payload:{...baseSnapshot,__nexusDeltaSync:'entity-delta-v1'},
+    updated_at:'snapshot-stamp',storageMode:'chunked'};
   const pending={operationId:'local-queue-recovery',ownerUserId:'account-A',
     baseServerVersion:'snapshot-stamp',localSequence:4,status:'pending',
     payload:JSON.parse(JSON.stringify(localSnapshot))};
@@ -1247,6 +1249,11 @@ function coordinatorHarness(options={}){
     getLocalBase:async()=>({...base}),
     getLocalWorkspace:async()=>JSON.parse(JSON.stringify(localSnapshot)),
     getPendingSnapshot:async()=>({...pending}),
+    readRemoteSnapshot:async owner=>{
+      assert.equal(owner,'account-A');
+      return {payload:JSON.parse(JSON.stringify(remoteSnapshot.payload)),
+        updated_at:remoteSnapshot.updated_at,storageMode:remoteSnapshot.storageMode};
+    },
     sameWorkspace:async(left,right)=>JSON.stringify(left.state)===JSON.stringify(right.state)&&
       JSON.stringify(left.featureState)===JSON.stringify(right.featureState),
     publishSnapshot:async(owner,payload,expectedHead,stamp)=>{
@@ -1255,10 +1262,13 @@ function coordinatorHarness(options={}){
       assert.equal(expectedHead,1);
       assert.equal(stamp,'snapshot-stamp');
       assert.equal(payload.__nexusDeltaSync,'entity-delta-v1');
+      remoteSnapshot={payload:JSON.parse(JSON.stringify(payload)),updated_at:'recovered-stamp',storageMode:'jsonb'};
+      state.snapshot_revision=1;state.head_revision=1;state.compacted_through_revision=1;
+      state.snapshot_updated_at='recovered-stamp';
       if(publishCalls===1)throw Object.assign(new Error('lost response after publish'),{code:'network_lost'});
       return {verified:true,snapshotRevision:1,headRevision:1,compactedThroughRevision:1,
         updated_at:'recovered-stamp',storageMode:'jsonb',
-        compaction:{ok:false,complete:false,pending:true,reason:'entity_operation_compaction_unavailable'}};
+        compaction:{ok:true,complete:true,pending:false,alreadyCompacted:true,compactedThroughRevision:1,rounds:0}};
     },
     commitLocalRecovery:async(owner,payload,publication,conflicts,metadata)=>{
       localCommits++;
@@ -1313,13 +1323,14 @@ function coordinatorHarness(options={}){
   assert.equal(second.recovered,true);
   assert.equal(second.snapshotRevision,1);
   assert.deepEqual(second.compaction,{
-    ok:false,complete:false,pending:true,reason:'entity_operation_compaction_unavailable'
-  },'the committed recovery result must surface non-fatal server compaction backlog for a safe retry');
+    ok:true,complete:true,pending:false,alreadyCompacted:true,compactedThroughRevision:1,rounds:0
+  },'the retry must verify and reuse the exact snapshot already published before the lost response');
   assert.equal(migrations,3,'a missing staged generation must be reconstructed exactly once from the same digest-bound candidate');
   assert.ok(recoveryProgress.some(event=>
     event.recoveryStep==='restage-generation'&&event.progressPhase==='completed'&&event.journalPhase==='staged'),
     'recovery progress must identify successful digest-bound restaging after the staged generation is lost');
-  assert.equal(publishCalls,2,'the exact same candidate must be re-verified after the lost response');
+  assert.equal(publishCalls,1,'the retry must verify and reuse the already-published snapshot without publishing it again');
+  assert.equal(second.snapshotReused,true);
   assert.equal(localCommits,1,'the verified publication should cause one atomic local recovery commit');
   assert.equal(applied,1,'the in-memory workspace must only switch after the local commit verifies');
   assert.equal(cursor.publishRevision,1);
