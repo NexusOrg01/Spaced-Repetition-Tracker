@@ -503,7 +503,7 @@
     async function acknowledgeShadowCompatibilitySnapshot(owner,pending,serverVersion,proof){
       if(!pending)return true;
       if(!acknowledgePendingSnapshot||!proof||proof.remoteReadbackVerified!==true||
-         proof.ownerId!==owner||proof.pendingOperationId!==pending.operationId||
+         proof.pendingLocalChangesPreserved!==true||proof.ownerId!==owner||proof.pendingOperationId!==pending.operationId||
          Number(proof.pendingLocalSequence)!==Number(pending.localSequence)||
          proof.snapshotUpdatedAt!==serverVersion||
          !Number.isSafeInteger(Number(proof.snapshotRevision))||
@@ -1781,12 +1781,13 @@
           const publicationSnapshotRevision=safeInteger(publication.snapshotRevision);
           const publicationHeadRevision=safeInteger(publication.headRevision);
           const publicationCompactedThrough=safeInteger(publication.compactedThroughRevision);
-          let remotePayloadMatches=false;
+          let remotePayloadMatches=false,remotePayloadDigest=null;
           try{
             remotePayloadMatches=!!(remoteReadback&&remoteReadback.updated_at===publication.updated_at&&
               isRecord(remoteReadback.payload)&&
               remoteReadback.payload.__nexusDeltaSync==='entity-delta-v1'&&
               await sameWorkspace(remoteReadback.payload,candidate));
+            if(remotePayloadMatches)remotePayloadDigest=await workspaceDigest(remoteReadback.payload);
             await assertOwner(owner);
           }catch(error){
             reportProgress('verify-pending-snapshot-readback','failed',{
@@ -1797,19 +1798,20 @@
               retryable:true,snapshotRequired:true,errorCode:String(error&&error.code||'unknown')
             });
           }
+          const remotePayloadDigestMatches=remotePayloadDigest===intent.candidateDigest;
           const remoteStateMatches=!!(remoteState&&remoteState.mode==='delta'&&
             remoteState.snapshot_updated_at===publication.updated_at&&
             remoteSnapshotRevision!==null&&remoteSnapshotRevision===publicationSnapshotRevision&&
             remoteHeadRevision!==null&&remoteHeadRevision===publicationHeadRevision&&
             remoteCompactedThrough!==null&&remoteCompactedThrough>=remoteSnapshotRevision&&
             publicationCompactedThrough!==null&&remoteCompactedThrough===publicationCompactedThrough);
-          if(!remotePayloadMatches||!remoteStateMatches){
+          if(!remotePayloadMatches||!remotePayloadDigestMatches||!remoteStateMatches){
             reportProgress('verify-pending-snapshot-readback','failed',{
               durationMs:Math.max(0,Date.now()-readbackStartedAt),ok:false,
               pendingLocalSequence:pendingAtStartIdentity?pendingAtStartIdentity.localSequence:intent.pendingOutboxProof?.throughSequence??null
             });
             return {ok:false,retryable:true,snapshotRequired:true,
-              reason:!remotePayloadMatches?'pending_snapshot_remote_readback_mismatch':
+              reason:!remotePayloadMatches||!remotePayloadDigestMatches?'pending_snapshot_remote_readback_mismatch':
                 'remote_state_changed_before_pending_acknowledgement',intentId:intent.intentId};
           }
           if(pendingAtStartIdentity){
@@ -1837,9 +1839,25 @@
               reason:'pending_outbox_changed_after_remote_readback',intentId:intent.intentId};
           }
           await assertOwner(owner);
+          publication={...publication,remoteReadbackProof:{
+            proofVersion:1,
+            remoteReadbackVerified:true,
+            pendingLocalChangesPreserved:prepared.pendingLocalChangesPreserved===true,
+            pendingLocalChangeCount:Number(prepared.pendingLocalChangeCount)||0,
+            ownerId:owner,
+            candidateDigest:intent.candidateDigest,
+            remotePayloadDigest,
+            snapshotUpdatedAt:publication.updated_at,
+            snapshotRevision:remoteSnapshotRevision,
+            headRevision:remoteHeadRevision,
+            compactedThroughRevision:remoteCompactedThrough,
+            pendingSnapshotProof:intent.pendingSnapshotProof||null,
+            pendingOutboxProof:intent.pendingOutboxProof||null
+          }};
           reportProgress('verify-pending-snapshot-readback','completed',{
             durationMs:Math.max(0,Date.now()-readbackStartedAt),ok:true,
             remoteReadbackVerified:true,
+            remotePayloadDigestVerified:remotePayloadDigestMatches,
             pendingLocalChangesPreserved:prepared.pendingLocalChangesPreserved===true,
             pendingLocalChangeCount:Number(prepared.pendingLocalChangeCount)||0,
             pendingLocalSequence:pendingAtStartIdentity?pendingAtStartIdentity.localSequence:intent.pendingOutboxProof?.throughSequence??null,
