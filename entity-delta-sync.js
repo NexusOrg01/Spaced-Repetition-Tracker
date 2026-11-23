@@ -566,6 +566,9 @@
              Number(remoteReadback.headRevision)<revision){
             return {ok:false,retryable:true,snapshotRequired:true,receiptMayHaveCommitted:true,
               reason:remoteReadback&&remoteReadback.reason||'remote_operation_readback_mismatch',
+              readbackErrorName:remoteReadback&&remoteReadback.errorName||null,
+              readbackErrorStage:remoteReadback&&remoteReadback.errorStage||null,
+              readbackErrorMessage:remoteReadback&&remoteReadback.errorMessage||null,
               publishedCount,acknowledgedCount};
           }
           await assertOwner(owner);
