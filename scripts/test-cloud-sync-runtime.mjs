@@ -596,6 +596,7 @@ const rotationSandbox = {
   timer: null,
   clearTimeout,
   clearRetry() {},
+  clearSyncVerificationWatchdog() {},
   pendingSync: false,
   hostedDeltaPollingEnabled: true,
   clearDeltaRemotePoll() {},
