@@ -2533,7 +2533,7 @@ function clearSyncVerificationWatchdog(resetDelayedOwner=false){
  syncVerificationWatchdog=null;syncVerificationWatchdogOwner='';
  if(resetDelayedOwner)syncVerificationDelayedOwner='';
 }
-function startSyncVerificationWatchdog(ownerId,epoch){
+function startSyncVerificationWatchdog(ownerId){
  if(!ownerId||syncVerificationDelayedOwner===ownerId||
     (syncVerificationWatchdog&&syncVerificationWatchdogOwner===ownerId))return;
  clearSyncVerificationWatchdog(false);
@@ -2541,7 +2541,11 @@ function startSyncVerificationWatchdog(ownerId,epoch){
  syncVerificationWatchdog=setTimeout(()=>{
   if(syncVerificationWatchdogOwner!==ownerId)return;
   syncVerificationWatchdog=null;syncVerificationWatchdogOwner='';
-  if(sessionEpoch!==epoch||!session||!session.user||session.user.id!==ownerId)return;
+  // A same-owner auth/session epoch can rotate while verification is pending.
+  // Account changes explicitly clear this timer in rotateSessionContext; for the
+  // same owner, keep the watchdog valid across epoch changes so retries cannot
+  // strand the UI at "Syncing...".
+  if(!session||!session.user||session.user.id!==ownerId)return;
   const currentStatus=normalizeSyncUiText(el('cloudStatus')?el('cloudStatus').textContent:'').trim();
   if(currentStatus==='Synced')return;
   const ownerMatches=localStorage.getItem(OWNER_KEY)===ownerId;
@@ -2572,7 +2576,7 @@ async function performUpload(){
  const uploadUserId=session.user.id,uploadEpoch=sessionEpoch;
  async function assertUploadOwner(){await assertActiveUser(uploadUserId,uploadEpoch);if(localStorage.getItem(OWNER_KEY)!==uploadUserId)throw syncCancelledError('The local workspace owner changed during sync.');}
  if(localStorage.getItem(OWNER_KEY)!==uploadUserId){ready=false;status('Account queue paused');say('The active account does not own this local workspace. No cloud write was attempted. Reconnect to the correct account.');return false;}
- syncing=true;syncingEpoch=uploadEpoch;setUploadInProgressStatus();startSyncVerificationWatchdog(uploadUserId,uploadEpoch);syncDiag('upload-start',diagnosticWorkspace(),{hasQueue:!!window.NexusOfflineSyncQueue});
+ syncing=true;syncingEpoch=uploadEpoch;setUploadInProgressStatus();startSyncVerificationWatchdog(uploadUserId);syncDiag('upload-start',diagnosticWorkspace(),{hasQueue:!!window.NexusOfflineSyncQueue});
  const uploadScope=createSyncAbortScope();activeUploadScope=uploadScope;
  let uploaded=false,retryReconcileAfterConflict=false,attemptedPayload=null,attemptedOperationId=null,attemptedBase=null,attemptedPriorStamp=null;
  const queue=window.NexusOfflineSyncQueue;
