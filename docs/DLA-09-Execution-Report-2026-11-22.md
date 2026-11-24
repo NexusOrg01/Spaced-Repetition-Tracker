@@ -742,3 +742,44 @@ Because recovery failed repeatedly, risky lifecycle execution was stopped. No fu
 Do not merge or promote this PR. Before another lifecycle attempt, add structured diagnostics for the exact `publishConflictRecovery` failure reason at each proof boundary (pre-publish outbox proof, remote snapshot read-back, post-read-back outbox proof, durable read-back proof, and atomic storage commit). Then reproduce the specific failing proof gate with a focused isolated regression while asserting the pending edit and outbox remain untouched. Only after that focused regression passes should one controlled A→B→A lifecycle be attempted again.
 
 No production/live Nexus or Supabase action was performed. Independent human review is not a prerequisite; the blocker is mechanical evidence, not review availability.
+
+
+
+## 13. Recovery proof diagnostics — 24 November 2026
+
+This is a diagnostic-only follow-up to the stop condition in §12.7. It does **not** resume the full A→B→A lifecycle and does not alter recovery acceptance or acknowledgement behavior.
+
+### 13.1 Changes on the existing PR branch
+
+- PR #147 branch: `fix/sync-account-handoff-reliability`.
+- Recovery diagnostic implementation commit: `d85fa776a7c3560226f84dd99abd5d367394f89f`.
+- Focused regression commit: `041f93ea871d51ff00601b1c6c81bf82be681578`.
+- The recovery-step progress wrapper now includes a bounded static failure reason when an operation returns `ok:false`, plus retry/snapshot-required flags and an allowlist of boolean proof diagnostics.
+- Thrown failures report only a bounded error code and error name; raw error messages, user IDs, workspace values, payloads, and digests are not emitted.
+- The staged-candidate rejection now emits a failed progress event with the four existing candidate/head/snapshot/base comparison booleans and the exact-published-snapshot boolean.
+- The remote read-back rejection now emits a failed progress event distinguishing payload equality, candidate digest equality, sync-state/revision equality, updated-at equality, and whether the pending outbox overlay had been applied.
+- Added a focused regression for a missing exact parked edit at remote read-back. It asserts the diagnostic reason is `pending_snapshot_remote_readback_mismatch`, the remote payload and digest comparisons fail, and the local outbox overlay was present. The existing assertions still require no local commit and preservation of pending/outbox state.
+
+No owner/session, revision, generation, manifest, chunk-reference, integrity, cancellation, remote-read-back, or acknowledgement condition was removed or weakened. The changes add observability only.
+
+### 13.2 Current validation and preview
+
+- PR head after the two code/test commits: `041f93ea871d51ff00601b1c6c81bf82be681578`.
+- Vercel deployment for that exact commit: **READY** — https://spaced-repetition-tracker-jqbitaenj-recall-ed03.vercel.app/
+- Vercel deployment metadata confirms branch `fix/sync-account-handoff-reliability` and commit `041f93ea871d51ff00601b1c6c81bf82be681578`.
+- GitHub combined commit status currently reports Vercel success. No GitHub Actions workflow run was returned for either diagnostic commit at the time of this report update. Therefore the new JavaScript regression and full relevant suites are **not yet mechanically verified on these commits**; the prior run #2151 is evidence for its earlier code head only.
+- No A→B→A lifecycle rerun was started. The critical stop condition remains in force until the focused diagnostics regression and relevant suites pass on the diagnostic head.
+
+### 13.3 Updated disposition
+
+| Work package | Status | Current basis |
+|---|---|---|
+| DLA-09A | **BLOCKED** | Diagnostic boundaries now expose more failure detail, but the app-level exact parked-edit remote proof remains unverified. |
+| DLA-09B | **PARTIAL** | Cold restore attribution remains 130.176 s total / 110.740 s projection rebuild; the 60 s target is unmet. |
+| DLA-09C | **COMPLETED — prior validated head** | Authentication retry tests passed in run #2151; not rerun on the diagnostic-only commits. |
+| DLA-09D | **COMPLETED — prior validated head** | Comparison cancellation/warm reuse tests passed in run #2151; not rerun on the diagnostic-only commits. |
+| DLA-09E | **BLOCKED** | No new lifecycle run; prior app-level recovery failure remains unresolved. |
+
+**Overall DLA-09 remains open.** The next permitted validation is the focused recovery/client/storage regression and relevant build/type/syntax checks on the diagnostic head. Only if those pass may one controlled disposable-account A→B→A lifecycle be attempted. Do not infer remote commitment or clear pending state from a progress event alone; the exact remote snapshot read-back and revision proof remain mandatory.
+
+No production/live Nexus or Supabase operation, merge, production deployment/promotion, new PR, or production configuration/schema/policy/data change occurred.
