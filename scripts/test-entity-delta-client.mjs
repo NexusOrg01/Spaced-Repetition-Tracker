@@ -2940,7 +2940,7 @@ for(const failure of [
 {
   const expectedNotes='x'+'n'.repeat(99),remoteNotes='r'+'n'.repeat(99);
   const fixture=makeParkedRecoveryFixture({
-    cursorMismatchWithPending:true,
+    cursorMismatchWithPending:true,extraLocalTopic:true,
     baseServerVersion:'older-snapshot-stamp',
     pendingBaseVersion:'older-snapshot-stamp',
     snapshotUpdatedAt:'current-snapshot-stamp',
@@ -2966,6 +2966,11 @@ for(const failure of [
     'the remote reconstruction must preserve the competing remote value as a distinct input');
   assert.equal(prepared.payload.state.topics[0].notes,expectedNotes,
     'the candidate must reapply the exact parked outbox value instead of retaining the remote overwrite');
+  const preservedPendingTopic=prepared.payload.state.topics.find(row=>row.id==='extra-local-topic');
+  assert.ok(preservedPendingTopic,
+    'cursor-mismatch recovery must retain complete pending-snapshot state beyond the outbox operation');
+  assert.equal(preservedPendingTopic.notes,'preserve-from-pending-snapshot',
+    'the exact local-only record must survive candidate reconstruction');
   assert.equal(prepared.conflicts.some(conflict=>
     conflict.path==='state.topics[parked-topic]'&&conflict.resolution==='local'),true,
     'the competing remote edit must be archived as a local-preserved conflict');
@@ -2975,6 +2980,11 @@ for(const failure of [
   const atCommit=fixture.proofAtCommit();
   assert.equal(atCommit.remoteSnapshot.payload.state.topics[0].notes,expectedNotes,
     'the exact record/value must exist in the remote snapshot before the pending/outbox state is cleared');
+  const readBackPendingTopic=atCommit.remoteSnapshot.payload.state.topics.find(row=>row.id==='extra-local-topic');
+  assert.ok(readBackPendingTopic,
+    'the full pending snapshot must be present in the verified remote read-back');
+  assert.equal(readBackPendingTopic.notes,'preserve-from-pending-snapshot',
+    'the exact local-only record must be proven remotely before pending state is cleared');
   assert.equal(atCommit.remoteSnapshot.updated_at,'snapshot-stamp-2');
   assert.equal(atCommit.state.snapshot_revision,1);
   assert.equal(atCommit.state.head_revision,1);

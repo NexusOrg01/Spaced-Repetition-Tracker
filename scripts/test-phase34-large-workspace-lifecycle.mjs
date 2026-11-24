@@ -1031,7 +1031,8 @@ try {
         elapsedMs: Math.max(0,Date.parse(event.at)-startedAt)
       };
       for (const key of numericFields) {
-        if (Number.isSafeInteger(event[key]) && event[key] >= 0) row[key] = event[key];
+        if (event[key] === null) row[key] = null;
+        else if (Number.isSafeInteger(event[key]) && event[key] >= 0) row[key] = event[key];
       }
       if (Number.isSafeInteger(event.durationMs)) {
         row.startElapsedMs = Math.max(0,row.elapsedMs-event.durationMs);
@@ -1206,10 +1207,23 @@ try {
     for(const field of [
       'projectionBatchCount','projectionRowsWritten','projectionWriteDurationMs',
       'projectionPruneDurationMs','projectionPruneRowsScanned','projectionPruneRowsRemoved',
-      'projectionOutboxPruneDurationMs','projectionOutboxPruneRowsRemoved'
+      'projectionOutboxPruneDurationMs','projectionOutboxPruneRowsRemoved',
+      'projectionTransactionWaitDurationMs','projectionTransactionCount',
+      'projectionKeyRangeWaitDurationMs','projectionRowGenerationDurationMs'
     ]){
       assert.ok(Number.isSafeInteger(initialProjectionRebuild[field])&&initialProjectionRebuild[field]>=0,
         'the cold restore must serialize the projection rebuild subphase metric '+field);
+    }
+    assert.ok(Object.prototype.hasOwnProperty.call(initialProjectionRebuild,'projectionSerializationDurationMs'),
+      'the cold restore report must explicitly serialize the projection serialization timing field');
+    if(initialProjectionRebuild.projectionSerializationDurationMs===null){
+      assert.equal(initialProjectionRebuild.projectionSerializationMode,
+        'indexeddb-structured-clone-in-write-transaction',
+        'an unmeasured structured-clone phase must be explicitly identified rather than silently omitted');
+    }else{
+      assert.ok(Number.isSafeInteger(initialProjectionRebuild.projectionSerializationDurationMs)&&
+        initialProjectionRebuild.projectionSerializationDurationMs>=0,
+        'a separately measurable serialization phase must expose a non-negative duration');
     }
   }
   const initialDeltaSyncResult = initialEvents.slice().reverse().find(event =>

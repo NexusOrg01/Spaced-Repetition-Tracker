@@ -1269,9 +1269,16 @@
                 baselineReconstructed=true;
               }
             }else if(validBase&&pendingBaseVersion===base.serverVersion){
-              // Preserve the exact older owner-bound ancestor associated with the
-              // parked snapshot; the verified current snapshot is used only to
-              // reconstruct the remote side of the merge.
+              // The local base's timestamp is owner-bound, but its payload is not
+              // proof of the historical server snapshot: prior recovery could have
+              // stored the parked local edit (and other pending rows) in that base.
+              // Using it as the merge ancestor would make those local edits look
+              // unchanged and let the newer remote snapshot delete them. Re-anchor
+              // the merge to the independently verified current remote snapshot.
+              // The complete pending snapshot/projection remains the local side,
+              // and exact outbox values still require read-back before acknowledgement.
+              base={...currentSnapshot.payload,serverVersion:currentSnapshot.updated_at};
+              baselineReconstructed=true;
             }else{
               return {ok:false,snapshotRequired:true,
                 reason:'pending_snapshot_base_version_mismatch'};
