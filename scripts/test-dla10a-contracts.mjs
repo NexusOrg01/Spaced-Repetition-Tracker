@@ -60,4 +60,18 @@ assert.ok(cloud.includes('sessionEpoch++')&&cloud.includes('sessionAbortControll
 assert.ok(doc.includes('run **#2191** passed')&&doc.includes('run **#677 failed**'),
   'the architecture record must retain the current-head validation and integration outcomes');
 
+const acceptanceStart=doc.indexOf('## 9. DLA-10A acceptance checklist');
+const acceptanceEnd=doc.indexOf('## 10. DLA-10A acceptance closeout and DLA-10B handoff',acceptanceStart);
+assert.ok(acceptanceStart>=0&&acceptanceEnd>acceptanceStart,
+  'DLA-10A acceptance closeout is missing.');
+const acceptance=doc.slice(acceptanceStart,acceptanceEnd);
+assert.ok(!/- \\[ \\]/.test(acceptance),
+  'DLA-10A acceptance checklist still contains an unfinished item.');
+const closeout=doc.slice(acceptanceEnd);
+for(const evidence of [
+  '45368812762','45368812713','DLA-09A','DLA-09E',
+  'DLA-10B is opened as the next work package','outboxEditPreserved=false'
+]) assert.ok(closeout.includes(evidence),
+  'DLA-10A closeout is missing current evidence: '+evidence);
+
 console.log('DLA-10A architecture contract guard passed: module map, owner/epoch semantics, outbox schema, commit points, compatibility, lifecycle, and current-head evidence.');
