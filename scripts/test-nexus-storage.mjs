@@ -201,10 +201,32 @@ function makeWindow(nativeStorage, indexedDB) {
   };
 }
 
+let syncTestCallSequence=0;
 function loadApi(win) {
   const context = { window: win, module: { exports: {} }, console, queueMicrotask };
   vm.runInNewContext(source, context, { filename: 'nexus-storage.js' });
-  return { api: context.module.exports, context };
+  const api=context.module.exports;
+  if(typeof api.syncWorkspaceEntities==='function'){
+    const originalSync=api.syncWorkspaceEntities;
+    api.syncWorkspaceEntities=async function(...args){
+      const sequence=++syncTestCallSequence;
+      const caller=new Error().stack.split('\\n').slice(2,4).join(' <- ');
+      const changeCount=Array.isArray(args[1])?args[1].length:(args[1]===null?'null':'other');
+      console.log('NEXUS_TEST_SYNC_CALL',sequence,'owner='+String(args[0]||''),'changes='+changeCount,
+        'replace='+String(args[2]?.replace===true),'caller='+caller);
+      try{
+        const result=await originalSync.apply(this,args);
+        console.log('NEXUS_TEST_SYNC_RESULT',sequence,'mode='+String(result?.mode||'none'),
+          'skipped='+String(result?.skipped===true));
+        return result;
+      }catch(error){
+        console.log('NEXUS_TEST_SYNC_ERROR',sequence,'code='+String(error?.code||'none'),
+          'reason='+String(error?.nexusEntityProjectionFailureReason||'none'));
+        throw error;
+      }
+    };
+  }
+  return { api, context };
 }
 
 const wait = () => new Promise(resolve => setTimeout(resolve, 0));
