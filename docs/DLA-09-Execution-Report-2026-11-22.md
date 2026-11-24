@@ -611,3 +611,134 @@ No production/live Nexus or Supabase data was inspected or changed. No productio
 The follow-up was recorded through documentation-only commits [`aacfaabd18952d6998591d879b14cdd464bbbb49`](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/commit/aacfaabd18952d6998591d879b14cdd464bbbb49) and [`255af5fbbb33d743910f958cee7f5294afb3bf0c`](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/commit/255af5fbbb33d743910f958cee7f5294afb3bf0c). These commits change only this execution report; no application source, tests, recovery behavior, workflow configuration, or deployment configuration changed. Their commit messages include `[skip ci]`, and no new workflow run was created for these documentation updates.
 
 The last application-code head evaluated by the failed current-head checks remains `8b45404cf22e80bd8b453a4082ef77599550b0f8`. The existing Netlify Deploy Preview URL remains https://deploy-preview-147--nexussrt.netlify.app; the documentation-only commits do not alter the app preview payload.
+
+
+## 12. DLA-09 execution evidence — 24 November 2026
+
+This section supersedes the previous current-status conclusions while preserving sections 1–11 as historical evidence. **DLA-09 is not closed:** the controlled app-level A→B→A lifecycle reproduced a repeated recovery failure and stopped at the safety boundary.
+
+### 12.1 Reconciliation and scope
+
+- Repository: `NexusOrg01/Spaced-Repetition-Tracker`
+- PR: [#147](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/pull/147)
+- Branch: `fix/sync-account-handoff-reliability`
+- Application/code validation head: `4f4d2652d0c98f44bde7504cd198bad4d60ace4a`
+- No new PR was created. PR #147 remains open/draft and unmerged.
+- The latest available ⭐-ledger snapshot recorded DLA-09A/DLA-09E blocked, DLA-09B partial, and DLA-09C/DLA-09D complete. Those statuses were treated as the starting ledger and checked against the current PR head, not accepted without code/test verification.
+- The DLA-09 roadmap file was visible in Library metadata, but Files read/materialization did not return its content. The explicit acceptance scope in the 24 November execution request and the checked-in DLA-09 report were used; no additional roadmap-only requirements were inferred.
+- All database execution below used disposable accounts and the workflow's localhost-only Supabase project. No production/staging Supabase project, live account, production configuration, schema, policy, or data was touched.
+
+### 12.2 Current recovery implementation and corrective changes
+
+The current PR head already contained the cursor-mismatch recovery implementation. Code inspection confirmed that it:
+
+1. Reconstructs the active owner-bound workspace projection and pending Delta outbox when the local cursor generation is stale.
+2. Overlays the exact outbox operations into the recovery candidate and records an owner/generation/revision/sequence/digest/cursor proof.
+3. Revalidates the pending proof before publication and after remote snapshot read-back.
+4. Reads the published snapshot and sync state back, compares the recovered workspace payload/digest and revision/head/compaction fields, and persists the read-back proof before local recovery commit.
+5. Requires the durable remote proof, unchanged active manifest/generation/workspace revision/write sequence/outbox high-watermark, and exact candidate inclusion of each pending outbox put/delete before advancing the local cursor acknowledgement and pruning the outbox.
+
+No ownership, session, revision, generation, active-manifest, chunk-reference, integrity, or cancellation gate was removed or weakened.
+
+Additional issues found by mechanical validation were corrected on this branch:
+
+- Added the missing storage-local `isRecord` predicate used by `workspaceContainsPendingOutboxChanges`; without it, the storage proof path failed closed with a ReferenceError.
+- Corrected the storage regression fixture's owner binding (`ownerId: owner`).
+- Corrected the entity-delta recovery test fixture so the persisted local cursor timestamp remains unchanged while the remote snapshot timestamp advances, and so synthetic pending/outbox mutations occur at the actual remote read-back boundary.
+- These changes affect only the existing PR branch. They do not acknowledge or bypass pending data.
+
+### 12.3 Mechanical validation
+
+**Catalogue/build validation — PASS**
+
+- Workflow run: [#2151](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45310921495)
+- Run ID: `45310921495`
+- Commit: `4f4d2652d0c98f44bde7504cd198bad4d60ace4a`
+- Result: success.
+- The run completed catalogue/inline-JavaScript checks, the entity-delta and durable-storage regressions, backup/restore/account-switch safety tests, build/preview configuration checks, Deno type-check, security/header checks, and the relevant regression suites.
+- `npm run build` passed. The repository has no `lint` script in `package.json`; JavaScript `node --check` and the available type/build checks were used instead.
+- The entity-delta client and durable storage suites passed, including exact outbox-backed recovery proof/read-back, rejection of missing/invalid proof, preservation of pending outbox data on failure, cancellation, account isolation, and account-handoff recovery.
+
+**Local authenticated integration — PARTIAL PASS / lifecycle blocker**
+
+- Workflow run: [#637](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45310921624)
+- Run ID: `45310921624`
+- Workflow SHA: `26b0e1e5ee7d34e9a911b83618719e6ca0aec500`
+- Environment: Linux x86_64, Chromium 141.0.7390.37, online browser, localhost-only Supabase, disposable accounts.
+- Local Supabase migrations and DLA-02/DLA-03 authenticated RPC/snapshot-integrity tests passed.
+- Three independent authenticated sessions were created (two devices for owner A and a separate owner B). The A1/A2/B browser protocol passed its 20 authenticated assertions, including owner isolation, CAS conflict/retry, operation receipt replay, direct-write denial, and distinct account heads.
+- The large-workspace lifecycle step failed; the cleanup step succeeded. All three disposable users, allowlist/downgrade receipts and Delta rows were removed, RPC grants were revoked, the local database was verified clean, and the local Supabase stack was stopped.
+
+### 12.4 Controlled cold/warm projection benchmark
+
+The same synthetic fixture was used in the local authenticated Chromium run:
+
+| Fixture field | Actual value |
+|---|---:|
+| Serialized payload target | 26,900,000 bytes |
+| Verified chunks | 103 |
+| Topics | 77,144 |
+| Review-history rows | 72,001 |
+
+**Cold first-time restore**
+
+- Total to verified: **130,176 ms**
+- Sign-in to verified: **131,749 ms**
+- Workspace reveal: **1,717 ms**
+- Manifest read: 31 ms
+- Chunk pages: 7; page-read total 458 ms; chunk validation 338 ms
+- Chunk read total: 1,052 ms; SHA-256: 222 ms; JSON parse: 67 ms
+- Projection rebuild: **110,740 ms**
+- Projection writes: **104,974 ms**, 149,151 rows, 19 batches
+- Projection transaction wait: **109,173 ms**
+- Projection prune: 2 ms; 2 stale rows scanned and removed
+- Delta sync after projection readiness: 7,194 ms
+- The first verification timed out at 120,008 ms, then completed successfully at 130,176 ms.
+- The 30-second watchdog exposed `Sync pending`; retries were scheduled with bounded delays (1.5, 3, 6, 12, 24 and 48 seconds). No premature `Synced` state was reported on this first cold restore.
+
+**Warm same-owner hard refresh**
+
+- Total to verified: **17,775 ms**
+- Workspace reveal: 4,787 ms
+- No full chunk download; the owner-verified projection was reused.
+- One of two workspace-comparison passes was saved; total comparison time was 9,090 ms.
+
+The 60-second verified-sync target is **not met** on the cold fixture. The first-login delayed state/retry path did recover truthfully, but this does not close DLA-09B because the separate A→B→A deadline/recovery acceptance below failed.
+
+### 12.5 DLA-09A / DLA-09E app-level recovery blocker
+
+The browser lifecycle reached the intended cursor-mismatch scenario:
+
+- Remote trigger advanced the server head from revision 42 to 43 while the local cursor remained at revision 42.
+- Before handoff, the exact parked edit was independently observed in the local workspace, pending snapshot, active projection, and one owner/generation-matched outbox group: the expected value began `xnnnn…`, not `nnnn…`.
+- The cursor generation matched the active projection generation; the pending edit was still marked pending.
+- Home, Study Hub and Library remained navigable during the held Account A verification (367 ms; owner verified; 100 topic cards rendered).
+
+After returning A through the A→B→A handoff, the app-level recovery did **not** complete:
+
+- Two recovery attempts emitted `snapshot-recovery-progress` with `ok:false` (about 10.6 seconds each).
+- Both emitted `snapshot-recovery-complete` with `ok:false` (about 11.7 seconds) and `delta-sync-result` with `ok:false` (about 16.8 seconds).
+- Upload error and retry scheduling followed. The UI remained `Sync pending`; the owner remained present.
+- The lifecycle assertion failed: `A→B→A must either verify within 60 seconds or expose a truthful delayed state by the deadline.`
+- The diagnostic emitted by this lifecycle run retained stage names and `ok:false` but did not expose the precise recovery-proof rejection reason. Therefore the exact failed proof gate is **unverified**.
+- The test did not establish the final remote read-back proof for the `xnnnn…` edit or prove that its outbox acknowledgement occurred. No premature `Synced` state or successful acknowledgement was observed in this failed path. The pre-handoff local/pending/outbox evidence remained present when recovery started, but remote commitment is unverified.
+
+Because recovery failed repeatedly, risky lifecycle execution was stopped. No further A→B→A attempt was made. The local test cleanup completed successfully.
+
+### 12.6 Updated DLA-09 ledger
+
+| Item | Updated status | Evidence / remaining condition |
+|---|---|---|
+| DLA-09A — cursor-mismatch recovery and parked-edit proof | **BLOCKED** | Unit/storage proof gates pass, but the real A→B→A app recovery failed before remote read-back/ack was proven. |
+| DLA-09B — cold projection performance and truthful delayed state | **PARTIAL** | Controlled attribution complete; 130.176 s cold restore with 110.740 s projection rebuild. First-login delayed/retry path recovered, but the A→B→A deadline acceptance failed. |
+| DLA-09C — auth lookup retry/recovery | **COMPLETED** | Relevant runtime/auth retry and eventual recovery tests passed in the mechanical suite. |
+| DLA-09D — comparison cancellation/warm reuse | **COMPLETED** | Cancellation and owner-verified warm projection reuse tests passed. |
+| DLA-09E — full account lifecycle matrix | **BLOCKED** | Local Supabase and A1/A2/B protocol passed; app-level A→B→A cursor-mismatch recovery failed repeatedly. |
+
+**Overall: DLA-09 is not closed.** DLA-09A and DLA-09E remain blocked; DLA-09B remains partial. DLA-09C and DLA-09D are complete.
+
+### 12.7 Stop condition and next safe diagnostic
+
+Do not merge or promote this PR. Before another lifecycle attempt, add structured diagnostics for the exact `publishConflictRecovery` failure reason at each proof boundary (pre-publish outbox proof, remote snapshot read-back, post-read-back outbox proof, durable read-back proof, and atomic storage commit). Then reproduce the specific failing proof gate with a focused isolated regression while asserting the pending edit and outbox remain untouched. Only after that focused regression passes should one controlled A→B→A lifecycle be attempted again.
+
+No production/live Nexus or Supabase action was performed. Independent human review is not a prerequisite; the blocker is mechanical evidence, not review availability.
