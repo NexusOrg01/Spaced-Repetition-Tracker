@@ -1530,7 +1530,15 @@ context = {
   window, document, navigator: { get onLine() { return networkAvailable; } },
   location: { hostname: 'preview.example', origin: 'https://preview.example', pathname: '/' },
   localStorage: storage, URL, URLSearchParams, console, Promise, Date, Map, Array, Object, JSON, String, Math, Number, Error, AbortController,
-  setTimeout, clearTimeout, setInterval, clearInterval,
+  setTimeout(callback, delay, ...args) {
+    // The real-browser lifecycle test covers the 30s cloud-verification watchdog.
+    // Keep this deterministic runtime harness from retaining background retry timers.
+    if (delay === 30000 && String(callback).includes('syncVerificationWatchdogOwner')) {
+      return Number.MAX_SAFE_INTEGER;
+    }
+    return setTimeout(callback, delay, ...args);
+  },
+  clearTimeout, setInterval, clearInterval,
   state: localState,
   clone: v => JSON.parse(JSON.stringify(v)),
   normalizeState: v => {
