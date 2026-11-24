@@ -1012,7 +1012,12 @@ try {
     const booleanFields = [
       'ok','ready','ownerVerified','timedOut','same','chunkDataIncluded','hasPayload',
       'projectionRebuildAttempted','projectionRebuildOk','projectionRevisionMatches','reused',
-      'remoteReadbackVerified','pendingLocalChangesPreserved','acknowledged','retryScheduled','alreadyScheduled','pendingSnapshotClear'
+      'remoteReadbackVerified','pendingLocalChangesPreserved','acknowledged','retryScheduled','alreadyScheduled','pendingSnapshotClear',
+      'retryable','snapshotRequired','candidateDigestMatches','expectedHeadRevisionMatches',
+      'snapshotRevisionMatches','baseUpdatedAtMatches','exactAlreadyPublishedSnapshotMatches',
+      'remotePayloadMatches','remotePayloadDigestMatches','remoteStateMatches','remoteUpdatedAtMatches',
+      'remoteSnapshotRevisionMatches','remoteHeadRevisionMatches','remoteCompactedThroughMatches',
+      'pendingOutboxProofPresent','pendingOutboxOverlayApplied'
     ];
     return events.filter(event =>
       event && typeof event.at === 'string' && Date.parse(event.at) >= startedAt &&
@@ -1031,7 +1036,7 @@ try {
       for (const key of booleanFields) {
         if (typeof event[key] === 'boolean') row[key] = event[key];
       }
-      for (const key of ['storageMode','syncMode','projectionRebuildMode','projectionSerializationMode','errorCategory','statusAfterWatchdog','recoveryStep','progressPhase']) {
+      for (const key of ['storageMode','syncMode','projectionRebuildMode','projectionSerializationMode','errorCategory','statusAfterWatchdog','recoveryStep','progressPhase','failureReason']) {
         if (typeof event[key] === 'string') row[key] = event[key];
       }
       const topicCount = event.workspace && event.workspace.topicCount;

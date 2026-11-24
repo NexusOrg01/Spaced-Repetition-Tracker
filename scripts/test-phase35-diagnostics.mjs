@@ -113,8 +113,13 @@ assert.deepEqual(safeRecoveryTrigger,{
 
 const recoveryProgressEvent={
  at:'2026-11-22T12:00:00.000Z',stage:'snapshot-recovery-progress',
- recoveryStep:'stage-generation',progressPhase:'started',journalPhase:'prepared',
- projectionReused:false,ownerId:'PRIVATE-OWNER',operationId:'PRIVATE-OPERATION',
+ recoveryStep:'verify-pending-snapshot-readback',progressPhase:'failed',journalPhase:'published',
+ durationMs:48,ok:false,failureReason:'pending_snapshot_remote_readback_mismatch',
+ retryable:true,snapshotRequired:true,remotePayloadMatches:false,remotePayloadDigestMatches:false,
+ remoteStateMatches:true,remoteUpdatedAtMatches:true,remoteSnapshotRevisionMatches:true,
+ remoteHeadRevisionMatches:true,remoteCompactedThroughMatches:true,pendingOutboxProofPresent:true,
+ pendingOutboxOverlayApplied:true,pendingLocalChangesPreserved:true,projectionReused:false,
+ ownerId:'PRIVATE-OWNER',operationId:'PRIVATE-OPERATION',
  candidateDigest:'PRIVATE-DIGEST',errorMessage:'PRIVATE ERROR',rawPayload:{secret:'PRIVATE'}
 };
 vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(recoveryProgressEvent)+')',sanitizerSandbox,
@@ -122,9 +127,13 @@ vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(recoveryProgressE
 const safeRecoveryProgress=JSON.parse(JSON.stringify(sanitizerSandbox.result));
 assert.deepEqual(safeRecoveryProgress,{
  at:recoveryProgressEvent.at,stage:'snapshot-recovery-progress',
- recoveryStep:'stage-generation',progressPhase:'started',journalPhase:'prepared',
- projectionReused:false
-},'recovery progress must preserve only allowlisted stage, phase, and reuse metadata');
+ recoveryStep:'verify-pending-snapshot-readback',progressPhase:'failed',journalPhase:'published',
+ durationMs:48,ok:false,failureReason:'pending_snapshot_remote_readback_mismatch',
+ retryable:true,snapshotRequired:true,remotePayloadMatches:false,remotePayloadDigestMatches:false,
+ remoteStateMatches:true,remoteUpdatedAtMatches:true,remoteSnapshotRevisionMatches:true,
+ remoteHeadRevisionMatches:true,remoteCompactedThroughMatches:true,pendingOutboxProofPresent:true,
+ pendingOutboxOverlayApplied:true,pendingLocalChangesPreserved:true,projectionReused:false
+},'recovery progress must preserve the exact safe failure boundary and boolean proof facts without exposing private data');
 for(const forbidden of ['PRIVATE','ownerId','operationId','candidateDigest','errorMessage','rawPayload'])
  assert.equal(JSON.stringify(safeRecoveryProgress).includes(forbidden),false,
   'recovery progress diagnostics must exclude '+forbidden);
