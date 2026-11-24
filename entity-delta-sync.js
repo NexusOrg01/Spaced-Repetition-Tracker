@@ -1381,17 +1381,22 @@
             changes:group.changes.map((change,ordinal)=>({...change,ordinal}))
           }));
           pendingOutboxGroups=outboxRecovery.state.outbox.groups;
-          const localReconstruction=reconstructRemoteSnapshot(
-            commonBase.payload,localOutboxGroups,cursorPublish,cursorPublish+localOutboxGroups.length
-          );
-          if(!localReconstruction||localReconstruction.ok!==true||
-             !(await sameWorkspace(localReconstruction.payload,local))){
+          // The outbox is a durable witness for its pending operations, not
+          // necessarily a complete replay of every row in the active projection:
+          // already-applied local state can also be carried by the owner/revision-
+          // bound compatibility snapshot. Require every outbox operation to match
+          // the active projection, while the pending snapshot/projection equality
+          // check above protects the complete local workspace.
+          const outboxProjectionProof=verifyPendingLocalChangesPreserved(
+            commonBase.payload,local,local,pendingOutboxGroups,[]);
+          if(!outboxProjectionProof.ok||outboxProjectionProof.changeCount<1){
             return {ok:false,retryable:true,snapshotRequired:true,
-              reason:'pending_outbox_does_not_reconstruct_active_projection'};
+              reason:'pending_outbox_does_not_match_active_projection',
+              pendingLocalChangeCount:outboxProjectionProof.changeCount};
           }
-          // commonBase proves that the owner-bound outbox reconstructs the active
-          // projection at cursor.publishRevision. It is not the merge ancestor: it
-          // may already contain the parked operation and mask that local change.
+          // commonBase is a comparison point for verifying the parked operations;
+          // it is not the merge ancestor because it may already contain a parked
+          // operation and mask that local change.
           mergeBasePayload=base;
           mergeLocalPayload=local;
           const localPayloadDigest=await workspaceDigest({
