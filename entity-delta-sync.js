@@ -1039,8 +1039,11 @@
       const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
       if(!cursorResult||
          (cursorResult.ok!==true&&cursorResult.reason!=='local_delta_cursor_mismatch')){
-        return {ok:false,reason:cursorResult&&cursorResult.reason||
-          'pending_outbox_recovery_state_unverified'};
+        // A missing/unsupported cursor is not proof that an outbox is empty.
+        // Preserve the legacy snapshot-recovery path here; the storage commit
+        // still refuses activation/acknowledgement if any durable outbox remains
+        // without an exact pendingOutboxProof.
+        return {ok:true,applicable:false};
       }
       // A valid current-generation cursor can still have parked Delta operations
       // when a remote conflict forces snapshot recovery. Probe the bounded outbox
