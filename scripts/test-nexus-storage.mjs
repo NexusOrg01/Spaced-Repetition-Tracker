@@ -2473,6 +2473,15 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(staged.staged,true);
   const publication={verified:true,updated_at:'proven-outbox-published',
     snapshotRevision:0,headRevision:0,compactedThroughRevision:0,storageMode:'jsonb'};
+  const entries=[
+    {key:'recall.study.tracker.v1',value:JSON.stringify(active.state)},
+    {key:'recall.study.features.v1',value:JSON.stringify(active.featureState)},
+    {key:'nexus.test.recovery.queue',value:JSON.stringify({pending:{}})},
+    {key:'nexus.test.recovery.base',value:JSON.stringify({[owner]:{
+      state:active.state,featureState:active.featureState,serverVersion:publication.updated_at}})},
+    {key:'nexus.test.recovery.stamp',value:JSON.stringify({[owner]:publication.updated_at})},
+    {key:'nexus.test.recovery.conflicts',value:JSON.stringify({[owner]:[]})}
+  ];
   const missingReadback=await loaded.api.markWorkspaceEntityRecoveryPublished(owner,intentId,publication);
   assert.equal(missingReadback.ok,false,
     'a pending outbox must not advance its recovery journal on publication/RPC success alone');
@@ -2504,15 +2513,6 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   }};
   const marked=await loaded.api.markWorkspaceEntityRecoveryPublished(owner,intentId,verifiedPublication);
   assert.equal(marked.ok,true);
-  const entries=[
-    {key:'recall.study.tracker.v1',value:JSON.stringify(active.state)},
-    {key:'recall.study.features.v1',value:JSON.stringify(active.featureState)},
-    {key:'nexus.test.recovery.queue',value:JSON.stringify({pending:{}})},
-    {key:'nexus.test.recovery.base',value:JSON.stringify({[owner]:{
-      state:active.state,featureState:active.featureState,serverVersion:publication.updated_at}})},
-    {key:'nexus.test.recovery.stamp',value:JSON.stringify({[owner]:publication.updated_at})},
-    {key:'nexus.test.recovery.conflicts',value:JSON.stringify({[owner]:[]})}
-  ];
   const committed=await loaded.api.commitWorkspaceEntityRecovery(owner,intentId,entries,digest);
   assert.equal(committed.ok,true,'a matching exact outbox proof should permit atomic recovery commit');
   const remaining=await loaded.api.readWorkspaceEntityOutboxGroups(owner,0,1000,4096);
