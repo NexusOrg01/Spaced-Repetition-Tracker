@@ -2601,7 +2601,7 @@ function makeParkedRecoveryFixture(options={}){
         currentPending={...currentPending,payload:{...currentPending.payload,
           state:{...currentPending.payload.state,topics:[{...parkedTopic,name:'CHANGED-DURING-READBACK'}]}}};
       }
-      if(readSnapshotCount===2&&options.mutateOutboxOnReadback&&outboxGroups.length){
+      if(readSnapshotCount===3&&options.mutateOutboxOnReadback&&outboxGroups.length){
         outboxGroups=[{...parkedOutboxGroup,changes:[{...parkedOutboxGroup.changes[0],
           value:{...parkedTopic,name:'CHANGED-DURING-READBACK'}}]}];
         outboxDigest='f'.repeat(64);
@@ -2734,6 +2734,10 @@ for(const failure of [
   const fixture=makeParkedRecoveryFixture(failure);
   const result=await fixture.client.publishConflictRecovery('account-A');
   assert.notEqual(result.ok,true,'unsafe recovery must not be committed: '+JSON.stringify(failure));
+  if(failure.mutateOutboxOnReadback){
+    assert.equal(result.reason,'pending_outbox_changed_after_remote_readback',
+      'a post-publication outbox mutation must be rejected by the second exact proof check');
+  }
   assert.equal(fixture.committed(),false,'pending state must not be archived without exact remote proof: '+JSON.stringify(failure));
   assert.equal(fixture.pending().status,'pending','the parked snapshot must remain pending after failed verification');
 }
