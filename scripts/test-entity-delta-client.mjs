@@ -2904,9 +2904,19 @@ for(const failure of [
   {outboxOnly:true,readbackMode:'missing-edit'}
 ]){
   const fixture=makeParkedRecoveryFixture(failure);
-  const result=await fixture.client.publishConflictRecovery('account-A');
+  const result=await fixture.client.publishConflictRecovery('account-A',{
+    onProgress:event=>{
+      if(event.recoveryStep==='verify-pending-snapshot-readback'&&event.progressPhase==='started')
+        fixture.markRemoteReadbackBoundary();
+    }
+  });
+  if(failure.mutateOutboxOnReadback){
+    assert.equal(fixture.outboxReadbackMutationTriggered(),true,
+      'the outbox mutation must occur inside the exact remote read-back window');
+    assert.equal(result.reason,'pending_outbox_changed_after_remote_readback');
+  }
   assert.notEqual(result.ok,true,
-    'changed or incomplete outbox-backed remote content must not be reported as recovered: '+JSON.stringify(failure));
+    'changed or incomplete outbox-backed remote content must not be reported as recovered: '+JSON.stringify({failure,result}));
   assert.equal(fixture.committed(),false);
   assert.equal(fixture.outbox().length,1,
     'failed outbox proof must retain the local pending operation');
