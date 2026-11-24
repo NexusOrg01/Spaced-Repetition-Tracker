@@ -1065,13 +1065,17 @@
           return {ok:false,reason:'pending_outbox_recovery_state_unverified'};
         }
         const queued=await storage.readWorkspaceEntityOutboxGroups(owner,after,1000,8*1048576);
-        if(!queued||queued.unavailable||queued.snapshotRequired||queued.ownerId!==owner||
-           queued.generation!==cursor.generation||
-           Number(queued.workspaceRevision)!==workspaceRevision||
-           !Array.isArray(queued.groups)||queued.hasMore===true){
+        if(!queued||queued.unavailable||queued.ownerId!==owner||!Array.isArray(queued.groups)){
           return {ok:false,reason:queued&&queued.reason||'pending_outbox_recovery_state_unverified'};
         }
-        if(queued.groups.length===0)return {ok:true,applicable:false};
+        // Only an explicitly complete, revision-matched empty read can skip the
+        // authoritative recovery view. A concurrent workspace revision, generation
+        // change, partial page or snapshot-required signal escalates to the fenced
+        // recovery-state read below instead of being mistaken for an empty outbox.
+        const verifiedEmptyOutbox=queued.generation===cursor.generation&&
+          Number(queued.workspaceRevision)===workspaceRevision&&
+          queued.hasMore!==true&&queued.snapshotRequired!==true&&queued.groups.length===0;
+        if(verifiedEmptyOutbox)return {ok:true,applicable:false};
       }
       if(typeof storage.readWorkspaceEntityDeltaRecoveryState!=='function'||
          typeof storage.readWorkspaceEntities!=='function'){
