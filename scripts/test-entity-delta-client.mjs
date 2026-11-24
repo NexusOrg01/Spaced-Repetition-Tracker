@@ -2562,9 +2562,9 @@ function makeParkedRecoveryFixture(options={}){
     async commitWorkspaceEntityRecovery(){return {ok:true};},
     async readWorkspaceEntityDeltaCursor(){
       if(options.outboxCurrentCursor&&!outboxCommitted){
-        return {ok:true,exists:true,cursor:{ownerId:owner,generation:'generation-B',publishRevision:0,
+        return {ok:true,exists:true,cursor:{ownerId:owner,generation:'generation-B',workspaceRevision:2,publishRevision:0,
           acknowledgedSequence:0,snapshotUpdatedAt:state.snapshot_updated_at,
-          remoteHeadRevision:0,requiresPull:false},generation:'generation-B'};
+          remoteHeadRevision:0,requiresPull:false},generation:'generation-B',workspaceRevision:2};
       }
       if((options.outboxOnly||options.cursorMismatchWithPending)&&!outboxCommitted){
         return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_mismatch'};
@@ -2578,7 +2578,7 @@ function makeParkedRecoveryFixture(options={}){
     async readWorkspaceEntityDeltaRecoveryState(){
       const recoveryActive=!!((options.outboxOnly||options.outboxCurrentCursor||options.cursorMismatchWithPending)&&!outboxCommitted);
       const cursor=recoveryActive
-        ?{ownerId:owner,generation:options.outboxCurrentCursor?'generation-B':'generation-A',publishRevision:0,acknowledgedSequence:0,
+        ?{ownerId:owner,generation:options.outboxCurrentCursor?'generation-B':'generation-A',workspaceRevision:2,publishRevision:0,acknowledgedSequence:0,
           remoteHeadRevision:0,snapshotUpdatedAt:initialLocalCursorSnapshotUpdatedAt,
           requiresPull:Number(state.head_revision)>0}
         :{generation:'generation-B',publishRevision:committed?Number(state.snapshot_revision):0,
