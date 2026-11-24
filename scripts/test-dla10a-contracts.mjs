@@ -65,7 +65,7 @@ const acceptanceEnd=doc.indexOf('## 10. DLA-10A acceptance closeout and DLA-10B 
 assert.ok(acceptanceStart>=0&&acceptanceEnd>acceptanceStart,
   'DLA-10A acceptance closeout is missing.');
 const acceptance=doc.slice(acceptanceStart,acceptanceEnd);
-assert.ok(!/- \\[ \\]/.test(acceptance),
+assert.ok(!/- \[ \]/.test(acceptance),
   'DLA-10A acceptance checklist still contains an unfinished item.');
 const closeout=doc.slice(acceptanceEnd);
 for(const evidence of [
