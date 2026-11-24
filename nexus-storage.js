@@ -1249,9 +1249,6 @@
       throw entityProjectionFailure(error,failureStage,failureDetails);
     }
   }
-      throw entityProjectionFailure(error,failureStage);
-    }
-  }
   async function readWorkspaceEntities(ownerId,options={}){
     const owner=entityOwnerKey(ownerId);
     if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner)return null;
