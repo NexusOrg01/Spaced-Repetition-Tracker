@@ -2719,7 +2719,10 @@ assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,1000
   assert.equal(activeBefore.state.topics[0].name,'PARKED LOCAL EDIT');
   const candidateState={
     ...activeBefore.state,
-    topics:[parkedValue,...Array.from({length:1000},(_,index)=>({
+    // ENTITY_MIGRATION_BATCH_SIZE is 8,000. Exceed it so the first
+    // committed batch yields, the injected abort fires, and the next batch is
+    // deterministically prevented from starting.
+    topics:[parkedValue,...Array.from({length:8200},(_,index)=>({
       id:'dla09-staged-topic-'+index,subjectId:'dla09-subject',
       name:'Staged candidate topic '+index
     }))]
@@ -2742,7 +2745,7 @@ assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,1000
     return true;
   },'the recovery stage must stop at the injected cancellation boundary');
   loaded.context.window.setTimeout=originalScheduler;
-  assert.ok(yieldCount>=1,'the recovery stage must commit at least one bounded row batch before cancellation');
+  assert.equal(yieldCount,1,'the recovery stage must commit one bounded row batch, then stop before the next batch');
 
   const manifestStore=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
   const manifest=manifestStore.get('workspace-entities:'+encodeURIComponent(owner));
