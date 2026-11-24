@@ -771,6 +771,32 @@
     }
   }
 
+  async function hasWorkspaceEntityOutboxRecords(ownerId,metrics=null){
+    const owner=entityOwnerKey(ownerId);
+    if(!owner||!enabled||!database)return false;
+    const prefix=entityOutboxPrefix(owner),range=entityPrefixRange(prefix);
+    // If an owner-bounded query cannot be constructed, fail closed. A projection
+    // replacement must never assume that an unreadable outbox is empty.
+    if(!range)return true;
+    return transaction(['outbox'],'readonly',(tx,set)=>{
+      const startedAt=Date.now();let recorded=false;
+      const recordWait=()=>{
+        if(recorded)return;
+        recorded=true;
+        if(metrics)metrics.keyRangeWaitDurationMs+=Math.max(0,Date.now()-startedAt);
+      };
+      const request=tx.objectStore('outbox').getAll(range,1);
+      request.onsuccess=()=>{
+        recordWait();
+        const rows=request.result||[];
+        // Any owner-prefixed row is retained until a receipt-bound acknowledgement
+        // or a verified recovery commit removes it. Orphaned/unknown rows also block.
+        set(rows.length>0);
+      };
+      request.onerror=recordWait;
+    },event=>recordProjectionTransaction(metrics,event));
+  }
+
   async function pruneWorkspaceEntityOutbox(ownerId,metrics=null){
     const owner=entityOwnerKey(ownerId);
     if(!enabled||!database||committedOwnerId!==owner)return 0;
@@ -955,6 +981,12 @@
       request.onsuccess=()=>set(request.result||null);
     },event=>recordProjectionTransaction(projectionMetrics,event));
     throwIfAborted();
+    if(options.deferActivation!==true&&await hasWorkspaceEntityOutboxRecords(owner,projectionMetrics)){
+      const error=new Error('A normal entity projection replacement is blocked while owner-scoped Delta outbox records remain pending. Complete a receipt-bound acknowledgement or use the protected recovery path first.');
+      error.code='NEXUS_PENDING_OUTBOX_REQUIRES_RECOVERY';
+      error.nexusEntityProjectionFailureReason='pending-outbox-requires-recovery';
+      throw error;
+    }
     if(hasSourceSnapshotGuard&&!(await sourceWorkspaceIsCurrent())){
       const error=new Error('The compatibility workspace changed before its entity projection rebuild could start.');
       error.nexusEntityProjectionFailureReason='source-snapshot-changed';
@@ -1165,10 +1197,11 @@
       }finally{
         pruneDurationMs=Math.max(0,Date.now()-pruneStartedAt);
       }
-      const outboxPruneStartedAt=Date.now();
-      try{prunedOutboxRows=await pruneWorkspaceEntityOutbox(owner,projectionMetrics);}
-      catch(error){console.warn('Superseded Nexus entity outbox records could not be fully pruned; the active generation remains safe.',error);}
-      finally{outboxPruneDurationMs=Math.max(0,Date.now()-outboxPruneStartedAt);}
+      // Outbox rows are not superseded by a local projection rebuild. The
+      // preflight above blocks non-recovery replacement while any owner-scoped
+      // operation remains; only verified acknowledgement/recovery may retire them.
+      prunedOutboxRows=0;
+      outboxPruneDurationMs=0;
       return {ownerId:owner,generation,rowCount,counts,sourceRevision:revision,
         sourceWorkspaceRevision,prunedRows,prunedOutboxRows,batchCount,writeDurationMs,
         pruneRowsScanned,pruneDurationMs,outboxPruneDurationMs,

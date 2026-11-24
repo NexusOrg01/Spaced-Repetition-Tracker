@@ -2666,11 +2666,13 @@ try {
             ?await storage.readWorkspaceEntities(context.ownerA):null;
           const cursorResult=storage&&typeof storage.readWorkspaceEntityDeltaCursor==='function'
             ?await storage.readWorkspaceEntityDeltaCursor(context.ownerA):null;
-          const cursor=cursorResult&&cursorResult.ok===true?cursorResult.cursor||null:null;
-          const outbox=cursor
-            ?await storage.readWorkspaceEntityOutboxGroups(context.ownerA,
-              Number(cursor.acknowledgedSequence),1000,1048576)
-            :null;
+          // The fast cursor reader intentionally rejects a generation mismatch.
+          // Recovery must instead inspect the owner-bound cursor and complete outbox
+          // through the recovery-state reader; a failed fast read is not proof of loss.
+          const recoveryState=storage&&typeof storage.readWorkspaceEntityDeltaRecoveryState==='function'
+            ?await storage.readWorkspaceEntityDeltaRecoveryState(context.ownerA):null;
+          const cursor=recoveryState&&recoveryState.ok===true?recoveryState.cursor||null:null;
+          const outbox=recoveryState&&recoveryState.ok===true?recoveryState.outbox||null:null;
           const pending=window.NexusOfflineSyncQueue&&
             typeof window.NexusOfflineSyncQueue.getPending==='function'
               ?window.NexusOfflineSyncQueue.getPending(localStorage,context.ownerA):null;
@@ -2717,12 +2719,15 @@ try {
             activeProjectionEditPreserved:activeTopic&&activeTopic.notes===context.expectedNotes,
             outboxEditPreserved:!!outboxChange&&outboxChange.value&&outboxChange.value.notes===context.expectedNotes,
             pendingOperationIdMatches:!!pending&&pending.operationId===context.pendingOperationId,
+            outboxRecoveryStateOk:!!recoveryState&&recoveryState.ok===true,
+            outboxRecoveryStateReason:recoveryState&&recoveryState.reason||null,
+            cursorReadReason:cursorResult&&cursorResult.reason||null,
             outboxOwnerMatches:!!outbox&&outbox.ownerId===context.ownerA,
             outboxGenerationMatches:!!outbox&&outbox.generation===context.projectionGeneration,
             cursorGenerationMatches:!!cursor&&cursor.generation===context.projectionGeneration,
             cursorAcknowledgedSequenceUnchanged:!!cursor&&
               Number(cursor.acknowledgedSequence)===context.cursorAcknowledgedSequence,
-            pendingOutboxGroupCount:Array.isArray(outbox&&outbox.groups)?outbox.groups.length:0,
+            pendingOutboxGroupCount:Number(outbox&&outbox.groupCount)||0,
             accountBEditAbsentFromA:!!active&&
               !active.state.topics.some(topic=>String(topic.id)===context.accountBOfflineEditId)
           };
