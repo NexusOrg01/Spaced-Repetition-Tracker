@@ -2506,6 +2506,10 @@ function makeParkedRecoveryFixture(options={}){
       value:parkedTopic}]};
   let outboxGroups=(options.outboxOnly||options.cursorMismatchWithPending)?[parkedOutboxGroup]:[];
   let outboxDigest='d'.repeat(64);
+  // The IndexedDB cursor is a local persisted baseline. Publishing a new remote
+  // snapshot changes the server timestamp first; it must not mutate the local
+  // cursor proof until the atomic local recovery commit advances that cursor.
+  const initialLocalCursorSnapshotUpdatedAt=state.snapshot_updated_at;
   let publishedCandidate=null,readSnapshotCount=0,proofAtCommit=null;
   const storage={
     async readWorkspaceEntityRecovery(){return {intent:intent?{...intent}:null};},
@@ -2567,7 +2571,7 @@ function makeParkedRecoveryFixture(options={}){
       const recoveryActive=!!((options.outboxOnly||options.cursorMismatchWithPending)&&!outboxCommitted);
       const cursor=recoveryActive
         ?{generation:'generation-A',publishRevision:0,acknowledgedSequence:0,
-          remoteHeadRevision:0,snapshotUpdatedAt:state.snapshot_updated_at,
+          remoteHeadRevision:0,snapshotUpdatedAt:initialLocalCursorSnapshotUpdatedAt,
           requiresPull:Number(state.head_revision)>0}
         :{generation:'generation-B',publishRevision:committed?Number(state.snapshot_revision):0,
           acknowledgedSequence:outboxCommitted?1:0,
@@ -2724,7 +2728,8 @@ for(const failure of [
   {readbackMode:'wrong-stamp'},
   {staleOwner:true},
   {staleRevision:true},
-  {mutatePendingOnReadback:true}
+  {mutatePendingOnReadback:true},
+  {mutateOutboxOnReadback:true}
 ]){
   const fixture=makeParkedRecoveryFixture(failure);
   const result=await fixture.client.publishConflictRecovery('account-A');
