@@ -1034,7 +1034,7 @@
 
     async function readPendingOutboxRecovery(owner,localFallback){
       if(!storage||typeof storage.readWorkspaceEntityDeltaCursor!=='function'){
-        return {ok:false,reason:'pending_outbox_recovery_reader_unavailable'};
+        return {ok:true,applicable:false};
       }
       const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
       if(!cursorResult||
