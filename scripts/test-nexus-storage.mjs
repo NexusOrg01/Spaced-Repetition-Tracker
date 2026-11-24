@@ -2590,7 +2590,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     snapshotRevision:0,headRevision:0,compactedThroughRevision:0,storageMode:'jsonb',
     remoteReadbackProof:{
       proofVersion:1,remoteReadbackVerified:true,pendingLocalChangesPreserved:true,
-      pendingLocalChangeCount:1,pendingOutboxOverlayApplied:true,ownerId,
+      pendingLocalChangeCount:1,pendingOutboxOverlayApplied:true,ownerId:owner,
       candidateDigest:digest,remotePayloadDigest:digest,
       snapshotUpdatedAt:'wrong-outbox-published',snapshotRevision:0,headRevision:0,
       compactedThroughRevision:0,pendingSnapshotProof:null,pendingOutboxProof:proof
