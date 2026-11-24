@@ -1032,20 +1032,34 @@
       }
     }
 
-    async function readCursorMismatchOutboxRecovery(owner,localFallback){
-      if(!storage||typeof storage.readWorkspaceEntityDeltaCursor!=='function')
-        return {ok:true,applicable:false};
-      const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
-      if(!cursorResult||cursorResult.ok===true||cursorResult.reason!=='local_delta_cursor_mismatch')
-        return {ok:true,applicable:false};
-      if(typeof storage.readWorkspaceEntityDeltaRecoveryState!=='function'||
+    async function readPendingOutboxRecovery(owner,localFallback){
+      if(!storage||typeof storage.readWorkspaceEntityDeltaCursor!=='function'||
+         typeof storage.readWorkspaceEntityDeltaRecoveryState!=='function'||
          typeof storage.readWorkspaceEntities!=='function'){
         return {ok:false,reason:'pending_outbox_recovery_reader_unavailable'};
       }
+      const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
+      if(!cursorResult||
+         (cursorResult.ok!==true&&cursorResult.reason!=='local_delta_cursor_mismatch')){
+        return {ok:false,reason:cursorResult&&cursorResult.reason||
+          'pending_outbox_recovery_state_unverified'};
+      }
+      // Snapshot recovery is also entered for remote conflicts/retention changes
+      // while the local cursor generation is still current. In that case the
+      // generation-only mismatch path silently omitted a real pending outbox.
+      // Read the same owner/manifest/revision-fenced recovery view for every
+      // recovery trigger and include it whenever either the generation is stale
+      // or unacknowledged operations exist.
       const state=await storage.readWorkspaceEntityDeltaRecoveryState(owner);
-      if(!state||state.ok!==true||state.generationMismatch!==true||
-         !state.outbox||!Array.isArray(state.outbox.groups)){
+      if(!state||state.ok!==true||state.ownerId!==owner||
+         !state.outbox||!Array.isArray(state.outbox.groups)||
+         state.outbox.hasMore===true||
+         Number(state.outbox.groupCount)!==state.outbox.groups.length){
         return {ok:false,reason:state&&state.reason||'pending_outbox_recovery_state_unverified'};
+      }
+      const hasPendingOutbox=state.outbox.groups.length>0;
+      if(state.generationMismatch!==true&&!hasPendingOutbox){
+        return {ok:true,applicable:false};
       }
       const projection=await storage.readWorkspaceEntities(owner);
       if(!projection||projection.ownerId!==owner||projection.pending===true||
@@ -1132,7 +1146,7 @@
         // Delta snapshot timestamp. That timestamp is then independently verified
         // against the remote snapshot before it is used as the three-way merge base.
         const pendingBefore=await getPendingSnapshot(owner);
-        const outboxRecoveryResult=await readCursorMismatchOutboxRecovery(owner,local);
+        const outboxRecoveryResult=await readPendingOutboxRecovery(owner,local);
         if(!outboxRecoveryResult||outboxRecoveryResult.ok!==true){
           return {ok:false,retryable:true,snapshotRequired:true,
             reason:outboxRecoveryResult&&outboxRecoveryResult.reason||'pending_outbox_recovery_unavailable'};
