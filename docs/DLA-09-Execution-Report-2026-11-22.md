@@ -801,3 +801,13 @@ The diagnostic code/test commits were validated by the following current-head wo
 The one controlled authenticated local integration run is **Phase 3.4 run #638** ([run 45331696070](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45331696070)). It has prepared its isolated local Supabase environment and is still applying migrations. DLA-02/DLA-03 RPC tests, disposable Auth fixtures, Chromium, A1/A2/B protocol, and the 26.9 MB lifecycle step have not yet completed. No result is claimed for those pending steps.
 
 Updated status: DLA-09A's focused proof/read-back diagnostic regression now passes, but its app-level parked-edit proof remains blocked pending run #638. DLA-09C and DLA-09D now have current-head full-suite support from run #2152. DLA-09B remains partial and DLA-09E remains blocked pending the controlled lifecycle outcome.
+
+
+
+### 13.5 Integration progress checkpoint — 24 November 2026
+
+- Authenticated local Supabase + Chromium run #638 ([run 45331696070](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45331696070)) remains in progress.
+- Isolated local Supabase setup and migrations: **passed**.
+- DLA-02/DLA-03 authenticated RPC and snapshot-integrity tests: **in progress**.
+- Disposable Auth fixtures, Chromium setup, authenticated A1/A2/B browser protocol, 26.9 MB lifecycle and cleanup: **not started/pending** at this checkpoint.
+- No browser lifecycle result is claimed. The workflow is using its localhost-only disposable Supabase environment.
