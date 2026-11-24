@@ -1535,6 +1535,21 @@ assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,1000
   assert.equal((await first.api.getWorkspace(owner)).workspaceRevision,workspaceRevision,
     'metadata and entity projection writes must not fake a compatibility record revision');
 
+  // The entity-authoritative topic and metadata edits above are synthetic
+  // fixture operations. Their projection assertions are complete; acknowledge
+  // them explicitly before testing an unrelated cancelled full-generation rebuild.
+  const hydrationFixtureOutbox=await first.api.readWorkspaceEntityOutbox(owner,0,10000);
+  assert.ok(hydrationFixtureOutbox.length>0,
+    'the hydration fixture must have exercised a real pending outbox before cleanup');
+  const hydrationFixtureThrough=hydrationFixtureOutbox.reduce((maximum,row)=>
+    Math.max(maximum,Number(row&&row.sequence)||0),0);
+  assert.ok(hydrationFixtureThrough>0);
+  assert.equal(await first.api.acknowledgeWorkspaceEntityOutbox(owner,hydrationFixtureThrough),
+    hydrationFixtureOutbox.length,
+    'the completed hydration fixture operations must be explicitly acknowledged before replacement testing');
+  assert.equal((await first.api.readWorkspaceEntityOutbox(owner,0,10000)).length,0,
+    'the cancelled-rebuild fixture must begin without unrelated pending operations');
+
   // Aborting a large replacement after its first IndexedDB batch must leave the
   // previously published generation selected and usable.
   const generationBeforeAbort=afterFirst.generation;
