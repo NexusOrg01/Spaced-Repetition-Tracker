@@ -1055,14 +1055,20 @@
         }
         const cursor=cursorResult.cursor;
         const after=Number(cursor.acknowledgedSequence);
+        const workspaceRevision=Number(cursorResult.workspaceRevision);
+        const cursorWorkspaceRevision=Number(cursor.workspaceRevision);
         if(cursor.ownerId!==owner||typeof cursor.generation!=='string'||
-           !cursor.generation||!Number.isSafeInteger(after)||after<0){
+           !cursor.generation||cursorResult.generation!==cursor.generation||
+           !Number.isSafeInteger(after)||after<0||
+           !Number.isSafeInteger(workspaceRevision)||workspaceRevision<0||
+           !Number.isSafeInteger(cursorWorkspaceRevision)||cursorWorkspaceRevision>workspaceRevision){
           return {ok:false,reason:'pending_outbox_recovery_state_unverified'};
         }
         const queued=await storage.readWorkspaceEntityOutboxGroups(owner,after,1000,8*1048576);
         if(!queued||queued.unavailable||queued.snapshotRequired||queued.ownerId!==owner||
-           queued.generation!==cursor.generation||!Array.isArray(queued.groups)||
-           queued.hasMore===true){
+           queued.generation!==cursor.generation||
+           Number(queued.workspaceRevision)!==workspaceRevision||
+           !Array.isArray(queued.groups)||queued.hasMore===true){
           return {ok:false,reason:queued&&queued.reason||'pending_outbox_recovery_state_unverified'};
         }
         if(queued.groups.length===0)return {ok:true,applicable:false};
