@@ -2170,7 +2170,8 @@ try {
     event.durationMs <= 60000
   ) || null;
   const watchdogEvent = deadlineEvents.find(event =>
-    event.stage === 'initialize-status-watchdog' &&
+    (event.stage === 'initialize-status-watchdog' ||
+      event.stage === 'sync-verification-watchdog') &&
     typeof event.at === 'string' &&
     event.at >= accountAReturnStartedIso
   ) || null;
