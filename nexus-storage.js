@@ -25,6 +25,7 @@
   const isManagedKey = key => typeof key === 'string' && APP_KEY.test(key) &&
     !INTERNAL_KEY.test(key) && key !== DIAGNOSTIC_KEY;
   const timestamp = () => new Date().toISOString();
+  const isRecord = value => !!value && typeof value === 'object' && !Array.isArray(value);
 
   let nativeStorage = null;
   let originalDescriptor = null;
