@@ -1594,6 +1594,7 @@
         }catch(error){
           reportProgress(step,'failed',{
             durationMs:Math.max(0,Date.now()-startedAt),ok:false,
+            failureReason:'recovery_step_threw',
             failureCode:typeof(error&&error.code)==='string'?error.code.slice(0,64):'unclassified',
             failureName:typeof(error&&error.name)==='string'?error.name.slice(0,64):'Error'
           });

@@ -1412,6 +1412,8 @@ function coordinatorHarness(options={}){
     'generation staging must report that the durable journal is still prepared');
   assert.ok(firstStageFailure,'a failed generation migration must emit a failed progress marker');
   assert.equal(firstStageFailure.ok,false);
+  assert.equal(firstStageFailure.failureReason,'recovery_step_threw',
+    'a thrown recovery step must expose a safe diagnostic reason without leaking its raw exception');
   assert.ok(Number.isSafeInteger(firstStageFailure.durationMs));
   assert.equal(publishCalls,0,'snapshot publication must not start until a candidate generation is staged');
   assert.equal(localCommits,0,'an incomplete staging attempt must not advance the local merge base');
