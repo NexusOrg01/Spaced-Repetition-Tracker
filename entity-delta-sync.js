@@ -1389,7 +1389,8 @@
           // check above protects the complete local workspace.
           const outboxProjectionProof=verifyPendingLocalChangesPreserved(
             commonBase.payload,local,local,pendingOutboxGroups,[]);
-          if(!outboxProjectionProof.ok||outboxProjectionProof.changeCount<1){
+          if(!outboxProjectionProof.ok||
+             (pendingOutboxGroups.length>0&&outboxProjectionProof.changeCount<1)){
             return {ok:false,retryable:true,snapshotRequired:true,
               reason:'pending_outbox_does_not_match_active_projection',
               pendingLocalChangeCount:outboxProjectionProof.changeCount};
