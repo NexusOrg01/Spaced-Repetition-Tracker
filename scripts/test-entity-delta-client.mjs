@@ -2742,8 +2742,10 @@ for(const failure of [
   {outboxOnly:true,mutateOutboxOnReadback:true}
 ]){
   const fixture=makeParkedRecoveryFixture(failure);
+  const recoveryProgress=[];
   const result=await fixture.client.publishConflictRecovery('account-A',{
     onProgress:event=>{
+      recoveryProgress.push({...event});
       if(event.recoveryStep==='verify-pending-snapshot-readback'&&event.progressPhase==='started')
         fixture.markRemoteReadbackBoundary();
     }
@@ -2754,6 +2756,17 @@ for(const failure of [
       'the compatibility snapshot mutation must occur inside the remote read-back window');
     assert.equal(result.reason,'pending_snapshot_changed_before_remote_acknowledgement',
       'a post-publication compatibility-snapshot mutation must be rejected before acknowledgement');
+  }
+  if(failure.readbackMode==='missing-edit'){
+    const diagnostic=recoveryProgress.find(event=>
+      event.recoveryStep==='verify-pending-snapshot-readback'&&
+      event.progressPhase==='failed'&&event.failureReason==='pending_snapshot_remote_readback_mismatch');
+    assert.ok(diagnostic,'a failed remote read-back must expose its exact rejection reason');
+    assert.equal(diagnostic.remotePayloadMatches,false,
+      'diagnostics must identify that the exact remote payload did not match the published candidate');
+    assert.equal(diagnostic.remotePayloadDigestMatches,false);
+    assert.equal(diagnostic.pendingOutboxOverlayApplied,true,
+      'diagnostics must distinguish a correct local overlay from a missing remote read-back');
   }
   if(failure.mutateOutboxOnReadback){
     assert.equal(fixture.outboxReadbackMutationTriggered(),true,
