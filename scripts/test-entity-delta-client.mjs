@@ -2593,8 +2593,9 @@ function makeParkedRecoveryFixture(options={}){
           digest:recoveryActive?outboxDigest:'e'.repeat(64),hasMore:false}};
     },
     async readWorkspaceEntityOutboxGroups(targetOwner,afterSequence=0){
-      return {ownerId:owner,groups:outboxCommitted?[]:
-        outboxGroups.filter(group=>group.lastSequence>afterSequence),hasMore:false};
+      return {ownerId:owner,generation:'generation-B',workspaceRevision:2,
+        groups:outboxCommitted?[]:outboxGroups.filter(group=>group.lastSequence>afterSequence),
+        hasMore:false,snapshotRequired:false,unavailable:false};
     }
   };
   const h=harness({state,pendingSnapshot:pending,readPage:options.readPage});
