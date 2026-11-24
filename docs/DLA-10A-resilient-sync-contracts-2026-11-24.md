@@ -165,6 +165,75 @@ These open DLA-09 results are carried forward as risks. They are not silently ma
 - [x] Snapshot/Delta compatibility and additive migration policy defined.
 - [x] Browser/tab closure is explicitly treated as termination of page execution; durable next-start resumption is the correctness guarantee.
 - [x] Current implementation gaps and failed current-head integration evidence recorded without overstating completion.
-- [ ] Automated contract guard and final PR validation pass on the resulting DLA-10A commit.
+- [x] Automated contract guard and final PR validation pass on the resulting DLA-10A commit.
 
 **Exit gate:** DLA-10B may start only after the automated contract guard and the relevant PR validation pass. DLA-10A does not authorize a merge, deployment/promotion, production write, staging RPC grant, or production database/configuration change.
+
+
+## 10. DLA-10A acceptance closeout and DLA-10B handoff — 24 November 2026
+
+### 10.1 Source and ledger reconciliation
+
+- The task-specific checked-in contract in this file was read on PR #147. It defines DLA-10A as an architecture/contract freeze and DLA-10B as the durable local-edit/outbox implementation described in §§3–7.
+- The original Word roadmap, `DLA-10-Non-Blocking-Resilient-Sync-Roadmap.docx`, is referenced in the 24 November project discussion, but it was not retrievable through the available Library search in this run. The attached project PDF was identified as a Project file, but Files could not read or materialize it. The Word source itself is therefore **not claimed as re-read**; the checked-in contract and prior 24 November task discussion are the available DLA-10 definition evidence.
+- No ⭐-marked Nexus ledger chat was retrievable in the available conversation context. The latest available unstarred status artifact is `docs/DLA-09-Execution-Report-2026-11-22.md`; its DLA-09 statuses were reconciled against current PR code and the current-head workflow results below. This closeout section is the repository-side ledger update; it does not claim to have edited a starred chat.
+
+### 10.2 DLA-10A acceptance result
+
+**DLA-10A: COMPLETED against the checked-in contract.**
+
+- PR #147 branch: `fix/sync-account-handoff-reliability`.
+- Validated head: `939ff725ed7d98c39a299d2d5c742086de3f40c6`.
+- Validate curriculum catalogue workflow run **#45368812762** — **PASSED**.
+- The dedicated step, `Validate DLA-10A resilient sync architecture contracts`, passed. Its log states: `DLA-10A architecture contract guard passed: module map, owner/epoch semantics, outbox schema, commit points, compatibility, lifecycle, and current-head evidence.`
+- The same successful job completed the catalogue/inline-JavaScript checks, entity-delta migration/client and staging-harness tests, static build, IndexedDB storage tests, backup/restore, offline queue, workspace merge, cloud-sync recovery/runtime, cloud-chunk storage, account-isolation and data-safety checks, security-header validation, regression/service-worker/undo tests, privacy-page checks, and the Deno account-deletion function type-check.
+- GitHub combined status for this head: Vercel and Netlify preview checks **success**.
+- The final DLA-10A checklist item is checked because the contract guard and the relevant catalogue/build/security validation passed. The separate DLA-09 lifecycle failure below remains an explicit carried-forward risk; it is not recorded as a DLA-10A pass or as a closed DLA-09 item.
+
+### 10.3 Current-head DLA-09 reconciliation — do not overstate completion
+
+Phase 3.4 authenticated local Supabase + Chromium workflow run **#45368812713** — **FAILED** at the 26.9 MB two-device offline/stale-compaction lifecycle step. Local Supabase setup/migrations, DLA-02/DLA-03 authenticated RPC and snapshot-integrity tests, disposable Auth fixtures, Chromium setup, the authenticated A1/A2/B browser protocol, and cleanup completed successfully. The lifecycle wait then timed out after 180 seconds.
+
+The failure trace reached recovery generation staging and reported:
+
+- `failureStage=write_row_batch`, `failureCode=NEXUS_SYNC_CANCELLED`, `failureName=AbortError`.
+- 96,000 rows had been generated across 12 committed batches when the staging attempt was cancelled.
+- The active generation, local edit, pending snapshot edit, and active-projection edit remained readable.
+- **The Delta outbox preservation assertion failed:** `outboxEditPreserved=false`, `pendingOutboxGroupCount=0`, `outboxOwnerMatches=false`, `outboxGenerationMatches=false`, and `cursorAcknowledgedSequenceUnchanged=false`.
+- The test did not establish verified remote commitment for the parked edit. This is a real DLA-09 recovery/outbox blocker, not a successful lifecycle result.
+- Cleanup passed: disposable users and Delta rows were removed, RPC grants were revoked, the local database was verified clean, and the local Supabase stack was stopped.
+
+Reconciled DLA-09 ledger:
+
+| Item | Current status | Evidence |
+|---|---|---|
+| DLA-09A — cursor-mismatch recovery / parked-edit proof | **BLOCKED** | Current-head lifecycle failed before exact remote proof and outbox preservation were established. |
+| DLA-09B — cold projection performance / truthful delayed state | **PARTIAL** | Prior measured cold restore: 130.176 s total, including 110.740 s projection rebuild; the 60 s verified-sync target remains unmet. |
+| DLA-09C — auth lookup retry/recovery | **COMPLETED** | Focused current-head validation passed. |
+| DLA-09D — comparison cancellation/warm reuse | **COMPLETED** | Focused current-head validation passed. |
+| DLA-09E — full account lifecycle matrix | **BLOCKED** | Current-head A→B→offline-B→online-B→A lifecycle did not pass. |
+
+**Overall DLA-09 remains open.** Its stop condition remains active: do not edit cursor-mismatch recovery, recovery merge ordering, snapshot publication, or outbox acknowledgement, and do not launch another A→B→A lifecycle attempt until a focused, evidence-backed correction preserves the parked outbox and passes its isolated regression. The failure is not to be relabelled as a mere timeout or provider issue.
+
+### 10.4 DLA-10B handoff
+
+**DLA-10B is opened as the next work package, but implementation is paused at the DLA-09 safety boundary.**
+
+The current code confirms the DLA-10B local-commit gap: `app-core.js` calls `NexusOfflineSyncQueue.commitWorkspace()`, then awaits `NexusStorage.flush()`, then calls `syncWorkspaceEntities()` separately. The compatibility workspace snapshot/revision and the entity projection/outbox group are therefore not yet one IndexedDB commit.
+
+The DLA-10B contract to implement is:
+
+1. One IndexedDB transaction for the accepted workspace snapshot/revision and its owner-scoped logical outbox group.
+2. A versioned envelope with authenticated owner, generation, stable operation ID, payload/protocol versions, canonical request hash, monotonic sequence/dependencies, base/target revision, bounded retry metadata, allowlisted error code, delivery state, and verified acknowledgement.
+3. Stable operation ID and exact payload hash across retries; changed payloads require a new ID.
+4. No outbox removal or cursor advancement until the matching owner-bound server receipt and remote read-back are verified and the local acknowledgement commits atomically.
+5. Session-epoch fencing around live requests, account-switch isolation, restart/online resumption, and preservation of legacy snapshot-queue data.
+
+The current DLA-09 failure directly demonstrates that the parked Delta outbox is not yet proven durable through recovery. The active stop condition prohibits changing the recovery/acknowledgement paths that DLA-10B would otherwise need to touch. Therefore this run records DLA-10B as **opened / scoped, not implemented or accepted**. No DLA-10B source-code change is claimed in this closeout. The next safe B step is a focused isolated reproduction and correction plan for the outbox-preservation failure, without weakening owner, generation, revision, manifest, integrity, or cancellation checks. Only after that focused proof passes can protected recovery/acknowledgement work or a controlled lifecycle rerun be considered.
+
+### 10.5 PR and safety state
+
+- PR #147 remains **open, draft, and unmerged** on `fix/sync-account-handoff-reliability`.
+- This closeout does not create another PR, merge, deploy/promote, change production Nexus, touch production Supabase/database/configuration, or perform production account operations.
+- Current branch preview references at the validated head: Netlify `https://deploy-preview-147--nexussrt.netlify.app`; Vercel `https://spaced-repetition-tracker-git-fix-sync-accou-8f743d-recall-ed03.vercel.app`.
+- The PR description still contains older commit/status references and is not the source of truth for this current-head reconciliation; use the branch head and workflow evidence above.
