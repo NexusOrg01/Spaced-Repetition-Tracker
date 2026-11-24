@@ -1033,9 +1033,7 @@
     }
 
     async function readPendingOutboxRecovery(owner,localFallback){
-      if(!storage||typeof storage.readWorkspaceEntityDeltaCursor!=='function'||
-         typeof storage.readWorkspaceEntityDeltaRecoveryState!=='function'||
-         typeof storage.readWorkspaceEntities!=='function'){
+      if(!storage||typeof storage.readWorkspaceEntityDeltaCursor!=='function'){
         return {ok:false,reason:'pending_outbox_recovery_reader_unavailable'};
       }
       const cursorResult=await storage.readWorkspaceEntityDeltaCursor(owner);
@@ -1044,12 +1042,36 @@
         return {ok:false,reason:cursorResult&&cursorResult.reason||
           'pending_outbox_recovery_state_unverified'};
       }
-      // Snapshot recovery is also entered for remote conflicts/retention changes
-      // while the local cursor generation is still current. In that case the
-      // generation-only mismatch path silently omitted a real pending outbox.
-      // Read the same owner/manifest/revision-fenced recovery view for every
-      // recovery trigger and include it whenever either the generation is stale
-      // or unacknowledged operations exist.
+      // A valid current-generation cursor can still have parked Delta operations
+      // when a remote conflict forces snapshot recovery. Probe the bounded outbox
+      // first so ordinary shadow-snapshot verification with an empty outbox does
+      // not acquire an unnecessary projection-recovery dependency.
+      if(cursorResult.ok===true){
+        if(!cursorResult.cursor||typeof storage.readWorkspaceEntityOutboxGroups!=='function'){
+          return {ok:false,reason:'pending_outbox_recovery_reader_unavailable'};
+        }
+        const cursor=cursorResult.cursor;
+        const after=Number(cursor.acknowledgedSequence);
+        if(cursor.ownerId!==owner||typeof cursor.generation!=='string'||
+           !cursor.generation||!Number.isSafeInteger(after)||after<0){
+          return {ok:false,reason:'pending_outbox_recovery_state_unverified'};
+        }
+        const queued=await storage.readWorkspaceEntityOutboxGroups(owner,after,1000,8*1048576);
+        if(!queued||queued.unavailable||queued.snapshotRequired||queued.ownerId!==owner||
+           queued.generation!==cursor.generation||!Array.isArray(queued.groups)||
+           queued.hasMore===true){
+          return {ok:false,reason:queued&&queued.reason||'pending_outbox_recovery_state_unverified'};
+        }
+        if(queued.groups.length===0)return {ok:true,applicable:false};
+      }
+      if(typeof storage.readWorkspaceEntityDeltaRecoveryState!=='function'||
+         typeof storage.readWorkspaceEntities!=='function'){
+        return {ok:false,reason:'pending_outbox_recovery_reader_unavailable'};
+      }
+      // Recovery state re-reads and fences the active owner, ready manifest,
+      // workspace revision, cursor and every outbox row. It is authoritative for
+      // the proof; the preliminary read above only avoids invoking it for an empty
+      // current-generation outbox.
       const state=await storage.readWorkspaceEntityDeltaRecoveryState(owner);
       if(!state||state.ok!==true||state.ownerId!==owner||
          !state.outbox||!Array.isArray(state.outbox.groups)||
