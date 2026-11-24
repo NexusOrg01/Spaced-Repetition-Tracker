@@ -192,6 +192,7 @@ function makeWindow(nativeStorage, indexedDB) {
     localStorage: nativeStorage,
     indexedDB,
     document: { getElementById: () => null },
+    navigator: { storage: { estimate: async () => ({ quota: 1000000, usage: 200000 }) } },
     console,
     setTimeout,
     crypto:webcrypto,
@@ -611,6 +612,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
       id:'expanded-topic-'+index,subjectId:'subject-1',name:'Expanded topic '+index,reviewCount:0
     })))
   };
+  const outboxBeforeFailedMigration=await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10);
   const originalScheduler=loaded.context.window.setTimeout;
   let migrationYieldCount=0;
   let readableGenerationDuringBuild=null;
@@ -630,6 +632,25 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
         'a later IndexedDB batch failure must identify the bounded row-write stage');
       assert.equal(error.nexusEntityProjectionFailureReason,'indexeddb-write-failed',
         'row-write failures must expose a safe category, not raw IndexedDB details');
+      assert.equal(error.nexusEntityProjectionFailureStore,'workspaces',
+        'row-write failures must identify the affected IndexedDB object store');
+      assert.equal(error.nexusEntityProjectionFailureTransactionMode,'readwrite',
+        'row-write failures must identify the transaction mode');
+      assert.ok(['abort','error'].includes(error.nexusEntityProjectionFailureTransactionOutcome),
+        'row-write failures must identify the transaction outcome');
+      assert.equal(error.nexusEntityProjectionFailureBatchIndex,2,
+        'row-write failures must identify the failed bounded batch');
+      assert.ok(error.nexusEntityProjectionFailureBatchRowCount>0&&
+        error.nexusEntityProjectionFailureBatchRowCount<=8000,
+        'row-write failures must report only the bounded batch size');
+      assert.equal(error.nexusEntityProjectionFailureCommittedBatchCount,1);
+      assert.ok(error.nexusEntityProjectionFailureRowsGenerated>8000);
+      assert.equal(error.nexusEntityProjectionFailureQuotaEstimateAvailable,true);
+      assert.equal(error.nexusEntityProjectionFailureQuotaBytes,1000000);
+      assert.equal(error.nexusEntityProjectionFailureUsageBytes,200000);
+      assert.equal(error.nexusEntityProjectionFailureRemainingQuotaBytes,800000);
+      assert.equal(error.nexusEntityProjectionFailureActiveGenerationPreserved,true);
+      assert.equal(error.nexusEntityProjectionFailurePendingGenerationCleared,true);
       return true;
     },'a failed later batch must leave the previous entity generation active');
   loaded.context.window.setTimeout=originalScheduler;
@@ -646,6 +667,9 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(preservedGeneration.state.history.length,1);
   assert.equal(preservedGeneration.state.history[0].id,'review-2',
     'the previous generation must retain committed deletions after failed backfill');
+  const outboxAfterFailedMigration=await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10);
+  assert.equal(JSON.stringify(outboxAfterFailedMigration),JSON.stringify(outboxBeforeFailedMigration),
+    'a failed replacement must leave the prior generation outbox unchanged');
 
   const pruneQueryStart=idb.rangeQueries.length;
   const resumedMigration=await loaded.api.migrateWorkspaceEntities('entity-owner-a',expandedState,afterChanges.featureState,

@@ -197,7 +197,7 @@
     }
   }
 
-  function transaction(storeNames, mode, configure, onTiming) {
+  function transaction(storeNames, mode, configure, onTiming, onFailure) {
     const startedAt=Date.now();
     let timingReported=false;
     const reportTiming=outcome=>{
@@ -205,10 +205,22 @@
       timingReported=true;
       try{onTiming({durationMs:Math.max(0,Date.now()-startedAt),outcome});}catch(_){}
     };
+    const reportFailure=(error,outcome)=>{
+      if(typeof onFailure!=='function')return;
+      const code=error&&error.code;
+      const errorName=typeof(error&&error.name)==='string'&&
+        /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.name)?error.name:'Error';
+      const errorCodeString=typeof code==='string'&&
+        /^[A-Z][A-Z0-9_]{0,63}$/.test(code)?code:null;
+      const errorDomExceptionCode=Number.isSafeInteger(code)&&code>=0?code:null;
+      try{onFailure({outcome,errorName,errorCodeString,errorDomExceptionCode});}catch(_){}
+    };
     return new Promise((resolve, reject) => {
       if (!database) {
+        const error=new Error('IndexedDB is not open.');
         reportTiming('error');
-        reject(new Error('IndexedDB is not open.'));
+        reportFailure(error,'unavailable');
+        reject(error);
         return;
       }
       let tx;
@@ -216,15 +228,18 @@
         tx = database.transaction(storeNames, mode);
       } catch (error) {
         reportTiming('error');
+        reportFailure(error,'create');
         reject(error);
         return;
       }
       let value;
       let settled = false;
-      const finishError = error => {
+      const finishError = (error,outcome='error') => {
         if (settled) return;
         settled = true;
-        reject(error || new Error('IndexedDB transaction failed.'));
+        const failure=error||new Error('IndexedDB transaction failed.');
+        reportFailure(failure,outcome);
+        reject(failure);
       };
       tx.oncomplete = () => {
         reportTiming('complete');
@@ -234,18 +249,18 @@
       };
       tx.onerror = () => {
         reportTiming('error');
-        finishError(tx.error);
+        finishError(tx.error,'error');
       };
       tx.onabort = () => {
         reportTiming('abort');
-        finishError(tx.error || new Error('IndexedDB transaction was aborted.'));
+        finishError(tx.error || new Error('IndexedDB transaction was aborted.'),'abort');
       };
       try {
         configure(tx, next => { value = next; });
       } catch (error) {
         try { tx.abort(); } catch (_) {}
         reportTiming('error');
-        finishError(error);
+        finishError(error,'configure-error');
       }
     });
   }
@@ -639,7 +654,7 @@
     for(const key of Object.keys(snapshot||{}))if(!collections.includes(key))rootValue[key]=snapshot[key];
     return rootValue;
   }
-  function entityProjectionFailure(error,stage){
+  function entityProjectionFailure(error,stage,details={}){
     const source=error&&(typeof error==='object'||typeof error==='function')?error:null;
     const target=source||new Error('Local entity projection rebuild failed.');
     const defaults={
@@ -648,22 +663,48 @@
       'publish-manifest':'manifest-publish-failed',
       'verify-publication':'manifest-verification-failed'
     };
-    try{
-      target.nexusEntityProjectionFailureStage=stage;
-      if(!target.nexusEntityProjectionFailureReason){
-        target.nexusEntityProjectionFailureReason=defaults[stage]||'other';
+    const assignDetails=destination=>{
+      destination.nexusEntityProjectionFailureStage=stage;
+      if(!destination.nexusEntityProjectionFailureReason){
+        destination.nexusEntityProjectionFailureReason=
+          source&&source.nexusEntityProjectionFailureReason||defaults[stage]||'other';
       }
-      return target;
+      for(const [key,value] of Object.entries(details)){
+        if(value!==undefined)destination[key]=value;
+      }
+      return destination;
+    };
+    try{
+      return assignDetails(target);
     }catch(_){
       const wrapped=new Error(source&&typeof source.message==='string'
         ?source.message:'Local entity projection rebuild failed.');
+      if(source&&typeof source.name==='string')wrapped.name=source.name;
+      if(source&&source.code!==undefined)wrapped.code=source.code;
       wrapped.cause=source;
-      wrapped.nexusEntityProjectionFailureStage=stage;
-      wrapped.nexusEntityProjectionFailureReason=
-        source&&source.nexusEntityProjectionFailureReason||defaults[stage]||'other';
-      return wrapped;
+      return assignDetails(wrapped);
     }
   }
+  async function readIndexedDbQuotaEstimate(){
+    const manager=root&&root.navigator&&root.navigator.storage;
+    if(!manager||typeof manager.estimate!=='function'){
+      return {available:false,quotaBytes:null,usageBytes:null};
+    }
+    try{
+      const estimate=await manager.estimate();
+      const toBytes=value=>{
+        const number=Number(value);
+        return Number.isFinite(number)&&number>=0&&number<=Number.MAX_SAFE_INTEGER
+          ?Math.floor(number):null;
+      };
+      const quotaBytes=toBytes(estimate&&estimate.quota);
+      const usageBytes=toBytes(estimate&&estimate.usage);
+      return {available:quotaBytes!==null||usageBytes!==null,quotaBytes,usageBytes};
+    }catch(_){
+      return {available:false,quotaBytes:null,usageBytes:null};
+    }
+  }
+
   function* generateWorkspaceEntityRows(ownerId,generation,state,featureState){
     const trackerRoot=entityRootValue(state,TRACKER_ENTITY_COLLECTIONS);
     const featureRoot=entityRootValue(featureState,FEATURE_ENTITY_COLLECTIONS);
@@ -694,14 +735,42 @@
       }
     }
   }
-  async function writeWorkspaceEntityBatch(rows,metrics=null){
+  async function writeWorkspaceEntityBatch(rows,metrics=null,context={}){
     if(!rows.length)return 0;
-    return transaction([WORKSPACES],'readwrite',(tx,set)=>{
-      const store=tx.objectStore(WORKSPACES);
-      for(const row of rows)store.put(row);
-      set(rows.length);
-    },event=>recordProjectionTransaction(metrics,event));
+    let transactionFailure=null;
+    try{
+      return await transaction([WORKSPACES],'readwrite',(tx,set)=>{
+        const store=tx.objectStore(WORKSPACES);
+        for(const row of rows)store.put(row);
+        set(rows.length);
+      },event=>recordProjectionTransaction(metrics,event),failure=>{transactionFailure=failure;});
+    }catch(error){
+      const wrapped=new Error(error&&typeof error.message==='string'
+        ?error.message:'IndexedDB entity batch write failed.');
+      wrapped.name=transactionFailure&&transactionFailure.errorName||
+        (error&&typeof error.name==='string'?error.name:'Error');
+      if(transactionFailure&&transactionFailure.errorCodeString)wrapped.code=transactionFailure.errorCodeString;
+      else if(error&&error.code!==undefined)wrapped.code=error.code;
+      wrapped.cause=error;
+      wrapped.nexusEntityProjectionFailureStore='workspaces';
+      wrapped.nexusEntityProjectionFailureTransactionMode='readwrite';
+      wrapped.nexusEntityProjectionFailureTransactionOutcome=
+        transactionFailure&&transactionFailure.outcome||'unknown';
+      wrapped.nexusEntityProjectionFailureBatchIndex=
+        Number.isSafeInteger(context.batchIndex)&&context.batchIndex>0?context.batchIndex:null;
+      wrapped.nexusEntityProjectionFailureBatchRowCount=rows.length;
+      wrapped.nexusEntityProjectionFailureName=wrapped.name;
+      wrapped.nexusEntityProjectionFailureCode=
+        typeof wrapped.code==='string'&&/^[A-Z][A-Z0-9_]{0,63}$/.test(wrapped.code)
+          ?wrapped.code:null;
+      wrapped.nexusEntityProjectionDomExceptionCode=
+        transactionFailure&&Number.isSafeInteger(transactionFailure.errorDomExceptionCode)
+          ?transactionFailure.errorDomExceptionCode
+          :(Number.isSafeInteger(wrapped.code)?wrapped.code:null);
+      throw wrapped;
+    }
   }
+
   async function pruneWorkspaceEntityOutbox(ownerId,metrics=null){
     const owner=entityOwnerKey(ownerId);
     if(!enabled||!database||committedOwnerId!==owner)return 0;
@@ -902,7 +971,7 @@
     const writeBatch=async()=>{
       if(!batch.length)return;
       const rows=batch.splice(0,batch.length),startedAt=Date.now();
-      await writeWorkspaceEntityBatch(rows,projectionMetrics);
+      await writeWorkspaceEntityBatch(rows,projectionMetrics,{batchIndex:batchCount+1});
       writeDurationMs+=Math.max(0,Date.now()-startedAt);
       batchCount++;
     };
@@ -1120,6 +1189,9 @@
       if(publicationFailureReason&&error&&typeof error==='object'){
         error.nexusEntityProjectionFailureReason=publicationFailureReason;
       }
+      const quotaEstimate=failureStage==='write-row-batch'&&!(signal&&signal.aborted)
+        ?await readIndexedDbQuotaEstimate()
+        :{available:false,quotaBytes:null,usageBytes:null};
       try{
         await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
           const store=tx.objectStore('migrationMeta'),request=store.get(manifestKey);
@@ -1142,6 +1214,41 @@
           };
         });
       }catch(_){}
+      let activeGenerationPreserved=false,pendingGenerationCleared=false;
+      if(failureStage==='write-row-batch'&&previous&&previous.activeGeneration){
+        try{
+          const afterFailure=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
+            const request=tx.objectStore('migrationMeta').get(manifestKey);
+            request.onsuccess=()=>set(request.result||null);
+          });
+          activeGenerationPreserved=!!afterFailure&&afterFailure.status==='ready'&&
+            afterFailure.activeGeneration===previous.activeGeneration;
+          pendingGenerationCleared=!!afterFailure&&!afterFailure.pendingGeneration&&
+            !afterFailure.pendingRecoveryIntentId;
+        }catch(_){}
+      }
+      const failureDetails={
+        nexusEntityProjectionFailureStore:error&&error.nexusEntityProjectionFailureStore||null,
+        nexusEntityProjectionFailureTransactionMode:error&&error.nexusEntityProjectionFailureTransactionMode||null,
+        nexusEntityProjectionFailureTransactionOutcome:error&&error.nexusEntityProjectionFailureTransactionOutcome||null,
+        nexusEntityProjectionFailureBatchIndex:error&&error.nexusEntityProjectionFailureBatchIndex,
+        nexusEntityProjectionFailureBatchRowCount:error&&error.nexusEntityProjectionFailureBatchRowCount,
+        nexusEntityProjectionFailureCommittedBatchCount:batchCount,
+        nexusEntityProjectionFailureRowsGenerated:rowCount,
+        nexusEntityProjectionFailureQuotaEstimateAvailable:quotaEstimate.available,
+        nexusEntityProjectionFailureQuotaBytes:quotaEstimate.quotaBytes,
+        nexusEntityProjectionFailureUsageBytes:quotaEstimate.usageBytes,
+        nexusEntityProjectionFailureRemainingQuotaBytes:
+          quotaEstimate.quotaBytes!==null&&quotaEstimate.usageBytes!==null
+            ?Math.max(0,quotaEstimate.quotaBytes-quotaEstimate.usageBytes):null,
+        nexusEntityProjectionFailureActiveGenerationPreserved:activeGenerationPreserved,
+        nexusEntityProjectionFailurePendingGenerationCleared:pendingGenerationCleared,
+        nexusEntityProjectionDomExceptionCode:error&&Number.isSafeInteger(error.nexusEntityProjectionDomExceptionCode)
+          ?error.nexusEntityProjectionDomExceptionCode:null
+      };
+      throw entityProjectionFailure(error,failureStage,failureDetails);
+    }
+  }
       throw entityProjectionFailure(error,failureStage);
     }
   }

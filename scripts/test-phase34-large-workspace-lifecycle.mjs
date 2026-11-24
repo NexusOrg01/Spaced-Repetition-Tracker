@@ -904,6 +904,7 @@ const browser = await chromium.launch({
 });
 let appLevelTimingEvidence = null;
 let page = null;
+let recoveryFailureContext = null;
 try {
   const context = await browser.newContext({
     serviceWorkers: 'block',
@@ -1007,7 +1008,9 @@ try {
       'projectionOutboxPruneDurationMs','projectionOutboxPruneRowsRemoved',
       'projectionTransactionWaitDurationMs','projectionTransactionCount',
       'projectionKeyRangeWaitDurationMs','projectionRowGenerationDurationMs',
-      'projectionSerializationDurationMs'
+      'projectionSerializationDurationMs','failureDomExceptionCode','failureBatchIndex',
+      'failureBatchRowCount','failureCommittedBatchCount','failureRowsGenerated',
+      'failureQuotaBytes','failureUsageBytes','failureRemainingQuotaBytes'
     ];
     const booleanFields = [
       'ok','ready','ownerVerified','timedOut','same','chunkDataIncluded','hasPayload',
@@ -1020,7 +1023,8 @@ try {
       'pendingOutboxProofPresent','pendingOutboxOverlayApplied','remoteSnapshotPresent',
       'remoteUpdatedAtMatchesState','remotePayloadShapeValid','remotePayloadDeltaMarkerMatches',
       'remoteManifestDeltaMarkerMatches','manifestDeltaMarker','payloadDeltaMarkerBeforeRestore',
-      'payloadDeltaMarkerAfterRestore','deltaMarkerRestored'
+      'payloadDeltaMarkerAfterRestore','deltaMarkerRestored','failureQuotaEstimateAvailable',
+      'failureActiveGenerationPreserved','failurePendingGenerationCleared'
     ];
     return events.filter(event =>
       event && typeof event.at === 'string' && Date.parse(event.at) >= startedAt &&
@@ -1040,7 +1044,7 @@ try {
       for (const key of booleanFields) {
         if (typeof event[key] === 'boolean') row[key] = event[key];
       }
-      for (const key of ['storageMode','syncMode','projectionRebuildMode','projectionSerializationMode','errorCategory','statusAfterWatchdog','recoveryStep','progressPhase','failureReason','failureStage','failureCode','failureName']) {
+      for (const key of ['storageMode','syncMode','projectionRebuildMode','projectionSerializationMode','errorCategory','statusAfterWatchdog','recoveryStep','progressPhase','failureReason','failureStage','failureCode','failureName','failureStore','failureTransactionMode','failureTransactionOutcome']) {
         if (typeof event[key] === 'string') row[key] = event[key];
       }
       const topicCount = event.workspace && event.workspace.topicCount;
@@ -1746,11 +1750,21 @@ try {
       outboxOwner: outbox?.ownerId || null,
       outboxGeneration: outbox?.generation || null,
       cursorGeneration: cursorResult.cursor.generation,
+      cursorAcknowledgedSequence: Number(cursorResult.cursor.acknowledgedSequence),
       cursorPublishRevision: Number(cursorResult.cursor.publishRevision),
       cursorRemoteHeadRevision: Number(cursorResult.cursor.remoteHeadRevision)
     };
   }, { ownerA, remoteReadTopicId: remoteReadTopic.id });
   const expectedAccountANotes = 'x' + 'n'.repeat(99);
+  recoveryFailureContext = {
+    ownerA,
+    editedTopicId: initialAPendingResult.editedTopicId,
+    expectedNotes: expectedAccountANotes,
+    projectionGeneration: initialAPendingResult.projectionGeneration,
+    pendingOperationId: initialAPendingResult.pendingOperationId,
+    cursorAcknowledgedSequence: initialAPendingResult.cursorAcknowledgedSequence,
+    accountBOfflineEditId: 'dla08-b-offline-reconnect-topic'
+  };
   console.log('DLA09E_PRE_HANDOFF_EDIT_PROOF=' + JSON.stringify(initialAPendingResult));
   assert.equal(initialAPendingResult.owner, ownerA);
   assert.equal(initialAPendingResult.pending, true,
@@ -2617,7 +2631,8 @@ try {
           'deltaMarkerRestored']) {
           if (typeof event[key] === 'boolean') row[key] = event[key];
         }
-        for (const key of ['recoveryStep','progressPhase','failureReason','recoveryReason','syncMode']) {
+        for (const key of ['recoveryStep','progressPhase','failureReason','recoveryReason','syncMode',
+          'failureStage','failureCode','failureName','failureStore','failureTransactionMode','failureTransactionOutcome']) {
           if (typeof event[key] === 'string') row[key] = event[key];
         }
         return row;
@@ -2634,6 +2649,89 @@ try {
       errorName: error && typeof error.name === 'string' ? error.name : 'Error',
       diagnostics
     }));
+    if(recoveryFailureContext){
+      let recoveryFailureEvidence=null;
+      try{
+        recoveryFailureEvidence=await page.evaluate(async context=>{
+          let events=[];
+          try{
+            const parsed=JSON.parse(localStorage.getItem('nexus.syncdiag.session.v1')||'[]');
+            events=Array.isArray(parsed)?parsed:[];
+          }catch(_){}
+          const failureEvent=events.slice().reverse().find(event=>
+            event&&event.stage==='snapshot-recovery-progress'&&
+            event.recoveryStep==='stage-generation'&&event.progressPhase==='failed')||null;
+          const storage=window.NexusStorage;
+          const active=storage&&typeof storage.readWorkspaceEntities==='function'
+            ?await storage.readWorkspaceEntities(context.ownerA):null;
+          const cursorResult=storage&&typeof storage.readWorkspaceEntityDeltaCursor==='function'
+            ?await storage.readWorkspaceEntityDeltaCursor(context.ownerA):null;
+          const cursor=cursorResult&&cursorResult.ok===true?cursorResult.cursor||null:null;
+          const outbox=cursor
+            ?await storage.readWorkspaceEntityOutboxGroups(context.ownerA,
+              Number(cursor.acknowledgedSequence),1000,1048576)
+            :null;
+          const pending=window.NexusOfflineSyncQueue&&
+            typeof window.NexusOfflineSyncQueue.getPending==='function'
+              ?window.NexusOfflineSyncQueue.getPending(localStorage,context.ownerA):null;
+          const localState=JSON.parse(localStorage.getItem('recall.study.tracker.v1')||'{}');
+          const findTopic=state=>Array.isArray(state&&state.topics)
+            ?state.topics.find(topic=>String(topic.id)===String(context.editedTopicId)):null;
+          const localTopic=findTopic(localState);
+          const pendingTopic=findTopic(pending&&pending.payload&&pending.payload.state);
+          const activeTopic=findTopic(active&&active.state);
+          const changes=Array.isArray(outbox&&outbox.groups)
+            ?outbox.groups.flatMap(group=>Array.isArray(group.changes)?group.changes:[]):[];
+          const outboxChange=changes.find(change=>
+            change.collection==='topics'&&String(change.id)===String(context.editedTopicId)&&
+            change.operation==='put');
+          let quotaEstimate={available:false,quotaBytes:null,usageBytes:null};
+          try{
+            if(navigator.storage&&typeof navigator.storage.estimate==='function'){
+              const estimate=await navigator.storage.estimate();
+              const toBytes=value=>{
+                const number=Number(value);
+                return Number.isFinite(number)&&number>=0&&number<=Number.MAX_SAFE_INTEGER
+                  ?Math.floor(number):null;
+              };
+              quotaEstimate={available:true,quotaBytes:toBytes(estimate.quota),usageBytes:toBytes(estimate.usage)};
+            }
+          }catch(_){}
+          const failureFields=['failureReason','failureStage','failureCode','failureName','failureStore',
+            'failureTransactionMode','failureTransactionOutcome','failureDomExceptionCode',
+            'failureBatchIndex','failureBatchRowCount','failureCommittedBatchCount','failureRowsGenerated',
+            'failureQuotaEstimateAvailable','failureQuotaBytes','failureUsageBytes','failureRemainingQuotaBytes',
+            'failureActiveGenerationPreserved','failurePendingGenerationCleared'];
+          const failure={};
+          if(failureEvent)for(const key of failureFields){
+            if(failureEvent[key]!==undefined)failure[key]=failureEvent[key];
+          }
+          return {
+            failure:Object.keys(failure).length?failure:null,
+            quotaEstimate,
+            accountAOwnerMatches:localStorage.getItem('nexus.cloud.last-user-id')===context.ownerA,
+            activeProjectionReadable:!!active,
+            activeGenerationMatches:!!active&&active.generation===context.projectionGeneration,
+            localEditPreserved:localTopic&&localTopic.notes===context.expectedNotes,
+            pendingEditPreserved:pendingTopic&&pendingTopic.notes===context.expectedNotes,
+            activeProjectionEditPreserved:activeTopic&&activeTopic.notes===context.expectedNotes,
+            outboxEditPreserved:!!outboxChange&&outboxChange.value&&outboxChange.value.notes===context.expectedNotes,
+            pendingOperationIdMatches:!!pending&&pending.operationId===context.pendingOperationId,
+            outboxOwnerMatches:!!outbox&&outbox.ownerId===context.ownerA,
+            outboxGenerationMatches:!!outbox&&outbox.generation===context.projectionGeneration,
+            cursorGenerationMatches:!!cursor&&cursor.generation===context.projectionGeneration,
+            cursorAcknowledgedSequenceUnchanged:!!cursor&&
+              Number(cursor.acknowledgedSequence)===context.cursorAcknowledgedSequence,
+            pendingOutboxGroupCount:Array.isArray(outbox&&outbox.groups)?outbox.groups.length:0,
+            accountBEditAbsentFromA:!!active&&
+              !active.state.topics.some(topic=>String(topic.id)===context.accountBOfflineEditId)
+          };
+        },recoveryFailureContext);
+      }catch(e){
+        recoveryFailureEvidence={inspectionErrorName:e&&typeof e.name==='string'?e.name:'Error'};
+      }
+      console.log('DLA10A_RECOVERY_FAILURE_EVIDENCE='+JSON.stringify(recoveryFailureEvidence));
+    }
   } catch (_) {
     console.log('DLA-09B_APP_LEVEL_FAILURE=' +
       (error && typeof error.name === 'string' ? error.name : 'Error'));

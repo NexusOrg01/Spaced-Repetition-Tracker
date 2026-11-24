@@ -1679,15 +1679,45 @@
             ?rawProjectionFailureReason.replace(/-/g,'_'):'recovery_step_threw';
           const projectionFailureStage=/^[a-z][a-z0-9_-]{0,79}$/.test(rawProjectionFailureStage)
             ?rawProjectionFailureStage.replace(/-/g,'_'):'other';
-          const failureCode=typeof(error&&error.code)==='string'&&
-            /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code)?error.code:'unclassified';
+          const rawFailureCode=String(error&&error.code||'');
+          const failureCode=/^[A-Z][A-Z0-9_]{0,63}$/.test(rawFailureCode)?rawFailureCode:'UNCLASSIFIED';
           const failureName=typeof(error&&error.name)==='string'&&
             /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.name)?error.name:'Error';
-          reportProgress(step,'failed',{
+          const details={
             durationMs:Math.max(0,Date.now()-startedAt),ok:false,
             failureReason:projectionFailureReason,failureStage:projectionFailureStage,
             failureCode,failureName
-          });
+          };
+          const numericFields={
+            failureDomExceptionCode:error&&error.nexusEntityProjectionDomExceptionCode,
+            failureBatchIndex:error&&error.nexusEntityProjectionFailureBatchIndex,
+            failureBatchRowCount:error&&error.nexusEntityProjectionFailureBatchRowCount,
+            failureCommittedBatchCount:error&&error.nexusEntityProjectionFailureCommittedBatchCount,
+            failureRowsGenerated:error&&error.nexusEntityProjectionFailureRowsGenerated,
+            failureQuotaBytes:error&&error.nexusEntityProjectionFailureQuotaBytes,
+            failureUsageBytes:error&&error.nexusEntityProjectionFailureUsageBytes,
+            failureRemainingQuotaBytes:error&&error.nexusEntityProjectionFailureRemainingQuotaBytes
+          };
+          for(const [key,value] of Object.entries(numericFields)){
+            if(Number.isSafeInteger(value)&&value>=0)details[key]=value;
+          }
+          const booleanFields={
+            failureQuotaEstimateAvailable:error&&error.nexusEntityProjectionFailureQuotaEstimateAvailable,
+            failureActiveGenerationPreserved:error&&error.nexusEntityProjectionFailureActiveGenerationPreserved,
+            failurePendingGenerationCleared:error&&error.nexusEntityProjectionFailurePendingGenerationCleared
+          };
+          for(const [key,value] of Object.entries(booleanFields)){
+            if(typeof value==='boolean')details[key]=value;
+          }
+          const stringFields={
+            failureStore:error&&error.nexusEntityProjectionFailureStore,
+            failureTransactionMode:error&&error.nexusEntityProjectionFailureTransactionMode,
+            failureTransactionOutcome:error&&error.nexusEntityProjectionFailureTransactionOutcome
+          };
+          for(const [key,value] of Object.entries(stringFields)){
+            if(typeof value==='string'&&/^[a-z][a-z0-9_-]{0,63}$/.test(value))details[key]=value;
+          }
+          reportProgress(step,'failed',details);
           throw error;
         }
       };
