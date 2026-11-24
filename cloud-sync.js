@@ -22,6 +22,7 @@ const SYNC_REQUEST_TIMEOUT_MS=180000,SESSION_INITIALIZATION_TIMEOUT_MS=120000,
  REMOTE_DELTA_POLL_INTERVAL_MS=15000,
  AUTH_SESSION_VERIFICATION_TIMEOUT_MS=15000,AUTH_SESSION_VERIFICATION_RETRY_MS=15000;
 let hostedDeltaPollingEnabled=false,remoteDeltaPollTimer=null;
+let syncVerificationWatchdog=null,syncVerificationWatchdogOwner='',syncVerificationDelayedOwner='';
 const productionDeltaIneligibleOwners=new Set();
 function syncCancelledError(message){
  const error=new Error(message||'The active account changed. The previous operation was cancelled safely.');
@@ -117,7 +118,7 @@ function syncDiagSummary(payload){
 const SYNC_DIAG_STAGES=new Set([
  'auth-event','baseline-restored-from-remote','cloud-chunk-read','cloud-chunk-read-error','cloud-chunk-read-skipped','cloud-chunk-pages-read','cloud-chunk-validation','cloud-snapshot-assembly','cloud-snapshot-hash','cloud-snapshot-parse','cloud-manifest-read','cloud-sync-mode-read','cloud-read','cloud-read-error','cloud-write-complete','cloud-write-error',
  'curriculum-install-save-requested','delta-auto-downgrade-result','delta-snapshot-downgrade-result','delta-sync-result','delta-recovery-verification','diagnostics-enabled','entity-projection-rebuild','entity-sync-result','initialize-after-cloud-read',
- 'initialize-error','initialize-finished','initialize-local-fallback','initialize-settled','initialize-start','initialize-status-watchdog','initialize-sync-deadline','initialize-stale-status-recovered',
+ 'initialize-error','initialize-finished','initialize-local-fallback','initialize-settled','initialize-start','initialize-status-watchdog','initialize-sync-deadline','initialize-stale-status-recovered','sync-verification-watchdog',
  'account-handoff-checkpoint-failed','account-handoff-outgoing-checkpoint','online-account-workspace-restored','local-save-queue-error',
  'local-save-queued','local-storage-flush','offline-account-base-unavailable','offline-account-pending-unavailable',
  'offline-account-queue-rebuilt','offline-account-recovery-error','offline-account-workspace-restored',
@@ -338,7 +339,7 @@ function setCloudStatus(value){
  const busy=/^(connecting|loading account|checking local and cloud data|comparing local and cloud data|restoring account workspace|reconciling cloud changes|syncing|opening google sign-in|preparing email sign-in|preparing snapshot downgrade)\b/i.test(text);
  node.setAttribute('aria-busy',String(busy));
 }
-const el=id=>document.getElementById(id),status=m=>{setCloudStatus(m);if(m==='Synced')clearRetry();},say=m=>{if(el('cloudHelpText'))el('cloudHelpText').textContent=normalizeSyncUiText(m);updateConflictRecoveryButton();},config=()=>{if(isPreviewDeploymentOrigin())return {...STAGING_CONFIG};try{return {...DEFAULT_CONFIG,...JSON.parse(localStorage.getItem(CFG_KEY)||'{}')}}catch(_){return {...DEFAULT_CONFIG}}};
+const el=id=>document.getElementById(id),status=m=>{setCloudStatus(m);if(m==='Synced'){clearRetry();clearSyncVerificationWatchdog(true);}},say=m=>{if(el('cloudHelpText'))el('cloudHelpText').textContent=normalizeSyncUiText(m);updateConflictRecoveryButton();},config=()=>{if(isPreviewDeploymentOrigin())return {...STAGING_CONFIG};try{return {...DEFAULT_CONFIG,...JSON.parse(localStorage.getItem(CFG_KEY)||'{}')}}catch(_){return {...DEFAULT_CONFIG}}};
 // The callback must return to the exact deployment that initiated sign-in. If Supabase rejects this origin, fix its redirect allow-list; do not pin a callback to an older preview.
 function authRedirectUrl(){const target=new URL(location.pathname,location.origin);target.search='';target.hash='';return target.href;}
 function conflictRecoveryOwner(){return session&&session.user&&session.user.id||localStorage.getItem(OWNER_KEY)||'';}
@@ -2527,6 +2528,39 @@ function upload(){
  task.then(release,release);
  return task;
 }
+function clearSyncVerificationWatchdog(resetDelayedOwner=false){
+ if(syncVerificationWatchdog)clearTimeout(syncVerificationWatchdog);
+ syncVerificationWatchdog=null;syncVerificationWatchdogOwner='';
+ if(resetDelayedOwner)syncVerificationDelayedOwner='';
+}
+function startSyncVerificationWatchdog(ownerId,epoch){
+ if(!ownerId||syncVerificationDelayedOwner===ownerId||
+    (syncVerificationWatchdog&&syncVerificationWatchdogOwner===ownerId))return;
+ clearSyncVerificationWatchdog(false);
+ syncVerificationWatchdogOwner=ownerId;
+ syncVerificationWatchdog=setTimeout(()=>{
+  if(syncVerificationWatchdogOwner!==ownerId)return;
+  syncVerificationWatchdog=null;syncVerificationWatchdogOwner='';
+  if(sessionEpoch!==epoch||!session||!session.user||session.user.id!==ownerId)return;
+  const currentStatus=normalizeSyncUiText(el('cloudStatus')?el('cloudStatus').textContent:'').trim();
+  if(currentStatus==='Synced')return;
+  const ownerMatches=localStorage.getItem(OWNER_KEY)===ownerId;
+  const localReady=!!(ready&&ownerMatches);
+  const statusAfterWatchdog=localReady?'Sync pending':'Account verification delayed';
+  syncVerificationDelayedOwner=ownerId;
+  status(statusAfterWatchdog);
+  say(localReady
+   ?'The workspace is available locally, but cloud verification is taking longer than expected. Pending edits remain preserved; Nexus will continue bounded retries. Keep this browser’s data.'
+   :'Account verification is taking longer than expected. The previous account remains isolated; Nexus will continue retrying without exposing unverified workspace data.');
+  const retry=scheduleRetry();
+  syncDiag('sync-verification-watchdog',diagnosticWorkspace(),{
+   ready:!!ready,ownerMatches,watchdogOutcome:localReady?'local-ready-unverified':'account-verification-delayed',
+   statusAfterWatchdog,retryScheduled:!!(retry&&retry.scheduled),
+   retryDelayMs:retry&&Number.isSafeInteger(retry.delayMs)?retry.delayMs:null,
+   retryAttempt:retry&&Number.isSafeInteger(retry.attempt)?retry.attempt:null
+  });
+ },30000);
+}
 function setUploadInProgressStatus(){
  const statusElement=el('cloudStatus');
  const currentStatus=String(statusElement&&statusElement.textContent||'').trim();
@@ -2538,7 +2572,7 @@ async function performUpload(){
  const uploadUserId=session.user.id,uploadEpoch=sessionEpoch;
  async function assertUploadOwner(){await assertActiveUser(uploadUserId,uploadEpoch);if(localStorage.getItem(OWNER_KEY)!==uploadUserId)throw syncCancelledError('The local workspace owner changed during sync.');}
  if(localStorage.getItem(OWNER_KEY)!==uploadUserId){ready=false;status('Account queue paused');say('The active account does not own this local workspace. No cloud write was attempted. Reconnect to the correct account.');return false;}
- syncing=true;syncingEpoch=uploadEpoch;setUploadInProgressStatus();syncDiag('upload-start',diagnosticWorkspace(),{hasQueue:!!window.NexusOfflineSyncQueue});
+ syncing=true;syncingEpoch=uploadEpoch;setUploadInProgressStatus();startSyncVerificationWatchdog(uploadUserId,uploadEpoch);syncDiag('upload-start',diagnosticWorkspace(),{hasQueue:!!window.NexusOfflineSyncQueue});
  const uploadScope=createSyncAbortScope();activeUploadScope=uploadScope;
  let uploaded=false,retryReconcileAfterConflict=false,attemptedPayload=null,attemptedOperationId=null,attemptedBase=null,attemptedPriorStamp=null;
  const queue=window.NexusOfflineSyncQueue;
@@ -3008,7 +3042,7 @@ function rotateSessionContext(nextSession){
  // its abort-scoped promise remains fenced by the captured owner/epoch and cannot
  // clear or overwrite a newer account's slot when its finally block runs.
  activeUploadScope=null;syncing=false;syncingEpoch=null;activeUploadPromises.clear();
- connectAttemptId++;connectPromise=null;clearTimeout(timer);clearRetry();pendingSync=false;
+ connectAttemptId++;connectPromise=null;clearTimeout(timer);clearRetry();clearSyncVerificationWatchdog(true);pendingSync=false;
  hostedDeltaPollingEnabled=false;clearDeltaRemotePoll();ready=false;
  return sessionEpoch;
 }
