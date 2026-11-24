@@ -2841,8 +2841,10 @@ for(const failure of [
   assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.pendingOutboxProof.throughSequence,1);
   assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.pendingOutboxOverlayApplied,true);
   assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.pendingLocalChangeCount,1);
-  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.remotePayloadMatches,true);
-  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.remotePayloadDigestMatches,true);
+  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.remoteReadbackVerified,true);
+  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.remotePayloadDigest,
+    fixture.proofAtCommit().publication.remoteReadbackProof.candidateDigest,
+    'the remote snapshot digest must equal the exact prepared candidate digest');
   assert.equal(fixture.proofAtCommit().pendingOutboxProof.digest,'d'.repeat(64));
   assert.equal(fixture.intent().pendingOutboxProof.throughSequence,1);
   assert.equal(fixture.outbox().length,0,
@@ -2875,8 +2877,10 @@ for(const failure of [
   assert.equal(fixture.remoteSnapshot().payload.state.topics[0].notes,'x'+'n'.repeat(99));
   assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.pendingOutboxOverlayApplied,true);
   assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.pendingLocalChangeCount,1);
-  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.remotePayloadMatches,true);
-  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.remotePayloadDigestMatches,true);
+  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.remoteReadbackVerified,true);
+  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.remotePayloadDigest,
+    fixture.proofAtCommit().publication.remoteReadbackProof.candidateDigest,
+    'the remote snapshot digest must equal the exact prepared candidate digest');
   assert.equal(fixture.outbox().length,0,
     'the outbox may be cleared only after the exact remote read-back proof and local commit');
   assert.equal(fixture.committed(),true);
