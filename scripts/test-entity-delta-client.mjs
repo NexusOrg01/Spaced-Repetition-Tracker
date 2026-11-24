@@ -2739,7 +2739,7 @@ for(const failure of [
   {staleOwner:true},
   {staleRevision:true},
   {mutatePendingOnReadback:true},
-  {mutateOutboxOnReadback:true}
+  {outboxOnly:true,mutateOutboxOnReadback:true}
 ]){
   const fixture=makeParkedRecoveryFixture(failure);
   const result=await fixture.client.publishConflictRecovery('account-A',{
@@ -2762,7 +2762,13 @@ for(const failure of [
       'a post-publication outbox mutation must be rejected by the second exact proof check');
   }
   assert.equal(fixture.committed(),false,'pending state must not be archived without exact remote proof: '+JSON.stringify(failure));
-  assert.equal(fixture.pending().status,'pending','the parked snapshot must remain pending after failed verification');
+  if(failure.outboxOnly){
+    assert.equal(fixture.outbox().length,1,
+      'the mutated parked outbox group must remain present after failed remote verification');
+    assert.equal(fixture.outbox()[0].changes[0].value.name,'CHANGED-DURING-READBACK');
+  }else{
+    assert.equal(fixture.pending().status,'pending','the parked snapshot must remain pending after failed verification');
+  }
 }
 
 
