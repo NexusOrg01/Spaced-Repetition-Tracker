@@ -498,12 +498,16 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'the first outbox page must return the oldest unacknowledged sequence');
   assert.deepEqual(secondOutboxPage.map(item=>item.sequence),[2],
     'the next outbox page must resume strictly after the supplied sequence cursor');
-  const boundedOutboxQueries=idb.rangeQueries.filter(query=>query.store==='outbox'&&query.count===1);
+  const boundedOutboxQueries=idb.rangeQueries.filter(query=>
+    query.store==='outbox'&&query.count===1&&String(query.lower||'').includes(':seq:'));
   assert.equal(boundedOutboxQueries.length,2,
     'both paged outbox reads must apply the row limit inside the IndexedDB request');
   assert.ok(boundedOutboxQueries[0].lower.endsWith(':seq:0000000000000001')&&
     boundedOutboxQueries[1].lower.endsWith(':seq:0000000000000002'),
     'paged outbox reads must use sequence-key ranges instead of scanning older owner records');
+  assert.ok(idb.rangeQueries.some(query=>
+    query.store==='outbox'&&query.count===1&&!String(query.lower||'').includes(':seq:')),
+    'normal projection replacement must issue a separate owner-bounded pending-outbox preflight');
   const outboxRows=idb.databases.get('nexus-workspace-v1').stores.get('outbox');
   const operationMarkerKey='workspace-entity-change:'+encodeURIComponent('entity-owner-a')+
     ':op:'+encodeURIComponent('entity-op-review-001');
@@ -2592,10 +2596,22 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     collection:'topics',id:'dla09-topic',operation:'put',position:0,value:parkedValue
   }],{operationId:'dla09-parked-operation'});
   assert.equal(pending.count,1);
+  const migrationMetaStore=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  const cursorKey=[...migrationMetaStore.keys()].find(key=>
+    String(key).includes(encodeURIComponent(owner))&&String(key).includes('cursor'));
+  assert.ok(cursorKey,'the owner-bound Delta cursor record must exist');
+  const staleCursor={...migrationMetaStore.get(cursorKey),generation:'stale-generation-before-recovery'};
+  migrationMetaStore.set(cursorKey,staleCursor);
+  const fastCursor=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(fastCursor.ok,false,'the normal cursor reader must fail closed on a generation mismatch');
+  assert.equal(fastCursor.reason,'local_delta_cursor_mismatch');
   const before=await loaded.api.readWorkspaceEntityDeltaRecoveryState(owner);
-  assert.equal(before.ok,true,'the parked outbox must be readable before recovery begins');
+  assert.equal(before.ok,true,'the recovery reader must still expose the parked outbox on cursor mismatch');
+  assert.equal(before.generationMismatch,true);
+  assert.equal(before.ownerId,owner);
   assert.equal(before.outbox.groupCount,1);
   assert.equal(before.outbox.groups[0].operationId,'dla09-parked-operation');
+  assert.equal(before.cursor.generation,'stale-generation-before-recovery');
   assert.equal(before.cursor.acknowledgedSequence,0);
   const proof={
     ownerId:owner,activeGeneration:before.activeGeneration,
@@ -2663,15 +2679,23 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'the owner write lock must remain held while the recovery journal is pending');
   const after=await loaded.api.readWorkspaceEntityDeltaRecoveryState(owner);
   assert.equal(after.ok,true,'the recovery reader must still expose the preserved outbox after staging abort');
+  assert.equal(after.ownerId,owner);
   assert.equal(after.activeGeneration,before.activeGeneration);
-  assert.equal(after.outbox.ownerId,owner);
-  assert.equal(after.outbox.generation,before.activeGeneration);
+  assert.equal(after.generationMismatch,true);
+  assert.equal(after.cursor.generation,'stale-generation-before-recovery');
   assert.equal(after.outbox.groupCount,1);
   assert.equal(after.outbox.digest,before.outbox.digest);
   assert.equal(after.cursor.acknowledgedSequence,before.cursor.acknowledgedSequence,
     'an interrupted stage must not advance the acknowledged cursor sequence');
   assert.equal(after.outbox.groups[0].operationId,'dla09-parked-operation');
   assert.deepEqual(after.outbox.groups[0].changes[0].value,parkedValue);
+  const outboxStore=idb.databases.get('nexus-workspace-v1').stores.get('outbox');
+  const markerKey='workspace-entity-change:'+encodeURIComponent(owner)+
+    ':op:'+encodeURIComponent('dla09-parked-operation');
+  const marker=outboxStore.get(markerKey);
+  assert.ok(marker,'the exact operation marker must remain physically durable after cancellation');
+  assert.equal(marker.ownerId,owner);
+  assert.equal(marker.generation,before.activeGeneration);
   const activeAfter=await loaded.api.readWorkspaceEntities(owner);
   assert.equal(activeAfter.generation,before.activeGeneration);
   assert.equal(activeAfter.state.topics[0].name,'PARKED LOCAL EDIT',
@@ -2686,7 +2710,9 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(restartedIntent.intent.phase,'prepared');
   const afterRestart=await restarted.api.readWorkspaceEntityDeltaRecoveryState(owner);
   assert.equal(afterRestart.ok,true);
+  assert.equal(afterRestart.generationMismatch,true);
   assert.equal(afterRestart.outbox.digest,before.outbox.digest);
+  assert.equal(afterRestart.cursor.generation,'stale-generation-before-recovery');
   assert.equal(afterRestart.cursor.acknowledgedSequence,before.cursor.acknowledgedSequence);
   assert.equal(afterRestart.outbox.groups[0].changes[0].value.notes,parkedValue.notes);
 
@@ -2711,7 +2737,11 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   ]);
   const afterReturn=await restarted.api.readWorkspaceEntityDeltaRecoveryState(owner);
   assert.equal(afterReturn.ok,true);
+  assert.equal(afterReturn.ownerId,owner);
+  assert.equal(afterReturn.activeGeneration,before.activeGeneration);
+  assert.equal(afterReturn.generationMismatch,true);
   assert.equal(afterReturn.outbox.digest,before.outbox.digest);
+  assert.equal(afterReturn.cursor.generation,'stale-generation-before-recovery');
   assert.equal(afterReturn.cursor.acknowledgedSequence,before.cursor.acknowledgedSequence);
   assert.deepEqual(afterReturn.outbox.groups[0].changes[0].value,parkedValue);
   const finalActive=await restarted.api.readWorkspaceEntities(owner);

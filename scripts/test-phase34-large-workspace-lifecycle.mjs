@@ -2722,9 +2722,10 @@ try {
             outboxRecoveryStateOk:!!recoveryState&&recoveryState.ok===true,
             outboxRecoveryStateReason:recoveryState&&recoveryState.reason||null,
             cursorReadReason:cursorResult&&cursorResult.reason||null,
-            outboxOwnerMatches:!!outbox&&outbox.ownerId===context.ownerA,
-            outboxGenerationMatches:!!outbox&&outbox.generation===context.projectionGeneration,
+            outboxOwnerMatches:!!recoveryState&&recoveryState.ok===true&&recoveryState.ownerId===context.ownerA,
+            outboxGenerationMatches:!!recoveryState&&recoveryState.ok===true&&recoveryState.activeGeneration===context.projectionGeneration,
             cursorGenerationMatches:!!cursor&&cursor.generation===context.projectionGeneration,
+            cursorGenerationMismatchExpected:!!recoveryState&&recoveryState.generationMismatch===true,
             cursorAcknowledgedSequenceUnchanged:!!cursor&&
               Number(cursor.acknowledgedSequence)===context.cursorAcknowledgedSequence,
             pendingOutboxGroupCount:Number(outbox&&outbox.groupCount)||0,
