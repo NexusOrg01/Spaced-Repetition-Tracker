@@ -2662,7 +2662,7 @@ function makeParkedRecoveryFixture(options={}){
         pendingOutboxProof:intent&&intent.pendingOutboxProof||null,
         remoteSnapshot:{...remoteSnapshot,payload:JSON.parse(JSON.stringify(remoteSnapshot.payload))},
         state:{...state}};
-      if((options.outboxOnly||options.cursorMismatchWithPending)&&
+      if((options.outboxOnly||options.outboxCurrentCursor||options.cursorMismatchWithPending)&&
          (!intent||!intent.pendingOutboxProof||
           candidate.state.topics[0].name!=='PARKED-EDIT'||
           candidate.state.topics[0].notes!==expectedNotes||
@@ -2673,7 +2673,7 @@ function makeParkedRecoveryFixture(options={}){
         return {ok:false,reason:'pending_outbox_candidate_or_remote_snapshot_proof_missing'};
       }
       committed=true;
-      if(options.outboxOnly||options.cursorMismatchWithPending){
+      if(options.outboxOnly||options.outboxCurrentCursor||options.cursorMismatchWithPending){
         outboxCommitted=true;outboxGroups=[];currentPending=null;
       }
       active={...staged,pending:false};
