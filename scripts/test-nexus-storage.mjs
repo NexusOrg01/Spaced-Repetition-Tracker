@@ -1005,7 +1005,22 @@ assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',
   // operation group. The pending-outbox replacement guard is exercised above,
   // where the exact owner-bound group is retained and checked after rejection.
 
-  // Simulate closing the page after its durable compatibility snapshots commit,
+  // The earlier incremental tests deliberately created local-only operations.
+// They are synthetic fixture data, so acknowledge them explicitly after their
+// preservation/merge assertions and before this independent missed-startup-sync
+// scenario. This avoids asking a normal projection rebuild to discard live outbox.
+const fixtureOutboxRows=await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10000);
+const fixtureOutboxThrough=fixtureOutboxRows.reduce((maximum,row)=>
+  Math.max(maximum,Number(row&&row.sequence)||0),0);
+if(fixtureOutboxThrough>0){
+  assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',fixtureOutboxThrough),
+    fixtureOutboxRows.length,
+    'the isolated fixture must explicitly clear its synthetic operations after their assertions');
+}
+assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10000)).length,0,
+  'the independent missed-sync fixture must begin without pending outbox operations');
+
+// Simulate closing the page after its durable compatibility snapshots commit,
   // but before syncWorkspaceEntities is called. On the next launch, an empty
   // startup delta must detect the version gap and rebuild from the snapshots.
   const missedSyncTopic={id:'topic-missed-entity-sync',subjectId:'subject-1',name:'Committed before page close'};
