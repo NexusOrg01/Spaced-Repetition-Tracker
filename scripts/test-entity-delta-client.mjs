@@ -2815,10 +2815,9 @@ for(const failure of [
     'a retried publication must preserve the exact parked notes value');
 }
 
-// A stale cursor generation must reconstruct the parked edit from the durable
-// owner-scoped Delta outbox, prove the active projection matches those operations,
-// and read the exact published candidate back before the storage layer may advance
-// the acknowledged sequence and prune the outbox.
+// A stale cursor generation must validate every parked operation against the
+// owner-scoped active projection and read the exact published candidate back before
+// the storage layer may advance the acknowledged sequence and prune the outbox.
 {
   const fixture=makeParkedRecoveryFixture({outboxOnly:true});
   const prepared=await fixture.client.prepareConflictRecovery('account-A');
@@ -2893,6 +2892,42 @@ for(const failure of [
     'the remote snapshot digest must equal the exact prepared candidate digest');
   assert.equal(fixture.outbox().length,0,
     'the outbox may be cleared only after the exact remote read-back proof and local commit');
+  assert.equal(fixture.committed(),true);
+}
+
+
+// A parked compatibility snapshot may carry additional local state that is not
+// represented by the single pending Delta group. The outbox must match its exact
+// operation in the active projection, while the complete owner/revision-bound
+// snapshot remains the merge source and is preserved in the remote read-back.
+{
+  const fixture=makeParkedRecoveryFixture({
+    outboxCurrentCursor:true,includePendingSnapshot:true,extraLocalTopic:true
+  });
+  const prepared=await fixture.client.prepareConflictRecovery('account-A');
+  assert.equal(prepared.ok,true,
+    'a complete pending snapshot must remain recoverable when the outbox is only an operation witness: '+JSON.stringify(prepared));
+  assert.equal(prepared.pendingSnapshotIncluded,true);
+  assert.equal(prepared.pendingOutboxIncluded,true);
+  assert.equal(prepared.pendingOutboxProof.groupCount,1);
+  assert.equal(prepared.pendingLocalChangesPreserved,true);
+  assert.equal(prepared.pendingLocalChangeCount,1);
+  assert.equal(prepared.payload.state.topics.some(row=>row.id==='extra-local-topic'),true,
+    'local snapshot state outside the current outbox group must remain in the recovery candidate');
+  assert.equal(fixture.pending().status,'pending');
+  assert.equal(fixture.outbox().length,1);
+  const result=await fixture.client.publishConflictRecovery('account-A');
+  assert.equal(result.ok,true,
+    'the full pending snapshot and parked outbox operation must be published and read back: '+JSON.stringify(result));
+  const remoteTopics=fixture.remoteSnapshot().payload.state.topics;
+  assert.equal(remoteTopics.find(row=>row.id==='parked-topic').name,'PARKED-EDIT');
+  assert.equal(remoteTopics.find(row=>row.id==='parked-topic').notes,'x'+'n'.repeat(99));
+  assert.equal(remoteTopics.find(row=>row.id==='extra-local-topic').notes,'preserve-from-pending-snapshot');
+  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.remoteReadbackVerified,true);
+  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.remotePayloadDigest,
+    fixture.proofAtCommit().publication.remoteReadbackProof.candidateDigest);
+  assert.equal(fixture.pending(),null,'the compatibility snapshot is acknowledged only after remote read-back');
+  assert.equal(fixture.outbox().length,0,'the outbox is pruned only after remote read-back and local commit');
   assert.equal(fixture.committed(),true);
 }
 
