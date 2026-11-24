@@ -2832,11 +2832,17 @@ for(const failure of [
     'the exact outbox-backed edit should be published and read back before local commit: '+JSON.stringify(result));
   assert.equal(fixture.publishedCandidate().state.topics[0].name,'PARKED-EDIT');
   assert.equal(fixture.publishedCandidate().state.topics[0].notes,'x'+'n'.repeat(99));
+  assert.equal(fixture.remoteSnapshot().payload.state.topics[0].name,'PARKED-EDIT',
+    'the exact parked edit must exist in the remote snapshot, not only the local candidate');
+  assert.equal(fixture.remoteSnapshot().payload.state.topics[0].notes,'x'+'n'.repeat(99),
+    'the remote snapshot must contain the exact parked notes value before acknowledgement');
   assert.equal(fixture.proofAtCommit().candidate.state.topics[0].name,'PARKED-EDIT');
   assert.equal(fixture.proofAtCommit().candidate.state.topics[0].notes,'x'+'n'.repeat(99));
   assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.pendingOutboxProof.throughSequence,1);
   assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.pendingOutboxOverlayApplied,true);
   assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.pendingLocalChangeCount,1);
+  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.remotePayloadMatches,true);
+  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.remotePayloadDigestMatches,true);
   assert.equal(fixture.proofAtCommit().pendingOutboxProof.digest,'d'.repeat(64));
   assert.equal(fixture.intent().pendingOutboxProof.throughSequence,1);
   assert.equal(fixture.outbox().length,0,
@@ -2864,8 +2870,13 @@ for(const failure of [
   assert.equal(result.ok,true,
     'the current-generation outbox edit must be published and read back before local commit: '+JSON.stringify(result));
   assert.equal(fixture.publishedCandidate().state.topics[0].name,'PARKED-EDIT');
+  assert.equal(fixture.remoteSnapshot().payload.state.topics[0].name,'PARKED-EDIT',
+    'the current-generation conflict path must read back the exact parked edit from the remote snapshot');
+  assert.equal(fixture.remoteSnapshot().payload.state.topics[0].notes,'x'+'n'.repeat(99));
   assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.pendingOutboxOverlayApplied,true);
   assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.pendingLocalChangeCount,1);
+  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.remotePayloadMatches,true);
+  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.remotePayloadDigestMatches,true);
   assert.equal(fixture.outbox().length,0,
     'the outbox may be cleared only after the exact remote read-back proof and local commit');
   assert.equal(fixture.committed(),true);
