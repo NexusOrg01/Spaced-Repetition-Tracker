@@ -2826,6 +2826,9 @@ for(const failure of [
   assert.equal(prepared.pendingOutboxProof.throughSequence,1);
   assert.equal(prepared.pendingOutboxOverlayApplied,true);
   assert.equal(prepared.pendingLocalChangeCount,1);
+  assert.equal(fixture.outbox().length,1,
+    'the pending outbox must remain intact before remote snapshot read-back and local commit');
+  assert.equal(fixture.committed(),false);
   assert.equal(prepared.payload.state.topics[0].name,'PARKED-EDIT');
   const result=await fixture.client.publishConflictRecovery('account-A');
   assert.equal(result.ok,true,
@@ -2866,6 +2869,9 @@ for(const failure of [
   assert.equal(prepared.pendingOutboxProof.groupCount,1);
   assert.equal(prepared.pendingOutboxOverlayApplied,true);
   assert.equal(prepared.pendingLocalChangeCount,1);
+  assert.equal(fixture.outbox().length,1,
+    'the current-generation pending outbox must not be acknowledged before read-back');
+  assert.equal(fixture.committed(),false);
   assert.equal(prepared.payload.state.topics[0].name,'PARKED-EDIT');
   assert.equal(prepared.payload.state.topics[0].notes,'x'+'n'.repeat(99));
   const result=await fixture.client.publishConflictRecovery('account-A');
