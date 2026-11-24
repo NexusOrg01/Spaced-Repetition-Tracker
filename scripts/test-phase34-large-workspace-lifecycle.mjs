@@ -2587,8 +2587,17 @@ try {
           'projectionSerializationDurationMs']) {
           if (Number.isSafeInteger(event[key]) && event[key] >= 0) row[key] = event[key];
         }
-        for (const key of ['ok','ready','ownerVerified','timedOut','chunkDataIncluded']) {
+        for (const key of ['ok','ready','ownerVerified','timedOut','chunkDataIncluded',
+          'retryable','snapshotRequired','candidateDigestMatches','expectedHeadRevisionMatches',
+          'snapshotRevisionMatches','baseUpdatedAtMatches','exactAlreadyPublishedSnapshotMatches',
+          'remotePayloadMatches','remotePayloadDigestMatches','remoteStateMatches','remoteUpdatedAtMatches',
+          'remoteSnapshotRevisionMatches','remoteHeadRevisionMatches','remoteCompactedThroughMatches',
+          'pendingOutboxProofPresent','pendingOutboxOverlayApplied','pendingLocalChangesPreserved',
+          'remoteReadbackVerified']) {
           if (typeof event[key] === 'boolean') row[key] = event[key];
+        }
+        for (const key of ['recoveryStep','progressPhase','failureReason','recoveryReason']) {
+          if (typeof event[key] === 'string') row[key] = event[key];
         }
         return row;
       });
