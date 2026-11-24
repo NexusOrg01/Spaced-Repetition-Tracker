@@ -1001,15 +1001,9 @@ assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',
     revisionGapRead.featureState.papers.some(row=>row.id===gapPaper.id),
     'snapshot backfill must retain Study Hub records from every missed revision');
 
-  // A queued entity delta from the old projection must not be published after a
-  // newer compatibility snapshot commits but before its projection backfill runs.
-  const staleOutboxTopic={id:'topic-stale-entity-outbox',subjectId:'subject-1',name:'Superseded before projection sync'};
-  await loaded.api.writeWorkspaceEntityChanges('entity-owner-a',[
-    {collection:'topics',id:staleOutboxTopic.id,operation:'put',position:null,value:staleOutboxTopic}
-  ],{operationId:'stale-outbox-before-snapshot-replacement'});
-  const currentEntityOutbox=await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10);
-  assert.ok(currentEntityOutbox.some(row=>row.operationId==='stale-outbox-before-snapshot-replacement'),
-    'a current-generation entity delta must be readable before a newer snapshot is committed');
+  // The next page-close fixture isolates a missed entity sync with no pending
+  // operation group. The pending-outbox replacement guard is exercised above,
+  // where the exact owner-bound group is retained and checked after rejection.
 
   // Simulate closing the page after its durable compatibility snapshots commit,
   // but before syncWorkspaceEntities is called. On the next launch, an empty
