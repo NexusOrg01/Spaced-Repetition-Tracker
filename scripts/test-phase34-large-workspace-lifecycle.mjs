@@ -1525,7 +1525,7 @@ try {
     }
     try { await route.continue(); } catch (_) {}
   };
-  const initialAReadPattern = /\/rest\/v1\/rpc\/nexus_read_entity_operations(?:\?|$)/;
+  const initialAReadPattern = /\/rest\/v1\/rpc\/(?:nexus_get_entity_sync_state|nexus_read_entity_operations|nexus_publish_entity_snapshot)(?:\?|$)/;
 
   // The initial page load has already verified Account A's current Delta head.
   // Advance the disposable server by one independent operation. Account A's
@@ -1909,11 +1909,13 @@ try {
              event.progressPhase === 'completed')) &&
           event.remoteReadbackVerified === true &&
           event.pendingLocalChangesPreserved === true &&
+          event.pendingOutboxOverlayApplied === true &&
           Number(event.pendingLocalSequence) === Number(pending.localSequence) &&
           Number.isSafeInteger(Number(event.pendingLocalChangeCount))
         ) : null;
         return event ? {
           pendingLocalChangesPreserved: true,
+          pendingOutboxOverlayApplied: true,
           pendingLocalChangeCount: Number(event.pendingLocalChangeCount)
         } : null;
       } catch (_) { return null; }
@@ -1927,6 +1929,7 @@ try {
             pendingBefore: true,
             remoteReadbackVerifiedBeforeAck: !!proof,
             pendingLocalChangesPreservedBeforeAck: !!proof?.pendingLocalChangesPreserved,
+            pendingOutboxOverlayAppliedBeforeAck: !!proof?.pendingOutboxOverlayApplied,
             pendingLocalChangeCountBeforeAck: proof?.pendingLocalChangeCount ?? null,
             pendingLocalSequence: Number(pending.localSequence)
           });
@@ -1943,6 +1946,7 @@ try {
             pendingBefore: true,
             remoteReadbackVerifiedBeforeCommit: !!proof,
             pendingLocalChangesPreservedBeforeCommit: !!proof?.pendingLocalChangesPreserved,
+            pendingOutboxOverlayAppliedBeforeCommit: !!proof?.pendingOutboxOverlayApplied,
             pendingLocalChangeCountBeforeCommit: proof?.pendingLocalChangeCount ?? null,
             pendingLocalSequence: Number(pending.localSequence)
           });
@@ -1965,10 +1969,21 @@ try {
     'The A→B→A acceptance run must execute in an online browser context.');
   let returnAReadHeld = false;
   let releaseReturnARead = null;
+  let returnAReadRpc = null;
   const holdReturnARead = async route => {
     const requestUrl = new URL(route.request().url());
-    if (!returnAReadHeld && requestUrl.pathname === '/rest/v1/rpc/nexus_read_entity_operations') {
+    const rpc = requestUrl.pathname.split('/').pop();
+    const recoveryStarted = await page.evaluate(() => {
+      try {
+        const events = JSON.parse(localStorage.getItem('nexus.syncdiag.session.v1') || '[]');
+        return Array.isArray(events) && events.some(event => event && event.stage === 'snapshot-recovery-start');
+      } catch (_) { return false; }
+    });
+    if (!returnAReadHeld && recoveryStarted &&
+        ['nexus_get_entity_sync_state','nexus_read_entity_operations','nexus_publish_entity_snapshot'].includes(rpc)) {
       returnAReadHeld = true;
+      returnAReadRpc = rpc;
+      console.log('DLA09E_RETURN_A_READ_HELD=' + JSON.stringify({account:'A',rpc}));
       await new Promise(resolve => { releaseReturnARead = resolve; });
     }
     try { await route.continue(); } catch (_) {}
@@ -2025,7 +2040,7 @@ try {
   // usable and its views can render before cloud verification reaches Synced.
   let navigationDuringSyncEvidence = null;
   try {
-    for (let i = 0; i < 400 && !returnAReadHeld; i++) await page.waitForTimeout(25);
+    for (let i = 0; i < 2400 && !returnAReadHeld; i++) await page.waitForTimeout(25);
     assert.equal(returnAReadHeld, true,
       'the returning Account A sync must reach the deliberately held authenticated remote-read boundary');
     const mismatchRecoveryStarted = await page.evaluate(({ ownerId, startedAt }) => {
@@ -2098,6 +2113,7 @@ try {
       views: navigationViews,
       durationMs: navigationDuringSyncMs,
       ownerVerified: navigationState.workspaceAuth === 'ready' && navigationState.owner === ownerA,
+      remoteReadRpc: returnAReadRpc,
       statusWhileReadHeld: navigationState.status,
       finalView: navigationState.activeView,
       topicCards: navigationState.topicCards
@@ -2274,6 +2290,7 @@ try {
     pendingAckChecks.every(item =>
       (item.remoteReadbackVerifiedBeforeAck === true || item.remoteReadbackVerifiedBeforeCommit === true) &&
       (item.pendingLocalChangesPreservedBeforeAck === true || item.pendingLocalChangesPreservedBeforeCommit === true) &&
+      (item.pendingOutboxOverlayAppliedBeforeAck === true || item.pendingOutboxOverlayAppliedBeforeCommit === true) &&
       Number.isSafeInteger(Number(item.pendingLocalChangeCountBeforeAck ?? item.pendingLocalChangeCountBeforeCommit)) &&
       Number(item.pendingLocalChangeCountBeforeAck ?? item.pendingLocalChangeCountBeforeCommit) > 0
     );
@@ -2477,6 +2494,14 @@ try {
   assert.equal(accountBSyncStateAfterReturn.mode, 'snapshot',
     'Account B must remain outside Delta mode after its offline reconnect sync.');
   const accountARowAfterReturn = await readSnapshotRow(clientA1Restart, ownerA);
+  assert.equal(accountARowAfterReturn.updated_at,accountASyncStateAfterReturn.snapshot_updated_at,
+    'the remote snapshot row and authenticated sync-state proof must refer to the same committed timestamp');
+  assert.equal(Number(accountASyncStateAfterReturn.snapshot_revision),
+    Number(accountASyncStateAfterReturn.head_revision),
+    'the exact parked edit must be committed at the verified remote head revision');
+  assert.equal(Number(accountASyncStateAfterReturn.compacted_through_revision),
+    Number(accountASyncStateAfterReturn.snapshot_revision),
+    'the committed remote snapshot must compact through the verified revision');
   assert.equal(accountARowAfterReturn.payload.__nexusDeltaSync, 'entity-delta-v1');
   const accountAPayloadAfterReturn = await chunkStorage.readSnapshot(clientA1Restart, ownerA, accountARowAfterReturn.payload);
   assert.equal(accountAPayloadAfterReturn.state.topics.length, INITIAL_TOPICS,

@@ -2480,7 +2480,8 @@ function makeParkedRecoveryFixture(options={}){
   };
   // Reproduce the defect: the local base has the same server stamp but already
   // contains the parked edit. The authoritative remote snapshot at that stamp does not.
-  const staleLocalBase={...parkedPayload,serverVersion:'snapshot-stamp'};
+  const staleLocalBase={...parkedPayload,
+    serverVersion:options.baseServerVersion||options.pendingBaseVersion||'snapshot-stamp'};
   const remoteBaseline={
     ...payload,
     __nexusDeltaSync:'entity-delta-v1',
@@ -2488,19 +2489,22 @@ function makeParkedRecoveryFixture(options={}){
   };
   const pending=options.outboxOnly?null:{
     status:'pending',ownerUserId:owner,operationId:'parked-op-1',
-    localSequence:11,baseServerVersion:'snapshot-stamp',payload:parkedPayload
+    localSequence:11,baseServerVersion:options.pendingBaseVersion||'snapshot-stamp',payload:parkedPayload
   };
-  const state={mode:'delta',protocol_version:1,head_revision:0,snapshot_revision:0,
-    compacted_through_revision:0,snapshot_updated_at:'snapshot-stamp'};
-  let remoteSnapshot={payload:remoteBaseline,updated_at:'snapshot-stamp'};
+  const state={mode:'delta',protocol_version:1,
+    head_revision:Number(options.headRevision)||0,
+    snapshot_revision:Number(options.snapshotRevision)||0,
+    compacted_through_revision:Number(options.compactedThroughRevision)||0,
+    snapshot_updated_at:options.snapshotUpdatedAt||'snapshot-stamp'};
+  let remoteSnapshot={payload:remoteBaseline,updated_at:state.snapshot_updated_at};
   let currentPending=pending,staged=null,
-    active=options.outboxOnly?{ownerId:owner,generation:'generation-B',
+    active=(options.outboxOnly||options.cursorMismatchWithPending)?{ownerId:owner,generation:'generation-B',
       state:parkedPayload.state,featureState:parkedPayload.featureState,pending:false}:null,
     intent=null,completedIntent=null,committed=false,outboxCommitted=false;
   const parkedOutboxGroup={operationId:'parked-outbox-op-1',firstSequence:1,lastSequence:1,
     changeCount:1,changes:[{collection:'topics',id:'parked-topic',operation:'put',position:0,
       value:parkedTopic}]};
-  let outboxGroups=options.outboxOnly?[parkedOutboxGroup]:[];
+  let outboxGroups=(options.outboxOnly||options.cursorMismatchWithPending)?[parkedOutboxGroup]:[];
   let outboxDigest='d'.repeat(64);
   let publishedCandidate=null,readSnapshotCount=0,proofAtCommit=null;
   const storage={
@@ -2530,7 +2534,10 @@ function makeParkedRecoveryFixture(options={}){
       if(intent.pendingSnapshotProof||intent.pendingOutboxProof){
         const proof=publication&&publication.remoteReadbackProof;
         if(!proof||proof.proofVersion!==1||proof.remoteReadbackVerified!==true||
-           proof.pendingLocalChangesPreserved!==true||proof.ownerId!==targetOwner||
+           proof.pendingLocalChangesPreserved!==true||
+           (intent.pendingOutboxProof&&Number(intent.pendingOutboxProof.groupCount)>0&&
+             (proof.pendingOutboxOverlayApplied!==true||Number(proof.pendingLocalChangeCount)<=0))||
+           proof.ownerId!==targetOwner||
            proof.candidateDigest!==intent.candidateDigest||
            proof.remotePayloadDigest!==intent.candidateDigest||
            proof.snapshotUpdatedAt!==publication.updated_at||
@@ -2547,22 +2554,25 @@ function makeParkedRecoveryFixture(options={}){
     },
     async commitWorkspaceEntityRecovery(){return {ok:true};},
     async readWorkspaceEntityDeltaCursor(){
-      if(options.outboxOnly&&!outboxCommitted){
+      if((options.outboxOnly||options.cursorMismatchWithPending)&&!outboxCommitted){
         return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_mismatch'};
       }
-      return {ok:true,cursor:{generation:'generation-B',publishRevision:0,
-        acknowledgedSequence:outboxCommitted?1:0,snapshotUpdatedAt:committed
-          ?'snapshot-stamp-2':'snapshot-stamp',remoteHeadRevision:0,requiresPull:false},
+      return {ok:true,cursor:{generation:'generation-B',publishRevision:committed
+          ?Number(state.snapshot_revision):0,
+        acknowledgedSequence:outboxCommitted?1:0,snapshotUpdatedAt:state.snapshot_updated_at,
+        remoteHeadRevision:committed?Number(state.head_revision):0,requiresPull:false},
         generation:'generation-B'};
     },
     async readWorkspaceEntityDeltaRecoveryState(){
-      const recoveryActive=!!(options.outboxOnly&&!outboxCommitted);
+      const recoveryActive=!!((options.outboxOnly||options.cursorMismatchWithPending)&&!outboxCommitted);
       const cursor=recoveryActive
         ?{generation:'generation-A',publishRevision:0,acknowledgedSequence:0,
-          remoteHeadRevision:0,snapshotUpdatedAt:'snapshot-stamp',requiresPull:false}
-        :{generation:'generation-B',publishRevision:0,acknowledgedSequence:outboxCommitted?1:0,
-          remoteHeadRevision:0,snapshotUpdatedAt:committed?'snapshot-stamp-2':'snapshot-stamp',
-          requiresPull:false};
+          remoteHeadRevision:0,snapshotUpdatedAt:state.snapshot_updated_at,
+          requiresPull:Number(state.head_revision)>0}
+        :{generation:'generation-B',publishRevision:committed?Number(state.snapshot_revision):0,
+          acknowledgedSequence:outboxCommitted?1:0,
+          remoteHeadRevision:committed?Number(state.head_revision):0,
+          snapshotUpdatedAt:state.snapshot_updated_at,requiresPull:false};
       const groups=recoveryActive?outboxGroups:[];
       return {ok:true,ownerId:owner,activeGeneration:'generation-B',
         generationMismatch:recoveryActive,workspaceRevision:2,cursor,
@@ -2575,7 +2585,7 @@ function makeParkedRecoveryFixture(options={}){
         outboxGroups.filter(group=>group.lastSequence>afterSequence),hasMore:false};
     }
   };
-  const h=harness({state,pendingSnapshot:pending});
+  const h=harness({state,pendingSnapshot:pending,readPage:options.readPage});
   const client=h.createClient({
     storage,
     getLocalBase:async()=>staleLocalBase,
@@ -2604,10 +2614,15 @@ function makeParkedRecoveryFixture(options={}){
     publishSnapshot:async(targetOwner,candidate,expectedHead,expectedStamp)=>{
       publishedCandidate=candidate;
       if(options.staleOwner)h.setActiveOwner('account-B');
+      const expectedRevision=Number(expectedHead);
       if(options.staleRevision){
-        state.snapshot_revision=1;state.head_revision=1;state.compacted_through_revision=1;
+        state.snapshot_revision=expectedRevision+1;
+        state.head_revision=expectedRevision+1;
+        state.compacted_through_revision=expectedRevision+1;
       }else{
-        state.snapshot_revision=0;state.head_revision=0;state.compacted_through_revision=0;
+        state.snapshot_revision=expectedRevision;
+        state.head_revision=expectedRevision;
+        state.compacted_through_revision=expectedRevision;
       }
       state.snapshot_updated_at='snapshot-stamp-2';
       // The authenticated sync-state RPC reads the harness-owned state object;
@@ -2619,20 +2634,29 @@ function makeParkedRecoveryFixture(options={}){
       };
       else if(options.readbackMode==='wrong-stamp')remoteSnapshot={payload:candidate,updated_at:'wrong-stamp'};
       else remoteSnapshot={payload:candidate,updated_at:'snapshot-stamp-2'};
-      return {verified:true,updated_at:'snapshot-stamp-2',snapshotRevision:0,
-        headRevision:0,compactedThroughRevision:0};
+      return {verified:true,updated_at:'snapshot-stamp-2',snapshotRevision:expectedRevision,
+        headRevision:expectedRevision,compactedThroughRevision:expectedRevision};
     },
     commitLocalRecovery:async(targetOwner,candidate,publication,conflicts,metadata)=>{
       proofAtCommit={owner:targetOwner,candidate,publication,metadata,
         pending:currentPending?{...currentPending}:null,
-        pendingOutboxProof:intent&&intent.pendingOutboxProof||null};
-      if(options.outboxOnly&&(!intent||!intent.pendingOutboxProof||
-         candidate.state.topics[0].name!=='PARKED-EDIT'||
-         candidate.state.topics[0].notes!==expectedNotes)){
-        return {ok:false,reason:'pending_outbox_candidate_or_proof_missing'};
+        pendingOutboxProof:intent&&intent.pendingOutboxProof||null,
+        remoteSnapshot:{...remoteSnapshot,payload:JSON.parse(JSON.stringify(remoteSnapshot.payload))},
+        state:{...state}};
+      if((options.outboxOnly||options.cursorMismatchWithPending)&&
+         (!intent||!intent.pendingOutboxProof||
+          candidate.state.topics[0].name!=='PARKED-EDIT'||
+          candidate.state.topics[0].notes!==expectedNotes||
+          remoteSnapshot.payload.state.topics.find(row=>row.id==='parked-topic')?.notes!==expectedNotes||
+          remoteSnapshot.updated_at!==publication.updated_at||
+          Number(publication.snapshotRevision)!==Number(publication.headRevision)||
+          Number(state.snapshot_revision)!==Number(publication.snapshotRevision))){
+        return {ok:false,reason:'pending_outbox_candidate_or_remote_snapshot_proof_missing'};
       }
       committed=true;
-      if(options.outboxOnly){outboxCommitted=true;outboxGroups=[];}
+      if(options.outboxOnly||options.cursorMismatchWithPending){
+        outboxCommitted=true;outboxGroups=[];currentPending=null;
+      }
       active={...staged,pending:false};
       completedIntent=intent?{...intent}:null;intent=null;
       return {ok:true,generation:'generation-B'};
@@ -2641,7 +2665,7 @@ function makeParkedRecoveryFixture(options={}){
   return {client,h,state,pending:()=>currentPending,committed:()=>committed,
     intent:()=>intent||completedIntent,publishedCandidate:()=>publishedCandidate,
     proofAtCommit:()=>proofAtCommit,readSnapshotCount:()=>readSnapshotCount,
-    outbox:()=>outboxGroups,
+    remoteSnapshot:()=>remoteSnapshot,outbox:()=>outboxGroups,
     setReadbackMode:value=>{options.readbackMode=value;}};
 }
 
@@ -2741,6 +2765,8 @@ for(const failure of [
   assert.equal(prepared.pendingOutboxIncluded,true);
   assert.equal(prepared.pendingOutboxProof.groupCount,1);
   assert.equal(prepared.pendingOutboxProof.throughSequence,1);
+  assert.equal(prepared.pendingOutboxOverlayApplied,true);
+  assert.equal(prepared.pendingLocalChangeCount,1);
   assert.equal(prepared.payload.state.topics[0].name,'PARKED-EDIT');
   const result=await fixture.client.publishConflictRecovery('account-A');
   assert.equal(result.ok,true,
@@ -2750,11 +2776,87 @@ for(const failure of [
   assert.equal(fixture.proofAtCommit().candidate.state.topics[0].name,'PARKED-EDIT');
   assert.equal(fixture.proofAtCommit().candidate.state.topics[0].notes,'x'+'n'.repeat(99));
   assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.pendingOutboxProof.throughSequence,1);
+  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.pendingOutboxOverlayApplied,true);
+  assert.equal(fixture.proofAtCommit().publication.remoteReadbackProof.pendingLocalChangeCount,1);
   assert.equal(fixture.proofAtCommit().pendingOutboxProof.digest,'d'.repeat(64));
   assert.equal(fixture.intent().pendingOutboxProof.throughSequence,1);
   assert.equal(fixture.outbox().length,0,
     'the outbox may be cleared only after exact remote read-back and successful local commit');
   assert.equal(fixture.committed(),true);
+}
+
+
+  
+// Cursor-mismatch regression: the stored base and active projection already
+// contain the parked edit, but the authoritative snapshot/tail contains a later
+// remote value. A three-way merge alone treats the local edit as unchanged and
+// would overwrite it. The outbox must be reapplied, the remote conflict archived,
+// and the exact read-back/revision checked before local acknowledgement.
+{
+  const expectedNotes='x'+'n'.repeat(99),remoteNotes='r'+'n'.repeat(99);
+  const fixture=makeParkedRecoveryFixture({
+    cursorMismatchWithPending:true,
+    baseServerVersion:'older-snapshot-stamp',
+    pendingBaseVersion:'older-snapshot-stamp',
+    snapshotUpdatedAt:'current-snapshot-stamp',
+    headRevision:1,
+    readPage:{
+      mode:'delta',snapshot_required:false,head_revision:1,snapshot_revision:0,
+      compacted_through_revision:0,next_revision:1,bytes:256,
+      groups:[{revision:1,operation_id:'remote-overwrite-after-park',changes:[
+        {ordinal:0,collection:'topics',id:'parked-topic',operation:'put',position:0,
+          value:{id:'parked-topic',name:'original',notes:remoteNotes}}
+      ]}]
+    }
+  });
+  const prepared=await fixture.client.prepareConflictRecovery('account-A');
+  assert.equal(prepared.ok,true,
+    'the cursor-mismatch recovery must reconstruct the parked outbox edit: '+JSON.stringify(prepared));
+  assert.equal(prepared.pendingSnapshotIncluded,true);
+  assert.equal(prepared.pendingOutboxIncluded,true);
+  assert.equal(prepared.pendingOutboxOverlayApplied,true);
+  assert.equal(prepared.pendingLocalChangesPreserved,true);
+  assert.equal(prepared.pendingLocalChangeCount,1);
+  assert.equal(prepared.remotePayload.state.topics[0].notes,remoteNotes,
+    'the remote reconstruction must preserve the competing remote value as a distinct input');
+  assert.equal(prepared.payload.state.topics[0].notes,expectedNotes,
+    'the candidate must reapply the exact parked outbox value instead of retaining the remote overwrite');
+  assert.equal(prepared.conflicts.some(conflict=>
+    conflict.path==='state.topics[parked-topic]'&&conflict.resolution==='local'),true,
+    'the competing remote edit must be archived as a local-preserved conflict');
+  const result=await fixture.client.publishConflictRecovery('account-A');
+  assert.equal(result.ok,true,
+    'the exact parked value should be published and read back before local commit: '+JSON.stringify(result));
+  const atCommit=fixture.proofAtCommit();
+  assert.equal(atCommit.remoteSnapshot.payload.state.topics[0].notes,expectedNotes,
+    'the exact record/value must exist in the remote snapshot before the pending/outbox state is cleared');
+  assert.equal(atCommit.remoteSnapshot.updated_at,'snapshot-stamp-2');
+  assert.equal(atCommit.state.snapshot_revision,1);
+  assert.equal(atCommit.state.head_revision,1);
+  assert.equal(atCommit.publication.remoteReadbackProof.snapshotRevision,1);
+  assert.equal(atCommit.publication.remoteReadbackProof.headRevision,1);
+  assert.equal(atCommit.publication.remoteReadbackProof.pendingOutboxOverlayApplied,true);
+  assert.equal(atCommit.publication.remoteReadbackProof.pendingLocalChangeCount,1);
+  assert.equal(fixture.outbox().length,0);
+  assert.equal(fixture.pending(),null);
+  assert.equal(fixture.committed(),true);
+}
+
+// Without a durable Delta outbox, an older pending snapshot whose base already
+// contains its local edit is ambiguous when the newer remote snapshot differs.
+// Do not guess, publish a false Synced state, or clear the pending snapshot.
+{
+  const fixture=makeParkedRecoveryFixture({
+    baseServerVersion:'older-snapshot-stamp',
+    pendingBaseVersion:'older-snapshot-stamp',
+    snapshotUpdatedAt:'current-snapshot-stamp'
+  });
+  const result=await fixture.client.publishConflictRecovery('account-A');
+  assert.notEqual(result.ok,true,
+    'an unprovable compatibility-snapshot edit must remain pending instead of being silently overwritten');
+  assert.equal(result.reason,'pending_snapshot_local_intent_unproven');
+  assert.equal(fixture.committed(),false);
+  assert.equal(fixture.pending().status,'pending');
 }
 
 // If the outbox changes while the remote snapshot is being read back, recovery

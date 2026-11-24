@@ -299,7 +299,7 @@
       }
       return cache.get(key);
     };
-    const touched=new Map(),groupList=Array.isArray(groups)?groups:[];
+    const touched=new Map(),metadataOutboxFields=new Map(),groupList=Array.isArray(groups)?groups:[];
     const hasOutboxChanges=groupList.some(group=>group&&Array.isArray(group.changes)&&group.changes.length>0);
     if(hasOutboxChanges){
       for(const group of groupList){
@@ -308,10 +308,17 @@
           if(!change||typeof change.collection!=='string'||typeof change.id!=='string'||!change.id)
             return {ok:false,changeCount:0};
           if(change.collection==='trackerMeta'||change.collection==='featureMeta'){
-            if(change.operation!=='put')return {ok:false,changeCount:0};
+            if(change.operation!=='put'||!isRecord(change.value))return {ok:false,changeCount:0};
+            const fields=metadataOutboxFields.get(change.collection)||new Map();
+            for(const [field,value] of Object.entries(change.value))fields.set(field,value);
+            if(!fields.size)return {ok:false,changeCount:0};
+            metadataOutboxFields.set(change.collection,fields);
           }else if((!TRACKER_RECORD_COLLECTIONS.has(change.collection)&&
                     !FEATURE_RECORD_COLLECTIONS.has(change.collection))||
                    !['put','delete'].includes(change.operation)){
+            return {ok:false,changeCount:0};
+          }else if(change.operation==='put'&&
+                   (!isRecord(change.value)||String(change.value.id)!==change.id)){
             return {ok:false,changeCount:0};
           }
           touched.set(change.collection+'\u0000'+change.id,change);
@@ -372,6 +379,16 @@
         const baseRoot=basePayload[rootName],localRoot=localPayload[rootName],
           candidateRoot=candidatePayload[rootName];
         if(!isRecord(baseRoot)||!isRecord(localRoot)||!isRecord(candidateRoot))return {ok:false,changeCount};
+        if(hasOutboxChanges){
+          const expectedFields=metadataOutboxFields.get(collection);
+          if(!expectedFields||!expectedFields.size)return {ok:false,changeCount};
+          for(const [field,value] of expectedFields){
+            if(!owns(localRoot,field)||!sameValue(localRoot[field],value)||
+               !owns(candidateRoot,field)||!sameValue(candidateRoot[field],value))return {ok:false,changeCount};
+          }
+          changeCount++;
+          continue;
+        }
         let entityChanged=false;
         const fields=new Set([...Object.keys(baseRoot),...Object.keys(localRoot)]);
         for(const field of fields){
@@ -392,11 +409,22 @@
       const recordPath=collection+'['+id+']';
       if(change.operation==='delete'){
         if(localRow)return {ok:false,changeCount};
+        if(hasOutboxChanges){
+          if(candidateRow)return {ok:false,changeCount};
+          changeCount++;
+          continue;
+        }
         if(baseRow&&candidateRow&&!remoteEditConflict(recordPath))return {ok:false,changeCount};
         if(baseRow&&!localRow)changeCount++;
         continue;
       }
       if(change.operation!=='put'||!localRow||!candidateRow)return {ok:false,changeCount};
+      if(hasOutboxChanges){
+        if(!isRecord(change.value)||String(change.value.id)!==id||
+           !sameValue(localRow,change.value)||!sameValue(candidateRow,change.value))return {ok:false,changeCount};
+        changeCount++;
+        continue;
+      }
       let entityChanged=false;
       const fields=new Set([...Object.keys(baseRow||{}),...Object.keys(localRow)]);
       for(const field of fields){
@@ -407,6 +435,82 @@
       if(entityChanged)changeCount++;
     }
     return {ok:true,changeCount};
+  }
+
+
+  // A cursor-mismatch recovery can start from a merge base that already contains
+  // the parked outbox value. In that case the ordinary three-way merge sees no
+  // local delta and lets a different remote value win. Preserve the outbox as
+  // explicit local intent and archive a same-record remote change before the
+  // exact outbox operation is reapplied to the candidate.
+  function appendPendingOutboxConflicts(remoteBasePayload,localPayload,remotePayload,groups,conflicts){
+    if(!isRecord(remoteBasePayload)||!isRecord(localPayload)||!isRecord(remotePayload))
+      return Array.isArray(conflicts)?conflicts.slice():[];
+    const output=Array.isArray(conflicts)?conflicts.slice():[];
+    const sameValue=(left,right)=>stableJson(left)===stableJson(right);
+    const sameSide=(left,leftPresent,right,rightPresent)=>
+      leftPresent===rightPresent&&(!leftPresent||sameValue(left,right));
+    const rowMap=(payload,rootName,collection)=>{
+      const root=payload[rootName],rows=root&&Array.isArray(root[collection])?root[collection]:[];
+      return new Map(rows.filter(isRecord).map(row=>[String(row.id),row]));
+    };
+    const addConflict=(path,baseValue,basePresent,localValue,localPresent,remoteValue,remotePresent)=>{
+      if(sameSide(localValue,localPresent,remoteValue,remotePresent)||
+         sameSide(remoteValue,remotePresent,baseValue,basePresent))return;
+      const record={
+        path,
+        base:basePresent?jsonCopy(baseValue):null,
+        local:localPresent?jsonCopy(localValue):null,
+        remote:remotePresent?jsonCopy(remoteValue):null,
+        basePresent,localPresent,remotePresent,resolution:'local'
+      };
+      const existing=output.findIndex(item=>item&&item.path===path);
+      if(existing>=0)output[existing]=record;
+      else output.push(record);
+    };
+    const touchedRows=new Map(),metadataFields={trackerMeta:new Map(),featureMeta:new Map()};
+    for(const group of Array.isArray(groups)?groups:[]){
+      if(!group||!Array.isArray(group.changes))continue;
+      for(const change of group.changes){
+        if(!change||typeof change.collection!=='string'||typeof change.id!=='string')continue;
+        if(change.collection==='trackerMeta'||change.collection==='featureMeta'){
+          if(isRecord(change.value)){
+            for(const [field,value] of Object.entries(change.value))
+              metadataFields[change.collection].set(field,value);
+          }
+        }else{
+          touchedRows.set(change.collection+'\u0000'+change.id,change);
+        }
+      }
+    }
+    for(const change of touchedRows.values()){
+      const rootName=TRACKER_RECORD_COLLECTIONS.has(change.collection)?'state':
+        FEATURE_RECORD_COLLECTIONS.has(change.collection)?'featureState':null;
+      if(!rootName)continue;
+      const baseRows=rowMap(remoteBasePayload,rootName,change.collection);
+      const localRows=rowMap(localPayload,rootName,change.collection);
+      const remoteRows=rowMap(remotePayload,rootName,change.collection);
+      const basePresent=baseRows.has(change.id),localPresent=localRows.has(change.id),
+        remotePresent=remoteRows.has(change.id);
+      addConflict(rootName+'.'+change.collection+'['+change.id+']',
+        baseRows.get(change.id),basePresent,localRows.get(change.id),localPresent,
+        remoteRows.get(change.id),remotePresent);
+    }
+    for(const collection of ['trackerMeta','featureMeta']){
+      const fields=metadataFields[collection];
+      if(!fields.size)continue;
+      const rootName=collection==='trackerMeta'?'state':'featureState';
+      const baseRoot=remoteBasePayload[rootName],localRoot=localPayload[rootName],remoteRoot=remotePayload[rootName];
+      if(!isRecord(baseRoot)||!isRecord(localRoot)||!isRecord(remoteRoot))continue;
+      for(const field of fields.keys()){
+        const basePresent=Object.prototype.hasOwnProperty.call(baseRoot,field);
+        const localPresent=Object.prototype.hasOwnProperty.call(localRoot,field);
+        const remotePresent=Object.prototype.hasOwnProperty.call(remoteRoot,field);
+        addConflict(rootName+'.'+field,baseRoot[field],basePresent,localRoot[field],localPresent,
+          remoteRoot[field],remotePresent);
+      }
+    }
+    return output;
   }
 
   async function prepareSnapshotReconciliationFromBases(mergeBasePayload,localPayload,
@@ -1148,7 +1252,7 @@
         }
         const baselineMatches=base.serverVersion===state.snapshot_updated_at;
         let mergeLocalPayload=pendingBefore?pendingBefore.payload:local;
-        let mergeBasePayload=base,pendingOutboxProof=null;
+        let mergeBasePayload=base,pendingOutboxProof=null,pendingOutboxGroups=[];
         const maxGroups=boundedLimit(recoveryOptions.maxGroups,MAX_RECONCILIATION_GROUPS,MAX_RECONCILIATION_GROUPS);
         const maxBytes=boundedLimit(recoveryOptions.maxBytes,MAX_RECONCILIATION_BYTES,MAX_RECONCILIATION_BYTES,1024);
         const groups=[];
@@ -1210,6 +1314,7 @@
             operation_id:group.operationId,
             changes:group.changes.map((change,ordinal)=>({...change,ordinal}))
           }));
+          pendingOutboxGroups=outboxRecovery.state.outbox.groups;
           const localReconstruction=reconstructRemoteSnapshot(
             commonBase.payload,localOutboxGroups,cursorPublish,cursorPublish+localOutboxGroups.length
           );
@@ -1280,13 +1385,46 @@
            pendingToken(latestPending)!==pendingIdentity||latestPendingDigest!==pendingDigest){
           return {ok:false,retryable:true,reason:'local_workspace_changed_during_reconciliation'};
         }
-        const prepared=await prepareSnapshotReconciliationFromBases(mergeBasePayload,mergeLocalPayload,
+        let prepared=await prepareSnapshotReconciliationFromBases(mergeBasePayload,mergeLocalPayload,
           remoteBasePayload,groups,snapshot,head,mergeWorkspace,recoveryOptions);
         if(!prepared.ok)return prepared;
+        let pendingOutboxOverlayApplied=false;
+        if(outboxRecovery&&pendingOutboxGroups.length){
+          if(recoveryOptions.signal?.aborted)return {ok:false,retryable:true,snapshotRequired:true,
+            reason:'reconciliation_cancelled'};
+          const overlayGroups=pendingOutboxGroups.map((group,index)=>({
+            revision:head+index+1,
+            operation_id:group.operationId,
+            changes:group.changes.map((change,ordinal)=>({...change,ordinal}))
+          }));
+          const overlayHead=safeInteger(head+overlayGroups.length);
+          if(overlayHead===null)return {ok:false,retryable:true,snapshotRequired:true,
+            reason:'pending_outbox_candidate_revision_unavailable'};
+          const overlay=reconstructRemoteSnapshot(prepared.payload,overlayGroups,head,overlayHead);
+          if(!overlay||overlay.ok!==true)return {ok:false,retryable:true,snapshotRequired:true,
+            reason:'pending_outbox_candidate_reconstruction_failed',
+            outboxReason:overlay&&overlay.reason||'unknown'};
+          const conflicts=appendPendingOutboxConflicts(
+            remoteBasePayload,mergeLocalPayload,prepared.remotePayload,pendingOutboxGroups,prepared.conflicts
+          );
+          prepared={...prepared,payload:overlay.payload,conflicts,pendingOutboxOverlayApplied:true};
+          pendingOutboxOverlayApplied=true;
+          if(recoveryOptions.signal?.aborted)return {ok:false,retryable:true,snapshotRequired:true,
+            reason:'reconciliation_cancelled'};
+          await assertOwner(owner);
+        }
         const pendingLocalPreservation=(pendingBefore||outboxRecovery)
           ?verifyPendingLocalChangesPreserved(mergeBasePayload,mergeLocalPayload,prepared.payload,
             outboxRecovery?outboxRecovery.state.outbox.groups:[],prepared.conflicts)
           :{ok:true,changeCount:0};
+        if(pendingBefore&&pendingOutboxGroups.length===0&&
+           pendingLocalPreservation.changeCount===0&&
+           pendingBefore.baseServerVersion!==state.snapshot_updated_at&&
+           !(await sameWorkspace(mergeLocalPayload,prepared.remotePayload))){
+          return {ok:false,retryable:true,snapshotRequired:true,
+            requiresSnapshotReconciliation:true,
+            reason:'pending_snapshot_local_intent_unproven'};
+        }
         if(!pendingLocalPreservation.ok){
           return {ok:false,retryable:true,snapshotRequired:true,
             reason:'pending_local_changes_not_preserved',
@@ -1319,6 +1457,8 @@
             ?Number(pendingBefore.localSequence):null,
           pendingOutboxIncluded:!!pendingOutboxProof,
           pendingOutboxProof,
+          pendingOutboxOverlayApplied:pendingOutboxOverlayApplied||
+            !!(pendingOutboxProof&&Number(pendingOutboxProof.groupCount)===0),
           requiresSnapshotPublication:true,requiresLocalRebase:true};
       }catch(error){
         return unavailable('account_or_snapshot_reconciliation_verification_failed',{
@@ -1838,12 +1978,20 @@
             return {ok:false,retryable:true,snapshotRequired:true,
               reason:'pending_outbox_changed_after_remote_readback',intentId:intent.intentId};
           }
+          const pendingOutboxOverlayApplied=!intent.pendingOutboxProof||
+            Number(intent.pendingOutboxProof.groupCount)===0||
+            prepared?.pendingOutboxOverlayApplied===true;
+          if(!pendingOutboxOverlayApplied){
+            return {ok:false,retryable:true,snapshotRequired:true,
+              reason:'pending_outbox_candidate_overlay_unverified',intentId:intent.intentId};
+          }
           await assertOwner(owner);
           publication={...publication,remoteReadbackProof:{
             proofVersion:1,
             remoteReadbackVerified:true,
             pendingLocalChangesPreserved:prepared.pendingLocalChangesPreserved===true,
             pendingLocalChangeCount:Number(prepared.pendingLocalChangeCount)||0,
+            pendingOutboxOverlayApplied,
             ownerId:owner,
             candidateDigest:intent.candidateDigest,
             remotePayloadDigest,
@@ -1860,6 +2008,7 @@
             remotePayloadDigestVerified:remotePayloadDigestMatches,
             pendingLocalChangesPreserved:prepared.pendingLocalChangesPreserved===true,
             pendingLocalChangeCount:Number(prepared.pendingLocalChangeCount)||0,
+            pendingOutboxOverlayApplied,
             pendingLocalSequence:pendingAtStartIdentity?pendingAtStartIdentity.localSequence:intent.pendingOutboxProof?.throughSequence??null,
             snapshotRevision:remoteSnapshotRevision,
             headRevision:remoteHeadRevision,

@@ -2507,7 +2507,8 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'a remote read-back without exact pending-change preservation must not advance the journal');
   const verifiedPublication={...publication,remoteReadbackProof:{
     proofVersion:1,remoteReadbackVerified:true,pendingLocalChangesPreserved:true,
-    pendingLocalChangeCount:1,ownerId:owner,candidateDigest:digest,remotePayloadDigest:digest,
+    pendingLocalChangeCount:1,pendingOutboxOverlayApplied:true,
+    ownerId:owner,candidateDigest:digest,remotePayloadDigest:digest,
     snapshotUpdatedAt:publication.updated_at,snapshotRevision:0,headRevision:0,
     compactedThroughRevision:0,pendingSnapshotProof:null,pendingOutboxProof:proof
   }};
@@ -2520,6 +2521,103 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'only the proof-bound outbox sequence may be acknowledged after the verified recovery commit');
   const finalProjection=await loaded.api.readWorkspaceEntities(owner);
   assert.equal(finalProjection.state.topics[0].name,'PARKED LOCAL EDIT');
+  await loaded.api.deleteWorkspaceEntities(owner);
+}
+
+
+
+// The storage layer independently checks the staged candidate against the exact
+// pending outbox values. A caller-supplied read-back flag/digest cannot clear the
+// outbox if the candidate row itself contains a different value.
+{
+  const owner='entity-delta-recovery-wrong-outbox-candidate-owner';
+  const state={schema:3,streams:[{id:'wrong-outbox-stream',name:'Commerce'}],
+    subjects:[{id:'wrong-outbox-subject',streamId:'wrong-outbox-stream',name:'Accounting'}],
+    topics:[{id:'wrong-outbox-topic',subjectId:'wrong-outbox-subject',name:'Remote baseline'}],
+    history:[],exams:[],settings:{}};
+  const features={version:1,journal:[],papers:[],goals:[],studyLogs:[]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true);
+  await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+  const cursor=await loaded.api.initializeWorkspaceEntityDeltaCursor(owner,0,'wrong-outbox-baseline',true);
+  assert.equal(cursor.ok,true);
+  const parkedValue={id:'wrong-outbox-topic',subjectId:'wrong-outbox-subject',name:'PARKED LOCAL EDIT'};
+  const pending=await loaded.api.writeWorkspaceEntityChanges(owner,[
+    {collection:'topics',id:'wrong-outbox-topic',operation:'put',position:0,value:parkedValue}
+  ],{operationId:'wrong-outbox-operation'});
+  assert.equal(pending.count,1);
+  const recoveryState=await loaded.api.readWorkspaceEntityDeltaRecoveryState(owner);
+  const proof={
+    ownerId:owner,activeGeneration:recoveryState.activeGeneration,
+    workspaceRevision:recoveryState.workspaceRevision,
+    throughSequence:recoveryState.outbox.throughSequence,
+    groupCount:recoveryState.outbox.groupCount,
+    changeCount:recoveryState.outbox.changeCount,
+    digest:recoveryState.outbox.digest,localPayloadDigest:'f'.repeat(64),
+    cursor:{
+      generation:recoveryState.cursor.generation,
+      publishRevision:recoveryState.cursor.publishRevision,
+      acknowledgedSequence:recoveryState.cursor.acknowledgedSequence,
+      remoteHeadRevision:recoveryState.cursor.remoteHeadRevision,
+      snapshotUpdatedAt:recoveryState.cursor.snapshotUpdatedAt,
+      requiresPull:recoveryState.cursor.requiresPull
+    }
+  };
+  const active=await loaded.api.readWorkspaceEntities(owner);
+  const wrongCandidateState={...active.state,topics:[{
+    ...parkedValue,name:'WRONG REMOTE VALUE'
+  }]};
+  const intentId='nexus-recovery-wrong-outbox-candidate';
+  const digest='b'.repeat(64);
+  const begun=await loaded.api.beginWorkspaceEntityRecovery(owner,{
+    intentId,candidateDigest:digest,baseUpdatedAt:'wrong-outbox-baseline',
+    expectedHeadRevision:0,snapshotRevision:0,conflicts:[],
+    payloadMetadata:{schema:4},pendingOutboxProof:proof
+  });
+  assert.equal(begun.ok,true);
+  const staged=await loaded.api.migrateWorkspaceEntities(owner,wrongCandidateState,active.featureState,{
+    expectedRevision:loaded.api.getStatus().revision,
+    deferActivation:true,recoveryIntentId:intentId,recoveryCandidateDigest:digest
+  });
+  assert.equal(staged.staged,true);
+  const publication={verified:true,updated_at:'wrong-outbox-published',
+    snapshotRevision:0,headRevision:0,compactedThroughRevision:0,storageMode:'jsonb',
+    remoteReadbackProof:{
+      proofVersion:1,remoteReadbackVerified:true,pendingLocalChangesPreserved:true,
+      pendingLocalChangeCount:1,pendingOutboxOverlayApplied:true,ownerId,
+      candidateDigest:digest,remotePayloadDigest:digest,
+      snapshotUpdatedAt:'wrong-outbox-published',snapshotRevision:0,headRevision:0,
+      compactedThroughRevision:0,pendingSnapshotProof:null,pendingOutboxProof:proof
+    }};
+  const marked=await loaded.api.markWorkspaceEntityRecoveryPublished(owner,intentId,publication);
+  assert.equal(marked.ok,true,
+    'the proof envelope may advance only to the published phase; the commit still independently checks exact row content');
+  const entries=[
+    {key:'recall.study.tracker.v1',value:JSON.stringify(wrongCandidateState)},
+    {key:'recall.study.features.v1',value:JSON.stringify(active.featureState)},
+    {key:'nexus.test.recovery.queue',value:JSON.stringify({pending:{}})},
+    {key:'nexus.test.recovery.base',value:JSON.stringify({[owner]:{
+      state:wrongCandidateState,featureState:active.featureState,serverVersion:publication.updated_at}})},
+    {key:'nexus.test.recovery.stamp',value:JSON.stringify({[owner]:publication.updated_at})},
+    {key:'nexus.test.recovery.conflicts',value:JSON.stringify({[owner]:[]})}
+  ];
+  await assert.rejects(()=>loaded.api.commitWorkspaceEntityRecovery(owner,intentId,entries,digest),
+    /exact pending Delta outbox values are not present in the recovery candidate/,
+    'a wrong record value must block the atomic acknowledgement even when the proof digest/flags are present');
+  const remaining=await loaded.api.readWorkspaceEntityOutboxGroups(owner,0,1000,4096);
+  assert.equal(remaining.groups.length,1,
+    'the wrong candidate must not clear the pending outbox group');
+  const afterBlockedCommit=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(afterBlockedCommit.state.topics[0].name,'PARKED LOCAL EDIT',
+    'the active projection must remain the exact parked value when the candidate proof is false');
+  assert.equal(loaded.api.getStatus().entityRecoveryLocked,true,
+    'the recovery lock must remain held until exact pending content is proven');
   await loaded.api.deleteWorkspaceEntities(owner);
 }
 

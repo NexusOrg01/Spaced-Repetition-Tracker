@@ -3183,8 +3183,12 @@
   function validRecoveryRemoteReadbackProof(owner,intent,publication){
     if(!intent||(!intent.pendingSnapshotProof&&!intent.pendingOutboxProof))return true;
     const proof=publication&&publication.remoteReadbackProof;
+    const exactOutboxRequired=!!(intent.pendingOutboxProof&&
+      Number(intent.pendingOutboxProof.groupCount)>0);
     return !!(proof&&proof.proofVersion===1&&proof.remoteReadbackVerified===true&&
-      proof.pendingLocalChangesPreserved===true&&proof.ownerId===owner&&
+      proof.pendingLocalChangesPreserved===true&&
+      (!exactOutboxRequired||(proof.pendingOutboxOverlayApplied===true&&
+        Number(proof.pendingLocalChangeCount)>0))&&proof.ownerId===owner&&
       proof.candidateDigest===intent.candidateDigest&&
       proof.remotePayloadDigest===intent.candidateDigest&&
       typeof proof.snapshotUpdatedAt==='string'&&proof.snapshotUpdatedAt===publication.updated_at&&
@@ -3200,6 +3204,50 @@
         stableEntityOperationJson(intent.pendingSnapshotProof||null)&&
       stableEntityOperationJson(proof.pendingOutboxProof||null)===
         stableEntityOperationJson(intent.pendingOutboxProof||null));
+  }
+
+
+  function workspaceContainsPendingOutboxChanges(tracker,features,groups){
+    if(!isRecord(tracker)||!isRecord(features)||!Array.isArray(groups))return false;
+    const touchedRows=new Map(),metadataFields={trackerMeta:new Map(),featureMeta:new Map()};
+    for(const group of groups){
+      if(!group||!Array.isArray(group.changes)||!group.changes.length)return false;
+      for(const change of group.changes){
+        if(!change||typeof change.collection!=='string'||typeof change.id!=='string'||!change.id)
+          return false;
+        if(change.collection==='trackerMeta'||change.collection==='featureMeta'){
+          if(change.operation!=='put'||!isRecord(change.value))return false;
+          for(const [field,value] of Object.entries(change.value))
+            metadataFields[change.collection].set(field,value);
+          continue;
+        }
+        const trackerCollection=TRACKER_ENTITY_COLLECTIONS.includes(change.collection);
+        const featureCollection=FEATURE_ENTITY_COLLECTIONS.includes(change.collection);
+        if((!trackerCollection&&!featureCollection)||
+           !['put','delete'].includes(change.operation))return false;
+        if(change.operation==='put'&&
+           (!isRecord(change.value)||String(change.value.id)!==change.id))return false;
+        touchedRows.set(change.collection+'\u0000'+change.id,change);
+      }
+    }
+    for(const change of touchedRows.values()){
+      const root=TRACKER_ENTITY_COLLECTIONS.includes(change.collection)?tracker:features;
+      const rows=Array.isArray(root[change.collection])?root[change.collection]:[];
+      const row=rows.find(item=>isRecord(item)&&String(item.id)===change.id)||null;
+      if(change.operation==='delete'){
+        if(row)return false;
+      }else if(!row||!sameJsonValue(row,change.value)){
+        return false;
+      }
+    }
+    for(const collection of ['trackerMeta','featureMeta']){
+      const root=collection==='trackerMeta'?tracker:features;
+      for(const [field,value] of metadataFields[collection]){
+        if(!Object.prototype.hasOwnProperty.call(root,field)||!sameJsonValue(root[field],value))
+          return false;
+      }
+    }
+    return true;
   }
 
   async function markWorkspaceEntityRecoveryPublished(ownerId,intentId,publication){
@@ -3323,6 +3371,7 @@
            outbox.throughSequence!==Number(pendingOutboxProof.throughSequence)||
            outbox.groupCount!==Number(pendingOutboxProof.groupCount)||
            outbox.changeCount!==Number(pendingOutboxProof.changeCount)||
+           outbox.groups.length!==Number(pendingOutboxProof.groupCount)||outbox.hasMore===true||
            outbox.digest!==pendingOutboxProof.digest||
            !proofCursor||cursor.generation!==proofCursor.generation||
            Number(cursor.publishRevision)!==Number(proofCursor.publishRevision)||
@@ -3331,6 +3380,10 @@
            cursor.snapshotUpdatedAt!==proofCursor.snapshotUpdatedAt||
            cursor.requiresPull!==proofCursor.requiresPull){
           throw new Error('The pending Delta outbox changed after verified recovery preparation; local changes remain preserved.');
+        }
+        if(Number(pendingOutboxProof.groupCount)>0&&
+           !workspaceContainsPendingOutboxChanges(tracker,features,outbox.groups)){
+          throw new Error('The exact pending Delta outbox values are not present in the recovery candidate; local changes remain preserved.');
         }
       }else if(outboxBeforeCommit.outbox.groups.length||outboxBeforeCommit.outbox.hasMore===true){
         throw new Error('Pending local Delta outbox entries have no exact verified recovery proof; local recovery commit was blocked.');
