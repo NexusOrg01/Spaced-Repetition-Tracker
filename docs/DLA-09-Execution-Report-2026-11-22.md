@@ -663,7 +663,7 @@ Additional issues found by mechanical validation were corrected on this branch:
 
 - Workflow run: [#637](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45310921624)
 - Run ID: `45310921624`
-- Workflow SHA: `26b0e1e5ee7d34e9a911b83618719e6ca0aec500`
+- Workflow SHA: `4f4d2652d0c98f44bde7504cd198bad4d60ace4a`
 - Environment: Linux x86_64, Chromium 141.0.7390.37, online browser, localhost-only Supabase, disposable accounts.
 - Local Supabase migrations and DLA-02/DLA-03 authenticated RPC/snapshot-integrity tests passed.
 - Three independent authenticated sessions were created (two devices for owner A and a separate owner B). The A1/A2/B browser protocol passed its 20 authenticated assertions, including owner isolation, CAS conflict/retry, operation receipt replay, direct-write denial, and distinct account heads.
