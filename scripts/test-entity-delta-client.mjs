@@ -2473,11 +2473,14 @@ function makeParkedRecoveryFixture(options={}){
   const originalNotes='n'.repeat(100),expectedNotes='x'+'n'.repeat(99);
   const originalTopic={id:'parked-topic',name:'original',notes:originalNotes};
   const parkedTopic={...originalTopic,name:'PARKED-EDIT',notes:expectedNotes};
+  const extraLocalTopic=options.extraLocalTopic
+    ?{id:'extra-local-topic',name:'LOCAL-SNAPSHOT-ONLY',notes:'preserve-from-pending-snapshot'}:null;
   const parkedPayload={
     app:'Nexus Spaced Repetition Tracker',
     schema:4,
     __nexusDeltaSync:'entity-delta-v1',
-    state:{streams:[],subjects:[],topics:[parkedTopic],history:[],exams:[]},
+    state:{streams:[],subjects:[],topics:extraLocalTopic?[parkedTopic,extraLocalTopic]:[parkedTopic],
+      history:[],exams:[]},
     featureState:{journal:[],papers:[],goals:[],studyLogs:[]}
   };
   // Reproduce the defect: the local base has the same server stamp but already
@@ -2489,7 +2492,7 @@ function makeParkedRecoveryFixture(options={}){
     __nexusDeltaSync:'entity-delta-v1',
     state:{...payload.state,topics:[originalTopic]}
   };
-  const pending=(options.outboxOnly||options.outboxCurrentCursor)?null:{
+  const pending=(options.outboxOnly||options.outboxCurrentCursor)&&!options.includePendingSnapshot?null:{
     status:'pending',ownerUserId:owner,operationId:'parked-op-1',
     localSequence:11,baseServerVersion:options.pendingBaseVersion||'snapshot-stamp',payload:parkedPayload
   };
@@ -2602,7 +2605,8 @@ function makeParkedRecoveryFixture(options={}){
   const client=h.createClient({
     storage,
     getLocalBase:async()=>staleLocalBase,
-    getLocalWorkspace:async()=>options.outboxOnly||options.outboxCurrentCursor?remoteBaseline:parkedPayload,
+    getLocalWorkspace:async()=>(options.outboxOnly||options.outboxCurrentCursor)&&!options.includePendingSnapshot
+      ?remoteBaseline:parkedPayload,
     getPendingSnapshot:async()=>currentPending,
     readRemoteSnapshot:async()=>{
       readSnapshotCount++;
