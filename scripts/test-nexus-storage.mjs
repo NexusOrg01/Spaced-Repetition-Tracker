@@ -77,6 +77,7 @@ class FakeTransaction {
   constructor(db, stores, mode) {
     this.db = db;
     this.mode = mode;
+    this.storeNames=stores.slice();
     this.maps = new Map();
     for (const name of stores) {
       const original = db.stores.get(name);
@@ -137,6 +138,9 @@ class FakeTransaction {
       }
       if (this.mode === 'readwrite') {
         for (const [name, map] of this.maps) this.db.stores.set(name, map);
+        if(typeof this.db.owner.onWriteTransactionComplete==='function'){
+          this.db.owner.onWriteTransactionComplete(this.storeNames.slice(),this);
+        }
       }
       this.finished = true;
       if (typeof this.oncomplete === 'function') this.oncomplete({ target: this });
@@ -160,7 +164,7 @@ class FakeDatabase {
 }
 
 class FakeIndexedDB {
-  constructor() { this.databases = new Map(); this.failNextWrite = false; this.rangeQueries=[]; this.sortedKeys=new WeakMap(); }
+  constructor() { this.databases = new Map(); this.failNextWrite = false; this.rangeQueries=[]; this.sortedKeys=new WeakMap(); this.onWriteTransactionComplete=null; }
   open(name, version) {
     const request = { result: null, error: null, onupgradeneeded: null, onsuccess: null, onerror: null, onblocked: null };
     queueMicrotask(() => {
@@ -2727,12 +2731,17 @@ assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,1000
       name:'Staged candidate topic '+index
     }))]
   };
-  const controller=new AbortController(),originalScheduler=loaded.context.window.setTimeout;
-  let yieldCount=0;
-  loaded.context.window.setTimeout=(callback,delay)=>{
-    yieldCount++;
-    if(yieldCount===1)controller.abort(new Error('Synthetic account handoff during recovery staging.'));
-    return originalScheduler(callback,delay);
+  const controller=new AbortController();
+  let rowBatchCommitted=false;
+  // Abort from the fake IndexedDB commit hook, after the first 8,000-row batch
+  // is durably committed but before migrateWorkspaceEntities advances to the
+  // next batch. This reproduces cancellation while failureStage is still
+  // write-row-batch, without relying on wall-clock timers or scheduler timing.
+  idb.onWriteTransactionComplete=stores=>{
+    if(!rowBatchCommitted&&stores.includes('workspaces')){
+      rowBatchCommitted=true;
+      controller.abort(new Error('Synthetic account handoff during recovery staging.'));
+    }
   };
   await assert.rejects(loaded.api.migrateWorkspaceEntities(owner,candidateState,activeBefore.featureState,{
     expectedRevision:loaded.api.getStatus().revision,
@@ -2743,9 +2752,10 @@ assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,1000
     assert.equal(error.code,'NEXUS_SYNC_CANCELLED');
     assert.equal(error.nexusEntityProjectionFailureStage,'write-row-batch');
     return true;
-  },'the recovery stage must stop at the injected cancellation boundary');
-  loaded.context.window.setTimeout=originalScheduler;
-  assert.ok(yieldCount>=1,'the recovery stage must reach its first bounded row-batch yield before cancellation');
+  },'the recovery stage must stop immediately after the first committed row batch');
+  idb.onWriteTransactionComplete=null;
+  assert.equal(rowBatchCommitted,true,
+    'the test must inject cancellation only after a real IndexedDB row batch commits');
 
   const manifestStore=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
   const manifest=manifestStore.get('workspace-entities:'+encodeURIComponent(owner));
