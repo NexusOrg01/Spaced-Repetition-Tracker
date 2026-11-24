@@ -998,6 +998,20 @@ assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',
   assert.equal(metadataOnlyRead.state.settings.theme,'dark',
     'metadata-only tracker settings must be reflected in the entity metadata root');
 
+  // Metadata-root updates are also real Delta operations. Their assertions
+  // are complete here; explicitly acknowledge this synthetic fixture group before
+  // exercising a separate full-snapshot revision-gap rebuild.
+  const metadataFixtureOutbox=await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10000);
+  const metadataFixtureThrough=metadataFixtureOutbox.reduce((maximum,row)=>
+    Math.max(maximum,Number(row&&row.sequence)||0),0);
+  if(metadataFixtureThrough>0){
+    assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',metadataFixtureThrough),
+      metadataFixtureOutbox.length,
+      'the metadata-only fixture must explicitly clear its tested synthetic operation');
+  }
+  assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10000)).length,0,
+    'the revision-gap backfill fixture must begin without pending metadata operations');
+
   // If multiple compatibility commits occur before the entity sync runs, the
   // latest delta alone is not a complete change set. Rebuild from the latest
   // snapshot instead of trying to append it to an older generation.
