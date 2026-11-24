@@ -155,7 +155,9 @@ function sanitizeSyncDiagEvent(event){
  'snapshotRevisionMatches','baseUpdatedAtMatches','exactAlreadyPublishedSnapshotMatches',
  'remotePayloadMatches','remotePayloadDigestMatches','remoteStateMatches','remoteUpdatedAtMatches',
  'remoteSnapshotRevisionMatches','remoteHeadRevisionMatches','remoteCompactedThroughMatches',
- 'pendingOutboxProofPresent','pendingOutboxOverlayApplied'];
+ 'pendingOutboxProofPresent','pendingOutboxOverlayApplied','remoteSnapshotPresent','remoteUpdatedAtMatchesState',
+ 'remotePayloadShapeValid','remotePayloadDeltaMarkerMatches','remoteManifestDeltaMarkerMatches',
+ 'manifestDeltaMarker','payloadDeltaMarkerBeforeRestore','payloadDeltaMarkerAfterRestore','deltaMarkerRestored'];
  for(const key of booleanFields){if(typeof event[key]==='boolean')safe[key]=event[key];}
  if(typeof event.statusAfterWatchdog==='string'&&
     ['Sync pending','Account verification delayed','Synced'].includes(event.statusAfterWatchdog)){
@@ -502,6 +504,22 @@ async function assertActiveUser(userId,expectedEpoch=sessionEpoch){
  if(authSessionVerificationPending||expectedEpoch!==sessionEpoch||sessionOwnerId!==userId||!session||!session.user||session.user.id!==userId)
   throw syncCancelledError('The active auth session is unverified or the account changed. No cloud data was applied or written.');
 }
+function restoreVerifiedChunkedDeltaMarker(remote,syncMode){
+ if(!remote||remote.storageMode!=='chunked'||!remote.chunkManifest||
+    remote.chunkManifest.__nexusStorage!=='chunked-v1'||
+    !remote.payload||typeof remote.payload!=='object'||Array.isArray(remote.payload))return remote;
+ const manifestMarksDelta=remote.chunkManifest.__nexusDeltaSync==='entity-delta-v1';
+ if(syncMode==='delta'&&manifestMarksDelta){
+  if(remote.payload.__nexusDeltaSync==='entity-delta-v1')return remote;
+  return {...remote,payload:{...remote.payload,__nexusDeltaSync:'entity-delta-v1'}};
+ }
+ if(syncMode==='snapshot'&&remote.payload.__nexusDeltaSync==='entity-delta-v1'){
+  const payload={...remote.payload};
+  delete payload.__nexusDeltaSync;
+  return {...remote,payload};
+ }
+ return remote;
+}
 async function fetchRemote(userId,knownWrite,signal,localBaselineReuse){
  const scope=createSyncAbortScope(signal),activeSignal=scope.signal,readEpoch=sessionEpoch;
  const uid=userId||(session&&session.user&&session.user.id),startedAt=Date.now();
@@ -580,28 +598,35 @@ async function fetchRemote(userId,knownWrite,signal,localBaselineReuse){
   let syncStateRead;
   try{
    syncStateRead=await scope.race(syncStateQuery.maybeSingle(),'workspace sync-mode verification');
-   syncDiag('cloud-sync-mode-read',null,{
-    durationMs:Date.now()-syncModeStartedAt,ok:!(syncStateRead&&syncStateRead.error),
-    syncMode:syncStateRead&&syncStateRead.data&&['delta','snapshot'].includes(syncStateRead.data.mode)
-     ?syncStateRead.data.mode:'unknown'
-   });
   }catch(syncModeError){
    syncDiag('cloud-sync-mode-read',null,{durationMs:Date.now()-syncModeStartedAt,
     ok:false,errorCategory:syncDiagErrorCategory(syncModeError),syncMode:'unknown'});
    throw syncModeError;
   }
   await assertActiveUser(uid,readEpoch);
-  if(syncStateRead&&syncStateRead.error)throw new Error(
-   'Could not verify the chunked workspace sync mode. The downloaded snapshot was not applied: '+
-   String(syncStateRead.error.message||syncStateRead.error.code||'state read failed')
-  );
-  if(syncStateRead&&syncStateRead.data&&syncStateRead.data.mode==='snapshot'&&
-     remote.payload&&remote.payload.__nexusDeltaSync==='entity-delta-v1'){
-   const snapshotPayload={...remote.payload};
-   delete snapshotPayload.__nexusDeltaSync;
-   remote={...remote,payload:snapshotPayload};
-  }else if(syncStateRead&&syncStateRead.data&&
-     !['delta','snapshot'].includes(syncStateRead.data.mode)){
+  if(syncStateRead&&syncStateRead.error){
+   syncDiag('cloud-sync-mode-read',null,{durationMs:Date.now()-syncModeStartedAt,
+    ok:false,errorCategory:syncDiagErrorCategory(syncStateRead.error),syncMode:'unknown'});
+   throw new Error(
+    'Could not verify the chunked workspace sync mode. The downloaded snapshot was not applied: '+
+    String(syncStateRead.error.message||syncStateRead.error.code||'state read failed')
+   );
+  }
+  const syncMode=syncStateRead&&syncStateRead.data&&syncStateRead.data.mode;
+  const manifestDeltaMarker=!!(remote&&remote.storageMode==='chunked'&&remote.chunkManifest&&
+   remote.chunkManifest.__nexusDeltaSync==='entity-delta-v1');
+  const payloadDeltaMarkerBeforeRestore=!!(remote&&remote.payload&&
+   remote.payload.__nexusDeltaSync==='entity-delta-v1');
+  remote=restoreVerifiedChunkedDeltaMarker(remote,syncMode);
+  const payloadDeltaMarkerAfterRestore=!!(remote&&remote.payload&&
+   remote.payload.__nexusDeltaSync==='entity-delta-v1');
+  syncDiag('cloud-sync-mode-read',null,{
+   durationMs:Date.now()-syncModeStartedAt,ok:true,
+   syncMode:['delta','snapshot'].includes(syncMode)?syncMode:'unknown',
+   manifestDeltaMarker,payloadDeltaMarkerBeforeRestore,payloadDeltaMarkerAfterRestore,
+   deltaMarkerRestored:syncMode==='delta'&&!payloadDeltaMarkerBeforeRestore&&payloadDeltaMarkerAfterRestore
+  });
+  if(!['delta','snapshot'].includes(syncMode)){
    throw new Error('The chunked workspace uses an unsupported sync mode. Local data remains preserved.');
   }
  }else{
@@ -2502,12 +2527,18 @@ function upload(){
  task.then(release,release);
  return task;
 }
+function setUploadInProgressStatus(){
+ const statusElement=el('cloudStatus');
+ const currentStatus=String(statusElement&&statusElement.textContent||'').trim();
+ if(['Sync pending','Account verification delayed','Sync delayed · local data ready'].includes(currentStatus))return;
+ status('Syncing…');
+}
 async function performUpload(){
  if(authSessionVerificationPending||deletingAccount||!localQueueHealthy||!client||!session||!ready)return false;
  const uploadUserId=session.user.id,uploadEpoch=sessionEpoch;
  async function assertUploadOwner(){await assertActiveUser(uploadUserId,uploadEpoch);if(localStorage.getItem(OWNER_KEY)!==uploadUserId)throw syncCancelledError('The local workspace owner changed during sync.');}
  if(localStorage.getItem(OWNER_KEY)!==uploadUserId){ready=false;status('Account queue paused');say('The active account does not own this local workspace. No cloud write was attempted. Reconnect to the correct account.');return false;}
- syncing=true;syncingEpoch=uploadEpoch;status('Syncing…');syncDiag('upload-start',diagnosticWorkspace(),{hasQueue:!!window.NexusOfflineSyncQueue});
+ syncing=true;syncingEpoch=uploadEpoch;setUploadInProgressStatus();syncDiag('upload-start',diagnosticWorkspace(),{hasQueue:!!window.NexusOfflineSyncQueue});
  const uploadScope=createSyncAbortScope();activeUploadScope=uploadScope;
  let uploaded=false,retryReconcileAfterConflict=false,attemptedPayload=null,attemptedOperationId=null,attemptedBase=null,attemptedPriorStamp=null;
  const queue=window.NexusOfflineSyncQueue;

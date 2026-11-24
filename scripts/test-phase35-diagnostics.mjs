@@ -119,6 +119,10 @@ const recoveryProgressEvent={
  remoteStateMatches:true,remoteUpdatedAtMatches:true,remoteSnapshotRevisionMatches:true,
  remoteHeadRevisionMatches:true,remoteCompactedThroughMatches:true,pendingOutboxProofPresent:true,
  pendingOutboxOverlayApplied:true,pendingLocalChangesPreserved:true,projectionReused:false,
+ remoteSnapshotPresent:true,remoteUpdatedAtMatchesState:true,remotePayloadShapeValid:true,
+ remotePayloadDeltaMarkerMatches:true,remoteManifestDeltaMarkerMatches:true,
+ manifestDeltaMarker:true,payloadDeltaMarkerBeforeRestore:false,payloadDeltaMarkerAfterRestore:true,
+ deltaMarkerRestored:true,
  ownerId:'PRIVATE-OWNER',operationId:'PRIVATE-OPERATION',
  candidateDigest:'PRIVATE-DIGEST',errorMessage:'PRIVATE ERROR',rawPayload:{secret:'PRIVATE'}
 };
@@ -132,7 +136,11 @@ assert.deepEqual(safeRecoveryProgress,{
  retryable:true,snapshotRequired:true,remotePayloadMatches:false,remotePayloadDigestMatches:false,
  remoteStateMatches:true,remoteUpdatedAtMatches:true,remoteSnapshotRevisionMatches:true,
  remoteHeadRevisionMatches:true,remoteCompactedThroughMatches:true,pendingOutboxProofPresent:true,
- pendingOutboxOverlayApplied:true,pendingLocalChangesPreserved:true,projectionReused:false
+ pendingOutboxOverlayApplied:true,pendingLocalChangesPreserved:true,projectionReused:false,
+ remoteSnapshotPresent:true,remoteUpdatedAtMatchesState:true,remotePayloadShapeValid:true,
+ remotePayloadDeltaMarkerMatches:true,remoteManifestDeltaMarkerMatches:true,
+ manifestDeltaMarker:true,payloadDeltaMarkerBeforeRestore:false,payloadDeltaMarkerAfterRestore:true,
+ deltaMarkerRestored:true
 },'recovery progress must preserve the exact safe failure boundary and boolean proof facts without exposing private data');
 for(const forbidden of ['PRIVATE','ownerId','operationId','candidateDigest','errorMessage','rawPayload'])
  assert.equal(JSON.stringify(safeRecoveryProgress).includes(forbidden),false,

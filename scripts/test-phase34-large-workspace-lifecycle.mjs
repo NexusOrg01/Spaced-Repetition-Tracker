@@ -1017,7 +1017,10 @@ try {
       'snapshotRevisionMatches','baseUpdatedAtMatches','exactAlreadyPublishedSnapshotMatches',
       'remotePayloadMatches','remotePayloadDigestMatches','remoteStateMatches','remoteUpdatedAtMatches',
       'remoteSnapshotRevisionMatches','remoteHeadRevisionMatches','remoteCompactedThroughMatches',
-      'pendingOutboxProofPresent','pendingOutboxOverlayApplied'
+      'pendingOutboxProofPresent','pendingOutboxOverlayApplied','remoteSnapshotPresent',
+      'remoteUpdatedAtMatchesState','remotePayloadShapeValid','remotePayloadDeltaMarkerMatches',
+      'remoteManifestDeltaMarkerMatches','manifestDeltaMarker','payloadDeltaMarkerBeforeRestore',
+      'payloadDeltaMarkerAfterRestore','deltaMarkerRestored'
     ];
     return events.filter(event =>
       event && typeof event.at === 'string' && Date.parse(event.at) >= startedAt &&
@@ -2593,10 +2596,13 @@ try {
           'remotePayloadMatches','remotePayloadDigestMatches','remoteStateMatches','remoteUpdatedAtMatches',
           'remoteSnapshotRevisionMatches','remoteHeadRevisionMatches','remoteCompactedThroughMatches',
           'pendingOutboxProofPresent','pendingOutboxOverlayApplied','pendingLocalChangesPreserved',
-          'remoteReadbackVerified']) {
+          'remoteReadbackVerified','remoteSnapshotPresent','remoteUpdatedAtMatchesState',
+          'remotePayloadShapeValid','remotePayloadDeltaMarkerMatches','remoteManifestDeltaMarkerMatches',
+          'manifestDeltaMarker','payloadDeltaMarkerBeforeRestore','payloadDeltaMarkerAfterRestore',
+          'deltaMarkerRestored']) {
           if (typeof event[key] === 'boolean') row[key] = event[key];
         }
-        for (const key of ['recoveryStep','progressPhase','failureReason','recoveryReason']) {
+        for (const key of ['recoveryStep','progressPhase','failureReason','recoveryReason','syncMode']) {
           if (typeof event[key] === 'string') row[key] = event[key];
         }
         return row;

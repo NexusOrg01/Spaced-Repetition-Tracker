@@ -24,6 +24,99 @@ const commercePack = commerceCatalogue.packs.find(pack => pack.id === 'sl-al-com
 const workspaceMerge = require('../workspace-sync-merge.js');
 const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
 
+const markerHelperStart = source.indexOf('function restoreVerifiedChunkedDeltaMarker(');
+const markerHelperEnd = source.indexOf('\nasync function fetchRemote', markerHelperStart);
+assert.ok(markerHelperStart >= 0 && markerHelperEnd > markerHelperStart,
+  'verified chunk-manifest Delta marker restoration must remain independently testable');
+const markerSandbox = {};
+vm.createContext(markerSandbox);
+vm.runInContext(
+  source.slice(markerHelperStart, markerHelperEnd) +
+    '\nglobalThis.restoreVerifiedChunkedDeltaMarker = restoreVerifiedChunkedDeltaMarker;',
+  markerSandbox,
+  { filename: 'verified-chunked-delta-marker.js' }
+);
+{
+  const reconstructedPayload = { app: 'Nexus', state: { streams: [] }, featureState: {} };
+  const activeManifest = {
+    __nexusStorage: 'chunked-v1', __nexusDeltaSync: 'entity-delta-v1',
+    revisionId: 'revision-A', chunkCount: 103, totalBytes: 26900000
+  };
+  const remote = {
+    storageMode: 'chunked', chunkManifest: activeManifest,
+    payload: reconstructedPayload, updated_at: '2026-11-24T05:00:00.000Z'
+  };
+  const restored = markerSandbox.restoreVerifiedChunkedDeltaMarker(remote, 'delta');
+  assert.equal(restored.payload.__nexusDeltaSync, 'entity-delta-v1',
+    'a verified active Delta manifest must restore protocol metadata omitted from pre-Delta immutable chunk bytes');
+  assert.notEqual(restored.payload, reconstructedPayload,
+    'marker restoration must return a new payload rather than mutate the verified reconstructed object');
+  assert.equal(reconstructedPayload.__nexusDeltaSync, undefined,
+    'the reconstructed chunk payload must remain immutable');
+  assert.equal(restored.chunkManifest, activeManifest,
+    'the exact verified active manifest reference must remain unchanged');
+  const unmarkedManifest = { ...activeManifest };
+  delete unmarkedManifest.__nexusDeltaSync;
+  const unmarked = markerSandbox.restoreVerifiedChunkedDeltaMarker({
+    ...remote, chunkManifest: unmarkedManifest, payload: { ...reconstructedPayload }
+  }, 'delta');
+  assert.equal(unmarked.payload.__nexusDeltaSync, undefined,
+    'a Delta marker must never be invented when the active manifest does not carry it');
+  const snapshotPayload = { ...reconstructedPayload, __nexusDeltaSync: 'entity-delta-v1' };
+  const snapshot = markerSandbox.restoreVerifiedChunkedDeltaMarker({
+    ...remote, payload: snapshotPayload
+  }, 'snapshot');
+  assert.equal(snapshot.payload.__nexusDeltaSync, undefined,
+    'snapshot mode must continue stripping the protocol-only Delta marker');
+  const legacy = { storageMode: 'legacy', payload: { ...reconstructedPayload } };
+  assert.equal(markerSandbox.restoreVerifiedChunkedDeltaMarker(legacy, 'delta'), legacy,
+    'legacy JSONB snapshots must not receive chunk-manifest metadata');
+}
+assert.ok(source.includes('remote=restoreVerifiedChunkedDeltaMarker(remote,syncMode);'),
+  'the verified marker helper must be applied by the actual remote-read path after mode verification');
+const uploadStatusHelperStart = source.indexOf('function setUploadInProgressStatus()');
+const uploadStatusHelperEnd = source.indexOf('\nasync function performUpload()', uploadStatusHelperStart);
+assert.ok(uploadStatusHelperStart >= 0 && uploadStatusHelperEnd > uploadStatusHelperStart,
+  'upload-start status policy must remain independently testable');
+const uploadStatusSandbox = {
+  currentStatus: 'Sync pending',
+  statusCalls: [],
+  el(id) {
+    assert.equal(id, 'cloudStatus');
+    return { textContent: this.currentStatus };
+  },
+  status(value) {
+    this.statusCalls.push(value);
+    this.currentStatus = value;
+  }
+};
+vm.createContext(uploadStatusSandbox);
+vm.runInContext(
+  source.slice(uploadStatusHelperStart, uploadStatusHelperEnd) +
+    '\nglobalThis.setUploadInProgressStatus = setUploadInProgressStatus;',
+  uploadStatusSandbox,
+  { filename: 'upload-start-status-policy.js' }
+);
+for (const delayedStatus of ['Sync pending','Account verification delayed','Sync delayed · local data ready']) {
+  uploadStatusSandbox.currentStatus = delayedStatus;
+  uploadStatusSandbox.statusCalls.length = 0;
+  uploadStatusSandbox.setUploadInProgressStatus();
+  assert.equal(uploadStatusSandbox.currentStatus, delayedStatus,
+    'bounded retries must preserve the explicit delayed state: ' + delayedStatus);
+  assert.equal(uploadStatusSandbox.statusCalls.length, 0,
+    'a retry must not overwrite the delayed state with a generic spinner');
+}
+uploadStatusSandbox.currentStatus = 'Synced';
+uploadStatusSandbox.statusCalls.length = 0;
+uploadStatusSandbox.setUploadInProgressStatus();
+assert.equal(uploadStatusSandbox.currentStatus, 'Syncing…',
+  'a new upload from a terminal verified state may display an active syncing status');
+assert.deepEqual(uploadStatusSandbox.statusCalls, ['Syncing…']);
+const performUploadStart = source.indexOf('async function performUpload()');
+assert.ok(performUploadStart >= 0 &&
+  source.slice(performUploadStart, performUploadStart + 900).includes('setUploadInProgressStatus();'),
+  'the upload retry path must use the tested delayed-status-preserving policy');
+
 const comparisonHelpersStart = source.indexOf('function workspaceComparisonProofMatches(');
 const comparisonHelpersEnd = source.indexOf('async function sameWorkspace(', comparisonHelpersStart);
 assert.ok(comparisonHelpersStart >= 0 && comparisonHelpersEnd > comparisonHelpersStart,

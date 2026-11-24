@@ -1168,17 +1168,38 @@
         const validBase=!!(base&&typeof base.serverVersion==='string'&&base.serverVersion&&
           isRecord(base.state)&&isRecord(base.featureState));
         const storedBaseDigest=validBase?await workspaceDigest(storedBase):null;
+        let remoteSnapshotBaselineDiagnostics=null;
         const readVerifiedRemoteBase=async()=>{
-          if(typeof readRemoteSnapshot!=='function')return null;
+          if(typeof readRemoteSnapshot!=='function'){
+            remoteSnapshotBaselineDiagnostics={
+              remoteSnapshotPresent:false,remoteUpdatedAtMatchesState:false,
+              remotePayloadShapeValid:false,remotePayloadDeltaMarkerMatches:false,
+              remoteManifestDeltaMarkerMatches:false
+            };
+            return null;
+          }
           await assertOwner(owner);
           const currentSnapshot=await readRemoteSnapshot(owner,recoveryOptions.signal||null);
           await assertOwner(owner);
-          if(!currentSnapshot||currentSnapshot.updated_at!==state.snapshot_updated_at||
-             !isRecord(currentSnapshot.payload)||!isRecord(currentSnapshot.payload.state)||
-             !isRecord(currentSnapshot.payload.featureState)||
-             currentSnapshot.payload.__nexusDeltaSync!=='entity-delta-v1')return null;
+          const remotePayload=currentSnapshot&&currentSnapshot.payload;
+          remoteSnapshotBaselineDiagnostics={
+            remoteSnapshotPresent:!!currentSnapshot,
+            remoteUpdatedAtMatchesState:!!currentSnapshot&&currentSnapshot.updated_at===state.snapshot_updated_at,
+            remotePayloadShapeValid:isRecord(remotePayload)&&isRecord(remotePayload.state)&&isRecord(remotePayload.featureState),
+            remotePayloadDeltaMarkerMatches:!!remotePayload&&remotePayload.__nexusDeltaSync==='entity-delta-v1',
+            remoteManifestDeltaMarkerMatches:!!(currentSnapshot&&currentSnapshot.chunkManifest&&
+              currentSnapshot.chunkManifest.__nexusDeltaSync==='entity-delta-v1')
+          };
+          if(!remoteSnapshotBaselineDiagnostics.remoteSnapshotPresent||
+             !remoteSnapshotBaselineDiagnostics.remoteUpdatedAtMatchesState||
+             !remoteSnapshotBaselineDiagnostics.remotePayloadShapeValid||
+             !remoteSnapshotBaselineDiagnostics.remotePayloadDeltaMarkerMatches)return null;
           return currentSnapshot;
         };
+        const remoteSnapshotBaselineFailure=()=>({
+          ok:false,retryable:true,snapshotRequired:true,reason:'remote_snapshot_baseline_unverified',
+          diagnostics:remoteSnapshotBaselineDiagnostics
+        });
         if(outboxRecovery){
           // The current verified snapshot is the remote reconstruction base. The
           // three-way merge ancestor must remain the exact base captured by the
@@ -1187,8 +1208,7 @@
           // was interrupted; using that cursor checkpoint as the merge base would make
           // the pending edit look unchanged and allow a later remote value to win.
           const currentSnapshot=await readVerifiedRemoteBase();
-          if(!currentSnapshot)return {ok:false,retryable:true,snapshotRequired:true,
-            reason:'remote_snapshot_baseline_unverified'};
+          if(!currentSnapshot)return remoteSnapshotBaselineFailure();
           remoteBasePayload=currentSnapshot.payload;
           if(pendingBefore){
             const pendingBaseVersion=pendingBefore.baseServerVersion;
@@ -1219,8 +1239,7 @@
           const pendingBaseVersion=pendingBefore.baseServerVersion;
           if(pendingBaseVersion===state.snapshot_updated_at){
             const currentSnapshot=await readVerifiedRemoteBase();
-            if(!currentSnapshot)return {ok:false,retryable:true,snapshotRequired:true,
-              reason:'remote_snapshot_baseline_unverified'};
+            if(!currentSnapshot)return remoteSnapshotBaselineFailure();
             const storedBaseMatchesRemote=!!(validBase&&base.serverVersion===state.snapshot_updated_at&&
               await sameWorkspace(base,currentSnapshot.payload));
             if(!storedBaseMatchesRemote){
@@ -1233,8 +1252,7 @@
             // Keep that exact ancestor and reconstruct the current remote side from
             // its verified snapshot plus the contiguous Delta tail.
             const currentSnapshot=await readVerifiedRemoteBase();
-            if(!currentSnapshot)return {ok:false,retryable:true,snapshotRequired:true,
-              reason:'remote_snapshot_baseline_unverified'};
+            if(!currentSnapshot)return remoteSnapshotBaselineFailure();
             remoteBasePayload=currentSnapshot.payload;
           }else{
             return {ok:false,snapshotRequired:true,
@@ -1245,8 +1263,7 @@
             reason:'local_snapshot_baseline_mismatch'};
           if(base.serverVersion!==state.snapshot_updated_at){
             const currentSnapshot=await readVerifiedRemoteBase();
-            if(!currentSnapshot)return {ok:false,retryable:true,snapshotRequired:true,
-              reason:'remote_snapshot_baseline_unverified'};
+            if(!currentSnapshot)return remoteSnapshotBaselineFailure();
             remoteBasePayload=currentSnapshot.payload;
           }
         }
@@ -1582,7 +1599,9 @@
                 'candidateDigestMatches','expectedHeadRevisionMatches','snapshotRevisionMatches',
                 'baseUpdatedAtMatches','exactAlreadyPublishedSnapshotMatches',
                 'remotePayloadMatches','remotePayloadDigestMatches','remoteStateMatches',
-                'pendingOutboxOverlayApplied','pendingLocalChangesPreserved'
+                'pendingOutboxOverlayApplied','pendingLocalChangesPreserved',
+                'remoteSnapshotPresent','remoteUpdatedAtMatchesState','remotePayloadShapeValid',
+                'remotePayloadDeltaMarkerMatches','remoteManifestDeltaMarkerMatches'
               ];
               for(const key of safeFlags){
                 if(typeof result.diagnostics[key]==='boolean')details[key]=result.diagnostics[key];
