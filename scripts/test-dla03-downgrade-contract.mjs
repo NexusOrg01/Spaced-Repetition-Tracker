@@ -74,7 +74,8 @@ assert.match(cloud, /downgradeEntityDelta/);
 assert.match(cloud, /downgradeEntityDelta,\s*noteCommittedLocalSave/);
 assert.match(cloud, /nexus_disable_entity_delta/);
 assert.match(cloud, /syncStateQuery=client\.from\('nexus_workspace_sync_state'\)/);
-assert.match(cloud, /syncStateRead\.data\.mode==='snapshot'[\s\S]*?delete snapshotPayload\.__nexusDeltaSync/);
+assert.match(cloud, /function restoreVerifiedChunkedDeltaMarker\(remote,syncMode\)[\s\S]*?if\(syncMode==='snapshot'&&remote\.payload\.__nexusDeltaSync==='entity-delta-v1'\)[\s\S]*?delete payload\.__nexusDeltaSync/,
+  'snapshot mode must continue stripping the Delta marker after the verified chunk-reader refactor');
 assert.match(docs, /checkpoint's `nexus_user_data\.updated_at` value/);
 assert.match(lifecycle, /rowAfterDowngrade\.updated_at, downgradeExpectedUpdatedAt/);
 
