@@ -608,7 +608,27 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     /active account does not match/,
     'migration must reject a workspace owner different from the committed session');
 
-  // A failed replacement generation must never displace the currently readable
+  // A normal projection replacement must refuse to retire a pending Delta outbox.
+// This preflight is tested separately from the synthetic quota failure below: once
+// the operation is explicitly acknowledged, the generic batch-failure test can
+// exercise its intended IndexedDB write failure rather than being stopped earlier.
+const pendingBeforeBlockedReplacement=await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10);
+assert.equal(pendingBeforeBlockedReplacement.length,1);
+assert.equal(pendingBeforeBlockedReplacement[0].operationId,'entity-op-superseded-by-rebuild');
+await assert.rejects(loaded.api.migrateWorkspaceEntities('entity-owner-a',afterChanges.state,afterChanges.featureState,
+  {expectedRevision:loaded.api.getStatus().revision}),error=>{
+    assert.equal(error.code,'NEXUS_PENDING_OUTBOX_REQUIRES_RECOVERY',
+      'a non-recovery projection replacement must fail closed while owner-scoped Delta outbox rows remain pending');
+    assert.equal(error.nexusEntityProjectionFailureReason,'pending-outbox-requires-recovery');
+    return true;
+  },'a pending Delta outbox must not be silently discarded by a new projection generation');
+assert.deepEqual(await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10),pendingBeforeBlockedReplacement,
+  'a blocked replacement must retain the exact pending outbox rows');
+assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',staleGenerationOperation.lastSequence),
+  staleGenerationOperation.count,
+  'the fixture must explicitly acknowledge its synthetic operation before testing a normal projection rebuild');
+
+// A failed replacement generation must never displace the currently readable
   // generation. The first 8,000 rows commit, then the next batch is interrupted.
   const expandedState={
     ...afterChanges.state,
@@ -676,20 +696,6 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'a failed replacement must leave the prior generation outbox unchanged');
 
   const pruneQueryStart=idb.rangeQueries.length;
-  await assert.rejects(loaded.api.migrateWorkspaceEntities('entity-owner-a',expandedState,afterChanges.featureState,
-    {expectedRevision:loaded.api.getStatus().revision}),error=>{
-      assert.equal(error.code,'NEXUS_PENDING_OUTBOX_REQUIRES_RECOVERY',
-        'a non-recovery projection replacement must fail closed while an owner has pending outbox rows');
-      assert.equal(error.nexusEntityProjectionFailureReason,'pending-outbox-requires-recovery');
-      return true;
-    },'a pending Delta outbox must not be silently discarded by a new projection generation');
-  assert.deepEqual(await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10),outboxBeforeFailedMigration,
-    'a blocked replacement must retain the exact pending outbox rows');
-  // This fixture uses the legacy sequence acknowledgement API only to clear its
-  // synthetic pending rows after the preservation assertions. Production Delta
-  // publication continues through the receipt/read-back-bound group acknowledgement.
-  assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',staleGenerationOperation.lastSequence),
-    staleGenerationOperation.count,'the fixture must explicitly clear its completed test operation before retrying migration');
   const resumedMigration=await loaded.api.migrateWorkspaceEntities('entity-owner-a',expandedState,afterChanges.featureState,
     {expectedRevision:loaded.api.getStatus().revision});
   const pruneQueries=idb.rangeQueries.slice(pruneQueryStart).filter(query=>

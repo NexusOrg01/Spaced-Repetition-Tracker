@@ -57,6 +57,9 @@ jobs:
         with:
           node-version: 22
 
+      - name: Gate lifecycle on isolated DLA-09 outbox-preservation proof
+        run: node scripts/test-nexus-storage.mjs
+
       - name: Install PostgreSQL client
         run: |
           sudo apt-get update -qq
