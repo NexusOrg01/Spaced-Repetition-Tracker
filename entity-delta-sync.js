@@ -1673,11 +1673,20 @@
           reportProgress(step,ok?'completed':'failed',details);
           return result;
         }catch(error){
+          const rawProjectionFailureReason=String(error&&error.nexusEntityProjectionFailureReason||'');
+          const rawProjectionFailureStage=String(error&&error.nexusEntityProjectionFailureStage||'');
+          const projectionFailureReason=/^[a-z][a-z0-9_-]{0,79}$/.test(rawProjectionFailureReason)
+            ?rawProjectionFailureReason.replace(/-/g,'_'):'recovery_step_threw';
+          const projectionFailureStage=/^[a-z][a-z0-9_-]{0,79}$/.test(rawProjectionFailureStage)
+            ?rawProjectionFailureStage.replace(/-/g,'_'):'other';
+          const failureCode=typeof(error&&error.code)==='string'&&
+            /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code)?error.code:'unclassified';
+          const failureName=typeof(error&&error.name)==='string'&&
+            /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.name)?error.name:'Error';
           reportProgress(step,'failed',{
             durationMs:Math.max(0,Date.now()-startedAt),ok:false,
-            failureReason:'recovery_step_threw',
-            failureCode:typeof(error&&error.code)==='string'?error.code.slice(0,64):'unclassified',
-            failureName:typeof(error&&error.name)==='string'?error.name.slice(0,64):'Error'
+            failureReason:projectionFailureReason,failureStage:projectionFailureStage,
+            failureCode,failureName
           });
           throw error;
         }

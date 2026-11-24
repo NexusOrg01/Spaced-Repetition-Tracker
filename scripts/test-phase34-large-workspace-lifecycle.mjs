@@ -1040,7 +1040,7 @@ try {
       for (const key of booleanFields) {
         if (typeof event[key] === 'boolean') row[key] = event[key];
       }
-      for (const key of ['storageMode','syncMode','projectionRebuildMode','projectionSerializationMode','errorCategory','statusAfterWatchdog','recoveryStep','progressPhase','failureReason']) {
+      for (const key of ['storageMode','syncMode','projectionRebuildMode','projectionSerializationMode','errorCategory','statusAfterWatchdog','recoveryStep','progressPhase','failureReason','failureStage','failureCode','failureName']) {
         if (typeof event[key] === 'string') row[key] = event[key];
       }
       const topicCount = event.workspace && event.workspace.topicCount;
