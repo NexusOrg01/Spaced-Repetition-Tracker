@@ -2510,7 +2510,8 @@ function makeParkedRecoveryFixture(options={}){
   // snapshot changes the server timestamp first; it must not mutate the local
   // cursor proof until the atomic local recovery commit advances that cursor.
   const initialLocalCursorSnapshotUpdatedAt=state.snapshot_updated_at;
-  let publishedCandidate=null,readSnapshotCount=0,proofAtCommit=null;
+  let publishedCandidate=null,readSnapshotCount=0,proofAtCommit=null,
+    pendingReadbackMutationTriggered=false,outboxReadbackMutationTriggered=false;
   const storage={
     async readWorkspaceEntityRecovery(){return {intent:intent?{...intent}:null};},
     async beginWorkspaceEntityRecovery(targetOwner,input){
@@ -2597,14 +2598,20 @@ function makeParkedRecoveryFixture(options={}){
     getPendingSnapshot:async()=>currentPending,
     readRemoteSnapshot:async()=>{
       readSnapshotCount++;
-      if(readSnapshotCount===2&&options.mutatePendingOnReadback&&currentPending){
+      // The first read after publication is the real remote read-back boundary.
+      // Mutations before publication belong to preparation, not the proof window.
+      if(publishedCandidate&&!pendingReadbackMutationTriggered&&
+         options.mutatePendingOnReadback&&currentPending){
         currentPending={...currentPending,payload:{...currentPending.payload,
           state:{...currentPending.payload.state,topics:[{...parkedTopic,name:'CHANGED-DURING-READBACK'}]}}};
+        pendingReadbackMutationTriggered=true;
       }
-      if(readSnapshotCount===3&&options.mutateOutboxOnReadback&&outboxGroups.length){
+      if(publishedCandidate&&!outboxReadbackMutationTriggered&&
+         options.mutateOutboxOnReadback&&outboxGroups.length){
         outboxGroups=[{...parkedOutboxGroup,changes:[{...parkedOutboxGroup.changes[0],
           value:{...parkedTopic,name:'CHANGED-DURING-READBACK'}}]}];
         outboxDigest='f'.repeat(64);
+        outboxReadbackMutationTriggered=true;
       }
       if(readSnapshotCount===2&&options.readbackMode==='missing')return null;
       if(readSnapshotCount>1&&options.readbackMode==='missing-edit'){
@@ -2734,6 +2741,10 @@ for(const failure of [
   const fixture=makeParkedRecoveryFixture(failure);
   const result=await fixture.client.publishConflictRecovery('account-A');
   assert.notEqual(result.ok,true,'unsafe recovery must not be committed: '+JSON.stringify(failure));
+  if(failure.mutatePendingOnReadback){
+    assert.equal(result.reason,'pending_snapshot_changed_before_remote_acknowledgement',
+      'a post-publication compatibility-snapshot mutation must be rejected before acknowledgement');
+  }
   if(failure.mutateOutboxOnReadback){
     assert.equal(result.reason,'pending_outbox_changed_after_remote_readback',
       'a post-publication outbox mutation must be rejected by the second exact proof check');
