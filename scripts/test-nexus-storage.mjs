@@ -851,6 +851,21 @@ assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',
   assert.equal(incrementallyRestored.counts.papers,2,
     'incremental Study Hub inserts must maintain exact collection counts');
 
+  // This fixture has completed its assertions for the initial incremental
+  // operation. Clear only these synthetic local-only rows before testing the
+  // separate rapid-save snapshot-backfill race; pending-outbox preservation and
+  // recovery are covered by the dedicated guard and DLA-09 regressions above.
+  const initialIncrementalOutbox=await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10000);
+  const initialIncrementalThrough=initialIncrementalOutbox.reduce((maximum,row)=>
+    Math.max(maximum,Number(row&&row.sequence)||0),0);
+  if(initialIncrementalThrough>0){
+    assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',initialIncrementalThrough),
+      initialIncrementalOutbox.length,
+      'the rapid-save fixture must explicitly clear its completed synthetic incremental operation');
+  }
+  assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10000)).length,0,
+    'the rapid-save backfill race must begin without pending local operations');
+
   // A later compatibility snapshot can commit while an earlier entity task is
   // waiting on durability. Reject the older delta and rebuild from the latest
   // snapshot so closing the page cannot leave a ready-but-incomplete projection.
