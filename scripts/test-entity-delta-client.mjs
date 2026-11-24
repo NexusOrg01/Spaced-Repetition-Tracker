@@ -2569,11 +2569,11 @@ function makeParkedRecoveryFixture(options={}){
       if((options.outboxOnly||options.cursorMismatchWithPending)&&!outboxCommitted){
         return {ok:false,snapshotRequired:true,reason:'local_delta_cursor_mismatch'};
       }
-      return {ok:true,cursor:{generation:'generation-B',publishRevision:committed
-          ?Number(state.snapshot_revision):0,
-        acknowledgedSequence:outboxCommitted?1:0,snapshotUpdatedAt:state.snapshot_updated_at,
-        remoteHeadRevision:committed?Number(state.head_revision):0,requiresPull:false},
-        generation:'generation-B'};
+      return {ok:true,exists:true,cursor:{ownerId:owner,generation:'generation-B',workspaceRevision:2,
+          publishRevision:committed?Number(state.snapshot_revision):0,
+          acknowledgedSequence:outboxCommitted?1:0,snapshotUpdatedAt:state.snapshot_updated_at,
+          remoteHeadRevision:committed?Number(state.head_revision):0,requiresPull:false},
+        generation:'generation-B',workspaceRevision:2};
     },
     async readWorkspaceEntityDeltaRecoveryState(){
       const recoveryActive=!!((options.outboxOnly||options.outboxCurrentCursor||options.cursorMismatchWithPending)&&!outboxCommitted);
