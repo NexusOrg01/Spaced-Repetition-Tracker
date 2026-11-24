@@ -783,3 +783,21 @@ No owner/session, revision, generation, manifest, chunk-reference, integrity, ca
 **Overall DLA-09 remains open.** The next permitted validation is the focused recovery/client/storage regression and relevant build/type/syntax checks on the diagnostic head. Only if those pass may one controlled disposable-account A→B→A lifecycle be attempted. Do not infer remote commitment or clear pending state from a progress event alone; the exact remote snapshot read-back and revision proof remain mandatory.
 
 No production/live Nexus or Supabase operation, merge, production deployment/promotion, new PR, or production configuration/schema/policy/data change occurred.
+
+
+
+### 13.4 Focused and full automated validation update — 24 November 2026
+
+The diagnostic code/test commits were validated by the following current-head workflow:
+
+- **Validate curriculum catalogue — run #2152** ([run 45331696043](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45331696043)): **PASSED**.
+- Exact command in the workflow's catalogue step:
+  `node --check scripts/test-active-manifest-race.mjs && node --check scripts/test-phase34-large-workspace-lifecycle.mjs && node scripts/test-entity-delta-migration.mjs && node scripts/test-entity-delta-client.mjs && node scripts/test-staging-two-client-harness.mjs && node scripts/validate-curricula.mjs`.
+- The new `test-entity-delta-client.mjs` remote-read-back diagnostic assertion passed. The log confirms the entity-delta client/cloud-sync suite passed.
+- The full validation step also passed `npm run build`, `node --check entity-delta-sync.js`, durable storage, backup/restore, offline queue, workspace merge, cloud-sync recovery/runtime, cloud chunk storage, account isolation, data-safety wiring, security headers, navigation/rendering and regression suites.
+- The account-deletion service emitted expected “not enabled on this Supabase environment” warnings; the account-deletion security/integration checks still passed.
+- F-Droid Android workflow run #1078 was **skipped**, as intended for the Web/PWA scope.
+
+The one controlled authenticated local integration run is **Phase 3.4 run #638** ([run 45331696070](https://github.com/NexusOrg01/Spaced-Repetition-Tracker/actions/runs/45331696070)). It has prepared its isolated local Supabase environment and is still applying migrations. DLA-02/DLA-03 RPC tests, disposable Auth fixtures, Chromium, A1/A2/B protocol, and the 26.9 MB lifecycle step have not yet completed. No result is claimed for those pending steps.
+
+Updated status: DLA-09A's focused proof/read-back diagnostic regression now passes, but its app-level parked-edit proof remains blocked pending run #638. DLA-09C and DLA-09D now have current-head full-suite support from run #2152. DLA-09B remains partial and DLA-09E remains blocked pending the controlled lifecycle outcome.
