@@ -1571,16 +1571,37 @@
         try{
           const result=await work();
           const ok=!(result&&typeof result==='object'&&result.ok===false);
-          reportProgress(step,ok?'completed':'failed',{
-            durationMs:Math.max(0,Date.now()-startedAt),ok
-          });
+          const details={durationMs:Math.max(0,Date.now()-startedAt),ok};
+          if(!ok&&result&&typeof result==='object'){
+            if(typeof result.reason==='string')details.failureReason=result.reason.slice(0,96);
+            if(result.retryable===true||result.retryable===false)details.retryable=result.retryable;
+            if(result.snapshotRequired===true||result.snapshotRequired===false)
+              details.snapshotRequired=result.snapshotRequired;
+            if(result.diagnostics&&typeof result.diagnostics==='object'){
+              const safeFlags=[
+                'candidateDigestMatches','expectedHeadRevisionMatches','snapshotRevisionMatches',
+                'baseUpdatedAtMatches','exactAlreadyPublishedSnapshotMatches',
+                'remotePayloadMatches','remotePayloadDigestMatches','remoteStateMatches',
+                'pendingOutboxOverlayApplied','pendingLocalChangesPreserved'
+              ];
+              for(const key of safeFlags){
+                if(typeof result.diagnostics[key]==='boolean')details[key]=result.diagnostics[key];
+              }
+            }
+          }
+          reportProgress(step,ok?'completed':'failed',details);
           return result;
         }catch(error){
           reportProgress(step,'failed',{
-            durationMs:Math.max(0,Date.now()-startedAt),ok:false
+            durationMs:Math.max(0,Date.now()-startedAt),ok:false,
+            failureCode:typeof(error&&error.code)==='string'?error.code.slice(0,64):'unclassified',
+            failureName:typeof(error&&error.name)==='string'?error.name.slice(0,64):'Error'
           });
           throw error;
         }
+      };
+      const reportRecoveryFailure=(step,reason,details={})=>{
+        reportProgress(step,'failed',{ok:false,failureReason:reason,...details});
       };
       try{
         await assertOwner(owner);
@@ -1780,6 +1801,8 @@
               !recoveryCandidateDiagnostics.snapshotRevisionMatches||
               !recoveryCandidateDiagnostics.baseUpdatedAtMatches)&&
              !exactAlreadyPublishedSnapshot){
+            reportRecoveryFailure('verify-staged-recovery-candidate',
+              'staged_recovery_candidate_changed',recoveryCandidateDiagnostics);
             return {ok:false,retryable:true,snapshotRequired:true,
               reason:'staged_recovery_candidate_changed',intentId:intent.intentId,
               diagnostics:recoveryCandidateDiagnostics};
@@ -1946,13 +1969,24 @@
             remoteCompactedThrough!==null&&remoteCompactedThrough>=remoteSnapshotRevision&&
             publicationCompactedThrough!==null&&remoteCompactedThrough===publicationCompactedThrough);
           if(!remotePayloadMatches||!remotePayloadDigestMatches||!remoteStateMatches){
-            reportProgress('verify-pending-snapshot-readback','failed',{
-              durationMs:Math.max(0,Date.now()-readbackStartedAt),ok:false,
-              pendingLocalSequence:pendingAtStartIdentity?pendingAtStartIdentity.localSequence:intent.pendingOutboxProof?.throughSequence??null
+            const failureReason=!remotePayloadMatches||!remotePayloadDigestMatches
+              ?'pending_snapshot_remote_readback_mismatch'
+              :'remote_state_changed_before_pending_acknowledgement';
+            reportRecoveryFailure('verify-pending-snapshot-readback',failureReason,{
+              durationMs:Math.max(0,Date.now()-readbackStartedAt),
+              remotePayloadMatches,
+              remotePayloadDigestMatches,
+              remoteStateMatches,
+              remoteUpdatedAtMatches:!!(remoteReadback&&remoteReadback.updated_at===publication.updated_at),
+              remoteSnapshotRevisionMatches:remoteSnapshotRevision===publicationSnapshotRevision,
+              remoteHeadRevisionMatches:remoteHeadRevision===publicationHeadRevision,
+              remoteCompactedThroughMatches:remoteCompactedThrough===publicationCompactedThrough,
+              pendingOutboxProofPresent:!!intent.pendingOutboxProof,
+              pendingOutboxOverlayApplied:!intent.pendingOutboxProof||
+                Number(intent.pendingOutboxProof.groupCount)===0||prepared?.pendingOutboxOverlayApplied===true
             });
             return {ok:false,retryable:true,snapshotRequired:true,
-              reason:!remotePayloadMatches||!remotePayloadDigestMatches?'pending_snapshot_remote_readback_mismatch':
-                'remote_state_changed_before_pending_acknowledgement',intentId:intent.intentId};
+              reason:failureReason,intentId:intent.intentId};
           }
           if(pendingAtStartIdentity){
             const latestPending=await getPendingSnapshot(owner);
