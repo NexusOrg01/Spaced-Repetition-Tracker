@@ -505,18 +505,18 @@ async function assertActiveUser(userId,expectedEpoch=sessionEpoch){
   throw syncCancelledError('The active auth session is unverified or the account changed. No cloud data was applied or written.');
 }
 function restoreVerifiedChunkedDeltaMarker(remote,syncMode){
- if(!remote||remote.storageMode!=='chunked'||!remote.chunkManifest||
-    remote.chunkManifest.__nexusStorage!=='chunked-v1'||
-    !remote.payload||typeof remote.payload!=='object'||Array.isArray(remote.payload))return remote;
- const manifestMarksDelta=remote.chunkManifest.__nexusDeltaSync==='entity-delta-v1';
- if(syncMode==='delta'&&manifestMarksDelta){
-  if(remote.payload.__nexusDeltaSync==='entity-delta-v1')return remote;
-  return {...remote,payload:{...remote.payload,__nexusDeltaSync:'entity-delta-v1'}};
- }
+ if(!remote||!remote.payload||typeof remote.payload!=='object'||Array.isArray(remote.payload))return remote;
  if(syncMode==='snapshot'&&remote.payload.__nexusDeltaSync==='entity-delta-v1'){
   const payload={...remote.payload};
   delete payload.__nexusDeltaSync;
   return {...remote,payload};
+ }
+ if(remote.storageMode!=='chunked'||!remote.chunkManifest||
+    remote.chunkManifest.__nexusStorage!=='chunked-v1')return remote;
+ const manifestMarksDelta=remote.chunkManifest.__nexusDeltaSync==='entity-delta-v1';
+ if(syncMode==='delta'&&manifestMarksDelta){
+  if(remote.payload.__nexusDeltaSync==='entity-delta-v1')return remote;
+  return {...remote,payload:{...remote.payload,__nexusDeltaSync:'entity-delta-v1'}};
  }
  return remote;
 }

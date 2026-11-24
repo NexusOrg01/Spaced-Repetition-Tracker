@@ -71,6 +71,12 @@ vm.runInContext(
   const legacy = { storageMode: 'legacy', payload: { ...reconstructedPayload } };
   assert.equal(markerSandbox.restoreVerifiedChunkedDeltaMarker(legacy, 'delta'), legacy,
     'legacy JSONB snapshots must not receive chunk-manifest metadata');
+  const legacySnapshot = markerSandbox.restoreVerifiedChunkedDeltaMarker({
+    storageMode: 'legacy',
+    payload: { ...reconstructedPayload, __nexusDeltaSync: 'entity-delta-v1' }
+  }, 'snapshot');
+  assert.equal(legacySnapshot.payload.__nexusDeltaSync, undefined,
+    'snapshot mode must continue stripping the Delta marker from legacy JSONB snapshots too');
 }
 assert.ok(source.includes('remote=restoreVerifiedChunkedDeltaMarker(remote,syncMode);'),
   'the verified marker helper must be applied by the actual remote-read path after mode verification');
@@ -80,15 +86,15 @@ assert.ok(uploadStatusHelperStart >= 0 && uploadStatusHelperEnd > uploadStatusHe
   'upload-start status policy must remain independently testable');
 const uploadStatusSandbox = {
   currentStatus: 'Sync pending',
-  statusCalls: [],
-  el(id) {
-    assert.equal(id, 'cloudStatus');
-    return { textContent: this.currentStatus };
-  },
-  status(value) {
-    this.statusCalls.push(value);
-    this.currentStatus = value;
-  }
+  statusCalls: []
+};
+uploadStatusSandbox.el = (id) => {
+  assert.equal(id, 'cloudStatus');
+  return { textContent: uploadStatusSandbox.currentStatus };
+};
+uploadStatusSandbox.status = (value) => {
+  uploadStatusSandbox.statusCalls.push(value);
+  uploadStatusSandbox.currentStatus = value;
 };
 vm.createContext(uploadStatusSandbox);
 vm.runInContext(
