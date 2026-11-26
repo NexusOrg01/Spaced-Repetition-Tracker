@@ -3901,14 +3901,15 @@
           request.onsuccess=()=>{
             if(failed)return;
             const rows=(request.result||[]).filter(row=>row&&row.kind==='workspace-operation'&&row.ownerId===operation.ownerId);
-            if(rows.length>MAX_PENDING_WORKSPACE_OPERATIONS){failed=true;try{tx.abort();}catch(_){}return;}
+            for(const row of rows)if(row.deliveryState==='acknowledged')outbox.delete(row.key);
+            const unresolved=rows.filter(row=>row.deliveryState!=='acknowledged');
+            if(unresolved.length>MAX_PENDING_WORKSPACE_OPERATIONS){failed=true;try{tx.abort();}catch(_){}return;}
             const key=workspaceOperationOutboxKey(operation.ownerId,operation.operationId);
             const same=rows.find(row=>row.operationId===operation.operationId);
             if(same){
               if(same.requestHash!==operation.requestHash){failed=true;try{tx.abort();}catch(_){}return;}
               complete();return;
             }
-            const unresolved=rows.filter(row=>row.deliveryState!=='acknowledged');
             const dependencies=unresolved.filter(row=>row.deliveryState==='in_flight'||
               row.deliveryState==='awaiting_receipt'||Number(row.attemptCount)>0);
             if(dependencies.length+1>MAX_PENDING_WORKSPACE_OPERATIONS){failed=true;try{tx.abort();}catch(_){}return;}
@@ -4073,7 +4074,8 @@
     return task;
   }
 
-  function commitLocalStorageEntries(entries, transactionOptions = {}) {
+  function commitLocalStorageEntries(entries) {
+    const transactionOptions=arguments.length>1&&isRecord(arguments[1])?arguments[1]:{};
     if (!Array.isArray(entries) || entries.length === 0) throw new Error('Invalid Nexus storage transaction.');
     const seen = new Set();
     const normalized = entries.map(entry => {
