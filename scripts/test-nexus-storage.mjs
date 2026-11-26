@@ -3130,3 +3130,93 @@ console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth is
     'the local outbox must remain intact after a rejected remote position change');
   console.log('DLA-08E pending-local-outbox remote-apply regression passed.');
 }
+
+{
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify({topics:[{id:'initial-A'}]})],
+    ['recall.study.features.v1',JSON.stringify({journal:[]})],
+    ['nexus.cloud.last-user-id','account-A']
+  ]);
+  const idb=new FakeIndexedDB();
+  const loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true);
+  const makeOperation=(owner,sequence,operationId,topicId)=>({
+    operationId,ownerUserId:owner,entityType:'workspace',entityId:'workspace',
+    operationType:'snapshot',schemaVersion:1,localSequence:sequence,
+    baseServerVersion:'remote-'+owner,status:'pending',
+    createdAt:'2026-11-26T00:00:00.000Z',updatedAt:'2026-11-26T00:00:00.000Z',
+    payload:{state:{topics:[{id:topicId,name:topicId}]},featureState:{journal:[]}},
+    entityChanges:[{collection:'topics',id:topicId,operation:'put',value:{id:topicId,name:topicId}}],
+    trackerRoot:{topics:[{id:topicId,name:topicId}]},featureRoot:{journal:[]},replaceEntities:false
+  });
+  const a1=makeOperation('account-A',1,'nexus-op-A1','topic-A1');
+  const queueA1={schemaVersion:1,sequence:1,pending:{'account-A':a1},archived:[],recoveryCommits:[]};
+  const commit=(api,owner,queue,tracker,feature)=>api.commitLocalStorageEntries([
+    {key:'nexus.cloud.last-user-id',value:owner},
+    {key:'recall.study.tracker.v1',value:JSON.stringify(tracker)},
+    {key:'recall.study.features.v1',value:JSON.stringify(feature)},
+    {key:'nexus.cloud.offline-outbox.v1',value:JSON.stringify(queue)}
+  ],{workspaceOperations:Object.values(queue.pending).filter(item=>item&&item.status==='pending')});
+  await commit(loaded.api,'account-A',queueA1,a1.payload.state,a1.payload.featureState);
+  const firstRead=await loaded.api.readWorkspacePendingOperations('account-A');
+  assert.equal(firstRead.ok,true);
+  assert.equal(firstRead.operations.length,1,'the workspace operation must be persisted with the local snapshot');
+  assert.equal(firstRead.operations[0].operationId,a1.operationId);
+  assert.equal(firstRead.operations[0].ownerId,'account-A');
+  assert.equal(firstRead.operations[0].recordVersion,1);
+  assert.equal(firstRead.operations[0].protocolVersion,1);
+  assert.equal(firstRead.operations[0].sequence,1);
+  assert.match(firstRead.operations[0].requestHash,/^[a-f0-9]{64}$/,'the durable operation must carry its SHA-256 payload hash');
+  assert.deepEqual(firstRead.operations[0].dependsOn,[]);
+
+  const a2=makeOperation('account-A',2,'nexus-op-A2','topic-A2');
+  const queueA2={schemaVersion:1,sequence:2,pending:{'account-A':a2},archived:[],recoveryCommits:[]};
+  await commit(loaded.api,'account-A',queueA2,a2.payload.state,a2.payload.featureState);
+  const coalesced=await loaded.api.readWorkspacePendingOperations('account-A');
+  assert.deepEqual(coalesced.operations.map(item=>item.operationId),[a2.operationId],
+    'a newer unattempted full snapshot may safely supersede the previous pending snapshot');
+  assert.deepEqual(coalesced.operations[0].supersededOperationIds,[a1.operationId],
+    'supersession must be explicitly recorded rather than silently dropping the previous pending snapshot');
+  assert.equal(coalesced.operations[0].supersededOperationCount,1);
+
+  const beforeFailure=await loaded.api.getWorkspace('account-A');
+  const a3=makeOperation('account-A',3,'nexus-op-A3','topic-A3');
+  const queueA3={schemaVersion:1,sequence:3,pending:{'account-A':a3},archived:[],recoveryCommits:[]};
+  idb.failNextWrite=true;
+  await assert.rejects(commit(loaded.api,'account-A',queueA3,a3.payload.state,a3.payload.featureState),
+    /Synthetic IndexedDB quota\/transaction failure/,
+    'failure of the combined transaction must reject the local save');
+  const afterFailure=await loaded.api.getWorkspace('account-A');
+  assert.deepEqual(afterFailure.state,beforeFailure.state,
+    'a failed outbox write must roll back the workspace snapshot in the same transaction');
+  const afterFailureOutbox=await loaded.api.readWorkspacePendingOperations('account-A');
+  assert.deepEqual(afterFailureOutbox.operations.map(item=>item.operationId),[a2.operationId],
+    'a failed local transaction must neither replace nor lose the previously durable outbox operation');
+
+  const reloaded=loadApi(makeWindow(native,idb));
+  assert.equal(await reloaded.api.bootstrap(),true,'the durable workspace and outbox must survive a browser reload');
+  const afterReload=await reloaded.api.readWorkspacePendingOperations('account-A');
+  assert.equal(afterReload.ok,true);
+  assert.deepEqual(afterReload.operations.map(item=>item.operationId),[a2.operationId]);
+
+  const b1=makeOperation('account-B',1,'nexus-op-B1','topic-B1');
+  const queueAB={schemaVersion:1,sequence:3,pending:{'account-A':a2,'account-B':b1},archived:[],recoveryCommits:[]};
+  await commit(reloaded.api,'account-B',queueAB,b1.payload.state,b1.payload.featureState);
+  const bRead=await reloaded.api.readWorkspacePendingOperations('account-B');
+  assert.equal(bRead.ok,true);
+  assert.deepEqual(bRead.operations.map(item=>item.operationId),[b1.operationId],
+    'account B must read only its own durable operation after A-to-B rotation');
+
+  await commit(reloaded.api,'account-A',queueAB,a2.payload.state,a2.payload.featureState);
+  const aReturn=await reloaded.api.readWorkspacePendingOperations('account-A');
+  assert.equal(aReturn.ok,true);
+  assert.deepEqual(aReturn.operations.map(item=>item.operationId),[a2.operationId],
+    'returning to account A must recover A’s original owner-scoped operation');
+  await commit(reloaded.api,'account-B',queueAB,b1.payload.state,b1.payload.featureState);
+  const bReturn=await reloaded.api.readWorkspacePendingOperations('account-B');
+  assert.equal(bReturn.ok,true);
+  assert.deepEqual(bReturn.operations.map(item=>item.operationId),[b1.operationId],
+    'returning to account B must recover B’s separate owner-scoped operation');
+  console.log('DLA-10B atomic workspace/outbox, reload, and A-B-A regressions passed.');
+}
+

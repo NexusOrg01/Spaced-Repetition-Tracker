@@ -399,7 +399,7 @@
       // Persist tracker, Study Hub state and the pending cloud snapshot in one atomic
       // queue commit. The cloud hook below only records that this commit has happened;
       // it must not serialize and enqueue the same workspace a second time.
-      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,workspaceEntries,{state,featureState},{returnOperationPayload:false});
+      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,workspaceEntries,{state,featureState},{returnOperationPayload:false,entityChanges:frozenEntityChanges,trackerRoot,featureRoot,replaceEntities:entityReplace});
       const storage=window.NexusStorage;
       if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function'){
         const saveRevision=++storageSaveRevision;

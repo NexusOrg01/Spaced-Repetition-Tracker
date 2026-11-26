@@ -14,6 +14,8 @@
   const TRACKER_KEY = 'recall.study.tracker.v1';
   const FEATURE_KEY = 'recall.study.features.v1';
   const OWNER_KEY = 'nexus.cloud.last-user-id';
+  const OFFLINE_QUEUE_KEY = 'nexus.cloud.offline-outbox.v1';
+  const MAX_PENDING_WORKSPACE_OPERATIONS = 100;
   const ENTITY_REVISION_PREFIX = 'nexus.workspace.entity-revision:';
   const FALLBACK_JOURNAL_KEY = 'nexus.storage.internal.fallback-journal.v1';
   const DIAGNOSTIC_KEY = 'nexus.syncdiag.session.v1';
@@ -606,6 +608,12 @@
   }
   function entityOutboxKey(ownerId,sequence){
     return entityOutboxPrefix(ownerId)+'seq:'+String(sequence).padStart(16,'0');
+  }
+  function workspaceOperationOutboxPrefix(ownerId){
+    return entityOutboxPrefix(ownerId)+'workspace:';
+  }
+  function workspaceOperationOutboxKey(ownerId,operationId){
+    return workspaceOperationOutboxPrefix(ownerId)+encodeURIComponent(String(operationId||''));
   }
   function entityOperationSequenceKey(ownerId,sequence,operationId){
     return entityOutboxPrefix(ownerId)+'opseq:'+String(sequence).padStart(16,'0')+':'+encodeURIComponent(operationId);
@@ -1410,6 +1418,25 @@
     return fingerprint;
   }
 
+  async function fingerprintWorkspaceOperation(operation){
+    const payload={ownerId:operation.ownerId,operationId:operation.operationId,
+      operationType:operation.operationType,payloadVersion:operation.payloadVersion,
+      baseRevision:operation.baseRevision,sequence:operation.sequence,
+      dependsOn:Array.isArray(operation.dependsOn)?operation.dependsOn:[],
+      payload:operation.payload,changes:operation.changes||null,
+      trackerRoot:operation.trackerRoot||null,featureRoot:operation.featureRoot||null,
+      replaceEntities:operation.replaceEntities===true};
+    let canonical;
+    try{canonical=JSON.stringify(payload);if(typeof canonical!=='string')throw new Error('invalid');}
+    catch(_){throw new Error('Workspace outbox operations must be JSON-compatible before a durable payload hash can be created.');}
+    const cryptoApi=root&&root.crypto,Encoder=root&&root.TextEncoder;
+    if(!cryptoApi||!cryptoApi.subtle||typeof cryptoApi.subtle.digest!=='function'||typeof Encoder!=='function')
+      throw new Error('Secure SHA-256 support is unavailable; workspace outbox persistence is paused.');
+    const digest=await cryptoApi.subtle.digest('SHA-256',new Encoder().encode(canonical));
+    let fingerprint='';for(const byte of new Uint8Array(digest))fingerprint+=byte.toString(16).padStart(2,'0');
+    return fingerprint;
+  }
+
   async function fingerprintEntityOutboxGroups(groups){
     const normalized=(Array.isArray(groups)?groups:[]).map(group=>({
       operationId:String(group&&group.operationId||''),
@@ -1632,6 +1659,23 @@
     return rows.filter(row=>row&&row.ownerId===owner&&
       row.generation===manifest.activeGeneration&&row.kind==='change'&&Number(row.sequence)>after);
   }
+  async function readWorkspacePendingOperations(ownerId,limit=100){
+    const owner=entityOwnerKey(ownerId),size=Math.max(1,Math.min(MAX_PENDING_WORKSPACE_OPERATIONS,Math.floor(Number(limit)||100)));
+    if(!owner||!enabled||!database||entityRemovalOwners.has(owner))return {ok:false,reason:'workspace_outbox_owner_unavailable'};
+    const range=entityPrefixRange(workspaceOperationOutboxPrefix(owner));
+    if(!range)return {ok:false,reason:'workspace_outbox_key_range_unavailable'};
+    const rows=await transaction(['outbox'],'readonly',(tx,set)=>{
+      const request=tx.objectStore('outbox').getAll(range,size+1);
+      request.onsuccess=()=>set(request.result||[]);
+    });
+    if(!enabled||committedOwnerId!==owner||entityRemovalOwners.has(owner))return {ok:false,reason:'workspace_outbox_owner_changed'};
+    const operations=rows.filter(row=>row&&row.kind==='workspace-operation'&&row.ownerId===owner&&
+      typeof row.operationId==='string'&&row.operationId&&row.recordVersion===1&&
+      typeof row.requestHash==='string'&&/^[a-f0-9]{64}$/.test(row.requestHash))
+      .sort((a,b)=>Number(a.sequence)-Number(b.sequence)).slice(0,size);
+    return {ok:true,ownerId:owner,operations,hasMore:rows.length>size};
+  }
+
   function entityOutboxUtf8ByteLength(value){
     const text=String(value),length=text.length;
     let bytes=0;
@@ -3816,11 +3860,84 @@
     }
   }
 
-  function persistBatch(batch) {
-    return transaction([RECORDS, META, WORKSPACES], 'readwrite', (tx, set) => {
+  async function persistBatch(batch, workspaceOperations = null) {
+    const preparedWorkspaceOperations=[];
+    if(Array.isArray(workspaceOperations)){
+      const seenOwners=new Set();
+      for(const item of workspaceOperations){
+        if(!isRecord(item)||typeof item.ownerUserId!=='string'||!item.ownerUserId||
+           typeof item.operationId!=='string'||!item.operationId||
+           !Number.isSafeInteger(Number(item.localSequence))||Number(item.localSequence)<1||
+           !isRecord(item.payload)||!isRecord(item.payload.state)||!isRecord(item.payload.featureState))
+          throw new Error('A workspace outbox operation is missing its owner, stable ID, sequence, or complete snapshot.');
+        if(seenOwners.has(item.ownerUserId))throw new Error('A local workspace transaction contains duplicate owner outbox operations.');
+        seenOwners.add(item.ownerUserId);
+        const operation={ownerId:item.ownerUserId,operationId:item.operationId,
+          operationType:String(item.operationType||'snapshot'),payloadVersion:Number(item.schemaVersion)||1,
+          baseRevision:typeof item.baseServerVersion==='string'?item.baseServerVersion:null,
+          sequence:Number(item.localSequence),payload:item.payload,
+          changes:Array.isArray(item.entityChanges)?item.entityChanges:null,
+          trackerRoot:isRecord(item.trackerRoot)?item.trackerRoot:null,
+          featureRoot:isRecord(item.featureRoot)?item.featureRoot:null,
+          replaceEntities:item.replaceEntities===true,createdAt:String(item.createdAt||timestamp()),
+          updatedAt:String(item.updatedAt||timestamp())};
+        operation.requestHash=await fingerprintWorkspaceOperation(operation);
+        preparedWorkspaceOperations.push(operation);
+      }
+    }
+    return transaction([RECORDS, META, WORKSPACES, 'outbox'], 'readwrite', (tx, set) => {
       const records = tx.objectStore(RECORDS);
       const meta = tx.objectStore(META);
       const workspaces = tx.objectStore(WORKSPACES);
+      const outbox = tx.objectStore('outbox');
+      const persistWorkspaceOperations = onComplete => {
+        if(!preparedWorkspaceOperations.length){onComplete();return;}
+        let remaining=preparedWorkspaceOperations.length,failed=false;
+        const complete=()=>{remaining--;if(remaining===0&&!failed)onComplete();};
+        for(const operation of preparedWorkspaceOperations){
+          const range=entityPrefixRange(workspaceOperationOutboxPrefix(operation.ownerId));
+          if(!range){failed=true;try{tx.abort();}catch(_){}return;}
+          const request=outbox.getAll(range,MAX_PENDING_WORKSPACE_OPERATIONS+1);
+          request.onsuccess=()=>{
+            if(failed)return;
+            const rows=(request.result||[]).filter(row=>row&&row.kind==='workspace-operation'&&row.ownerId===operation.ownerId);
+            if(rows.length>MAX_PENDING_WORKSPACE_OPERATIONS){failed=true;try{tx.abort();}catch(_){}return;}
+            const key=workspaceOperationOutboxKey(operation.ownerId,operation.operationId);
+            const same=rows.find(row=>row.operationId===operation.operationId);
+            if(same){
+              if(same.requestHash!==operation.requestHash){failed=true;try{tx.abort();}catch(_){}return;}
+              complete();return;
+            }
+            const unresolved=rows.filter(row=>row.deliveryState!=='acknowledged');
+            const dependencies=unresolved.filter(row=>row.deliveryState==='in_flight'||
+              row.deliveryState==='awaiting_receipt'||Number(row.attemptCount)>0);
+            if(dependencies.length+1>MAX_PENDING_WORKSPACE_OPERATIONS){failed=true;try{tx.abort();}catch(_){}return;}
+            const superseded=unresolved.filter(row=>!dependencies.includes(row));
+            for(const row of superseded)outbox.delete(row.key);
+            const supersededIds=[];
+            let supersededCount=0;
+            for(const row of superseded){
+              supersededIds.push(row.operationId);
+              for(const priorId of Array.isArray(row.supersededOperationIds)?row.supersededOperationIds:[])supersededIds.push(priorId);
+              supersededCount+=1+Math.max(0,Number(row.supersededOperationCount)||0);
+            }
+            const envelope={key,kind:'workspace-operation',recordVersion:1,protocolVersion:1,
+              ownerId:operation.ownerId,operationId:operation.operationId,
+              operationType:operation.operationType,payloadVersion:operation.payloadVersion,
+              baseRevision:operation.baseRevision,targetRevision:null,sequence:operation.sequence,
+              dependsOn:dependencies.map(row=>row.operationId),
+              supersededOperationIds:Array.from(new Set(supersededIds)).slice(-64),
+              supersededOperationCount:supersededCount,
+              requestHash:operation.requestHash,payload:operation.payload,changes:operation.changes,
+              trackerRoot:operation.trackerRoot,featureRoot:operation.featureRoot,
+              replaceEntities:operation.replaceEntities,createdAt:operation.createdAt,
+              updatedAt:operation.updatedAt,attemptCount:0,lastAttemptAt:null,nextAttemptAt:null,
+              lastErrorCode:null,deliveryState:'pending',acknowledgement:null};
+            outbox.put(envelope);complete();
+          };
+          request.onerror=()=>{failed=true;try{tx.abort();}catch(_){}};
+        }
+      };
       const request = meta.get('lastCommittedRevision');
       request.onsuccess = () => {
         const nextRevision = Math.max(0, Number(request.result && request.result.value) || 0) + 1;
@@ -3906,7 +4023,7 @@
               workspaces.put(makeWorkspaceRow(
                 owner, tracker, featureState, nextRevision, nextWorkspaceRevision
               ));
-              set(nextRevision);
+              persistWorkspaceOperations(()=>set(nextRevision));
             };
           };
           ownerRequest.onsuccess = () => { values.owner = ownerRequest.result || null; done(); };
@@ -3925,7 +4042,8 @@
   async function persistPending() {
     while (enabled && pending.size) {
       const batch = Array.from(pending.values());
-      const nextRevision = await persistBatch(batch);
+      const operationItem=batch.find(item=>Array.isArray(item.workspaceOperations));
+      const nextRevision = await persistBatch(batch,operationItem?operationItem.workspaceOperations:null);
       revision = nextRevision;
       for (const item of batch) {
         if (item.key === OWNER_KEY) committedOwnerId = item.value;
@@ -3955,7 +4073,7 @@
     return task;
   }
 
-  function commitLocalStorageEntries(entries) {
+  function commitLocalStorageEntries(entries, transactionOptions = {}) {
     if (!Array.isArray(entries) || entries.length === 0) throw new Error('Invalid Nexus storage transaction.');
     const seen = new Set();
     const normalized = entries.map(entry => {
@@ -4005,6 +4123,8 @@
       else cache.set(entry.key, entry.value);
       knownKeys.add(entry.key);
       const item = { ...entry, sequence: ++writeSequence };
+      if(entry.key===OFFLINE_QUEUE_KEY&&Array.isArray(transactionOptions.workspaceOperations))
+        item.workspaceOperations=transactionOptions.workspaceOperations;
       staged.push(item);
       pending.set(entry.key, item);
     }
@@ -4256,6 +4376,7 @@
     syncWorkspaceEntities,
     waitForWorkspaceEntitySync,
     readWorkspaceEntityOutbox,
+    readWorkspacePendingOperations,
     readWorkspaceEntityOutboxGroups,
     acknowledgeWorkspaceEntityOutbox,
     readWorkspaceEntityDeltaCursor,
