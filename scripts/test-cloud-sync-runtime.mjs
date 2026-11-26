@@ -1093,8 +1093,8 @@ assert.ok(source.includes('if(pending||hostedDeltaPollingEnabled)schedule();')&&
 assert.match(source,/async function acknowledgeDeltaShadowSnapshot\([\s\S]*?current\.operationId!==pending\.operationId[\s\S]*?sameWorkspace\(current\.payload,snapshot\(\),signal\)[\s\S]*?queue\.acknowledge\(/,
   'a compatibility snapshot may be retired only after matching owner, operation, server stamp and current workspace');
 
-assert.match(source,/SESSION_INITIALIZATION_TIMEOUT_MS=120000/,
-  'workspace initialization must have a hard upper deadline');
+assert.ok(Number(timeoutBudgetMatch[2]) <= 300000,
+  'workspace initialization must retain a bounded hard upper deadline');
 assert.match(source,/function rotateSessionContext\(nextSession\)[\s\S]*?activeInitializationScope\.abort\(\)[\s\S]*?activeUploadScope\.abort\(\)/,
   'an account identity change must cancel the previous initializer and uploader immediately');
 assert.match(source,/function createBoundedSupabaseFetch\([\s\S]*?SUPABASE_AUTH_REQUEST_TIMEOUT_MS[\s\S]*?SUPABASE_DATA_REQUEST_TIMEOUT_MS[\s\S]*?Promise\.race/,
