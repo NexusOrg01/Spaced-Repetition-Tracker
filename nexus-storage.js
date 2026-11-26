@@ -1698,12 +1698,7 @@
     }
     const rows=page.rows||[];
     for(const row of rows){
-      // Outbox records are owner-scoped durable operations, not members of the
-      // replaceable projection generation. A recovery may activate a new
-      // projection while the old generation's unacknowledged operations remain
-      // parked. Preserve their original generation as provenance and validate it
-      // against the operation marker below instead of rejecting the queue.
-      if(!row||row.ownerId!==owner||typeof row.generation!=='string'||!row.generation||
+      if(!row||row.ownerId!==owner||row.generation!==manifest.activeGeneration||
          row.kind!=='change'||!Number.isSafeInteger(Number(row.sequence))||
          Number(row.sequence)<=after||typeof row.operationId!=='string'||!row.operationId){
         return {...empty,generation:manifest.activeGeneration,workspaceRevision,
@@ -1716,17 +1711,14 @@
       const operationId=rows[index].operationId;
       let end=index+1;
       while(end<rows.length&&rows[end].operationId===operationId)end++;
-      const groupRows=rows.slice(index,end),marker=page.markers.get(operationId),
-        operationGeneration=groupRows[0]&&groupRows[0].generation;
+      const groupRows=rows.slice(index,end),marker=page.markers.get(operationId);
       if(!marker){
         if(!groups.length)return {...empty,generation:manifest.activeGeneration,workspaceRevision,
           snapshotRequired:true,reason:'missing_local_operation_marker'};
         hasMore=true;break;
       }
       const first=Number(marker.firstSequence),last=Number(marker.lastSequence),count=Number(marker.count);
-      if(typeof operationGeneration!=='string'||!operationGeneration||
-         groupRows.some(row=>row.generation!==operationGeneration)||
-         marker.ownerId!==owner||marker.generation!==operationGeneration||
+      if(marker.ownerId!==owner||marker.generation!==manifest.activeGeneration||
          marker.kind!=='operation-marker'||marker.operationId!==operationId||
          !Number.isSafeInteger(first)||first<1||!Number.isSafeInteger(last)||last<first||
          !Number.isSafeInteger(count)||count<1||count>1000||last-first+1!==count){
@@ -1827,9 +1819,8 @@
     if(entityRecoveryLockedOwners.has(owner))return 0;
     let removed=0,afterSequence=0;
     // Acknowledgement is a destructive queue operation, so every bounded page
-    // revalidates the owner and compatibility workspace revision in the same
-    // transaction that removes its rows. Operation generations are retained as
-    // provenance and checked against their markers, but do not own the queue.
+    // revalidates the owner, active generation and compatibility workspace revision
+    // in the same transaction that removes its rows.
     while(afterSequence<through){
       if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner)return removed;
       const sequenceRange=entityOutboxSequenceRange(owner,afterSequence,through);
@@ -1857,7 +1848,7 @@
           const rows=values.rows||[];
           for(const item of rows){
             const sequence=Number(item&&item.sequence);
-            if(!item||item.ownerId!==owner||typeof item.generation!=='string'||!item.generation||
+            if(!item||item.ownerId!==owner||item.generation!==manifest.activeGeneration||
                item.kind!=='change'||typeof item.operationId!=='string'||!item.operationId||
                !Number.isSafeInteger(sequence)||sequence<=afterSequence||sequence>through||
                typeof item.key!=='string'||!item.key.startsWith(entityOutboxPrefix(owner)+'seq:')){
@@ -1878,12 +1869,8 @@
             const request=store.get(entityOperationKey(owner,operationId));
             request.onsuccess=()=>{
               const marker=request.result;
-              const operationRows=rows.filter(row=>row.operationId===operationId);
-              const operationGeneration=operationRows[0]&&operationRows[0].generation;
               if(marker){
-                if(typeof operationGeneration!=='string'||!operationGeneration||
-                   operationRows.some(row=>row.generation!==operationGeneration)||
-                   marker.ownerId!==owner||marker.generation!==operationGeneration||
+                if(marker.ownerId!==owner||marker.generation!==manifest.activeGeneration||
                    marker.kind!=='operation-marker'||marker.operationId!==operationId||
                    !Number.isSafeInteger(Number(marker.lastSequence))){
                   try{tx.abort();}catch(_){}
@@ -1939,7 +1926,7 @@
           const rows=values.rows||[];
           for(const item of rows){
             const sequence=Number(item&&item.lastSequence);
-            if(!item||item.ownerId!==owner||typeof item.generation!=='string'||!item.generation||
+            if(!item||item.ownerId!==owner||item.generation!==manifest.activeGeneration||
                item.kind!=='operation-marker-sequence'||typeof item.operationId!=='string'||
                !item.operationId||!Number.isSafeInteger(sequence)||
                sequence<=afterMarkerSequence||sequence>through||
@@ -1959,7 +1946,7 @@
             request.onsuccess=()=>{
               const marker=request.result;
               if(marker){
-                if(marker.ownerId!==owner||marker.generation!==item.generation||
+                if(marker.ownerId!==owner||marker.generation!==manifest.activeGeneration||
                    marker.kind!=='operation-marker'||marker.operationId!==item.operationId||
                    Number(marker.lastSequence)!==Number(item.lastSequence)){
                   try{tx.abort();}catch(_){}
@@ -2044,9 +2031,8 @@
 
   // Read-only recovery view for a cursor whose generation metadata is stale.
   // It does not rebind or trust that cursor for writes: it independently verifies
-  // the active owner, ready manifest, durable workspace revision and every
-  // owner-scoped outbox operation/marker pair before exposing parked local work.
-  // Outbox rows may legitimately retain an older projection generation.
+  // the active owner, ready manifest, durable workspace revision and every outbox
+  // row against the active generation before exposing parked local operations.
   async function readWorkspaceEntityDeltaRecoveryState(ownerId){
     const owner=entityOwnerKey(ownerId),key=entityDeltaCursorKey(owner);
     const fail=reason=>({ok:false,snapshotRequired:true,reason});
