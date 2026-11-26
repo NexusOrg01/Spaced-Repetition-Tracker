@@ -3175,32 +3175,49 @@ console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth is
   const coalesced=await loaded.api.readWorkspacePendingOperations('account-A');
   assert.deepEqual(coalesced.operations.map(item=>item.operationId),[a2.operationId],
     'a newer unattempted full snapshot may safely supersede the previous pending snapshot');
-  assert.deepEqual(coalesced.operations[0].supersededOperationIds,[a1.operationId],
+  assert.equal(JSON.stringify(coalesced.operations[0].supersededOperationIds),JSON.stringify([a1.operationId]),
     'supersession must be explicitly recorded rather than silently dropping the previous pending snapshot');
   assert.equal(coalesced.operations[0].supersededOperationCount,1);
 
-  const beforeFailure=await loaded.api.getWorkspace('account-A');
+  const outboxRows=idb.databases.get('nexus-workspace-v1').stores.get('outbox');
+  const a2Envelope=Array.from(outboxRows.values()).find(item=>item&&item.operationId===a2.operationId);
+  assert.ok(a2Envelope,'the operation envelope must exist before simulating an interrupted send');
+  a2Envelope.deliveryState='in_flight';
+  a2Envelope.attemptCount=1;
+  a2Envelope.lastAttemptAt='2026-11-26T00:01:00.000Z';
+  outboxRows.set(a2Envelope.key,a2Envelope);
+
   const a3=makeOperation('account-A',3,'nexus-op-A3','topic-A3');
   const queueA3={schemaVersion:1,sequence:3,pending:{'account-A':a3},archived:[],recoveryCommits:[]};
+  await commit(loaded.api,'account-A',queueA3,a3.payload.state,a3.payload.featureState);
+  const dependencyRead=await loaded.api.readWorkspacePendingOperations('account-A');
+  assert.deepEqual(dependencyRead.operations.map(item=>item.operationId),[a2.operationId,a3.operationId],
+    'an operation already attempted must remain durable when a newer snapshot is committed');
+  assert.deepEqual(JSON.stringify(dependencyRead.operations[1].dependsOn),JSON.stringify([a2.operationId]),
+    'the newer operation must retain an explicit dependency on the in-flight operation');
+
+  const beforeFailure=await loaded.api.getWorkspace('account-A');
+  const a4=makeOperation('account-A',4,'nexus-op-A4','topic-A4');
+  const queueA4={schemaVersion:1,sequence:4,pending:{'account-A':a4},archived:[],recoveryCommits:[]};
   idb.failNextWrite=true;
-  await assert.rejects(commit(loaded.api,'account-A',queueA3,a3.payload.state,a3.payload.featureState),
+  await assert.rejects(commit(loaded.api,'account-A',queueA4,a4.payload.state,a4.payload.featureState),
     /Synthetic IndexedDB quota\/transaction failure/,
     'failure of the combined transaction must reject the local save');
   const afterFailure=await loaded.api.getWorkspace('account-A');
-  assert.deepEqual(afterFailure.state,beforeFailure.state,
+  assert.equal(JSON.stringify(afterFailure.state),JSON.stringify(beforeFailure.state),
     'a failed outbox write must roll back the workspace snapshot in the same transaction');
   const afterFailureOutbox=await loaded.api.readWorkspacePendingOperations('account-A');
-  assert.deepEqual(afterFailureOutbox.operations.map(item=>item.operationId),[a2.operationId],
-    'a failed local transaction must neither replace nor lose the previously durable outbox operation');
+  assert.deepEqual(afterFailureOutbox.operations.map(item=>item.operationId),[a2.operationId,a3.operationId],
+    'a failed local transaction must neither replace nor lose the previously durable outbox operations');
 
   const reloaded=loadApi(makeWindow(native,idb));
   assert.equal(await reloaded.api.bootstrap(),true,'the durable workspace and outbox must survive a browser reload');
   const afterReload=await reloaded.api.readWorkspacePendingOperations('account-A');
   assert.equal(afterReload.ok,true);
-  assert.deepEqual(afterReload.operations.map(item=>item.operationId),[a2.operationId]);
+  assert.deepEqual(afterReload.operations.map(item=>item.operationId),[a2.operationId,a3.operationId]);
 
-  const b1=makeOperation('account-B',1,'nexus-op-B1','topic-B1');
-  const queueAB={schemaVersion:1,sequence:3,pending:{'account-A':a2,'account-B':b1},archived:[],recoveryCommits:[]};
+  const b1=makeOperation('account-B',4,'nexus-op-B1','topic-B1');
+  const queueAB={schemaVersion:1,sequence:4,pending:{'account-A':a3,'account-B':b1},archived:[],recoveryCommits:[]};
   await commit(reloaded.api,'account-B',queueAB,b1.payload.state,b1.payload.featureState);
   const bRead=await reloaded.api.readWorkspacePendingOperations('account-B');
   assert.equal(bRead.ok,true);
@@ -3210,7 +3227,7 @@ console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth is
   await commit(reloaded.api,'account-A',queueAB,a2.payload.state,a2.payload.featureState);
   const aReturn=await reloaded.api.readWorkspacePendingOperations('account-A');
   assert.equal(aReturn.ok,true);
-  assert.deepEqual(aReturn.operations.map(item=>item.operationId),[a2.operationId],
+  assert.deepEqual(aReturn.operations.map(item=>item.operationId),[a2.operationId,a3.operationId],
     'returning to account A must recover A’s original owner-scoped operation');
   await commit(reloaded.api,'account-B',queueAB,b1.payload.state,b1.payload.featureState);
   const bReturn=await reloaded.api.readWorkspacePendingOperations('account-B');
