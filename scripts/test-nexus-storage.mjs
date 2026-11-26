@@ -3237,9 +3237,11 @@ console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth is
   const deletedB=await reloaded.api.deleteWorkspaceEntities('account-B');
   assert.equal(deletedB.workspaceOutboxRowsRemoved,1,
     'account deletion must remove the separate workspace-operation outbox namespace');
+  const remainingBEnvelopes=Array.from(idb.databases.get('nexus-workspace-v1').stores.get('outbox').values())
+    .filter(item=>item&&item.kind==='workspace-operation'&&item.ownerId==='account-B');
+  assert.equal(remainingBEnvelopes.length,0,'deleted-account outbox envelopes must be physically removed');
   const afterDeleteB=await reloaded.api.readWorkspacePendingOperations('account-B');
-  assert.equal(afterDeleteB.ok,true);
-  assert.equal(afterDeleteB.operations.length,0,'deleted-account outbox operations must not remain recoverable');
+  assert.equal(afterDeleteB.ok,false,'a deleted owner must remain fenced from workspace-outbox reads');
   console.log('DLA-10B atomic workspace/outbox, reload, A-B-A, and owner-deletion regressions passed.');
 }
 
