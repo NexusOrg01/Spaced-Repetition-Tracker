@@ -3234,6 +3234,12 @@ console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth is
   assert.equal(bReturn.ok,true);
   assert.deepEqual(bReturn.operations.map(item=>item.operationId),[b1.operationId],
     'returning to account B must recover B’s separate owner-scoped operation');
-  console.log('DLA-10B atomic workspace/outbox, reload, and A-B-A regressions passed.');
+  const deletedB=await reloaded.api.deleteWorkspaceEntities('account-B');
+  assert.equal(deletedB.workspaceOutboxRowsRemoved,1,
+    'account deletion must remove the separate workspace-operation outbox namespace');
+  const afterDeleteB=await reloaded.api.readWorkspacePendingOperations('account-B');
+  assert.equal(afterDeleteB.ok,true);
+  assert.equal(afterDeleteB.operations.length,0,'deleted-account outbox operations must not remain recoverable');
+  console.log('DLA-10B atomic workspace/outbox, reload, A-B-A, and owner-deletion regressions passed.');
 }
 

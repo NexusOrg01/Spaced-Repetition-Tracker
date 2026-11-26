@@ -610,7 +610,7 @@
     return entityOutboxPrefix(ownerId)+'seq:'+String(sequence).padStart(16,'0');
   }
   function workspaceOperationOutboxPrefix(ownerId){
-    return entityOutboxPrefix(ownerId)+'workspace:';
+    return 'workspace-operation-outbox:'+encodeURIComponent(entityOwnerKey(ownerId))+':';
   }
   function workspaceOperationOutboxKey(ownerId,operationId){
     return workspaceOperationOutboxPrefix(ownerId)+encodeURIComponent(String(operationId||''));
@@ -3772,9 +3772,11 @@
     };
 
     const entityRowsRemoved=await removeOwnerPrefix('workspaces',entityOwnerRecordPrefix(owner));
-    const outboxRowsRemoved=await removeOwnerPrefix('outbox',entityOutboxPrefix(owner));
+    const entityOutboxRowsRemoved=await removeOwnerPrefix('outbox',entityOutboxPrefix(owner));
+    const workspaceOutboxRowsRemoved=await removeOwnerPrefix('outbox',workspaceOperationOutboxPrefix(owner));
+    const outboxRowsRemoved=entityOutboxRowsRemoved+workspaceOutboxRowsRemoved;
     entityRecoveryLockedOwners.delete(owner);
-    return {ownerId:owner,entityRowsRemoved,outboxRowsRemoved,
+    return {ownerId:owner,entityRowsRemoved,outboxRowsRemoved,entityOutboxRowsRemoved,workspaceOutboxRowsRemoved,
       manifestRemoved:removedMetadata.manifestRemoved,sequenceRemoved:removedMetadata.sequenceRemoved,
       cursorRemoved:removedMetadata.cursorRemoved,recoveryRemoved:removedMetadata.recoveryRemoved};
   }
