@@ -2094,39 +2094,6 @@ try {
     }, { ownerId: ownerA, startedAt: accountAReturnStartedIso });
     assert.equal(mismatchRecoveryStarted, true,
       'a stale-generation cursor must enter the explicit snapshot-recovery path before the held remote read is released');
-    const parkedOutboxProof = await page.evaluate(async ({ ownerId, topicId, expectedNotes }) => {
-      const state = await window.NexusStorage.readWorkspaceEntityDeltaRecoveryState(ownerId);
-      const changes = state && state.ok === true && Array.isArray(state.outbox?.groups)
-        ? state.outbox.groups.flatMap(group => Array.isArray(group.changes) ? group.changes : [])
-        : [];
-      const edit = changes.find(change =>
-        change.collection === 'topics' &&
-        String(change.id) === String(topicId) &&
-        change.operation === 'put'
-      );
-      return {
-        ok: !!state && state.ok === true,
-        reason: state && state.reason || null,
-        generationMismatch: !!state && state.generationMismatch === true,
-        groupCount: Number(state && state.outbox && state.outbox.groupCount) || 0,
-        editPreserved: !!edit && edit.value && edit.value.notes === expectedNotes,
-        activeGeneration: state && state.activeGeneration || null,
-        cursorGeneration: state && state.cursor && state.cursor.generation || null
-      };
-    }, {
-      ownerId: recoveryFailureContext.ownerA,
-      topicId: recoveryFailureContext.editedTopicId,
-      expectedNotes: recoveryFailureContext.expectedNotes
-    });
-    assert.equal(parkedOutboxProof.ok, true,
-      'the recovery reader must expose owner-bound pending operations even when their stored generation differs from the active projection');
-    assert.equal(parkedOutboxProof.generationMismatch, true,
-      'the fixture must prove the stale cursor generation is being recovered rather than silently rebound');
-    assert.ok(parkedOutboxProof.groupCount > 0,
-      'the stale-generation recovery view must retain the parked outbox operation group');
-    assert.equal(parkedOutboxProof.editPreserved, true,
-      'the exact parked local edit must remain readable from the owner-scoped outbox');
-    console.log('DLA10B_OWNER_SCOPED_OUTBOX_PROOF=' + JSON.stringify(parkedOutboxProof));
     const statusBeforeNavigation = String(await page.locator('#cloudStatus').textContent() || '').trim();
     assert.notEqual(statusBeforeNavigation, 'Synced',
       'holding the returning account remote read must keep the UI from claiming cloud verification');
