@@ -1698,7 +1698,12 @@
     }
     const rows=page.rows||[];
     for(const row of rows){
-      if(!row||row.ownerId!==owner||row.generation!==manifest.activeGeneration||
+      // Outbox records are owner-scoped durable operations, not members of the
+      // replaceable projection generation. A recovery may activate a new
+      // projection while the old generation's unacknowledged operations remain
+      // parked. Preserve their original generation as provenance and validate it
+      // against the operation marker below instead of rejecting the queue.
+      if(!row||row.ownerId!==owner||typeof row.generation!=='string'||!row.generation||
          row.kind!=='change'||!Number.isSafeInteger(Number(row.sequence))||
          Number(row.sequence)<=after||typeof row.operationId!=='string'||!row.operationId){
         return {...empty,generation:manifest.activeGeneration,workspaceRevision,
@@ -1711,14 +1716,17 @@
       const operationId=rows[index].operationId;
       let end=index+1;
       while(end<rows.length&&rows[end].operationId===operationId)end++;
-      const groupRows=rows.slice(index,end),marker=page.markers.get(operationId);
+      const groupRows=rows.slice(index,end),marker=page.markers.get(operationId),
+        operationGeneration=groupRows[0]&&groupRows[0].generation;
       if(!marker){
         if(!groups.length)return {...empty,generation:manifest.activeGeneration,workspaceRevision,
           snapshotRequired:true,reason:'missing_local_operation_marker'};
         hasMore=true;break;
       }
       const first=Number(marker.firstSequence),last=Number(marker.lastSequence),count=Number(marker.count);
-      if(marker.ownerId!==owner||marker.generation!==manifest.activeGeneration||
+      if(typeof operationGeneration!=='string'||!operationGeneration||
+         groupRows.some(row=>row.generation!==operationGeneration)||
+         marker.ownerId!==owner||marker.generation!==operationGeneration||
          marker.kind!=='operation-marker'||marker.operationId!==operationId||
          !Number.isSafeInteger(first)||first<1||!Number.isSafeInteger(last)||last<first||
          !Number.isSafeInteger(count)||count<1||count>1000||last-first+1!==count){
@@ -1848,7 +1856,7 @@
           const rows=values.rows||[];
           for(const item of rows){
             const sequence=Number(item&&item.sequence);
-            if(!item||item.ownerId!==owner||item.generation!==manifest.activeGeneration||
+            if(!item||item.ownerId!==owner||typeof item.generation!=='string'||!item.generation||
                item.kind!=='change'||typeof item.operationId!=='string'||!item.operationId||
                !Number.isSafeInteger(sequence)||sequence<=afterSequence||sequence>through||
                typeof item.key!=='string'||!item.key.startsWith(entityOutboxPrefix(owner)+'seq:')){
@@ -1869,8 +1877,12 @@
             const request=store.get(entityOperationKey(owner,operationId));
             request.onsuccess=()=>{
               const marker=request.result;
+              const operationRows=rows.filter(row=>row.operationId===operationId);
+              const operationGeneration=operationRows[0]&&operationRows[0].generation;
               if(marker){
-                if(marker.ownerId!==owner||marker.generation!==manifest.activeGeneration||
+                if(typeof operationGeneration!=='string'||!operationGeneration||
+                   operationRows.some(row=>row.generation!==operationGeneration)||
+                   marker.ownerId!==owner||marker.generation!==operationGeneration||
                    marker.kind!=='operation-marker'||marker.operationId!==operationId||
                    !Number.isSafeInteger(Number(marker.lastSequence))){
                   try{tx.abort();}catch(_){}
@@ -1926,7 +1938,7 @@
           const rows=values.rows||[];
           for(const item of rows){
             const sequence=Number(item&&item.lastSequence);
-            if(!item||item.ownerId!==owner||item.generation!==manifest.activeGeneration||
+            if(!item||item.ownerId!==owner||typeof item.generation!=='string'||!item.generation||
                item.kind!=='operation-marker-sequence'||typeof item.operationId!=='string'||
                !item.operationId||!Number.isSafeInteger(sequence)||
                sequence<=afterMarkerSequence||sequence>through||
@@ -1946,7 +1958,7 @@
             request.onsuccess=()=>{
               const marker=request.result;
               if(marker){
-                if(marker.ownerId!==owner||marker.generation!==manifest.activeGeneration||
+                if(marker.ownerId!==owner||marker.generation!==item.generation||
                    marker.kind!=='operation-marker'||marker.operationId!==item.operationId||
                    Number(marker.lastSequence)!==Number(item.lastSequence)){
                   try{tx.abort();}catch(_){}
