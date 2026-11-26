@@ -1827,8 +1827,9 @@
     if(entityRecoveryLockedOwners.has(owner))return 0;
     let removed=0,afterSequence=0;
     // Acknowledgement is a destructive queue operation, so every bounded page
-    // revalidates the owner, active generation and compatibility workspace revision
-    // in the same transaction that removes its rows.
+    // revalidates the owner and compatibility workspace revision in the same
+    // transaction that removes its rows. Operation generations are retained as
+    // provenance and checked against their markers, but do not own the queue.
     while(afterSequence<through){
       if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner)return removed;
       const sequenceRange=entityOutboxSequenceRange(owner,afterSequence,through);
@@ -2043,8 +2044,9 @@
 
   // Read-only recovery view for a cursor whose generation metadata is stale.
   // It does not rebind or trust that cursor for writes: it independently verifies
-  // the active owner, ready manifest, durable workspace revision and every outbox
-  // row against the active generation before exposing parked local operations.
+  // the active owner, ready manifest, durable workspace revision and every
+  // owner-scoped outbox operation/marker pair before exposing parked local work.
+  // Outbox rows may legitimately retain an older projection generation.
   async function readWorkspaceEntityDeltaRecoveryState(ownerId){
     const owner=entityOwnerKey(ownerId),key=entityDeltaCursorKey(owner);
     const fail=reason=>({ok:false,snapshotRequired:true,reason});
