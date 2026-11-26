@@ -23,6 +23,10 @@ globalThis.NexusCurriculumPacks = commerceCatalogue.packs;
 const commercePack = commerceCatalogue.packs.find(pack => pack.id === 'sl-al-commerce-si');
 const workspaceMerge = require('../workspace-sync-merge.js');
 const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
+const timeoutBudgetMatch = source.match(/const SYNC_REQUEST_TIMEOUT_MS=(\\d+),SESSION_INITIALIZATION_TIMEOUT_MS=(\\d+)/);
+assert.ok(timeoutBudgetMatch, 'the upload and initialization safety deadlines must remain explicit and testable');
+assert.ok(Number(timeoutBudgetMatch[2]) > Number(timeoutBudgetMatch[1]),
+  'session initialization must not cancel a valid upload/recovery before its own bounded sync deadline');
 
 const markerHelperStart = source.indexOf('function restoreVerifiedChunkedDeltaMarker(');
 const markerHelperEnd = source.indexOf('\nasync function fetchRemote', markerHelperStart);

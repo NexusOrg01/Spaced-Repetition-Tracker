@@ -15,7 +15,10 @@ function productionDeltaClientGateOpen(){
 }
 const SYNC_DIAG_ENABLED=(()=>{try{const requested=new URLSearchParams(location.search).get('nexusSyncDiag')==='1';if(requested){localStorage.setItem('nexus.syncdiag.enabled','1');sessionStorage.setItem('nexus.syncdiag.enabled','1');}return requested||localStorage.getItem('nexus.syncdiag.enabled')==='1'||sessionStorage.getItem('nexus.syncdiag.enabled')==='1';}catch(_){return false;}})();
 const SYNC_DIAG_KEY='nexus.syncdiag.session.v1';
-const SYNC_REQUEST_TIMEOUT_MS=180000,SESSION_INITIALIZATION_TIMEOUT_MS=120000,
+// Initialization wraps the upload/recovery scope. Keep its outer deadline beyond
+// the per-sync deadline so a large but valid IndexedDB recovery is not cancelled
+// by the shorter login/initialization budget while its UI remains interactive.
+const SYNC_REQUEST_TIMEOUT_MS=180000,SESSION_INITIALIZATION_TIMEOUT_MS=240000,
  SUPABASE_AUTH_REQUEST_TIMEOUT_MS=15000,SUPABASE_DATA_REQUEST_TIMEOUT_MS=60000,
  WORKSPACE_COMPARE_TIMEOUT_MS=60000,LOCAL_RECOVERY_TIMEOUT_MS=45000,
  COLD_RESTORE_SYNC_DEADLINE_MS=60000,
