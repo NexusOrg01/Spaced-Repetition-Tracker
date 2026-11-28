@@ -2647,6 +2647,17 @@ assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,1000
   );
   assert.equal(falsePreservation.ok,false,
     'a remote read-back without exact pending-change preservation must not advance the journal');
+  // Capture the deferred browser task so the test can run and await it
+  // deterministically, without relying on a 1.5-second wall-clock timer.
+  const deferredPruneCallbacks=[];
+  const originalWindowSetTimeout=loaded.context.window.setTimeout;
+  loaded.context.window.setTimeout=(callback,delay,...args)=>{
+    if(delay===1500){
+      deferredPruneCallbacks.push(()=>callback(...args));
+      return 0;
+    }
+    return originalWindowSetTimeout(callback,delay,...args);
+  };
   const verifiedPublication={...publication,remoteReadbackProof:{
     proofVersion:1,remoteReadbackVerified:true,pendingLocalChangesPreserved:true,
     pendingLocalChangeCount:1,pendingOutboxOverlayApplied:true,
@@ -2660,6 +2671,13 @@ assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,1000
   assert.equal(committed.ok,true,'a matching exact outbox proof should permit atomic recovery commit');
   assert.equal(staleRowsRemain(),true,
     'the recovery commit must return before a large inactive-generation cleanup finishes');
+  assert.equal(deferredPruneCallbacks.length,1,
+    'the committed recovery must schedule exactly one inactive-generation cleanup task');
+  const cleanupResult=await deferredPruneCallbacks[0]();
+  assert.ok(cleanupResult&&cleanupResult.removed>=2000,
+    'the deferred task must remove the synthetic stale generation in bounded batches');
+  assert.equal(staleRowsRemain(),false,
+    'the inactive generation must be removed after the atomic recovery commit returns');
   const remaining=await loaded.api.readWorkspaceEntityOutboxGroups(owner,0,1000,4096);
   assert.equal(remaining.groups.length,0,
     'only the proof-bound outbox sequence may be acknowledged after the verified recovery commit');
@@ -2675,10 +2693,6 @@ assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,1000
   assert.equal(finalRecoveryState.ok,true);
   assert.equal(finalRecoveryState.generationMismatch,false);
   assert.equal(finalRecoveryState.outbox.groupCount,0);
-  await new Promise(resolve=>setTimeout(resolve,1600));
-  for(let attempt=0;attempt<100&&staleRowsRemain();attempt++)await wait();
-  assert.equal(staleRowsRemain(),false,
-    'deferred cleanup must eventually remove stale rows without blocking recovery completion');
   await loaded.api.deleteWorkspaceEntities(owner);
 }
 

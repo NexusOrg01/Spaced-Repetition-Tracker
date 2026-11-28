@@ -3686,8 +3686,11 @@
         // storage hygiene, but can require hundreds of IndexedDB batches for a
         // large workspace. Do not hold initial cloud verification open for it.
         const scheduleInactiveGenerationPrune=()=>{
-          const prune=()=>{void pruneInactiveWorkspaceEntityGenerations(owner,result.generation)
-            .catch(error=>console.warn('Old Nexus entity recovery generations could not be pruned; the active generation remains verified.',error));};
+          const prune=()=>pruneInactiveWorkspaceEntityGenerations(owner,result.generation)
+            .catch(error=>{
+              console.warn('Old Nexus entity recovery generations could not be pruned; the active generation remains verified.',error);
+              return {removed:0,scanned:0,error:true};
+            });
           try{
             if(root&&typeof root.setTimeout==='function')root.setTimeout(prune,1500);
             else Promise.resolve().then(prune);
