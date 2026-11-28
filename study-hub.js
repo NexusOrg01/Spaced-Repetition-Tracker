@@ -30,6 +30,12 @@
     for(const collection of ['journal','papers','goals','studyLogs'])delete value[collection];
     return value;
   }
+  function featureEntityRootFor(source){
+    const value={...(source||fsState)};
+    for(const collection of ['journal','papers','goals','studyLogs'])delete value[collection];
+    return value;
+  }
+  window.NexusGetFeatureEntityRootForCommit=source=>featureEntityRootFor(source||fsState);
   function saveFs(entityChanges=[]){
     focusGoalCacheKey='';
     // Do not evict the large topic/history aggregate for journal, paper, goal or other
@@ -50,12 +56,31 @@
         });
       }
       window.NexusDeleteDiagnosticPhase?.('hub:save:offline-queue-commit');
-      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,workspaceEntries,{state,featureState:fsState},{returnOperationPayload:false});
+      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,workspaceEntries,{state,featureState:fsState},{
+        returnOperationPayload:false,entityChanges:frozenEntityChanges,
+        trackerRoot:window.NexusGetTrackerEntityRootForCommit?.(state)||null,
+        featureRoot,replaceEntities:frozenEntityChanges===null
+      });
       const storage=window.NexusStorage;
-      if(owner&&storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&
-         typeof storage.flush==='function'&&typeof storage.syncWorkspaceEntities==='function'){
-        const durableFlush=storage.flush();
+      let durableFlush=null;
+      if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function'){
+        durableFlush=window.NexusTrackDurableSave
+          ?window.NexusTrackDurableSave(storage.flush()):storage.flush();
+        durableFlush.catch(error=>{
+          if(!window.NexusTrackDurableSave){
+            const status=$('saveStatus');
+            if(status){status.textContent='Save failed — export backup';status.style.color='var(--red)';}
+          }
+          notify('Study Hub data could not be saved to durable device storage. Keep Nexus open and export a backup.');
+          console.error('Nexus Study Hub durable save failed',error);
+        });
+      }else{
+        const status=window.document?.getElementById?.('saveStatus')||null;
+        if(status){status.textContent='Saved on this device';status.style.color='';}
+      }
+      if(owner&&durableFlush&&typeof storage.syncWorkspaceEntities==='function'){
         storage.syncWorkspaceEntities(owner,frozenEntityChanges,{
+          trackerRoot:window.NexusGetTrackerEntityRootForCommit?.(state)||null,
           featureRoot,featureSnapshotJson:featureSnapshot,replace:frozenEntityChanges===null,
           durablePromise:durableFlush
         }).catch(error=>{
@@ -1919,13 +1944,22 @@
     const entries=[{key:window.NexusStorageKey,value:JSON.stringify(nextState)}];
     const revisionEntry=window.NexusWorkspaceEntityRevisionEntry?.();
     if(revisionEntry)entries.push(revisionEntry);
+    const nextFeatures=window.NexusGetFeatureState?window.NexusGetFeatureState():{};
     window.NexusOfflineSyncQueue.commitWorkspace(localStorage,entries,
-      {state:nextState,featureState:window.NexusGetFeatureState?window.NexusGetFeatureState():{}},
-      {returnOperationPayload:false});
+      {state:nextState,featureState:nextFeatures},
+      {returnOperationPayload:false,entityChanges:null,
+        trackerRoot:window.NexusGetTrackerEntityRootForCommit?.(nextState)||null,
+        featureRoot:window.NexusGetFeatureEntityRootForCommit?.(nextFeatures)||null,replaceEntities:true});
+    const storage=window.NexusStorage;
+    if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function'){
+      await (window.NexusTrackDurableSave?window.NexusTrackDurableSave(storage.flush()):storage.flush());
+    }
+    if(!window.NexusTrackDurableSave||!storage||!storage.isEnabled?.()){
+      const saveStatus=$('saveStatus');
+      if(saveStatus){saveStatus.textContent='Saved on this device';saveStatus.style.color='';}
+    }
     state=nextState;
     await window.NexusRebuildEntityProjection?.();
-    const saveStatus=$('saveStatus');
-    if(saveStatus){saveStatus.textContent='Saved on this device';saveStatus.style.color='';}
     if(window.NexusCloudSync)window.NexusCloudSync.schedule();
     try{
       renderAll();
@@ -1992,7 +2026,16 @@
       if(revisionEntry)entries.push(revisionEntry);
       window.NexusOfflineSyncQueue.commitWorkspace(localStorage,entries,
         {state:nextState,featureState:nextFeatures},
-        {archivePending:mode==='REPLACE',reason:'manual-restore-replace',returnOperationPayload:false});
+        {archivePending:mode==='REPLACE',reason:'manual-restore-replace',returnOperationPayload:false,
+          entityChanges:null,trackerRoot:window.NexusGetTrackerEntityRootForCommit?.(nextState)||null,
+          featureRoot:window.NexusGetFeatureEntityRootForCommit?.(nextFeatures)||null,replaceEntities:true});
+      const storage=window.NexusStorage;
+      if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function'){
+        await (window.NexusTrackDurableSave?window.NexusTrackDurableSave(storage.flush()):storage.flush());
+      }else{
+        const saveStatus=$('saveStatus');
+        if(saveStatus){saveStatus.textContent='Saved on this device';saveStatus.style.color='';}
+      }
       committed=true;
       if(mode==='REPLACE')window.NexusStartUndoWorkspaceReplace?.('Backup replaced.');
       state=nextState;
@@ -2007,8 +2050,10 @@
       if(focusTimer){clearInterval(focusTimer);focusTimer=null;}
       if(focusStart){focusTimer=setInterval(refreshLiveFocusUi,1000);}
       if(window.NexusCloudSync)window.NexusCloudSync.schedule();
-      $('saveStatus').textContent='Saved on this device';
-      $('saveStatus').style.color='';
+      if(!window.NexusTrackDurableSave||!storage||!storage.isEnabled?.()){
+        $('saveStatus').textContent='Saved on this device';
+        $('saveStatus').style.color='';
+      }
       renderAll();
       renderHub();
       if(focusStart)refreshLiveFocusUi();
@@ -2264,14 +2309,25 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
       ];
       const revisionEntry=window.NexusWorkspaceEntityRevisionEntry?.(owner);
       if(revisionEntry)entries.push(revisionEntry);
-      queue.commitWorkspace(localStorage,entries,{state:resetState,featureState:resetFeatures},{archivePending:true,reason:'manual-reset',returnOperationPayload:false});
+      queue.commitWorkspace(localStorage,entries,{state:resetState,featureState:resetFeatures},{
+        archivePending:true,reason:'manual-reset',returnOperationPayload:false,entityChanges:null,
+        trackerRoot:window.NexusGetTrackerEntityRootForCommit?.(resetState)||null,
+        featureRoot:window.NexusGetFeatureEntityRootForCommit?.(resetFeatures)||null,replaceEntities:true
+      });
+      const storage=window.NexusStorage;
+      if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function'){
+        await (window.NexusTrackDurableSave?window.NexusTrackDurableSave(storage.flush()):storage.flush());
+      }
+      if(!window.NexusTrackDurableSave||!storage||!storage.isEnabled?.()){
+        const status=$('saveStatus');
+        if(status){status.textContent='Saved on this device';status.style.color='';}
+      }
       window.NexusStartUndoWorkspaceReplace?.('Workspace reset.');
       state=resetState;fsState=resetFeatures;
       if(window.NexusFSRS&&typeof window.NexusFSRS.setSettings==='function')window.NexusFSRS.setSettings(resetFeatures.fsrsSettings,{syncFeature:false,persist:false});
       focusGoalCacheKey='';focusStart=null;focusPausedAt=null;focusTopicId='';focusSubjectId='';
       if(focusTimer){clearInterval(focusTimer);focusTimer=null;}
       if(window.NexusClearCascadeUndo)window.NexusClearCascadeUndo();
-      const storage=window.NexusStorage;
       if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function')await storage.flush();
       OLD_KEYS.forEach(k=>localStorage.removeItem(k));
       if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function')await storage.flush();

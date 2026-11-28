@@ -11,7 +11,7 @@ const driver = cloud.slice(start, end);
 
 for (const required of [
   "window.NEXUS_ENTITY_DELTA_SYNC_HOSTED_QA!==true",
-  "window.NEXUS_ENTITY_DELTA_SYNC_QA_REF!=='fix/dla04-entity-projection-guard'",
+  "window.NEXUS_ENTITY_DELTA_SYNC_QA_REF!=='fix/sync-account-handoff-reliability'",
   "config().url!=='https://xuwfzibxhxzxxupprxsq.supabase.co'",
   "u.origin===location.origin",
   "client.auth.getUser()",
@@ -24,8 +24,7 @@ for (const required of [
   "stale.data.code==='revision_conflict'",
   "head_changed_during_read_only_replay_checks",
   "operation_history_changed_during_read_only_checks",
-  "installHostedQaReplayPanel",
-  "Run Owner-A replay checks"
+  "client.rpc('nexus_publish_entity_operation'"
 ]) assert.ok(driver.includes(required), 'hosted QA replay driver must enforce: ' + required);
 
 assert.match(driver, /const altered=JSON\.parse\(JSON\.stringify\(changes\)\)/,
@@ -41,7 +40,7 @@ assert.ok(build.includes("env.NEXUS_ENTITY_DELTA_QA_ENABLED !== 'true'") &&
 
 
 const ownerStart = cloud.indexOf('async function runHostedQaOwnerIsolationChecks(){');
-const ownerEnd = cloud.indexOf('function installHostedQaReplayPanel(){', ownerStart);
+const ownerEnd = cloud.indexOf('async function signOut(){', ownerStart);
 assert.ok(ownerStart >= 0 && ownerEnd > ownerStart,
   'hosted Owner-B isolation checks must be defined before the QA panel');
 const ownerDriver = cloud.slice(ownerStart, ownerEnd);
@@ -65,9 +64,11 @@ assert.doesNotMatch(ownerDriver, /\.from\([^)]*\)\.(insert|update|upsert|delete)
   'Owner-B isolation checks must not write directly to workspace tables');
 assert.doesNotMatch(ownerDriver, /localStorage\.(setItem|removeItem)|service_role|sb_secret_/,
   'Owner-B isolation checks must not mutate local account state or use privileged credentials');
-assert.ok(cloud.includes("Run Owner-B isolation checks") &&
-  cloud.includes("runHostedQaOwnerIsolationChecks"),
-  'the hosted account panel must expose the Owner-B isolation action');
+assert.ok(cloud.includes("runHostedQaOwnerIsolationChecks") &&
+  cloud.includes("runHostedQaReplayChecks"),
+  'the backend QA checks must remain available to automated tooling');
+assert.doesNotMatch(cloud, /installHostedQaReplayPanel|nexusHostedQaReplayPanel|Run Owner-A replay checks|Run Owner-B isolation checks|DLA-04 hosted protocol checks/,
+  'internal hosted QA replay controls must not be injected into the user-facing Account and Backup settings');
 assert.ok(ownerDriver.includes("operationId:'nexus-entity-3eacc7b2-08ed-4d08-8d8b-fbcbe9c683eb-1'") &&
   ownerDriver.includes("headRevision:13,snapshotRevision:11,compactedThroughRevision:11"),
   'the Owner-B probes must target the currently verified Owner-A staging operation/checkpoint');

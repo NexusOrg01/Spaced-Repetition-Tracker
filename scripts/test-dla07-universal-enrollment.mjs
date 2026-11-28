@@ -71,6 +71,8 @@ assert.match(buildTests, /retired build-time owner list must not limit universal
 assert.match(buildTests, /the build must not embed any Production owner UUID list/);
 
 assert.equal(cloud.includes('NEXUS_ENTITY_DELTA_SYNC_PRODUCTION_OWNER_IDS'), false);
+assert.match(cloud, /if\(\(productionGate\|\|hostedQaGate\)\&\&!\(action\&\&action.downgrade===true\)/,
+  'the dedicated hosted staging QA gate must use the same authenticated global enrollment handshake');
 assert.match(cloud, /function productionDeltaClientGateOpen\(\)[\s\S]*?LIVE_SUPABASE_URL[\s\S]*?LIVE_APP_HOST/);
 assert.match(cloud, /if\(\(!stateRead\.data&&remoteMode!=='delta'\)\|\|remoteMode==='snapshot'\|\|remoteMode===''\)/,
   'an owner with no pre-existing sync-state row must continue into Delta after the enable RPC creates one');

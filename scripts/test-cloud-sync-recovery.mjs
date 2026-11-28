@@ -76,12 +76,12 @@ assert.ok(cloud.includes("else if(pendingAutomaticallySynced){say('Offline work 
 assert.ok(cloud.includes("status('Cloud conflict')") && cloud.includes('queue.acknowledge(localStorage,uploadUserId,pending.operationId'),
   'conflicts pause and only verified uploads acknowledge the queued operation');
 assert.ok(cloud.includes('const latest=await fetchRemote(uploadUserId,null,uploadScope.signal)') &&
-  cloud.includes('sameWorkspace(latest.payload,attemptedPayload)') &&
+  cloud.includes('sameWorkspace(latest.payload,attemptedPayload,uploadScope.signal)') &&
   cloud.includes('queue.rememberBase(localStorage,uploadUserId,latest.payload,lastRemoteStamp)') &&
   cloud.includes('interrupted write was safely acknowledged'),
   'ambiguous-write read-back must verify workspace content, advance the merge base, and only then acknowledge the queue');
 assert.ok(cloud.includes('sameWorkspace(remote.payload,pending.payload)') &&
-  cloud.includes('sameWorkspace(before.payload,payload)') &&
+  cloud.includes('sameWorkspace(before.payload,payload,uploadScope.signal)') &&
   cloud.includes('sameWorkspace(remote.payload,pendingForUser.payload)'),
   'pending reconciliation must ignore export metadata and compare the actual workspace contents');
 assert.ok(cloud.includes('nextCloudStamp(pending.baseServerVersion)') && cloud.includes('nextCloudStamp(priorStamp)'),

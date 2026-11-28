@@ -57,6 +57,9 @@ jobs:
         with:
           node-version: 22
 
+      - name: Gate lifecycle on isolated DLA-09 outbox-preservation proof
+        run: node scripts/test-nexus-storage.mjs
+
       - name: Install PostgreSQL client
         run: |
           sudo apt-get update -qq
@@ -92,6 +95,7 @@ jobs:
           node --check offline-sync-queue.js
           node --check nexus-storage.js
           node --check scripts/test-active-manifest-race.mjs
+          node --check scripts/test-phase34-large-workspace-lifecycle.mjs
           psql "$PHASE34_DB_URL" -X -v ON_ERROR_STOP=1 -f supabase/tests/nexus_user_data_chunks_active_manifest.sql
           NEXUS_RACE_DATABASE_URL="$PHASE34_DB_URL" node scripts/test-active-manifest-race.mjs
           node scripts/test-cloud-chunk-storage.mjs

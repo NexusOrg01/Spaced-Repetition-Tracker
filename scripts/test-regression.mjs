@@ -235,7 +235,7 @@ assert.ok(studyHub.includes('for(const record of history){') && studyHub.include
   !studyHub.includes('const reviews=history.map(') && !studyHub.includes('const sessions=studyLogs.map('),
   'activity analytics must aggregate source records directly instead of allocating full-size wrapper arrays');
 const ordinarySaveStart=appCore.indexOf('function save(options={}){');
-const ordinarySaveEnd=appCore.indexOf('window.NexusRebuildEntityProjection=()=>{',ordinarySaveStart);
+const ordinarySaveEnd=appCore.indexOf('window.NexusRebuildEntityProjection=',ordinarySaveStart);
 const ordinarySaveBody=ordinarySaveStart>=0&&ordinarySaveEnd>ordinarySaveStart
   ?appCore.slice(ordinarySaveStart,ordinarySaveEnd):'';
 const catalogueRepairStart=appCore.indexOf('onCatalogLoaded:()=>{');
@@ -356,7 +356,7 @@ assert.ok(durableStorage.includes('const ownerEntry = normalized.find(entry => e
 assert.ok(offlineQueue.includes('if(value.length>MAX_COMPACT_DECODE_BYTES)return value;') &&
   offlineQueue.includes("oversized.code='NEXUS_OFFLINE_QUEUE_TOO_LARGE'"),
   'the offline queue must never write a compact stream that its decoder will later refuse');
-const offlineRecoveryStart = cloudSync.indexOf('async function recoverCachedWorkspaceForOfflineAccount(userId)');
+const offlineRecoveryStart = cloudSync.indexOf('async function recoverCachedWorkspaceForOfflineAccount(userId,parentSignal)');
 const offlineRecoveryEnd = cloudSync.indexOf('async function initializeSession(s)', offlineRecoveryStart);
 const offlineRecovery = offlineRecoveryStart >= 0 && offlineRecoveryEnd > offlineRecoveryStart
   ? cloudSync.slice(offlineRecoveryStart, offlineRecoveryEnd)
@@ -365,7 +365,9 @@ assert.ok(offlineRecovery.includes("if(currentOwner===userId){") &&
   offlineRecovery.includes("error.code!=='NEXUS_OFFLINE_QUEUE_TOO_LARGE'") &&
   offlineRecovery.includes("rebuildOversizedOfflineQueue(queue,userId,snapshot()") &&
   offlineRecovery.includes("if(oversizedQueueDetected){") &&
-  offlineRecovery.includes("rebuildOversizedOfflineQueue(queue,userId,snapshot()"),
+  offlineRecovery.includes("rebuildOversizedOfflineQueue(queue,userId,snapshot()") &&
+  offlineRecovery.includes("durableReadScope.race(durable.getWorkspace(userId)") &&
+  offlineRecovery.includes("flushDurableLocalWrites(parentSignal)"),
   'queue recovery must work for both the active account and a different account restored from its own IndexedDB/base workspace');
 
 assert.ok(studyHub.includes('function openAnalyticsPdfDialog()') &&

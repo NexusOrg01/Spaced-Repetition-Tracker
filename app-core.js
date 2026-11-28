@@ -337,17 +337,36 @@
   }
   window.NexusTrackerEntityPutChange=trackerEntityPutChange;
   window.NexusTrackerEntityDeleteChange=trackerEntityDeleteChange;
-  function trackerEntityRoot(){
-    const value={...state};
+  function trackerEntityRoot(source=state){
+    const value={...(source||{})};
     for(const collection of TRACKER_ENTITY_ARRAYS)delete value[collection];
     return value;
   }
+  window.NexusGetTrackerEntityRootForCommit=source=>trackerEntityRoot(source||state);
   function featureEntityRoot(value){
     const rootValue={...(value||{})};
     for(const collection of ['journal','papers','goals','studyLogs'])delete rootValue[collection];
     return rootValue;
   }
   let storageSaveRevision=0;
+  function trackDurableSave(promise){
+    const revision=++storageSaveRevision;
+    const status=$('saveStatus');
+    if(status){status.textContent='Saving to this device…';status.style.color='';}
+    let tracked;
+    tracked=Promise.resolve(promise).then(result=>{
+      if(revision===storageSaveRevision&&status){status.textContent='Saved on this device';status.style.color='';}
+      if(window.NexusPendingDurableSaveNotification===tracked)window.NexusPendingDurableSaveNotification=null;
+      return result;
+    },error=>{
+      if(revision===storageSaveRevision&&status){status.textContent='Save failed — export backup';status.style.color='var(--red)';}
+      if(window.NexusPendingDurableSaveNotification===tracked)window.NexusPendingDurableSaveNotification=null;
+      throw error;
+    });
+    window.NexusPendingDurableSaveNotification=tracked;
+    return tracked;
+  }
+  window.NexusTrackDurableSave=trackDurableSave;
   function save(options={}){
     try{
       if(state.history!==historyMetricsObservedSource||state.history.length!==historyMetricsObservedLength){
@@ -399,21 +418,16 @@
       // Persist tracker, Study Hub state and the pending cloud snapshot in one atomic
       // queue commit. The cloud hook below only records that this commit has happened;
       // it must not serialize and enqueue the same workspace a second time.
-      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,workspaceEntries,{state,featureState},{returnOperationPayload:false});
+      window.NexusOfflineSyncQueue.commitWorkspace(localStorage,workspaceEntries,{state,featureState},{returnOperationPayload:false,entityChanges:frozenEntityChanges,trackerRoot,featureRoot,replaceEntities:entityReplace});
       const storage=window.NexusStorage;
       if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function'){
-        const saveRevision=++storageSaveRevision;
-        $('saveStatus').textContent='Saving to this device…';
-        $('saveStatus').style.color='';
-        const durableFlush=storage.flush();
-        durableFlush.then(()=>{
-          if(saveRevision!==storageSaveRevision)return;
-          $('saveStatus').textContent='Saved on this device';
-          $('saveStatus').style.color='';
-        }).catch(error=>{
-          if(saveRevision!==storageSaveRevision)return;
-          $('saveStatus').textContent='Save failed — export backup';
-          $('saveStatus').style.color='var(--red)';
+        const durableFlush=window.NexusTrackDurableSave
+          ?window.NexusTrackDurableSave(storage.flush()):storage.flush();
+        durableFlush.catch(error=>{
+          if(!window.NexusTrackDurableSave){
+            $('saveStatus').textContent='Save failed — export backup';
+            $('saveStatus').style.color='var(--red)';
+          }
           notify('Could not finish saving to durable device storage. Keep Nexus open and export a backup before continuing.');
           console.error('Nexus durable save failed',error);
         });
@@ -455,31 +469,82 @@
   // CSV import, JSON restore, undo, or account-bound workspace replacement. The
   // durable snapshot remains authoritative; projection failure is non-fatal and
   // leaves a visible diagnostic for later recovery.
-  window.NexusRebuildEntityProjection=()=>{
+  window.NexusRebuildEntityProjection=async(options={})=>{
+    const signal=options&&options.signal||null;
     const storage=window.NexusStorage,owner=localStorage.getItem('nexus.cloud.last-user-id')||'';
     if(!owner||!storage||typeof storage.isEnabled!=='function'||!storage.isEnabled()||
-       typeof storage.syncWorkspaceEntities!=='function')return Promise.resolve({skipped:true});
+       typeof storage.syncWorkspaceEntities!=='function')return {skipped:true};
     try{
+      // A returning account may already have a complete generation. Probe only its
+      // owner-bound manifest, durable workspace revision and generation roots before
+      // serializing/cloning the full compatibility workspace for a replacement.
+      if(typeof storage.getWorkspaceEntityProjectionReadiness==='function'){
+        let readiness=null;
+        try{
+          readiness=await storage.getWorkspaceEntityProjectionReadiness(owner);
+          window.NexusCloudSync?.noteProjectionReadiness?.(readiness);
+          if(signal&&signal.aborted)throw signal.reason instanceof Error?signal.reason:new Error('Projection readiness check was cancelled.');
+          if(readiness&&readiness.ready){
+            return {ownerId:owner,mode:'reused',generation:readiness.generation,
+              sourceWorkspaceRevision:readiness.workspaceRevision,rowCount:readiness.rowCount};
+          }
+        }catch(error){
+          if(signal&&signal.aborted)throw error;
+          if(options.reuseOnly===true){
+            return {ownerId:owner,mode:'deferred',reason:'projection-readiness-unavailable'};
+          }
+          console.warn('Nexus entity projection readiness could not be verified; attempting a guarded rebuild.',error);
+        }
+        // Account handoff can render the owner-verified compatibility snapshot before
+        // the network confirms whether this account is in Delta mode. In reuse-only
+        // mode, retain a valid generation but do not serialize/rebuild a stale one.
+        // The authenticated Delta upload gate performs the guarded rebuild if needed.
+        if(options.reuseOnly===true){
+          return {ownerId:owner,mode:'deferred',
+            reason:readiness&&typeof readiness.reason==='string'?readiness.reason:'projection-readiness-unavailable'};
+        }
+      }else if(options.reuseOnly===true){
+        return {ownerId:owner,mode:'deferred',reason:'projection-readiness-unavailable'};
+      }
       const featureState=window.NexusGetFeatureStateForCommit
         ?window.NexusGetFeatureStateForCommit()
         :window.NexusGetFeatureState?window.NexusGetFeatureState():{};
       const trackerSnapshot=JSON.stringify(state),featureSnapshot=JSON.stringify(featureState);
       const trackerRoot=JSON.parse(JSON.stringify(trackerEntityRoot()));
       const featureRoot=JSON.parse(JSON.stringify(featureEntityRoot(featureState)));
+      if(signal&&signal.aborted)throw signal.reason instanceof Error?signal.reason:new Error('Projection rebuild was cancelled.');
       const durablePromise=typeof storage.flush==='function'?storage.flush():Promise.resolve();
-      return storage.syncWorkspaceEntities(owner,null,{
+      return await storage.syncWorkspaceEntities(owner,null,{
         trackerRoot,featureRoot,trackerSnapshotJson:trackerSnapshot,
-        featureSnapshotJson:featureSnapshot,replace:true,durablePromise
-      }).catch(error=>{
-        console.warn('Nexus entity projection rebuild failed; the durable snapshot remains active.',error);
-        return {ok:false,error:String(error&&error.message||error)};
+        featureSnapshotJson:featureSnapshot,replace:true,durablePromise,signal
       });
     }catch(error){
-      console.warn('Nexus entity projection rebuild could not be scheduled; the durable snapshot remains active.',error);
-      return Promise.resolve({ok:false,error:String(error&&error.message||error)});
+      if(signal&&signal.aborted)throw error;
+      console.warn('Nexus entity projection rebuild failed; the durable snapshot remains active.',error);
+      return {ok:false,error:String(error&&error.message||error)};
     }
   };
-  function notify(text,undoable=false,options={}){$('toastText').textContent=text;$('undoBtn').style.display=undoable?'':'none';$('toast').classList.toggle('undoable',undoable);$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),2600);}
+  function notify(text,undoable=false,options={}){
+    const message=String(text||'');
+    const reportsSaveSuccess=/(saved|recorded|added|deleted|updated|restored|import complete|reset|cleared|logged)/i.test(message)&&
+      !/(failed|could not|unable|not saved|no data|cancelled|canceled)/i.test(message);
+    const pending=window.NexusPendingDurableSaveNotification;
+    if(reportsSaveSuccess&&pending){
+      if(undoable){
+        text='Saving to this device — '+message;
+      }else{
+        Promise.resolve(pending).then(()=>{
+          if(window.NexusPendingDurableSaveNotification!==pending){notify(text,undoable,options);return;}
+          window.NexusPendingDurableSaveNotification=null;
+          notify(text,undoable,options);
+        },()=>{
+          if(window.NexusPendingDurableSaveNotification===pending)window.NexusPendingDurableSaveNotification=null;
+        });
+        return;
+      }
+    }
+    $('toastText').textContent=text;$('undoBtn').style.display=undoable?'':'none';$('toast').classList.toggle('undoable',undoable);$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),2600);
+  }
   function clearUndoPresentation(){
     $('undoBtn').style.display='none';
     $('toastText').hidden=false;
@@ -1109,7 +1174,7 @@
   function deleteTopic(id){
     markDeleteDiagnosticPhase('topic:lookup');
     const t=getTopic(id);if(!t)return;
-    if(!confirm(`Delete “${t.name}” from the topic tracker? Existing history entries will be retained.`))return;
+    if(!confirm(`Delete "${t.name}" from the topic tracker? Existing history entries will be retained.`))return;
     markDeleteDiagnosticPhase('topic:undo-snapshot');
     startUndoBulkDelete('Topic deleted.',{silent:true});
     markDeleteDiagnosticPhase('topic:curriculum-tombstone');
@@ -1170,7 +1235,7 @@
     for(const entry of state.history){
       if(entry.subjectId===id||topicIdSet.has(entry.topicId)){historyCount++;historyIds.push(entry.id);}
     }
-    if(!confirm(`Delete subject “${subject.name}” and all its data?\n\nThis permanently removes ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. Undo is available for 15 seconds after deletion. Export a full JSON backup first if unsure.`))return;
+    if(!confirm(`Delete subject "${subject.name}" and all its data?\n\nThis permanently removes ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. Undo is available for 15 seconds after deletion. Export a full JSON backup first if unsure.`))return;
     markDeleteDiagnosticPhase('subject:undo-snapshot');
     startUndoBulkDelete('Subject and its data deleted.',{silent:true});
     markDeleteDiagnosticPhase('subject:curriculum-tombstone');
@@ -1232,7 +1297,7 @@
         historyCount++;historyIds.push(entry.id);
       }
     }
-    if(!confirm(`Delete stream “${stream.name}” and all nested data?\n\nThis permanently removes ${subjectIds.length} subject(s), ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. Undo is available for 15 seconds after deletion. Export a full JSON backup first if unsure.`))return;
+    if(!confirm(`Delete stream "${stream.name}" and all nested data?\n\nThis permanently removes ${subjectIds.length} subject(s), ${topicIds.length} topic(s), ${historyCount} review-history record(s), and linked Study Hub journal/paper records. Undo is available for 15 seconds after deletion. Export a full JSON backup first if unsure.`))return;
     markDeleteDiagnosticPhase('stream:undo-snapshot');
     startUndoBulkDelete('Stream and its data deleted.',{silent:true});
     markDeleteDiagnosticPhase('stream:curriculum-tombstone');
@@ -1283,7 +1348,7 @@
   }
   function deleteExam(id){
     markDeleteDiagnosticPhase('exam:lookup');
-    const exam=state.exams.find(item=>item.id===id);if(!exam||!confirm(`Delete “${exam.name}”?`))return;
+    const exam=state.exams.find(item=>item.id===id);if(!exam||!confirm(`Delete "${exam.name}"?`))return;
     markDeleteDiagnosticPhase('exam:undo-snapshot');
     startUndoArrayReplacement('Exam deleted.','exams',{silent:true});
     markDeleteDiagnosticPhase('exam:filter');
@@ -1299,7 +1364,7 @@
   function exportHistory(){const rows=[['Review date','Stream','Subject','Topic','Rating','Rating meaning','Interval days','Next due','Note'],...state.history.map(h=>[h.reviewedAt,h.streamName,h.subjectName,h.topicName,h.rating,RATING_LABELS[h.rating],h.intervalDays,h.dueDate,h.note])];downloadFile(`nexus-history-${today()}.csv`,'\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('History CSV exported.');}
   function exportTopics(){const rows=[['Stream','Subject','Topic','Notes','Last reviewed','Last rating','Next due','Interval days','Review count','Streak','Lapses','Status'],...state.topics.map(t=>{const d=subjectDisplay(t);return[d.stream,d.subject,t.name,t.notes,t.lastReviewed,t.lastRating,t.dueDate,t.intervalDays,t.reviewCount,t.streak,t.lapses,status(t)];})];downloadFile(`nexus-topics-${today()}.csv`,'\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');notify('Topics CSV exported.');}
   async function importBackup(file){if(!file)return;try{const parsed=JSON.parse(await file.text()),raw=parsed?.state||parsed;const restored=normalizeState(raw);if(!restored.topics||!restored.history||!restored.subjects)throw new Error('Required backup sections are missing.');if(!confirm(`Import ${restored.topics.length} topics, ${restored.history.length} history records, and ${restored.exams.length} exams? This replaces current local data.`))return;startUndoWorkspaceReplace('Backup imported.');state=restored;save({replaceEntities:true});renderAll();switchView('overview');notify('Backup restored.',true);}catch(err){alert(`Could not import this backup. ${err.message||'Check the file format.'}`);}finally{$('importFile').value='';}}
-  function clearHistory(){if(!state.history.length){notify('History is already empty.');return;}if(!confirm('DANGER ZONE — Clear every saved review-history entry?\n\nAll rating analytics, review-history exports and historical counts based on these records will be lost. Topic schedules may remain unchanged. Use Undo immediately or restore a backup if this was accidental. Continue?'))return;startUndoHistoryChange('History cleared.');state.history=[];save({replaceEntities:true});renderAll();notify('History cleared; schedules remain unchanged.',true);}
+  function clearHistory(){if(!state.history.length){notify('History is already empty.');return;}if(!confirm('DANGER ZONE - Clear every saved review history entry?\n\nAll rating analytics, review-history exports and historical counts based on these records will be lost. Topic schedules may remain unchanged. Use Undo immediately or restore a backup if this was accidental. Continue?'))return;startUndoHistoryChange('History cleared.');state.history=[];save({replaceEntities:true});renderAll();notify('History cleared. Schedules remain unchanged.',true);}
   function resetAll(){if(!confirm('Reset all local data, including topics, custom streams, subjects, exams, settings and history? Download a backup first if you may need it.'))return;startUndoWorkspaceReplace('Tracker reset.');state=baseState();save({replaceEntities:true});renderAll();switchView('overview');notify('Tracker reset.',true);}
   function applyTheme(){document.documentElement.dataset.theme=state.settings.theme;const themeColor=document.querySelector('meta[name="theme-color"]');if(themeColor){const appBackground=getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();if(appBackground)themeColor.setAttribute('content',appBackground);}$('themeSelect').value=state.settings.theme;$('themeBtn').textContent=state.settings.theme==='light'?'☀':state.settings.theme==='dark'?'☾':'◐';$('themeBtn').title=`Theme: ${state.settings.theme}. Click to cycle.`;}
   function cycleTheme(){const seq=['system','light','dark'];state.settings.theme=seq[(seq.indexOf(state.settings.theme)+1)%seq.length];save({entityChanges:[]});applyTheme();notify(`Theme: ${state.settings.theme}.`);}
@@ -1343,7 +1408,7 @@
     markDeleteDiagnosticPhase('history:lookup');
     const entry=state.history.find(item=>String(item.id)===String(id));
     if(!entry){notify('That review-history entry could not be found. Refresh the history and try again.');return;}
-    if(!confirm('DANGER ZONE — Delete this review record?\n\nThis review will disappear from rating analytics and future history exports. The topic schedule will not change. Undo is available for 15 seconds after deletion. Continue?'))return;
+    if(!confirm('DANGER ZONE - Delete this review record?\n\nThis review will disappear from rating analytics and future history exports. The topic schedule will not change. Undo is available for 15 seconds after deletion. Continue?'))return;
     markDeleteDiagnosticPhase('history:undo-snapshot');
     startUndoHistoryChange('History entry deleted.',{silent:true});
     markDeleteDiagnosticPhase('history:filter');
@@ -1519,13 +1584,13 @@
     // already exposed on window. Do not reassign arrow wrappers here: each wrapper
     // would overwrite its own global binding and recursively call itself.
     window.clearHistory=function(){
-      if(!confirm('Clear ALL history?\\n\\nThis will delete '+state.history.length+' records. Schedules stay but past reviews are retained.\\n\\nExport a backup first!'))return;
+      if(!confirm('Clear ALL history?\n\nThis will delete '+state.history.length+' records. Schedules stay but past reviews are retained.\n\nExport a backup first!'))return;
       if(!confirm('Are you absolutely sure?'))return;
       startUndoHistoryChange('All history cleared.');
       state.history=[];save({replaceEntities:true});renderAll();
     };
     window.resetAll=function(){
-      if(!confirm('Reset ALL data?\\n\\nThis deletes topics, subjects, streams, exams, history and settings. Export a backup first.'))return;
+      if(!confirm('Reset ALL data?\n\nThis deletes topics, subjects, streams, exams, history and settings. Export a backup first.'))return;
       const typed=prompt('To confirm, type RESET in capital letters:');
       if(typed!=='RESET'){alert('Cancelled');return;}
       startUndoWorkspaceReplace('All data reset.');

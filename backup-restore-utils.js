@@ -253,12 +253,12 @@
     return normalizeFeatureState(hasFeatureState === true ? importedInput : currentInput, defaults);
   }
 
-  function commitLocalStorageAtomically(storage, entries) {
+  function commitLocalStorageAtomically(storage, entries, transactionOptions = {}) {
     if (!storage || !Array.isArray(entries) || entries.length === 0) throw new Error('Invalid local restore transaction.');
     const durableStorage = typeof window !== 'undefined' ? window.NexusStorage : null;
     if (durableStorage && typeof durableStorage.isFacade === 'function' && durableStorage.isFacade(storage) &&
         typeof durableStorage.commitLocalStorageEntries === 'function') {
-      return durableStorage.commitLocalStorageEntries(entries);
+      return durableStorage.commitLocalStorageEntries(entries, transactionOptions);
     }
     const seen = new Set();
     for (const entry of entries) {

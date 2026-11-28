@@ -229,8 +229,36 @@ assert.ok(first.manifest.chunkCount>1,'large workspace must be divided into mult
 assert.equal(cloud.rows.get(OWNER_A).payload.__nexusStorage,'chunked-v1','existing snapshot row must become the active manifest only after chunk verification');
 assert.equal(cloud.chunks.filter(row=>row.user_id===OWNER_A&&row.revision_id===first.manifest.revisionId).length,first.manifest.chunkCount,'all chunks must be present before publication');
 
-const reconstructed=await chunks.readSnapshot(cloud,OWNER_A,first.manifest);
+const readMetrics=[];
+const reconstructed=await chunks.readSnapshot(cloud,OWNER_A,first.manifest,null,
+ (stage,metrics)=>readMetrics.push({stage,...metrics}));
 assert.deepEqual(reconstructed,firstPayload,'reconstructed snapshot must preserve the complete tracker and Study Hub payload');
+const metricFor=stage=>readMetrics.find(metric=>metric.stage===stage)||null;
+const pageReadMetrics=metricFor('cloud-chunk-pages-read');
+assert.ok(pageReadMetrics,'cold chunk reconstruction must report its paginated remote read');
+assert.equal(pageReadMetrics.pageCount,Math.ceil(first.manifest.chunkCount/16));
+assert.equal(pageReadMetrics.completedPageCount,pageReadMetrics.pageCount);
+assert.equal(pageReadMetrics.rowsRead,first.manifest.chunkCount);
+assert.equal(pageReadMetrics.chunkCount,first.manifest.chunkCount);
+assert.equal(pageReadMetrics.payloadUtf8Bytes,first.manifest.totalBytes);
+assert.equal(pageReadMetrics.chunkDataIncluded,true,
+ 'page-read timing must explicitly identify that each page response contains the chunk data');
+assert.equal(pageReadMetrics.ok,true);
+assert.ok(Number.isSafeInteger(pageReadMetrics.durationMs)&&pageReadMetrics.durationMs>=0);
+assert.ok(Number.isSafeInteger(pageReadMetrics.maxPageDurationMs)&&pageReadMetrics.maxPageDurationMs>=0);
+assert.ok(Number.isSafeInteger(pageReadMetrics.minPageDurationMs)&&pageReadMetrics.minPageDurationMs>=0);
+assert.ok(metricFor('cloud-chunk-validation')?.ok===true,
+ 'all chunk structural, byte-length, count and manifest-size checks must pass');
+assert.ok(metricFor('cloud-snapshot-assembly')?.ok===true,
+ 'all verified chunk strings must be assembled');
+assert.ok(metricFor('cloud-snapshot-hash')?.ok===true,
+ 'the reconstructed bytes must pass SHA-256 verification');
+assert.ok(metricFor('cloud-snapshot-parse')?.ok===true,
+ 'the reconstructed JSON and workspace shape must parse successfully');
+const metricsJson=JSON.stringify(readMetrics);
+for(const forbidden of [OWNER_A,first.manifest.revisionId,'chunk_data','topicName','PRIVATE'])
+ assert.equal(metricsJson.includes(forbidden),false,
+  'chunk timing metrics must not expose owner/revision identifiers or workspace content');
 assert.equal(chunks.utf8ByteLength(cloud.chunks.filter(row=>row.revision_id===first.manifest.revisionId).map(row=>row.chunk_data).join('')),first.manifest.totalBytes,'UTF-8 byte count must match the published manifest');
 for(const row of cloud.chunks.filter(row=>row.revision_id===first.manifest.revisionId)){
  assert.ok(row.chunk_bytes<=chunks.CHUNK_BYTES,'each chunk must remain under the byte limit');
@@ -262,7 +290,11 @@ assert.equal(cloud.chunks.filter(row=>row.revision_id===second.manifest.revision
 const tamper=cloud.chunks.find(row=>row.user_id===OWNER_A&&row.revision_id===second.manifest.revisionId);
 const originalChunk=tamper.chunk_data;
 tamper.chunk_data=originalChunk+'tampered';
-const corrupt=await chunks.readSnapshot(cloud,OWNER_A,second.manifest).then(()=>null,error=>error);
+const corruptMetrics=[];
+const corrupt=await chunks.readSnapshot(cloud,OWNER_A,second.manifest,undefined,
+ (stage,metrics)=>corruptMetrics.push({stage,...metrics})).then(()=>null,error=>error);
+assert.ok(corruptMetrics.some(metric=>metric.stage==='cloud-chunk-validation'&&metric.ok===false),
+ 'a corrupted chunk must produce a failed aggregate validation metric without exposing the corrupt bytes');
 assert.ok(/integrity|size|SHA-256/i.test(corrupt.message),'corrupt chunks must fail closed before local application');
 tamper.chunk_data=originalChunk;
 

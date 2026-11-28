@@ -77,13 +77,14 @@ class FakeTransaction {
   constructor(db, stores, mode) {
     this.db = db;
     this.mode = mode;
+    this.storeNames=stores.slice();
     this.maps = new Map();
     for (const name of stores) {
       const original = db.stores.get(name);
       if (!original) throw new Error('Unknown object store: ' + name);
       // Stored rows are immutable: get/getAll return detached clones and put
       // clones incoming values. A shallow map copy preserves rollback semantics
-      // without cloning every historical entity on each 400-row write batch.
+      // without cloning every historical entity on each bounded entity-write batch.
       this.maps.set(name, mode === 'readwrite' ? new Map(original) : original);
     }
     this.pending = 0;
@@ -137,6 +138,9 @@ class FakeTransaction {
       }
       if (this.mode === 'readwrite') {
         for (const [name, map] of this.maps) this.db.stores.set(name, map);
+        if(typeof this.db.owner.onWriteTransactionComplete==='function'){
+          this.db.owner.onWriteTransactionComplete(this.storeNames.slice(),this);
+        }
       }
       this.finished = true;
       if (typeof this.oncomplete === 'function') this.oncomplete({ target: this });
@@ -160,7 +164,7 @@ class FakeDatabase {
 }
 
 class FakeIndexedDB {
-  constructor() { this.databases = new Map(); this.failNextWrite = false; this.rangeQueries=[]; this.sortedKeys=new WeakMap(); }
+  constructor() { this.databases = new Map(); this.failNextWrite = false; this.rangeQueries=[]; this.sortedKeys=new WeakMap(); this.onWriteTransactionComplete=null; }
   open(name, version) {
     const request = { result: null, error: null, onupgradeneeded: null, onsuccess: null, onerror: null, onblocked: null };
     queueMicrotask(() => {
@@ -192,6 +196,7 @@ function makeWindow(nativeStorage, indexedDB) {
     localStorage: nativeStorage,
     indexedDB,
     document: { getElementById: () => null },
+    navigator: { storage: { estimate: async () => ({ quota: 1000000, usage: 200000 }) } },
     console,
     setTimeout,
     crypto:webcrypto,
@@ -200,10 +205,32 @@ function makeWindow(nativeStorage, indexedDB) {
   };
 }
 
+let syncTestCallSequence=0;
 function loadApi(win) {
   const context = { window: win, module: { exports: {} }, console, queueMicrotask };
   vm.runInNewContext(source, context, { filename: 'nexus-storage.js' });
-  return { api: context.module.exports, context };
+  const api=context.module.exports;
+  if(typeof api.syncWorkspaceEntities==='function'){
+    const originalSync=api.syncWorkspaceEntities;
+    api.syncWorkspaceEntities=async function(...args){
+      const sequence=++syncTestCallSequence;
+      const caller=new Error().stack.split('\\n').slice(2,4).join(' <- ');
+      const changeCount=Array.isArray(args[1])?args[1].length:(args[1]===null?'null':'other');
+      console.log('NEXUS_TEST_SYNC_CALL',sequence,'owner='+String(args[0]||''),'changes='+changeCount,
+        'replace='+String(args[2]?.replace===true),'caller='+caller);
+      try{
+        const result=await originalSync.apply(this,args);
+        console.log('NEXUS_TEST_SYNC_RESULT',sequence,'mode='+String(result?.mode||'none'),
+          'skipped='+String(result?.skipped===true));
+        return result;
+      }catch(error){
+        console.log('NEXUS_TEST_SYNC_ERROR',sequence,'code='+String(error?.code||'none'),
+          'reason='+String(error?.nexusEntityProjectionFailureReason||'none'));
+        throw error;
+      }
+    };
+  }
+  return { api, context };
 }
 
 const wait = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -497,12 +524,16 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'the first outbox page must return the oldest unacknowledged sequence');
   assert.deepEqual(secondOutboxPage.map(item=>item.sequence),[2],
     'the next outbox page must resume strictly after the supplied sequence cursor');
-  const boundedOutboxQueries=idb.rangeQueries.filter(query=>query.store==='outbox'&&query.count===1);
+  const boundedOutboxQueries=idb.rangeQueries.filter(query=>
+    query.store==='outbox'&&query.count===1&&String(query.lower||'').includes(':seq:'));
   assert.equal(boundedOutboxQueries.length,2,
     'both paged outbox reads must apply the row limit inside the IndexedDB request');
   assert.ok(boundedOutboxQueries[0].lower.endsWith(':seq:0000000000000001')&&
     boundedOutboxQueries[1].lower.endsWith(':seq:0000000000000002'),
     'paged outbox reads must use sequence-key ranges instead of scanning older owner records');
+  assert.ok(idb.rangeQueries.some(query=>
+    query.store==='outbox'&&query.count===1&&!String(query.lower||'').includes(':seq:')),
+    'normal projection replacement must issue a separate owner-bounded pending-outbox preflight');
   const outboxRows=idb.databases.get('nexus-workspace-v1').stores.get('outbox');
   const operationMarkerKey='workspace-entity-change:'+encodeURIComponent('entity-owner-a')+
     ':op:'+encodeURIComponent('entity-op-review-001');
@@ -603,14 +634,35 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     /active account does not match/,
     'migration must reject a workspace owner different from the committed session');
 
-  // A failed replacement generation must never displace the currently readable
-  // generation. The first 400 rows commit, then the next batch is interrupted.
+  // A normal projection replacement must refuse to retire a pending Delta outbox.
+// This preflight is tested separately from the synthetic quota failure below: once
+// the operation is explicitly acknowledged, the generic batch-failure test can
+// exercise its intended IndexedDB write failure rather than being stopped earlier.
+const pendingBeforeBlockedReplacement=await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10);
+assert.equal(pendingBeforeBlockedReplacement.length,1);
+assert.equal(pendingBeforeBlockedReplacement[0].operationId,'entity-op-superseded-by-rebuild');
+await assert.rejects(loaded.api.migrateWorkspaceEntities('entity-owner-a',afterChanges.state,afterChanges.featureState,
+  {expectedRevision:loaded.api.getStatus().revision}),error=>{
+    assert.equal(error.code,'NEXUS_PENDING_OUTBOX_REQUIRES_RECOVERY',
+      'a non-recovery projection replacement must fail closed while owner-scoped Delta outbox rows remain pending');
+    assert.equal(error.nexusEntityProjectionFailureReason,'pending-outbox-requires-recovery');
+    return true;
+  },'a pending Delta outbox must not be silently discarded by a new projection generation');
+assert.deepEqual(await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10),pendingBeforeBlockedReplacement,
+  'a blocked replacement must retain the exact pending outbox rows');
+assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',staleGenerationOperation.lastSequence),
+  staleGenerationOperation.count,
+  'the fixture must explicitly acknowledge its synthetic operation before testing a normal projection rebuild');
+
+// A failed replacement generation must never displace the currently readable
+  // generation. The first 8,000 rows commit, then the next batch is interrupted.
   const expandedState={
     ...afterChanges.state,
-    topics:afterChanges.state.topics.concat(Array.from({length:400},(_,index)=>({
+    topics:afterChanges.state.topics.concat(Array.from({length:8200},(_,index)=>({
       id:'expanded-topic-'+index,subjectId:'subject-1',name:'Expanded topic '+index,reviewCount:0
     })))
   };
+  const outboxBeforeFailedMigration=await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10);
   const originalScheduler=loaded.context.window.setTimeout;
   let migrationYieldCount=0;
   let readableGenerationDuringBuild=null;
@@ -630,6 +682,25 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
         'a later IndexedDB batch failure must identify the bounded row-write stage');
       assert.equal(error.nexusEntityProjectionFailureReason,'indexeddb-write-failed',
         'row-write failures must expose a safe category, not raw IndexedDB details');
+      assert.equal(error.nexusEntityProjectionFailureStore,'workspaces',
+        'row-write failures must identify the affected IndexedDB object store');
+      assert.equal(error.nexusEntityProjectionFailureTransactionMode,'readwrite',
+        'row-write failures must identify the transaction mode');
+      assert.ok(['abort','error'].includes(error.nexusEntityProjectionFailureTransactionOutcome),
+        'row-write failures must identify the transaction outcome');
+      assert.equal(error.nexusEntityProjectionFailureBatchIndex,2,
+        'row-write failures must identify the failed bounded batch');
+      assert.ok(error.nexusEntityProjectionFailureBatchRowCount>0&&
+        error.nexusEntityProjectionFailureBatchRowCount<=8000,
+        'row-write failures must report only the bounded batch size');
+      assert.equal(error.nexusEntityProjectionFailureCommittedBatchCount,1);
+      assert.ok(error.nexusEntityProjectionFailureRowsGenerated>8000);
+      assert.equal(error.nexusEntityProjectionFailureQuotaEstimateAvailable,true);
+      assert.equal(error.nexusEntityProjectionFailureQuotaBytes,1000000);
+      assert.equal(error.nexusEntityProjectionFailureUsageBytes,200000);
+      assert.equal(error.nexusEntityProjectionFailureRemainingQuotaBytes,800000);
+      assert.equal(error.nexusEntityProjectionFailureActiveGenerationPreserved,true);
+      assert.equal(error.nexusEntityProjectionFailurePendingGenerationCleared,true);
       return true;
     },'a failed later batch must leave the previous entity generation active');
   loaded.context.window.setTimeout=originalScheduler;
@@ -646,6 +717,9 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(preservedGeneration.state.history.length,1);
   assert.equal(preservedGeneration.state.history[0].id,'review-2',
     'the previous generation must retain committed deletions after failed backfill');
+  const outboxAfterFailedMigration=await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10);
+  assert.equal(JSON.stringify(outboxAfterFailedMigration),JSON.stringify(outboxBeforeFailedMigration),
+    'a failed replacement must leave the prior generation outbox unchanged');
 
   const pruneQueryStart=idb.rangeQueries.length;
   const resumedMigration=await loaded.api.migrateWorkspaceEntities('entity-owner-a',expandedState,afterChanges.featureState,
@@ -656,18 +730,28 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'inactive entity-generation cleanup must continue through multiple bounded pages');
   assert.ok(pruneQueries.every(query=>query.count===400),
     'every inactive-generation cleanup page must cap materialized IndexedDB rows at 400');
+  const resumedActivePrefix='workspace-entity:entity-owner-a:'+encodeURIComponent(resumedMigration.generation)+':';
+  assert.ok(pruneQueries.every(query=>query.upper<=resumedActivePrefix||
+    query.lower>=resumedActivePrefix+'\uffff'),
+    'inactive-generation cleanup must never scan the newly published active generation');
+  assert.ok(resumedMigration.pruneRowsScanned>=resumedMigration.prunedRows,
+    'cleanup diagnostics must count at least every row that was removed');
+  assert.ok(resumedMigration.pruneDurationMs>=0&&resumedMigration.writeDurationMs>=0,
+    'projection write and cleanup phase timings must be finite non-negative durations');
+  assert.ok(resumedMigration.batchCount>=2,
+    'the migration report must count its bounded 8,000-row write batches');
   assert.ok(resumedMigration.prunedRows>=400,
     'a successful replacement must prune the interrupted hidden generation in bounded batches');
-  assert.ok(resumedMigration.prunedOutboxRows>=3,
-    'a successful replacement must prune superseded changes and their idempotency markers');
+  assert.equal(resumedMigration.prunedOutboxRows,0,
+    'a projection replacement must never retire outbox rows; completed operations are removed only by explicit acknowledgement');
   assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10)).length,0,
     'a new active entity generation must never expose old-generation outbox changes');
   assert.notEqual(resumedMigration.generation,afterChanges.generation,
     'retrying an interrupted migration must publish a new generation only after all batches commit');
   const resumedWorkspace=await loaded.api.readWorkspaceEntities('entity-owner-a');
-  assert.equal(resumedWorkspace.state.topics.length,402,'the resumed generation must contain the complete topic collection');
-  assert.equal(resumedWorkspace.counts.topics,402,'the resumed manifest must contain exact collection counts');
-  assert.equal(resumedWorkspace.rowCount,412,'the resumed manifest must publish an exact total entity row count');
+  assert.equal(resumedWorkspace.state.topics.length,8202,'the resumed generation must contain the complete topic collection');
+  assert.equal(resumedWorkspace.counts.topics,8202,'the resumed manifest must contain exact collection counts');
+  assert.equal(resumedWorkspace.rowCount,8212,'the resumed manifest must publish an exact total entity row count');
 
   const duplicateIdState={
     ...resumedWorkspace.state,
@@ -683,7 +767,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const afterDuplicateIdFailure=await loaded.api.readWorkspaceEntities('entity-owner-a');
   assert.equal(afterDuplicateIdFailure.generation,resumedMigration.generation,
     'a duplicate-ID migration must leave the previous complete generation active');
-  assert.equal(afterDuplicateIdFailure.rowCount,412,
+  assert.equal(afterDuplicateIdFailure.rowCount,8212,
     'a failed replacement must preserve the prior generation row-count integrity metadata');
   const missingIdState={
     ...resumedWorkspace.state,
@@ -699,7 +783,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   const afterMissingIdFailure=await loaded.api.readWorkspaceEntities('entity-owner-a');
   assert.equal(afterMissingIdFailure.generation,resumedMigration.generation,
     'a missing-ID migration must leave the previous complete generation active');
-  assert.equal(afterMissingIdFailure.rowCount,412,
+  assert.equal(afterMissingIdFailure.rowCount,8212,
     'a failed migration with a missing ID must preserve the previous generation row count');
 
   // Existing entity rows/outbox entries remain physically stored but must be
@@ -786,12 +870,27 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'tracker metadata-root updates must be applied with the delta');
   assert.equal(incrementallyRestored.featureState.settings.dailyMinutes,120,
     'Study Hub metadata-root updates must be applied with the delta');
-  assert.equal(incrementallyRestored.counts.topics,403,
+  assert.equal(incrementallyRestored.counts.topics,8203,
     'incremental appends must maintain exact collection counts');
   assert.equal(incrementallyRestored.counts.history,2,
     'incremental history inserts must maintain exact collection counts');
   assert.equal(incrementallyRestored.counts.papers,2,
     'incremental Study Hub inserts must maintain exact collection counts');
+
+  // This fixture has completed its assertions for the initial incremental
+  // operation. Clear only these synthetic local-only rows before testing the
+  // separate rapid-save snapshot-backfill race; pending-outbox preservation and
+  // recovery are covered by the dedicated guard and DLA-09 regressions above.
+  const initialIncrementalOutbox=await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10000);
+  const initialIncrementalThrough=initialIncrementalOutbox.reduce((maximum,row)=>
+    Math.max(maximum,Number(row&&row.sequence)||0),0);
+  if(initialIncrementalThrough>0){
+    assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',initialIncrementalThrough),
+      initialIncrementalOutbox.length,
+      'the rapid-save fixture must explicitly clear its completed synthetic incremental operation');
+  }
+  assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10000)).length,0,
+    'the rapid-save backfill race must begin without pending local operations');
 
   // A later compatibility snapshot can commit while an earlier entity task is
   // waiting on durability. Reject the older delta and rebuild from the latest
@@ -903,6 +1002,20 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(metadataOnlyRead.state.settings.theme,'dark',
     'metadata-only tracker settings must be reflected in the entity metadata root');
 
+  // Metadata-root updates are also real Delta operations. Their assertions
+  // are complete here; explicitly acknowledge this synthetic fixture group before
+  // exercising a separate full-snapshot revision-gap rebuild.
+  const metadataFixtureOutbox=await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10000);
+  const metadataFixtureThrough=metadataFixtureOutbox.reduce((maximum,row)=>
+    Math.max(maximum,Number(row&&row.sequence)||0),0);
+  if(metadataFixtureThrough>0){
+    assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',metadataFixtureThrough),
+      metadataFixtureOutbox.length,
+      'the metadata-only fixture must explicitly clear its tested synthetic operation');
+  }
+  assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10000)).length,0,
+    'the revision-gap backfill fixture must begin without pending metadata operations');
+
   // If multiple compatibility commits occur before the entity sync runs, the
   // latest delta alone is not a complete change set. Rebuild from the latest
   // snapshot instead of trying to append it to an older generation.
@@ -943,17 +1056,26 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     revisionGapRead.featureState.papers.some(row=>row.id===gapPaper.id),
     'snapshot backfill must retain Study Hub records from every missed revision');
 
-  // A queued entity delta from the old projection must not be published after a
-  // newer compatibility snapshot commits but before its projection backfill runs.
-  const staleOutboxTopic={id:'topic-stale-entity-outbox',subjectId:'subject-1',name:'Superseded before projection sync'};
-  await loaded.api.writeWorkspaceEntityChanges('entity-owner-a',[
-    {collection:'topics',id:staleOutboxTopic.id,operation:'put',position:null,value:staleOutboxTopic}
-  ],{operationId:'stale-outbox-before-snapshot-replacement'});
-  const currentEntityOutbox=await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10);
-  assert.ok(currentEntityOutbox.some(row=>row.operationId==='stale-outbox-before-snapshot-replacement'),
-    'a current-generation entity delta must be readable before a newer snapshot is committed');
+  // The next page-close fixture isolates a missed entity sync with no pending
+  // operation group. The pending-outbox replacement guard is exercised above,
+  // where the exact owner-bound group is retained and checked after rejection.
 
-  // Simulate closing the page after its durable compatibility snapshots commit,
+  // The earlier incremental tests deliberately created local-only operations.
+// They are synthetic fixture data, so acknowledge them explicitly after their
+// preservation/merge assertions and before this independent missed-startup-sync
+// scenario. This avoids asking a normal projection rebuild to discard live outbox.
+const fixtureOutboxRows=await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10000);
+const fixtureOutboxThrough=fixtureOutboxRows.reduce((maximum,row)=>
+  Math.max(maximum,Number(row&&row.sequence)||0),0);
+if(fixtureOutboxThrough>0){
+  assert.equal(await loaded.api.acknowledgeWorkspaceEntityOutbox('entity-owner-a',fixtureOutboxThrough),
+    fixtureOutboxRows.length,
+    'the isolated fixture must explicitly clear its synthetic operations after their assertions');
+}
+assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,10000)).length,0,
+  'the independent missed-sync fixture must begin without pending outbox operations');
+
+// Simulate closing the page after its durable compatibility snapshots commit,
   // but before syncWorkspaceEntities is called. On the next launch, an empty
   // startup delta must detect the version gap and rebuild from the snapshots.
   const missedSyncTopic={id:'topic-missed-entity-sync',subjectId:'subject-1',name:'Committed before page close'};
@@ -1054,7 +1176,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     schema:3,
     streams:[{id:'projection-stream',name:'Commerce'}],
     subjects:[{id:'projection-subject',streamId:'projection-stream',name:'Accounting'}],
-    topics:Array.from({length:401},(_,index)=>({
+    topics:Array.from({length:8200},(_,index)=>({
       id:'projection-topic-'+index,subjectId:'projection-subject',name:'Projection topic '+index
     })),
     history:[],exams:[],settings:{theme:'dark'}
@@ -1081,7 +1203,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'a null change list with replace:true must perform a complete entity backfill');
   const firstWorkspace=await loaded.api.readWorkspaceEntities(owner);
   assert.ok(firstWorkspace,'the null-triggered backfill must publish a readable generation');
-  assert.equal(firstWorkspace.state.topics.length,401);
+  assert.equal(firstWorkspace.state.topics.length,8200);
   assert.equal(firstWorkspace.featureState.journal.length,1);
   assert.equal((await loaded.api.readWorkspaceEntityOutbox(owner,0,20)).length,0,
     'a snapshot projection rebuild must not manufacture incremental outbox operations');
@@ -1116,7 +1238,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.ok(rebuiltWorkspace,'the replacement generation must remain readable after the unrelated write');
   assert.notEqual(rebuiltWorkspace.generation,firstWorkspace.generation,
     'replace:true must publish a new complete generation rather than silently keeping the old one');
-  assert.equal(rebuiltWorkspace.state.topics.length,401);
+  assert.equal(rebuiltWorkspace.state.topics.length,8200);
   assert.equal(rebuiltWorkspace.featureState.journal[0].id,'projection-journal');
   assert.equal((await loaded.api.readWorkspaceEntityOutbox(owner,0,20)).length,0);
 
@@ -1125,11 +1247,27 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   // later retry to build from the newer committed compatibility snapshot.
   const manifestKey='workspace-entities:'+encodeURIComponent(owner);
   const metaStore=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  const markerKey=loaded.api.getWorkspaceEntityRevisionKey(owner);
+  const raceBaseTracker={
+    ...trackerState,
+    topics:trackerState.topics.concat(Array.from({length:1800},(_,index)=>({
+      id:'projection-race-base-topic-'+index,subjectId:'projection-subject',
+      name:'Projection race base topic '+index
+    })))
+  };
+  await loaded.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(raceBaseTracker)},
+    {key:'recall.study.features.v1',value:featureJson},
+    {key:markerKey,value:'projection-race-base'}
+  ]);
+  await loaded.api.flush();
+  const raceBaseBuild=await loaded.api.syncWorkspaceEntities(owner,null,{replace:true});
+  assert.equal(raceBaseBuild.mode,'snapshot-backfill',
+    'the multi-batch race fixture must start from a valid active projection');
   const activeBeforeRace=metaStore.get(manifestKey);
   const changedTopic={id:'projection-topic-added-during-rebuild',
     subjectId:'projection-subject',name:'Committed during projection rebuild'};
-  const changedTracker={...trackerState,topics:[...trackerState.topics,changedTopic]};
-  const markerKey=loaded.api.getWorkspaceEntityRevisionKey(owner);
+  const changedTracker={...raceBaseTracker,topics:[...raceBaseTracker.topics,changedTopic]};
   let workspaceChangeCommitted=false;
   const schedulerBeforeWorkspaceRace=loaded.context.window.setTimeout;
   loaded.context.window.setTimeout=(callback,delay)=>{
@@ -1175,7 +1313,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'a retry must rebuild from the latest committed compatibility snapshot');
   const finalWorkspace=await loaded.api.readWorkspaceEntities(owner);
   assert.ok(finalWorkspace,'the retry must publish a verified entity generation');
-  assert.equal(finalWorkspace.state.topics.length,402);
+  assert.equal(finalWorkspace.state.topics.length,10001);
   assert.equal(finalWorkspace.state.topics.at(-1).id,changedTopic.id);
 }
 
@@ -1346,6 +1484,34 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(initial.state.topics[0].name,'Original title');
   const originalWorkspace=await first.api.getWorkspace(owner);
   const workspaceRevision=originalWorkspace.workspaceRevision;
+  assert.equal(await first.api.isWorkspaceSnapshotCurrent(owner,
+    JSON.stringify(originalWorkspace.state),JSON.stringify(originalWorkspace.featureState)),true,
+    'an exact target-owner compatibility snapshot must be recognized without parsing it');
+  assert.equal(await first.api.isWorkspaceSnapshotCurrent(owner,
+    JSON.stringify({...originalWorkspace.state,settings:{theme:'changed'}}),
+    JSON.stringify(originalWorkspace.featureState)),false,
+    'a changed target-owner snapshot must not suppress its workspace revision marker');
+  const initialReadiness=await first.api.getWorkspaceEntityProjectionReadiness(owner);
+  assert.equal(initialReadiness.ready,true,
+    'a complete owner-matched projection at the durable workspace revision must be reusable');
+  assert.equal(initialReadiness.ownerId,owner);
+  assert.equal(initialReadiness.generation,initial.generation,
+    'readiness must identify the already-published generation without rebuilding it');
+  assert.equal(initialReadiness.workspaceRevision,workspaceRevision);
+
+  // A stale manifest must fail closed, and restoring its exact revision must make
+  // the same active generation reusable again without scanning/materializing rows.
+  const manifestStore=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  const manifestKey='workspace-entities:'+encodeURIComponent(owner);
+  const savedManifest=clone(manifestStore.get(manifestKey));
+  manifestStore.set(manifestKey,{...savedManifest,sourceWorkspaceRevision:workspaceRevision+1});
+  const staleReadiness=await first.api.getWorkspaceEntityProjectionReadiness(owner);
+  assert.equal(staleReadiness.ready,false,
+    'a projection whose source revision differs from the durable workspace must never be reused');
+  assert.equal(staleReadiness.reason,'stale-workspace-revision');
+  manifestStore.set(manifestKey,savedManifest);
+  assert.equal((await first.api.getWorkspaceEntityProjectionReadiness(owner)).ready,true,
+    'the unchanged active generation must remain reusable after its valid manifest is restored');
 
   await first.api.writeWorkspaceEntityChanges(owner,[{
     collection:'topics',id:'hydrate-topic',operation:'put',position:0,
@@ -1372,6 +1538,54 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(afterFirst.state.topics[0].name,'Entity-authoritative title');
   assert.equal((await first.api.getWorkspace(owner)).workspaceRevision,workspaceRevision,
     'metadata and entity projection writes must not fake a compatibility record revision');
+
+  // The entity-authoritative topic and metadata edits above are synthetic
+  // fixture operations. Their projection assertions are complete; acknowledge
+  // them explicitly before testing an unrelated cancelled full-generation rebuild.
+  const hydrationFixtureOutbox=await first.api.readWorkspaceEntityOutbox(owner,0,10000);
+  assert.ok(hydrationFixtureOutbox.length>0,
+    'the hydration fixture must have exercised a real pending outbox before cleanup');
+  const hydrationFixtureThrough=hydrationFixtureOutbox.reduce((maximum,row)=>
+    Math.max(maximum,Number(row&&row.sequence)||0),0);
+  assert.ok(hydrationFixtureThrough>0);
+  assert.equal(await first.api.acknowledgeWorkspaceEntityOutbox(owner,hydrationFixtureThrough),
+    hydrationFixtureOutbox.length,
+    'the completed hydration fixture operations must be explicitly acknowledged before replacement testing');
+  assert.equal((await first.api.readWorkspaceEntityOutbox(owner,0,10000)).length,0,
+    'the cancelled-rebuild fixture must begin without unrelated pending operations');
+
+  // Aborting a large replacement after its first IndexedDB batch must leave the
+  // previously published generation selected and usable.
+  const generationBeforeAbort=afterFirst.generation;
+  const replacementState={...afterFirst.state,topics:Array.from({length:8200},(_,index)=>({
+    id:'cancel-rebuild-'+index,name:'Cancelled rebuild '+index,subjectId:'hydrate-subject'
+  }))};
+  const controller=new AbortController(),nativeYield=first.context.window.setTimeout;
+  let projectionYields=0;
+  first.context.window.setTimeout=(callback,...args)=>nativeYield(()=>{
+    projectionYields++;
+    if(projectionYields===1)controller.abort(new Error('projection rebuild cancelled'));
+    callback();
+  },...args);
+  try{
+    await assert.rejects(
+      first.api.migrateWorkspaceEntities(owner,replacementState,afterFirst.featureState,{
+        expectedRevision:first.api.getStatus().revision,signal:controller.signal
+      }),
+      /projection rebuild cancelled/,
+      'an aborted projection replacement must report cancellation'
+    );
+  }finally{
+    first.context.window.setTimeout=nativeYield;
+  }
+  assert.ok(projectionYields>=1,'the replacement must reach a cooperative batch yield before cancellation');
+  const afterAbort=await first.api.readWorkspaceEntities(owner);
+  assert.equal(afterAbort.generation,generationBeforeAbort,
+    'an interrupted projection candidate must never replace the previously active generation');
+  assert.equal(afterAbort.state.topics[0].name,'Entity-authoritative title',
+    'the previously published generation must remain readable after cancellation');
+  assert.equal((await first.api.getWorkspaceEntityProjectionReadiness(owner)).ready,true,
+    'a cancelled replacement must leave the old current projection reusable');
 
   // Simulate a fresh page context. Its first IndexedDB snapshot is older than the
   // entity projection; startup must hydrate the newer entity state before modules read it.
@@ -1430,15 +1644,40 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   large.context.window.setTimeout=(callback,delay)=>originalScheduler(()=>{
     cooperativeBatches++;callback();
   },delay);
+  const largePruneQueryStart=idb.rangeQueries.length;
   const migration=await large.api.migrateWorkspaceEntities('large-workspace-owner',largeState,largeFeatures,
     {expectedRevision:large.api.getStatus().revision});
+  const largeActivePrefix='workspace-entity:large-workspace-owner:'+encodeURIComponent(migration.generation)+':';
+  const largePruneQueries=idb.rangeQueries.slice(largePruneQueryStart).filter(query=>
+    query.store==='workspaces'&&query.lower&&query.lower.startsWith('workspace-entity:large-workspace-owner:'));
+  assert.ok(largePruneQueries.length>=2,
+    'first-time cleanup must inspect both bounded stale-generation key ranges');
+  assert.ok(largePruneQueries.every(query=>query.upper<=largeActivePrefix||
+    query.lower>=largeActivePrefix+'\uffff'),
+    'first-time cleanup ranges must exclude every row in the active generation');
   large.context.window.setTimeout=originalScheduler;
   assert.equal(migration.counts.topics,totalTopics,'large migration must preserve every topic');
   assert.equal(migration.counts.history,totalHistory,'large migration must preserve every review-history row');
   assert.equal(migration.counts.studyLogs,totalStudyLogs,'large migration must preserve every study log');
   assert.equal(migration.rowCount,149148,'large manifest must publish exact metadata-plus-record row count');
-  assert.ok(cooperativeBatches>=Math.ceil(migration.rowCount/400)-1,
-    'large migration must yield after each bounded 400-row batch');
+  assert.ok(Number.isSafeInteger(migration.transactionWaitDurationMs)&&migration.transactionWaitDurationMs>=0,
+    'large projection rebuild must expose cumulative IndexedDB transaction wait time');
+  assert.ok(Number.isSafeInteger(migration.transactionCount)&&migration.transactionCount>0,
+    'large projection rebuild must expose the number of measured IndexedDB transactions');
+  assert.ok(Number.isSafeInteger(migration.keyRangeWaitDurationMs)&&migration.keyRangeWaitDurationMs>=0,
+    'large projection cleanup must expose bounded key-range request wait time');
+  assert.ok(Number.isSafeInteger(migration.rowGenerationDurationMs)&&migration.rowGenerationDurationMs>=0,
+    'large projection rebuild must expose attributable row-generation time');
+  assert.equal(migration.serializationDurationMs,null,
+    'the browser-managed IndexedDB structured-clone serialization cost must not be misreported as an explicit JSON serialization phase');
+  assert.equal(migration.serializationMode,'indexeddb-structured-clone-in-write-transaction',
+    'projection diagnostics must state that structured-clone cost is included in IndexedDB write transactions');
+  assert.ok(cooperativeBatches>=Math.ceil(migration.rowCount/8000)-1,
+    'large migration must yield after each bounded 8,000-row write batch');
+  assert.equal(migration.pruneRowsScanned,0,
+    'first-time projection cleanup must not scan the generation it just published');
+  assert.equal(migration.prunedRows,0,
+    'first-time projection cleanup must leave its complete active generation untouched');
   const hydrationQueryStart=idb.rangeQueries.length;
   const restored=await large.api.readWorkspaceEntities('large-workspace-owner');
   const hydrationQueries=idb.rangeQueries.slice(hydrationQueryStart)
@@ -1765,17 +2004,132 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
       value:{id:'apply-local-pending',subjectId:'apply-subject',name:'Local pending'}}
   ],{operationId:'local-operation-pending'});
   assert.equal(local.count,1);
-  const blocked=await loaded.api.applyWorkspaceEntityDeltaGroup(owner,{
+  const disjoint=await loaded.api.applyWorkspaceEntityDeltaGroup(owner,{
     revision:3,operation_id:'remote-operation-three',
     changes:[{collection:'topics',id:'apply-topic-late',operation:'put',position:0,
       value:{id:'apply-topic-late',subjectId:'apply-subject',name:'Late remote topic'}}]
   },2,3);
+  assert.equal(disjoint.ok,true,
+    'a verified remote change to a different entity must merge without forcing full snapshot recovery');
+  assert.equal(disjoint.cursor.publishRevision,3);
+  assert.equal(disjoint.cursor.acknowledgedSequence,0,
+    'applying a disjoint remote edit must not acknowledge the independent local outbox');
+  assert.ok(disjoint.workspace.state.topics.some(row=>row.id==='apply-local-pending'),
+    'the local pending entity value must remain present after disjoint remote application');
+  assert.ok(disjoint.workspace.state.topics.some(row=>row.id==='apply-topic-late'),
+    'the non-overlapping remote entity must be applied in the same projection');
+  const remainingLocalOutbox=await loaded.api.readWorkspaceEntityOutboxGroups(owner,0,1000,4096);
+  assert.equal(remainingLocalOutbox.groups.length,1,
+    'the original local outbox operation must remain durable for publication after remote apply');
+  assert.equal(remainingLocalOutbox.groups[0].operationId,'local-operation-pending');
+
+  // A stale generation with a pending local outbox must be routed through the
+  // full owner/revision/manifest-fenced recovery path. Metadata-only repair would
+  // bypass the remote read-back proof required before acknowledging local work.
+  const deltaCursorKey='workspace-entity-delta-cursor:'+encodeURIComponent(owner);
+  const migrationMeta=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  const originalCursor=clone(migrationMeta.get(deltaCursorKey));
+  assert.ok(originalCursor,'the cursor-generation recovery fixture must have a durable cursor');
+  loaded.context.window.localStorage.setItem('nexus.syncdiag.session.v1','[]');
+  assert.equal(loaded.context.window.localStorage.getItem('nexus.syncdiag.session.v1'),'[]',
+    'session diagnostics must remain readable without entering the workspace persistence queue');
+  migrationMeta.set(deltaCursorKey,{...originalCursor,generation:'dla09-stale-generation'});
+  const staleGenerationRead=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(staleGenerationRead.ok,false);
+  assert.equal(staleGenerationRead.reason,'local_delta_cursor_mismatch',
+    'a stale generation must be reported rather than silently accepted');
+  const recoveryState=await loaded.api.readWorkspaceEntityDeltaRecoveryState(owner);
+  assert.equal(recoveryState.ok,true,
+    'read-only recovery may inspect pending outbox rows only after active owner, manifest, generation and revision integrity are verified');
+  assert.equal(recoveryState.generationMismatch,true,
+    'the recovery reader must report, not silently accept, the stale cursor generation');
+  assert.equal(recoveryState.cursor.generation,'dla09-stale-generation');
+  assert.ok(recoveryState.activeGeneration);
+  assert.equal(recoveryState.outbox.groups.length,1,
+    'the recovery reader must preserve the exact unacknowledged operation while the cursor generation is stale');
+  assert.equal(recoveryState.outbox.groups[0].operationId,'local-operation-pending');
+  assert.equal(recoveryState.outbox.hasMore,false);
+  const generationRepair=await loaded.api.repairWorkspaceEntityDeltaCursorGeneration(owner,{
+    snapshotUpdatedAt:'verified-remote-snapshot-2026-11-14',
+    headRevision:3,
+    compactedThroughRevision:0
+  });
+  assert.equal(generationRepair.ok,false,
+    'a generation mismatch with a pending local outbox must not be repaired without full remote snapshot reconciliation');
+  assert.equal(generationRepair.reason,'cursor_repair_outbox_pending');
+  const cursorAfterRefusedRepair=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(cursorAfterRefusedRepair.ok,false,
+    'refusing metadata-only repair must leave the stale cursor visible to the recovery coordinator');
+  assert.equal(cursorAfterRefusedRepair.reason,'local_delta_cursor_mismatch');
+  const outboxAfterRefusedRepair=await loaded.api.readWorkspaceEntityOutboxGroups(
+    owner,Number(originalCursor.acknowledgedSequence),1000,4096);
+  assert.equal(outboxAfterRefusedRepair.groups.length,1,
+    'refusing cursor repair must preserve the exact unacknowledged local operation');
+  assert.equal(outboxAfterRefusedRepair.groups[0].operationId,'local-operation-pending');
+  const wrongBaselineRepair=await loaded.api.repairWorkspaceEntityDeltaCursorGeneration(owner,{
+    snapshotUpdatedAt:'wrong-snapshot-baseline',
+    headRevision:3,
+    compactedThroughRevision:0
+  });
+  assert.equal(wrongBaselineRepair.ok,false,
+    'a cursor repair must reject a remote snapshot baseline mismatch');
+  // Fake IndexedDB commits replace the store Map, so reacquire it after the
+  // repair attempts before injecting a second, structurally invalid cursor.
+  const migrationMetaAfterRepair=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  const staleStoredCursor=clone(migrationMetaAfterRepair.get(deltaCursorKey));
+  migrationMetaAfterRepair.set(deltaCursorKey,{...staleStoredCursor,protocolVersion:2});
+  const invalidCursorRepair=await loaded.api.repairWorkspaceEntityDeltaCursorGeneration(owner,{
+    snapshotUpdatedAt:'verified-remote-snapshot-2026-11-14',
+    headRevision:3,
+    compactedThroughRevision:0
+  });
+  assert.equal(invalidCursorRepair.ok,false,
+    'a cursor with structural corruption beyond its generation must not be repaired');
+  const migrationMetaAfterInvalidRepair=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  migrationMetaAfterInvalidRepair.set(deltaCursorKey,originalCursor);
+
+  const blocked=await loaded.api.applyWorkspaceEntityDeltaGroup(owner,{
+    revision:4,operation_id:'remote-operation-four',
+    changes:[{collection:'topics',id:'apply-local-pending',operation:'put',position:0,
+      value:{id:'apply-local-pending',subjectId:'apply-subject',name:'Conflicting remote value'}}]
+  },3,4);
   assert.equal(blocked.ok,false);
   assert.equal(blocked.reason,'local_outbox_pending',
-    'remote apply must pause rather than overwrite unacknowledged local entity operations');
+    'a remote update to the exact locally edited entity must still stop for three-way recovery');
   const unchanged=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
-  assert.equal(unchanged.cursor.publishRevision,2,
-    'a blocked remote group must not advance the durable inbound cursor');
+  assert.equal(unchanged.cursor.publishRevision,3,
+    'an overlapping remote group must not advance the durable inbound cursor');
+  const preserved=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(preserved.state.topics.find(row=>row.id==='apply-local-pending').name,'Local pending',
+    'an overlapping remote edit must never overwrite the local pending entity value');
+}
+{
+  const owner='entity-delta-generation-repair-empty-owner';
+  const state={schema:3,streams:[],subjects:[],topics:[],history:[],exams:[],settings:{}};
+  const features={version:1,journal:[],papers:[],goals:[],studyLogs:[]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true);
+  await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+  await loaded.api.initializeWorkspaceEntityDeltaCursor(owner,0,'empty-repair-baseline',true);
+  const key='workspace-entity-delta-cursor:'+encodeURIComponent(owner);
+  const meta=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  const cursor=clone(meta.get(key));
+  meta.set(key,{...cursor,generation:'dla09-empty-stale-generation'});
+  const repair=await loaded.api.repairWorkspaceEntityDeltaCursorGeneration(owner,{
+    snapshotUpdatedAt:'empty-repair-baseline',headRevision:0,compactedThroughRevision:0
+  });
+  assert.equal(repair.ok,true,
+    'a generation-only mismatch may be repaired when the verified active projection has no pending outbox');
+  assert.equal(repair.repaired,true);
+  assert.equal(repair.cursor.generation,repair.generation);
+  const outbox=await loaded.api.readWorkspaceEntityOutboxGroups(owner,0,1000,4096);
+  assert.equal(outbox.groups.length,0);
 }
 {
   const owner='entity-delta-apply-rollback-owner';
@@ -1965,6 +2319,11 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(replay.ok,true);
   assert.equal(replay.alreadyCommitted,true,
     'a retry after local commit must confirm the completion receipt without applying a second transaction');
+  await assert.rejects(
+    ()=>publishedRestarted.api.commitWorkspaceEntityRecovery(owner,intentId,entries,'d'.repeat(64)),
+    /recovery_intent_id_reused/,
+    'a completion receipt must not authorize the same intent ID with a different candidate digest'
+  );
 
   const secondIntent=await publishedRestarted.api.beginWorkspaceEntityRecovery(owner,{
     intentId:'nexus-recovery-delete-pending-test',candidateDigest:'b'.repeat(64),
@@ -2003,6 +2362,667 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
     'account cleanup must remove the selected account operation outbox');
   assert.equal(publishedRestarted.api.getStatus().entityRecoveryLocked,false,
     'successful owner cleanup must release the in-memory recovery lock');
+}
+
+// A recovery candidate identical to the durable workspace must reuse its
+// already-verified active entity generation instead of staging a duplicate
+// 149k-row replacement generation.
+{
+  const owner='entity-recovery-active-generation-reuse-owner';
+  const state={
+    schema:3,
+    streams:[{id:'reuse-stream',name:'Commerce'}],
+    subjects:[{id:'reuse-subject',streamId:'reuse-stream',name:'Accounting'}],
+    topics:[{id:'reuse-topic',subjectId:'reuse-subject',name:'Verified topic'}],
+    history:[{id:'reuse-review',topicId:'reuse-topic',rating:4}],
+    exams:[],settings:{theme:'dark'}
+  };
+  const features={version:1,journal:[{id:'reuse-journal',text:'Verified note'}],
+    papers:[],goals:[],studyLogs:[],selectedTopicIds:[]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true);
+  const migration=await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+  const originalGeneration=migration.generation;
+  await loaded.api.initializeWorkspaceEntityDeltaCursor(owner,0,'reuse-baseline-stamp',true);
+  const intentId='nexus-recovery-active-generation-reuse';
+  const digest='c'.repeat(64);
+  const begun=await loaded.api.beginWorkspaceEntityRecovery(owner,{
+    intentId,candidateDigest:digest,baseUpdatedAt:'reuse-baseline-stamp',
+    expectedHeadRevision:2,snapshotRevision:2,conflicts:[],payloadMetadata:{schema:4}
+  });
+  assert.equal(begun.ok,true);
+
+  const changedState={...state,topics:[{...state.topics[0],name:'Not the durable candidate'}]};
+  const rejected=await loaded.api.stageWorkspaceEntityRecoveryFromActive(
+    owner,intentId,digest,JSON.stringify(changedState),JSON.stringify(features)
+  );
+  assert.equal(rejected.ok,false,
+    'active-generation reuse must reject a candidate that differs from the exact durable compatibility snapshot');
+  assert.equal((await loaded.api.readWorkspaceEntityRecovery(owner)).intent.phase,'prepared',
+    'a rejected reuse attempt must leave the recovery intent prepared and retryable');
+
+  const workspaceRows=idb.databases.get('nexus-workspace-v1').stores.get('workspaces');
+  const rowCountBefore=workspaceRows.size;
+  const reorderedState={
+    schema:3,
+    settings:{theme:'dark'},
+    history:[{rating:4,id:'reuse-review',topicId:'reuse-topic'}],
+    topics:[{name:'Verified topic',subjectId:'reuse-subject',id:'reuse-topic'}],
+    subjects:[{name:'Accounting',id:'reuse-subject',streamId:'reuse-stream'}],
+    streams:[{name:'Commerce',id:'reuse-stream'}],
+    exams:[]
+  };
+  const reorderedFeatures={
+    selectedTopicIds:[],studyLogs:[],goals:[],papers:[],
+    journal:[{text:'Verified note',id:'reuse-journal'}],version:1
+  };
+  const reused=await loaded.api.stageWorkspaceEntityRecoveryFromActive(
+    owner,intentId,digest,JSON.stringify(reorderedState),JSON.stringify(reorderedFeatures)
+  );
+  assert.equal(reused.ok,true,
+    'an exact owner/revision/root-matched active generation should be staged for recovery reuse');
+  assert.equal(reused.reusedActiveGeneration,true);
+  assert.equal(reused.generation,originalGeneration,
+    'recovery reuse must keep the previously published generation ID');
+  assert.equal(workspaceRows.size,rowCountBefore,
+    'recovery reuse must not write a duplicate set of entity rows');
+  const manifest=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta')
+    .get('workspace-entities:'+encodeURIComponent(owner));
+  assert.equal(manifest.activeGeneration,originalGeneration);
+  assert.equal(manifest.pendingGeneration,originalGeneration,
+    'the pending recovery pointer may reference the active generation only after exact snapshot and root checks');
+  const pending=await loaded.api.readWorkspaceEntities(owner,{pending:true,recoveryIntentId:intentId});
+  assert.equal(pending.pending,true);
+  assert.equal(pending.generation,originalGeneration);
+  assert.equal(pending.state.topics[0].name,'Verified topic');
+
+  const publication={verified:true,updated_at:'reuse-verified-snapshot',
+    snapshotRevision:2,headRevision:2,compactedThroughRevision:2,storageMode:'jsonb'};
+  const marked=await loaded.api.markWorkspaceEntityRecoveryPublished(owner,intentId,publication);
+  assert.equal(marked.ok,true);
+  const entries=[
+    {key:'recall.study.tracker.v1',value:JSON.stringify(state)},
+    {key:'recall.study.features.v1',value:JSON.stringify(features)},
+    {key:'nexus.test.recovery.queue',value:JSON.stringify({pending:{}})},
+    {key:'nexus.test.recovery.base',value:JSON.stringify({[owner]:{state,featureState:features,serverVersion:publication.updated_at}})},
+    {key:'nexus.test.recovery.stamp',value:JSON.stringify({[owner]:publication.updated_at})},
+    {key:'nexus.test.recovery.conflicts',value:JSON.stringify({[owner]:[]})}
+  ];
+  const committed=await loaded.api.commitWorkspaceEntityRecovery(owner,intentId,entries,digest);
+  assert.equal(committed.ok,true,
+    'a verified recovery may atomically commit against the reused active generation');
+  assert.equal(committed.generation,originalGeneration);
+  const active=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(active.generation,originalGeneration);
+  assert.equal(active.state.topics[0].name,'Verified topic');
+  const cursor=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(cursor.ok,true);
+  assert.equal(cursor.cursor.generation,originalGeneration);
+  assert.equal(cursor.cursor.publishRevision,2);
+  assert.equal(cursor.cursor.requiresPull,false);
+  assert.equal(await loaded.api.readWorkspaceEntityRecovery(owner),null);
+}
+
+// A published snapshot must not clear an unacknowledged Delta outbox unless the
+// exact local outbox content was included in and proven by that remote snapshot.
+{
+  const owner='entity-delta-recovery-pending-outbox-owner';
+  const state={schema:3,streams:[{id:'outbox-recovery-stream',name:'Commerce'}],
+    subjects:[{id:'outbox-recovery-subject',streamId:'outbox-recovery-stream',name:'Accounting'}],
+    topics:[{id:'outbox-recovery-topic',subjectId:'outbox-recovery-subject',name:'Remote baseline'}],
+    history:[],exams:[],settings:{}};
+  const features={version:1,journal:[],papers:[],goals:[],studyLogs:[]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true);
+  await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+  const cursor=await loaded.api.initializeWorkspaceEntityDeltaCursor(owner,0,'outbox-recovery-baseline',true);
+  assert.equal(cursor.ok,true);
+  const pending=await loaded.api.writeWorkspaceEntityChanges(owner,[
+    {collection:'topics',id:'outbox-recovery-topic',operation:'put',position:0,
+      value:{id:'outbox-recovery-topic',subjectId:'outbox-recovery-subject',name:'PARKED LOCAL EDIT'}}
+  ],{operationId:'parked-edit-operation'});
+  assert.equal(pending.count,1);
+  const active=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(active.state.topics[0].name,'PARKED LOCAL EDIT');
+  const intentId='nexus-recovery-pending-outbox-guard';
+  const digest='e'.repeat(64);
+  const begun=await loaded.api.beginWorkspaceEntityRecovery(owner,{
+    intentId,candidateDigest:digest,baseUpdatedAt:'outbox-recovery-baseline',
+    expectedHeadRevision:0,snapshotRevision:0,conflicts:[],payloadMetadata:{schema:4}
+  });
+  assert.equal(begun.ok,true);
+  const staged=await loaded.api.migrateWorkspaceEntities(owner,active.state,active.featureState,{
+    expectedRevision:loaded.api.getStatus().revision,
+    deferActivation:true,recoveryIntentId:intentId,recoveryCandidateDigest:digest
+  });
+  assert.equal(staged.staged,true);
+  const publication={verified:true,updated_at:'outbox-recovery-published',
+    snapshotRevision:0,headRevision:0,compactedThroughRevision:0,storageMode:'jsonb'};
+  const marked=await loaded.api.markWorkspaceEntityRecoveryPublished(owner,intentId,publication);
+  assert.equal(marked.ok,true);
+  const entries=[
+    {key:'recall.study.tracker.v1',value:JSON.stringify(active.state)},
+    {key:'recall.study.features.v1',value:JSON.stringify(active.featureState)},
+    {key:'nexus.test.recovery.queue',value:JSON.stringify({pending:{}})},
+    {key:'nexus.test.recovery.base',value:JSON.stringify({[owner]:{
+      state:active.state,featureState:active.featureState,serverVersion:publication.updated_at}})},
+    {key:'nexus.test.recovery.stamp',value:JSON.stringify({[owner]:publication.updated_at})},
+    {key:'nexus.test.recovery.conflicts',value:JSON.stringify({[owner]:[]})}
+  ];
+  await assert.rejects(()=>loaded.api.commitWorkspaceEntityRecovery(owner,intentId,entries,digest),
+    /Pending local Delta outbox entries have no exact verified recovery proof/,
+    'a recovery commit must stop rather than acknowledge outbox rows that were not proven in the published candidate');
+  const remaining=await loaded.api.readWorkspaceEntityOutboxGroups(owner,0,1000,4096);
+  assert.equal(remaining.groups.length,1,
+    'a blocked recovery commit must retain the parked local operation in IndexedDB');
+  assert.equal(remaining.groups[0].operationId,'parked-edit-operation');
+  const afterBlockedCommit=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(afterBlockedCommit.state.topics[0].name,'PARKED LOCAL EDIT',
+    'a blocked recovery commit must leave the active projection unchanged');
+  assert.equal(loaded.api.getStatus().entityRecoveryLocked,true,
+    'the recovery lock must remain held while pending outbox content is unresolved');
+  await loaded.api.deleteWorkspaceEntities(owner);
+}
+
+// A recovery journal with a matching owner/generation/cursor/outbox fingerprint
+// may acknowledge the exact pending sequence after the caller has verified the
+// published snapshot read-back.
+{
+  const owner='entity-delta-recovery-proven-outbox-owner';
+  const state={schema:3,streams:[{id:'proven-outbox-stream',name:'Commerce'}],
+    subjects:[{id:'proven-outbox-subject',streamId:'proven-outbox-stream',name:'Accounting'}],
+    topics:[{id:'proven-outbox-topic',subjectId:'proven-outbox-subject',name:'Remote baseline'}],
+    history:[],exams:[],settings:{}};
+  const features={version:1,journal:[],papers:[],goals:[],studyLogs:[]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true);
+  await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+  const cursor=await loaded.api.initializeWorkspaceEntityDeltaCursor(owner,0,'proven-outbox-baseline',true);
+  assert.equal(cursor.ok,true);
+  const pending=await loaded.api.writeWorkspaceEntityChanges(owner,[
+    {collection:'topics',id:'proven-outbox-topic',operation:'put',position:0,
+      value:{id:'proven-outbox-topic',subjectId:'proven-outbox-subject',name:'PARKED LOCAL EDIT'}}
+  ],{operationId:'proven-outbox-operation'});
+  assert.equal(pending.count,1);
+  // DLA-10B's durable operation envelope shares the IndexedDB outbox store but
+  // has its own owner-scoped namespace. DLA-09 recovery must not erase it as a
+  // side effect of retiring the exact proof-bound Delta operation.
+  const sharedOutboxRows=idb.databases.get('nexus-workspace-v1').stores.get('outbox');
+  const workspaceEnvelope={
+    key:'workspace-operation-outbox:'+encodeURIComponent(owner)+':dla09-envelope-operation',
+    kind:'workspace-operation',recordVersion:1,protocolVersion:1,
+    ownerId:owner,operationId:'dla09-envelope-operation',
+    operationType:'workspace-change',payloadVersion:1,
+    baseRevision:1,targetRevision:null,sequence:1,dependsOn:[],
+    supersededOperationIds:[],supersededOperationCount:0,
+    requestHash:'a'.repeat(64),payload:{schema:3},changes:[],
+    trackerRoot:{},featureRoot:{},replaceEntities:false,
+    createdAt:'dla09-envelope-created',updatedAt:'dla09-envelope-created',
+    attemptCount:0,lastAttemptAt:null,nextAttemptAt:null,lastErrorCode:null,
+    deliveryState:'pending',acknowledgement:null
+  };
+  sharedOutboxRows.set(workspaceEnvelope.key,workspaceEnvelope);
+  idb.sortedKeys.delete(sharedOutboxRows);
+  const recoveryState=await loaded.api.readWorkspaceEntityDeltaRecoveryState(owner);
+  assert.equal(recoveryState.ok,true);
+  assert.equal(recoveryState.outbox.groupCount,1);
+  assert.equal(recoveryState.outbox.highWatermark,recoveryState.outbox.throughSequence);
+  assert.match(recoveryState.outbox.digest,/^[a-f0-9]{64}$/i);
+  const proof={
+    ownerId:owner,activeGeneration:recoveryState.activeGeneration,
+    workspaceRevision:recoveryState.workspaceRevision,
+    throughSequence:recoveryState.outbox.throughSequence,
+    groupCount:recoveryState.outbox.groupCount,
+    changeCount:recoveryState.outbox.changeCount,
+    digest:recoveryState.outbox.digest,localPayloadDigest:'f'.repeat(64),
+    cursor:{
+      generation:recoveryState.cursor.generation,
+      publishRevision:recoveryState.cursor.publishRevision,
+      acknowledgedSequence:recoveryState.cursor.acknowledgedSequence,
+      remoteHeadRevision:recoveryState.cursor.remoteHeadRevision,
+      snapshotUpdatedAt:recoveryState.cursor.snapshotUpdatedAt,
+      requiresPull:recoveryState.cursor.requiresPull
+    }
+  };
+  const active=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(active.state.topics[0].name,'PARKED LOCAL EDIT');
+  const intentId='nexus-recovery-proven-outbox';
+  const digest='c'.repeat(64);
+  const begun=await loaded.api.beginWorkspaceEntityRecovery(owner,{
+    intentId,candidateDigest:digest,baseUpdatedAt:'proven-outbox-baseline',
+    expectedHeadRevision:0,snapshotRevision:0,conflicts:[],
+    payloadMetadata:{schema:4},pendingOutboxProof:proof
+  });
+  assert.equal(begun.ok,true);
+  const staged=await loaded.api.migrateWorkspaceEntities(owner,active.state,active.featureState,{
+    expectedRevision:loaded.api.getStatus().revision,
+    deferActivation:true,recoveryIntentId:intentId,recoveryCandidateDigest:digest
+  });
+  assert.equal(staged.staged,true);
+  // A realistic old-generation cleanup backlog must not hold the successful
+  // recovery commit open after its new generation and cursor are already durable.
+  const staleGeneration='000000000000-stale-recovery-generation';
+  const staleGenerationPrefix='workspace-entity:'+encodeURIComponent(owner)+
+    ':'+encodeURIComponent(staleGeneration)+':';
+  const workspaceRows=idb.databases.get('nexus-workspace-v1').stores.get('workspaces');
+  for(let index=0;index<2000;index++){
+    const key=staleGenerationPrefix+'topics:'+String(index).padStart(5,'0');
+    workspaceRows.set(key,{key,ownerId:owner,generation:staleGeneration,entityRow:true,
+      collection:'topics',entityId:'stale-recovery-'+index});
+  }
+  // Direct fixture writes bypass FakeObjectStore.put(), which normally invalidates
+  // the cached key order used by bounded getAll() range queries.
+  idb.sortedKeys.delete(workspaceRows);
+  const staleRowsRemain=()=>[
+    ...idb.databases.get('nexus-workspace-v1').stores.get('workspaces').keys()
+  ].some(key=>key.startsWith(staleGenerationPrefix));
+  const publication={verified:true,updated_at:'proven-outbox-published',
+    snapshotRevision:0,headRevision:0,compactedThroughRevision:0,storageMode:'jsonb'};
+  const entries=[
+    {key:'recall.study.tracker.v1',value:JSON.stringify(active.state)},
+    {key:'recall.study.features.v1',value:JSON.stringify(active.featureState)},
+    {key:'nexus.test.recovery.queue',value:JSON.stringify({pending:{}})},
+    {key:'nexus.test.recovery.base',value:JSON.stringify({[owner]:{
+      state:active.state,featureState:active.featureState,serverVersion:publication.updated_at}})},
+    {key:'nexus.test.recovery.stamp',value:JSON.stringify({[owner]:publication.updated_at})},
+    {key:'nexus.test.recovery.conflicts',value:JSON.stringify({[owner]:[]})}
+  ];
+  const missingReadback=await loaded.api.markWorkspaceEntityRecoveryPublished(owner,intentId,publication);
+  assert.equal(missingReadback.ok,false,
+    'a pending outbox must not advance its recovery journal on publication/RPC success alone');
+  assert.equal(missingReadback.reason,'recovery_remote_readback_proof_required');
+  const stagedIntent=await loaded.api.readWorkspaceEntityRecovery(owner);
+  assert.ok(stagedIntent&&stagedIntent.intent&&stagedIntent.intent.key);
+  const migrationMetaForProof=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  migrationMetaForProof.set(stagedIntent.intent.key,{...stagedIntent.intent,phase:'published',publication});
+  await assert.rejects(()=>loaded.api.commitWorkspaceEntityRecovery(owner,intentId,entries,digest),
+    /exact remote snapshot read-back proof is missing or invalid/,
+    'the atomic commit must independently reject a journal advanced without exact read-back proof');
+  migrationMetaForProof.set(stagedIntent.intent.key,stagedIntent.intent);
+  const falsePreservationPublication={...publication,remoteReadbackProof:{
+    proofVersion:1,remoteReadbackVerified:true,pendingLocalChangesPreserved:false,
+    pendingLocalChangeCount:0,ownerId:owner,candidateDigest:digest,remotePayloadDigest:digest,
+    snapshotUpdatedAt:publication.updated_at,snapshotRevision:0,headRevision:0,
+    compactedThroughRevision:0,pendingSnapshotProof:null,pendingOutboxProof:proof
+  }};
+  const falsePreservation=await loaded.api.markWorkspaceEntityRecoveryPublished(
+    owner,intentId,falsePreservationPublication
+  );
+  assert.equal(falsePreservation.ok,false,
+    'a remote read-back without exact pending-change preservation must not advance the journal');
+  // Capture the deferred browser task so the test can run and await it
+  // deterministically, without relying on a 1.5-second wall-clock timer.
+  const deferredPruneCallbacks=[];
+  const originalWindowSetTimeout=loaded.context.window.setTimeout;
+  loaded.context.window.setTimeout=(callback,delay,...args)=>{
+    if(delay===1500){
+      deferredPruneCallbacks.push(()=>callback(...args));
+      return 0;
+    }
+    return originalWindowSetTimeout(callback,delay,...args);
+  };
+  const verifiedPublication={...publication,remoteReadbackProof:{
+    proofVersion:1,remoteReadbackVerified:true,pendingLocalChangesPreserved:true,
+    pendingLocalChangeCount:1,pendingOutboxOverlayApplied:true,
+    ownerId:owner,candidateDigest:digest,remotePayloadDigest:digest,
+    snapshotUpdatedAt:publication.updated_at,snapshotRevision:0,headRevision:0,
+    compactedThroughRevision:0,pendingSnapshotProof:null,pendingOutboxProof:proof
+  }};
+  const marked=await loaded.api.markWorkspaceEntityRecoveryPublished(owner,intentId,verifiedPublication);
+  assert.equal(marked.ok,true);
+  const committed=await loaded.api.commitWorkspaceEntityRecovery(owner,intentId,entries,digest);
+  assert.equal(committed.ok,true,'a matching exact outbox proof should permit atomic recovery commit');
+  assert.equal(staleRowsRemain(),true,
+    'the recovery commit must return before a large inactive-generation cleanup finishes');
+  assert.equal(deferredPruneCallbacks.length,1,
+    'the committed recovery must schedule exactly one inactive-generation cleanup task');
+  const cleanupResult=await deferredPruneCallbacks[0]();
+  assert.ok(cleanupResult&&cleanupResult.removed>=2000,
+    'the deferred task must remove the synthetic stale generation in bounded batches');
+  assert.equal(staleRowsRemain(),false,
+    'the inactive generation must be removed after the atomic recovery commit returns');
+  const remaining=await loaded.api.readWorkspaceEntityOutboxGroups(owner,0,1000,4096);
+  assert.equal(remaining.groups.length,0,
+    'only the proof-bound outbox sequence may be acknowledged after the verified recovery commit');
+  const committedOutboxRows=idb.databases.get('nexus-workspace-v1').stores.get('outbox');
+  const deltaPrefix='workspace-entity-change:'+encodeURIComponent(owner)+':';
+  assert.equal([...committedOutboxRows.keys()].some(key=>String(key).startsWith(deltaPrefix)),false,
+    'the exact proof-bound Delta changes and markers must be retired in the recovery transaction');
+  assert.deepEqual(committedOutboxRows.get(workspaceEnvelope.key),workspaceEnvelope,
+    'DLA-09 recovery must preserve the separate DLA-10B operation envelope until its own receipt');
+  const finalProjection=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(finalProjection.state.topics[0].name,'PARKED LOCAL EDIT');
+  const finalCursor=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(finalCursor.ok,true);
+  assert.equal(finalCursor.cursor.generation,finalProjection.generation,
+    'the replacement cursor must point to the atomically activated generation');
+  assert.equal(finalCursor.cursor.acknowledgedSequence,proof.throughSequence,
+    'the cursor may acknowledge the parked group only after the exact read-back proof');
+  const finalRecoveryState=await loaded.api.readWorkspaceEntityDeltaRecoveryState(owner);
+  assert.equal(finalRecoveryState.ok,true);
+  assert.equal(finalRecoveryState.generationMismatch,false);
+  assert.equal(finalRecoveryState.outbox.groupCount,0);
+  const postRecovery=await loaded.api.writeWorkspaceEntityChanges(owner,[{
+    collection:'topics',id:'proven-outbox-topic',operation:'put',position:0,
+    value:{id:'proven-outbox-topic',subjectId:'proven-outbox-subject',name:'POST-RECOVERY EDIT'}
+  }],{operationId:'post-recovery-operation'});
+  assert.equal(postRecovery.count,1,
+    'a new operation must be accepted after the recovery lock is released');
+  const postRecoveryGroups=await loaded.api.readWorkspaceEntityOutboxGroups(
+    owner,proof.throughSequence,1000,4096);
+  assert.equal(postRecoveryGroups.groups.length,1,
+    'a new-generation operation appended after recovery must remain visible and must not be swept by old cleanup');
+  assert.equal(postRecoveryGroups.groups[0].operationId,'post-recovery-operation');
+  assert.equal(postRecoveryGroups.generation,finalProjection.generation);
+  const afterPostRecoveryOutboxRows=idb.databases.get('nexus-workspace-v1').stores.get('outbox');
+  assert.deepEqual(afterPostRecoveryOutboxRows.get(workspaceEnvelope.key),workspaceEnvelope,
+    'the DLA-10B envelope remains intact alongside the new Delta generation');
+  await loaded.api.deleteWorkspaceEntities(owner);
+}
+
+
+
+// DLA-09 isolated proof: a cancelled recovery-generation stage must preserve
+// the exact parked outbox group, its owner/generation binding, and the cursor's
+// acknowledged sequence across restart and an A→B→A account handoff.
+{
+  const owner='dla09-cancelled-recovery-outbox-owner';
+  const ownerB='dla09-cancelled-recovery-outbox-owner-b';
+  const state={schema:3,streams:[{id:'dla09-stream',name:'Commerce'}],
+    subjects:[{id:'dla09-subject',streamId:'dla09-stream',name:'Accounting'}],
+    topics:[{id:'dla09-topic',subjectId:'dla09-subject',name:'Remote baseline'}],
+    history:[],exams:[],settings:{}};
+  const features={version:1,journal:[],papers:[],goals:[],studyLogs:[]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true,'DLA-09 cancellation fixture must initialize durable storage');
+  await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+  const cursor=await loaded.api.initializeWorkspaceEntityDeltaCursor(owner,0,'dla09-cancelled-stage-baseline',true);
+  assert.equal(cursor.ok,true);
+  const parkedValue={id:'dla09-topic',subjectId:'dla09-subject',name:'PARKED LOCAL EDIT',
+    notes:'Exact parked edit must survive interrupted generation staging'};
+  const pending=await loaded.api.writeWorkspaceEntityChanges(owner,[{
+    collection:'topics',id:'dla09-topic',operation:'put',position:0,value:parkedValue
+  }],{operationId:'dla09-parked-operation'});
+  assert.equal(pending.count,1);
+  const migrationMetaStore=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  const cursorKey=[...migrationMetaStore.keys()].find(key=>
+    String(key).includes(encodeURIComponent(owner))&&String(key).includes('cursor'));
+  assert.ok(cursorKey,'the owner-bound Delta cursor record must exist');
+  const staleCursor={...migrationMetaStore.get(cursorKey),generation:'stale-generation-before-recovery'};
+  migrationMetaStore.set(cursorKey,staleCursor);
+  const fastCursor=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(fastCursor.ok,false,'the normal cursor reader must fail closed on a generation mismatch');
+  assert.equal(fastCursor.reason,'local_delta_cursor_mismatch');
+  const before=await loaded.api.readWorkspaceEntityDeltaRecoveryState(owner);
+  assert.equal(before.ok,true,'the recovery reader must still expose the parked outbox on cursor mismatch');
+  assert.equal(before.generationMismatch,true);
+  assert.equal(before.ownerId,owner);
+  assert.equal(before.outbox.groupCount,1);
+  assert.equal(before.outbox.groups[0].operationId,'dla09-parked-operation');
+  assert.equal(before.cursor.generation,'stale-generation-before-recovery');
+  assert.equal(before.cursor.acknowledgedSequence,0);
+  const proof={
+    ownerId:owner,activeGeneration:before.activeGeneration,
+    workspaceRevision:before.workspaceRevision,
+    throughSequence:before.outbox.throughSequence,
+    groupCount:before.outbox.groupCount,changeCount:before.outbox.changeCount,
+    digest:before.outbox.digest,localPayloadDigest:'f'.repeat(64),
+    cursor:{
+      generation:before.cursor.generation,publishRevision:before.cursor.publishRevision,
+      acknowledgedSequence:before.cursor.acknowledgedSequence,
+      remoteHeadRevision:before.cursor.remoteHeadRevision,
+      snapshotUpdatedAt:before.cursor.snapshotUpdatedAt,
+      requiresPull:before.cursor.requiresPull
+    }
+  };
+  const intentId='dla09-cancelled-recovery-intent',candidateDigest='d'.repeat(64);
+  const begun=await loaded.api.beginWorkspaceEntityRecovery(owner,{
+    intentId,candidateDigest,baseUpdatedAt:'dla09-cancelled-stage-baseline',
+    expectedHeadRevision:0,snapshotRevision:0,conflicts:[],
+    payloadMetadata:{schema:4},pendingOutboxProof:proof
+  });
+  assert.equal(begun.ok,true,'the recovery intent must bind the parked outbox proof');
+  const activeBefore=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(activeBefore.state.topics[0].name,'PARKED LOCAL EDIT');
+  const candidateState={
+    ...activeBefore.state,
+    // ENTITY_MIGRATION_BATCH_SIZE is 8,000. Exceed it so the first
+    // committed batch yields, the injected abort fires, and the next batch is
+    // deterministically prevented from starting.
+    topics:[parkedValue,...Array.from({length:8200},(_,index)=>({
+      id:'dla09-staged-topic-'+index,subjectId:'dla09-subject',
+      name:'Staged candidate topic '+index
+    }))]
+  };
+  const controller=new AbortController();
+  let rowBatchCommitted=false;
+  // Abort from the fake IndexedDB commit hook, after the first 8,000-row batch
+  // is durably committed but before migrateWorkspaceEntities advances to the
+  // next batch. This reproduces cancellation while failureStage is still
+  // write-row-batch, without relying on wall-clock timers or scheduler timing.
+  idb.onWriteTransactionComplete=stores=>{
+    if(!rowBatchCommitted&&stores.includes('workspaces')){
+      rowBatchCommitted=true;
+      controller.abort(new Error('Synthetic account handoff during recovery staging.'));
+    }
+  };
+  await assert.rejects(loaded.api.migrateWorkspaceEntities(owner,candidateState,activeBefore.featureState,{
+    expectedRevision:loaded.api.getStatus().revision,
+    deferActivation:true,recoveryIntentId:intentId,
+    recoveryCandidateDigest:candidateDigest,signal:controller.signal
+  }),error=>{
+    assert.equal(error.name,'AbortError');
+    assert.equal(error.code,'NEXUS_SYNC_CANCELLED');
+    assert.equal(error.nexusEntityProjectionFailureStage,'write-row-batch');
+    return true;
+  },'the recovery stage must stop immediately after the first committed row batch');
+  idb.onWriteTransactionComplete=null;
+  assert.equal(rowBatchCommitted,true,
+    'the test must inject cancellation only after a real IndexedDB row batch commits');
+
+  const manifestStore=idb.databases.get('nexus-workspace-v1').stores.get('migrationMeta');
+  const manifest=manifestStore.get('workspace-entities:'+encodeURIComponent(owner));
+  assert.ok(manifest,'the active owner manifest must remain present after interrupted staging');
+  assert.equal(manifest.status,'ready');
+  assert.equal(manifest.activeGeneration,before.activeGeneration);
+  assert.equal(manifest.pendingGeneration,null);
+  assert.equal(manifest.pendingRecoveryIntentId,null);
+
+  const interruptedIntent=await loaded.api.readWorkspaceEntityRecovery(owner);
+  assert.ok(interruptedIntent&&interruptedIntent.intent,
+    'the prepared recovery journal must remain durable for a safe retry');
+  assert.equal(interruptedIntent.intent.phase,'prepared');
+  assert.equal(loaded.api.getStatus().entityRecoveryLocked,true,
+    'the owner write lock must remain held while the recovery journal is pending');
+  const after=await loaded.api.readWorkspaceEntityDeltaRecoveryState(owner);
+  assert.equal(after.ok,true,'the recovery reader must still expose the preserved outbox after staging abort');
+  assert.equal(after.ownerId,owner);
+  assert.equal(after.activeGeneration,before.activeGeneration);
+  assert.equal(after.generationMismatch,true);
+  assert.equal(after.cursor.generation,'stale-generation-before-recovery');
+  assert.equal(after.outbox.groupCount,1);
+  assert.equal(after.outbox.digest,before.outbox.digest);
+  assert.equal(after.cursor.acknowledgedSequence,before.cursor.acknowledgedSequence,
+    'an interrupted stage must not advance the acknowledged cursor sequence');
+  assert.equal(after.outbox.groups[0].operationId,'dla09-parked-operation');
+  assert.deepEqual(after.outbox.groups[0].changes[0].value,parkedValue);
+  const outboxStore=idb.databases.get('nexus-workspace-v1').stores.get('outbox');
+  const markerKey='workspace-entity-change:'+encodeURIComponent(owner)+
+    ':op:'+encodeURIComponent('dla09-parked-operation');
+  const marker=outboxStore.get(markerKey);
+  assert.ok(marker,'the exact operation marker must remain physically durable after cancellation');
+  assert.equal(marker.ownerId,owner);
+  assert.equal(marker.generation,before.activeGeneration);
+  const activeAfter=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(activeAfter.generation,before.activeGeneration);
+  assert.equal(activeAfter.state.topics[0].name,'PARKED LOCAL EDIT',
+    'the active generation must continue to expose the exact parked edit');
+
+  // A new adapter instance represents a page reload. The journal and outbox
+  // must remain recoverable without clearing the pending group or cursor.
+  const restarted=loadApi(makeWindow(native,idb));
+  assert.equal(await restarted.api.bootstrap(),true);
+  const restartedIntent=await restarted.api.readWorkspaceEntityRecovery(owner);
+  assert.ok(restartedIntent&&restartedIntent.intent);
+  assert.equal(restartedIntent.intent.phase,'prepared');
+  const afterRestart=await restarted.api.readWorkspaceEntityDeltaRecoveryState(owner);
+  assert.equal(afterRestart.ok,true);
+  assert.equal(afterRestart.generationMismatch,true);
+  assert.equal(afterRestart.outbox.digest,before.outbox.digest);
+  assert.equal(afterRestart.cursor.generation,'stale-generation-before-recovery');
+  assert.equal(afterRestart.cursor.acknowledgedSequence,before.cursor.acknowledgedSequence);
+  assert.equal(afterRestart.outbox.groups[0].changes[0].value.notes,parkedValue.notes);
+
+  // Switch to an unrelated owner and back. The parked group must remain isolated
+  // under Account A's owner/generation prefix and never appear in Account B's view.
+  const bState={schema:3,streams:[{id:'dla09-b-stream',name:'B only'}],
+    subjects:[],topics:[{id:'dla09-b-topic',name:'ACCOUNT B ONLY'}],history:[],exams:[],settings:{}};
+  await restarted.api.commitLocalStorageEntries([
+    {key:'nexus.cloud.last-user-id',value:ownerB},
+    {key:'recall.study.tracker.v1',value:JSON.stringify(bState)},
+    {key:'recall.study.features.v1',value:JSON.stringify(features)}
+  ]);
+  assert.equal(restarted.context.window.localStorage.getItem('nexus.cloud.last-user-id'),ownerB);
+  assert.equal(JSON.parse(restarted.context.window.localStorage.getItem('recall.study.tracker.v1')).topics[0].name,
+    'ACCOUNT B ONLY');
+  assert.equal(await restarted.api.readWorkspaceEntities(ownerB),null,
+    'Account B must not inherit Account A entity projection rows');
+  await restarted.api.commitLocalStorageEntries([
+    {key:'nexus.cloud.last-user-id',value:owner},
+    {key:'recall.study.tracker.v1',value:JSON.stringify(activeBefore.state)},
+    {key:'recall.study.features.v1',value:JSON.stringify(activeBefore.featureState)}
+  ]);
+  const afterReturn=await restarted.api.readWorkspaceEntityDeltaRecoveryState(owner);
+  assert.equal(afterReturn.ok,true);
+  assert.equal(afterReturn.ownerId,owner);
+  assert.equal(afterReturn.activeGeneration,before.activeGeneration);
+  assert.equal(afterReturn.generationMismatch,true);
+  assert.equal(afterReturn.outbox.digest,before.outbox.digest);
+  assert.equal(afterReturn.cursor.generation,'stale-generation-before-recovery');
+  assert.equal(afterReturn.cursor.acknowledgedSequence,before.cursor.acknowledgedSequence);
+  assert.deepEqual(afterReturn.outbox.groups[0].changes[0].value,parkedValue);
+  const finalActive=await restarted.api.readWorkspaceEntities(owner);
+  assert.equal(finalActive.generation,before.activeGeneration);
+  assert.equal(finalActive.state.topics[0].name,'PARKED LOCAL EDIT');
+}
+
+// The storage layer independently checks the staged candidate against the exact
+// pending outbox values. A caller-supplied read-back flag/digest cannot clear the
+// outbox if the candidate row itself contains a different value.
+{
+  const owner='entity-delta-recovery-wrong-outbox-candidate-owner';
+  const state={schema:3,streams:[{id:'wrong-outbox-stream',name:'Commerce'}],
+    subjects:[{id:'wrong-outbox-subject',streamId:'wrong-outbox-stream',name:'Accounting'}],
+    topics:[{id:'wrong-outbox-topic',subjectId:'wrong-outbox-subject',name:'Remote baseline'}],
+    history:[],exams:[],settings:{}};
+  const features={version:1,journal:[],papers:[],goals:[],studyLogs:[]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true);
+  await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+  const cursor=await loaded.api.initializeWorkspaceEntityDeltaCursor(owner,0,'wrong-outbox-baseline',true);
+  assert.equal(cursor.ok,true);
+  const parkedValue={id:'wrong-outbox-topic',subjectId:'wrong-outbox-subject',name:'PARKED LOCAL EDIT'};
+  const pending=await loaded.api.writeWorkspaceEntityChanges(owner,[
+    {collection:'topics',id:'wrong-outbox-topic',operation:'put',position:0,value:parkedValue}
+  ],{operationId:'wrong-outbox-operation'});
+  assert.equal(pending.count,1);
+  const recoveryState=await loaded.api.readWorkspaceEntityDeltaRecoveryState(owner);
+  const proof={
+    ownerId:owner,activeGeneration:recoveryState.activeGeneration,
+    workspaceRevision:recoveryState.workspaceRevision,
+    throughSequence:recoveryState.outbox.throughSequence,
+    groupCount:recoveryState.outbox.groupCount,
+    changeCount:recoveryState.outbox.changeCount,
+    digest:recoveryState.outbox.digest,localPayloadDigest:'f'.repeat(64),
+    cursor:{
+      generation:recoveryState.cursor.generation,
+      publishRevision:recoveryState.cursor.publishRevision,
+      acknowledgedSequence:recoveryState.cursor.acknowledgedSequence,
+      remoteHeadRevision:recoveryState.cursor.remoteHeadRevision,
+      snapshotUpdatedAt:recoveryState.cursor.snapshotUpdatedAt,
+      requiresPull:recoveryState.cursor.requiresPull
+    }
+  };
+  const active=await loaded.api.readWorkspaceEntities(owner);
+  const wrongCandidateState={...active.state,topics:[{
+    ...parkedValue,name:'WRONG REMOTE VALUE'
+  }]};
+  const intentId='nexus-recovery-wrong-outbox-candidate';
+  const digest='b'.repeat(64);
+  const begun=await loaded.api.beginWorkspaceEntityRecovery(owner,{
+    intentId,candidateDigest:digest,baseUpdatedAt:'wrong-outbox-baseline',
+    expectedHeadRevision:0,snapshotRevision:0,conflicts:[],
+    payloadMetadata:{schema:4},pendingOutboxProof:proof
+  });
+  assert.equal(begun.ok,true);
+  const staged=await loaded.api.migrateWorkspaceEntities(owner,wrongCandidateState,active.featureState,{
+    expectedRevision:loaded.api.getStatus().revision,
+    deferActivation:true,recoveryIntentId:intentId,recoveryCandidateDigest:digest
+  });
+  assert.equal(staged.staged,true);
+  const publication={verified:true,updated_at:'wrong-outbox-published',
+    snapshotRevision:0,headRevision:0,compactedThroughRevision:0,storageMode:'jsonb',
+    remoteReadbackProof:{
+      proofVersion:1,remoteReadbackVerified:true,pendingLocalChangesPreserved:true,
+      pendingLocalChangeCount:1,pendingOutboxOverlayApplied:true,ownerId:owner,
+      candidateDigest:digest,remotePayloadDigest:digest,
+      snapshotUpdatedAt:'wrong-outbox-published',snapshotRevision:0,headRevision:0,
+      compactedThroughRevision:0,pendingSnapshotProof:null,pendingOutboxProof:proof
+    }};
+  const marked=await loaded.api.markWorkspaceEntityRecoveryPublished(owner,intentId,publication);
+  assert.equal(marked.ok,true,
+    'the proof envelope may advance only to the published phase; the commit still independently checks exact row content');
+  const entries=[
+    {key:'recall.study.tracker.v1',value:JSON.stringify(wrongCandidateState)},
+    {key:'recall.study.features.v1',value:JSON.stringify(active.featureState)},
+    {key:'nexus.test.recovery.queue',value:JSON.stringify({pending:{}})},
+    {key:'nexus.test.recovery.base',value:JSON.stringify({[owner]:{
+      state:wrongCandidateState,featureState:active.featureState,serverVersion:publication.updated_at}})},
+    {key:'nexus.test.recovery.stamp',value:JSON.stringify({[owner]:publication.updated_at})},
+    {key:'nexus.test.recovery.conflicts',value:JSON.stringify({[owner]:[]})}
+  ];
+  await assert.rejects(()=>loaded.api.commitWorkspaceEntityRecovery(owner,intentId,entries,digest),
+    /exact pending Delta outbox values are not present in the recovery candidate/,
+    'a wrong record value must block the atomic acknowledgement even when the proof digest/flags are present');
+  const remaining=await loaded.api.readWorkspaceEntityOutboxGroups(owner,0,1000,4096);
+  assert.equal(remaining.groups.length,1,
+    'the wrong candidate must not clear the pending outbox group');
+  const afterBlockedCommit=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(afterBlockedCommit.state.topics[0].name,'PARKED LOCAL EDIT',
+    'the active projection must remain the exact parked value when the candidate proof is false');
+  assert.equal(loaded.api.getStatus().entityRecoveryLocked,true,
+    'the recovery lock must remain held until exact pending content is proven');
+  await loaded.api.deleteWorkspaceEntities(owner);
 }
 
 // Waiting for entity synchronization must drain tasks appended while the
@@ -2049,3 +3069,266 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 0));
 }
 
 console.log('Nexus IndexedDB storage tests passed: safe migration/retry, auth isolation, durable reload, atomic batches, delete tombstones, delta cursor receipt atomicity, recovery journal restart at prepared/staged/published phases, recovery write locks, failed-write recovery, and account-handoff isolation.');
+
+
+// DLA-08D: cancellation during projection-readiness preflight must propagate
+// immediately instead of falling through to full-workspace serialization.
+{
+  const appCoreSource=readFileSync(resolve(root,'app-core.js'),'utf8');
+  const projectionStart=appCoreSource.indexOf('  window.NexusRebuildEntityProjection=async(options={})=>{');
+  const projectionEnd=appCoreSource.indexOf('\n  function notify(',projectionStart);
+  assert.ok(projectionStart>=0&&projectionEnd>projectionStart,
+    'the projection rebuild entrypoint must be available for isolated cancellation testing');
+  const projectionSource=appCoreSource.slice(projectionStart,projectionEnd).trim();
+  const controller=new AbortController();
+  let serializedValues=0,projectionWrites=0;
+  const context={
+    window:{
+      NexusStorage:{
+        isEnabled:()=>true,
+        getWorkspaceEntityProjectionReadiness:async()=>{
+          controller.abort(new Error('projection readiness cancelled'));
+          return {ready:true,generation:'obsolete-generation',workspaceRevision:1,rowCount:1};
+        },
+        syncWorkspaceEntities:async()=>{projectionWrites++;return {ok:true};}
+      }
+    },
+    localStorage:{getItem:()=> 'projection-cancel-owner'},
+    state:{topics:[{id:'large-workspace-record'}]},
+    Error,
+    JSON:{
+      parse:JSON.parse,
+      stringify(value){serializedValues++;return JSON.stringify(value);}
+    },
+    console:{warn(){}}
+  };
+  vm.runInNewContext(projectionSource,context,{filename:'app-core-projection-cancellation-test.js'});
+  await assert.rejects(
+    context.window.NexusRebuildEntityProjection({signal:controller.signal}),
+    /projection readiness cancelled/,
+    'readiness cancellation must propagate rather than fall through to a guarded rebuild'
+  );
+  assert.equal(serializedValues,0,
+    'a cancelled readiness probe must not serialize the large compatibility workspace');
+  assert.equal(projectionWrites,0,
+    'a cancelled readiness probe must not schedule an IndexedDB projection write');
+  console.log('DLA-08D projection-readiness cancellation regression passed.');
+}
+
+
+// DLA-08E: a verified remote update may be applied over a newer local workspace
+// revision only when every local mutation is represented by a valid, non-overlapping
+// outbox. Position-changing remote mutations in a locally edited collection fail closed.
+{
+  const owner='delta-remote-apply-with-pending-local-outbox-owner';
+  const state={
+    schema:3,
+    streams:[{id:'delta-stream',name:'Commerce'}],
+    subjects:[{id:'delta-subject',streamId:'delta-stream',name:'Accounting'}],
+    topics:[
+      {id:'topic-local',subjectId:'delta-subject',name:'Original local topic'},
+      {id:'topic-remote',subjectId:'delta-subject',name:'Original remote topic'}
+    ],
+    history:[],exams:[],settings:{theme:'dark'}
+  };
+  const features={version:1,journal:[],papers:[],goals:[],studyLogs:[],selectedTopicIds:[]};
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify(state)],
+    ['recall.study.features.v1',JSON.stringify(features)],
+    ['nexus.cloud.last-user-id',owner]
+  ]);
+  const idb=new FakeIndexedDB(),loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true);
+  await loaded.api.migrateWorkspaceEntities(owner,state,features,
+    {expectedRevision:loaded.api.getStatus().revision});
+  const initialCursor=await loaded.api.initializeWorkspaceEntityDeltaCursor(
+    owner,0,'delta-local-snapshot-stamp',true);
+  assert.equal(initialCursor.ok,true);
+
+  const localState=clone(state);
+  localState.topics[0].name='Local edit that must remain queued';
+  const markerKey=loaded.api.getWorkspaceEntityRevisionKey(owner);
+  await loaded.api.commitLocalStorageEntries([
+    {key:'recall.study.tracker.v1',value:JSON.stringify(localState)},
+    {key:'recall.study.features.v1',value:JSON.stringify(features)},
+    {key:markerKey,value:'1'}
+  ]);
+  const localProjection=await loaded.api.syncWorkspaceEntities(owner,[
+    {collection:'topics',id:'topic-local',operation:'put',position:0,value:localState.topics[0]}
+  ],{
+    trackerSnapshotJson:JSON.stringify(localState),
+    featureSnapshotJson:JSON.stringify(features)
+  });
+  assert.equal(localProjection.mode,'incremental',
+    'a single durable local workspace revision must create an incremental outbox rather than rebuild the projection');
+
+  const beforeApply=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(beforeApply.ok,true);
+  assert.ok(beforeApply.cursor.workspaceRevision<beforeApply.workspaceRevision,
+    'the local edit must advance the durable workspace revision while leaving the remote cursor behind');
+  const outboxBefore=await loaded.api.readWorkspaceEntityOutboxGroups(
+    owner,beforeApply.cursor.acknowledgedSequence,1000,1048576);
+  assert.equal(outboxBefore.snapshotRequired,false);
+  assert.equal(outboxBefore.groups.length,1);
+  assert.equal(outboxBefore.groups[0].changeCount,1);
+
+  const remoteUpdate={
+    revision:1,operation_id:'remote-topic-in-place-update',
+    changes:[{collection:'topics',id:'topic-remote',operation:'put',position:1,
+      value:{...state.topics[1],name:'Remote update at stable position'}}]
+  };
+  const applied=await loaded.api.applyWorkspaceEntityDeltaGroup(owner,remoteUpdate,0,1);
+  assert.equal(applied.ok,true,
+    'a remote in-place update to a different entity must apply over a fully verified pending local outbox: '+JSON.stringify(applied));
+  assert.equal(applied.applied,1);
+  const afterApply=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(afterApply.state.topics.find(topic=>topic.id==='topic-local').name,
+    'Local edit that must remain queued');
+  assert.equal(afterApply.state.topics.find(topic=>topic.id==='topic-remote').name,
+    'Remote update at stable position');
+  const afterCursor=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(afterCursor.ok,true);
+  assert.equal(afterCursor.cursor.workspaceRevision,afterCursor.workspaceRevision,
+    'successful remote application must align the cursor to the current durable workspace revision');
+  assert.equal(afterCursor.cursor.publishRevision,1);
+  assert.equal(afterCursor.cursor.acknowledgedSequence,0,
+    'applying a remote group must not acknowledge the pending local outbox');
+  const outboxAfter=await loaded.api.readWorkspaceEntityOutboxGroups(
+    owner,afterCursor.cursor.acknowledgedSequence,1000,1048576);
+  assert.equal(outboxAfter.groups.length,1,
+    'the independent local edit must remain queued for the outbound publisher');
+  assert.equal(outboxAfter.groups[0].changes[0].id,'topic-local');
+
+  const unsafeDelete=await loaded.api.applyWorkspaceEntityDeltaGroup(owner,{
+    revision:2,operation_id:'remote-topic-delete-requires-rebase',
+    changes:[{collection:'topics',id:'topic-remote',operation:'delete'}]
+  },1,2);
+  assert.equal(unsafeDelete.ok,false);
+  assert.equal(unsafeDelete.snapshotRequired,true);
+  assert.equal(unsafeDelete.reason,'local_outbox_position_rebase_required',
+    'a delete in a collection with pending local positions must use recovery rather than silently shift queued positions');
+  const afterRejectedDelete=await loaded.api.readWorkspaceEntities(owner);
+  assert.equal(afterRejectedDelete.state.topics.some(topic=>topic.id==='topic-remote'),true,
+    'a rejected position-changing remote mutation must not partially alter the active generation');
+  const cursorAfterRejectedDelete=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(cursorAfterRejectedDelete.cursor.publishRevision,1);
+  assert.equal((await loaded.api.readWorkspaceEntityOutboxGroups(
+    owner,cursorAfterRejectedDelete.cursor.acknowledgedSequence,1000,1048576)).groups.length,1,
+    'the local outbox must remain intact after a rejected remote position change');
+  console.log('DLA-08E pending-local-outbox remote-apply regression passed.');
+}
+
+{
+  const native=new MemoryStorage([
+    ['recall.study.tracker.v1',JSON.stringify({topics:[{id:'initial-A'}]})],
+    ['recall.study.features.v1',JSON.stringify({journal:[]})],
+    ['nexus.cloud.last-user-id','account-A']
+  ]);
+  const idb=new FakeIndexedDB();
+  const loaded=loadApi(makeWindow(native,idb));
+  assert.equal(await loaded.api.bootstrap(),true);
+  const makeOperation=(owner,sequence,operationId,topicId)=>({
+    operationId,ownerUserId:owner,entityType:'workspace',entityId:'workspace',
+    operationType:'snapshot',schemaVersion:1,localSequence:sequence,
+    baseServerVersion:'remote-'+owner,status:'pending',
+    createdAt:'2026-11-26T00:00:00.000Z',updatedAt:'2026-11-26T00:00:00.000Z',
+    payload:{state:{topics:[{id:topicId,name:topicId}]},featureState:{journal:[]}},
+    entityChanges:[{collection:'topics',id:topicId,operation:'put',value:{id:topicId,name:topicId}}],
+    trackerRoot:{topics:[{id:topicId,name:topicId}]},featureRoot:{journal:[]},replaceEntities:false
+  });
+  const a1=makeOperation('account-A',1,'nexus-op-A1','topic-A1');
+  const queueA1={schemaVersion:1,sequence:1,pending:{'account-A':a1},archived:[],recoveryCommits:[]};
+  const commit=(api,owner,queue,tracker,feature)=>api.commitLocalStorageEntries([
+    {key:'nexus.cloud.last-user-id',value:owner},
+    {key:'recall.study.tracker.v1',value:JSON.stringify(tracker)},
+    {key:'recall.study.features.v1',value:JSON.stringify(feature)},
+    {key:'nexus.cloud.offline-outbox.v1',value:JSON.stringify(queue)}
+  ],{workspaceOperations:Object.values(queue.pending).filter(item=>item&&item.status==='pending')});
+  await commit(loaded.api,'account-A',queueA1,a1.payload.state,a1.payload.featureState);
+  const firstRead=await loaded.api.readWorkspacePendingOperations('account-A');
+  assert.equal(firstRead.ok,true);
+  assert.equal(firstRead.operations.length,1,'the workspace operation must be persisted with the local snapshot');
+  assert.equal(firstRead.operations[0].operationId,a1.operationId);
+  assert.equal(firstRead.operations[0].ownerId,'account-A');
+  assert.equal(firstRead.operations[0].recordVersion,1);
+  assert.equal(firstRead.operations[0].protocolVersion,1);
+  assert.equal(firstRead.operations[0].sequence,1);
+  assert.match(firstRead.operations[0].requestHash,/^[a-f0-9]{64}$/,'the durable operation must carry its SHA-256 payload hash');
+  assert.deepEqual(firstRead.operations[0].dependsOn,[]);
+
+  const a2=makeOperation('account-A',2,'nexus-op-A2','topic-A2');
+  const queueA2={schemaVersion:1,sequence:2,pending:{'account-A':a2},archived:[],recoveryCommits:[]};
+  await commit(loaded.api,'account-A',queueA2,a2.payload.state,a2.payload.featureState);
+  const coalesced=await loaded.api.readWorkspacePendingOperations('account-A');
+  assert.deepEqual(coalesced.operations.map(item=>item.operationId),[a2.operationId],
+    'a newer unattempted full snapshot may safely supersede the previous pending snapshot');
+  assert.equal(JSON.stringify(coalesced.operations[0].supersededOperationIds),JSON.stringify([a1.operationId]),
+    'supersession must be explicitly recorded rather than silently dropping the previous pending snapshot');
+  assert.equal(coalesced.operations[0].supersededOperationCount,1);
+
+  const outboxRows=idb.databases.get('nexus-workspace-v1').stores.get('outbox');
+  const a2Envelope=Array.from(outboxRows.values()).find(item=>item&&item.operationId===a2.operationId);
+  assert.ok(a2Envelope,'the operation envelope must exist before simulating an interrupted send');
+  a2Envelope.deliveryState='in_flight';
+  a2Envelope.attemptCount=1;
+  a2Envelope.lastAttemptAt='2026-11-26T00:01:00.000Z';
+  outboxRows.set(a2Envelope.key,a2Envelope);
+
+  const a3=makeOperation('account-A',3,'nexus-op-A3','topic-A3');
+  const queueA3={schemaVersion:1,sequence:3,pending:{'account-A':a3},archived:[],recoveryCommits:[]};
+  await commit(loaded.api,'account-A',queueA3,a3.payload.state,a3.payload.featureState);
+  const dependencyRead=await loaded.api.readWorkspacePendingOperations('account-A');
+  assert.deepEqual(dependencyRead.operations.map(item=>item.operationId),[a2.operationId,a3.operationId],
+    'an operation already attempted must remain durable when a newer snapshot is committed');
+  assert.deepEqual(JSON.stringify(dependencyRead.operations[1].dependsOn),JSON.stringify([a2.operationId]),
+    'the newer operation must retain an explicit dependency on the in-flight operation');
+
+  const beforeFailure=await loaded.api.getWorkspace('account-A');
+  const a4=makeOperation('account-A',4,'nexus-op-A4','topic-A4');
+  const queueA4={schemaVersion:1,sequence:4,pending:{'account-A':a4},archived:[],recoveryCommits:[]};
+  idb.failNextWrite=true;
+  await assert.rejects(commit(loaded.api,'account-A',queueA4,a4.payload.state,a4.payload.featureState),
+    /Synthetic IndexedDB quota\/transaction failure/,
+    'failure of the combined transaction must reject the local save');
+  const afterFailure=await loaded.api.getWorkspace('account-A');
+  assert.equal(JSON.stringify(afterFailure.state),JSON.stringify(beforeFailure.state),
+    'a failed outbox write must roll back the workspace snapshot in the same transaction');
+  const afterFailureOutbox=await loaded.api.readWorkspacePendingOperations('account-A');
+  assert.deepEqual(afterFailureOutbox.operations.map(item=>item.operationId),[a2.operationId,a3.operationId],
+    'a failed local transaction must neither replace nor lose the previously durable outbox operations');
+
+  const reloaded=loadApi(makeWindow(native,idb));
+  assert.equal(await reloaded.api.bootstrap(),true,'the durable workspace and outbox must survive a browser reload');
+  const afterReload=await reloaded.api.readWorkspacePendingOperations('account-A');
+  assert.equal(afterReload.ok,true);
+  assert.deepEqual(afterReload.operations.map(item=>item.operationId),[a2.operationId,a3.operationId]);
+
+  const b1=makeOperation('account-B',4,'nexus-op-B1','topic-B1');
+  const queueAB={schemaVersion:1,sequence:4,pending:{'account-A':a3,'account-B':b1},archived:[],recoveryCommits:[]};
+  await commit(reloaded.api,'account-B',queueAB,b1.payload.state,b1.payload.featureState);
+  const bRead=await reloaded.api.readWorkspacePendingOperations('account-B');
+  assert.equal(bRead.ok,true);
+  assert.deepEqual(bRead.operations.map(item=>item.operationId),[b1.operationId],
+    'account B must read only its own durable operation after A-to-B rotation');
+
+  await commit(reloaded.api,'account-A',queueAB,a2.payload.state,a2.payload.featureState);
+  const aReturn=await reloaded.api.readWorkspacePendingOperations('account-A');
+  assert.equal(aReturn.ok,true);
+  assert.deepEqual(aReturn.operations.map(item=>item.operationId),[a2.operationId,a3.operationId],
+    'returning to account A must recover A’s original owner-scoped operation');
+  await commit(reloaded.api,'account-B',queueAB,b1.payload.state,b1.payload.featureState);
+  const bReturn=await reloaded.api.readWorkspacePendingOperations('account-B');
+  assert.equal(bReturn.ok,true);
+  assert.deepEqual(bReturn.operations.map(item=>item.operationId),[b1.operationId],
+    'returning to account B must recover B’s separate owner-scoped operation');
+  const deletedB=await reloaded.api.deleteWorkspaceEntities('account-B');
+  assert.equal(deletedB.workspaceOutboxRowsRemoved,1,
+    'account deletion must remove the separate workspace-operation outbox namespace');
+  const remainingBEnvelopes=Array.from(idb.databases.get('nexus-workspace-v1').stores.get('outbox').values())
+    .filter(item=>item&&item.kind==='workspace-operation'&&item.ownerId==='account-B');
+  assert.equal(remainingBEnvelopes.length,0,'deleted-account outbox envelopes must be physically removed');
+  const afterDeleteB=await reloaded.api.readWorkspacePendingOperations('account-B');
+  assert.equal(afterDeleteB.ok,false,'a deleted owner must remain fenced from workspace-outbox reads');
+  console.log('DLA-10B atomic workspace/outbox, reload, A-B-A, and owner-deletion regressions passed.');
+}
+

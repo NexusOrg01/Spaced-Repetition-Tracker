@@ -14,12 +14,20 @@
   const TRACKER_KEY = 'recall.study.tracker.v1';
   const FEATURE_KEY = 'recall.study.features.v1';
   const OWNER_KEY = 'nexus.cloud.last-user-id';
+  const OFFLINE_QUEUE_KEY = 'nexus.cloud.offline-outbox.v1';
+  const MAX_PENDING_WORKSPACE_OPERATIONS = 100;
   const ENTITY_REVISION_PREFIX = 'nexus.workspace.entity-revision:';
   const FALLBACK_JOURNAL_KEY = 'nexus.storage.internal.fallback-journal.v1';
+  const DIAGNOSTIC_KEY = 'nexus.syncdiag.session.v1';
   const APP_KEY = /^(?:recall\.|nexus\.|alSrsTrackerV2$|alTrackerData$|alHistoryLog$)/;
   const INTERNAL_KEY = /^nexus\.storage\.internal\./;
-  const isManagedKey = key => typeof key === 'string' && APP_KEY.test(key) && !INTERNAL_KEY.test(key);
+  // Session diagnostics are ephemeral telemetry, not workspace state. Keep them
+  // in native localStorage so recording a recovery event cannot enqueue a managed
+  // write that blocks the recovery operation currently trying to emit that event.
+  const isManagedKey = key => typeof key === 'string' && APP_KEY.test(key) &&
+    !INTERNAL_KEY.test(key) && key !== DIAGNOSTIC_KEY;
   const timestamp = () => new Date().toISOString();
+  const isRecord = value => !!value && typeof value === 'object' && !Array.isArray(value);
 
   let nativeStorage = null;
   let originalDescriptor = null;
@@ -191,40 +199,80 @@
     }
   }
 
-  function transaction(storeNames, mode, configure) {
+  function transaction(storeNames, mode, configure, onTiming, onFailure) {
+    const startedAt=Date.now();
+    let timingReported=false;
+    const reportTiming=outcome=>{
+      if(timingReported||typeof onTiming!=='function')return;
+      timingReported=true;
+      try{onTiming({durationMs:Math.max(0,Date.now()-startedAt),outcome});}catch(_){}
+    };
+    const reportFailure=(error,outcome)=>{
+      if(typeof onFailure!=='function')return;
+      const code=error&&error.code;
+      const errorName=typeof(error&&error.name)==='string'&&
+        /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.name)?error.name:'Error';
+      const errorCodeString=typeof code==='string'&&
+        /^[A-Z][A-Z0-9_]{0,63}$/.test(code)?code:null;
+      const errorDomExceptionCode=Number.isSafeInteger(code)&&code>=0?code:null;
+      try{onFailure({outcome,errorName,errorCodeString,errorDomExceptionCode});}catch(_){}
+    };
     return new Promise((resolve, reject) => {
       if (!database) {
-        reject(new Error('IndexedDB is not open.'));
+        const error=new Error('IndexedDB is not open.');
+        reportTiming('error');
+        reportFailure(error,'unavailable');
+        reject(error);
         return;
       }
       let tx;
       try {
         tx = database.transaction(storeNames, mode);
       } catch (error) {
+        reportTiming('error');
+        reportFailure(error,'create');
         reject(error);
         return;
       }
       let value;
       let settled = false;
-      const finishError = error => {
+      const finishError = (error,outcome='error') => {
         if (settled) return;
         settled = true;
-        reject(error || new Error('IndexedDB transaction failed.'));
+        const failure=error||new Error('IndexedDB transaction failed.');
+        reportFailure(failure,outcome);
+        reject(failure);
       };
       tx.oncomplete = () => {
+        reportTiming('complete');
         if (settled) return;
         settled = true;
         resolve(value);
       };
-      tx.onerror = () => finishError(tx.error);
-      tx.onabort = () => finishError(tx.error || new Error('IndexedDB transaction was aborted.'));
+      tx.onerror = () => {
+        reportTiming('error');
+        finishError(tx.error,'error');
+      };
+      tx.onabort = () => {
+        reportTiming('abort');
+        finishError(tx.error || new Error('IndexedDB transaction was aborted.'),'abort');
+      };
       try {
         configure(tx, next => { value = next; });
       } catch (error) {
         try { tx.abort(); } catch (_) {}
-        finishError(error);
+        reportTiming('error');
+        finishError(error,'configure-error');
       }
     });
+  }
+
+  function recordProjectionTransaction(metrics,event){
+    if(!metrics||!event)return;
+    const duration=Number(event.durationMs);
+    if(Number.isSafeInteger(duration)&&duration>=0)
+      metrics.transactionWaitDurationMs+=duration;
+    metrics.transactionCount++;
   }
 
   function openDatabase() {
@@ -356,6 +404,36 @@
     return row && row.deleted !== true && typeof row.value === 'string' ? row.value : null;
   }
 
+  // Compare JSON values without treating object-key order as a data change.
+  // Arrays remain order-sensitive; this is used only after parsing durable snapshots.
+  function sameJsonValue(left,right) {
+    const pending=[[left,right]];
+    while(pending.length){
+      const pair=pending.pop(),a=pair[0],b=pair[1];
+      if(a===b)continue;
+      if(a===null||b===null||typeof a!=='object'||typeof b!=='object')return false;
+      const aArray=Array.isArray(a),bArray=Array.isArray(b);
+      if(aArray!==bArray)return false;
+      if(aArray){
+        if(a.length!==b.length)return false;
+        for(let index=0;index<a.length;index++)pending.push([a[index],b[index]]);
+        continue;
+      }
+      const keys=Object.keys(a);
+      if(keys.length!==Object.keys(b).length)return false;
+      for(const key of keys){
+        if(!Object.prototype.hasOwnProperty.call(b,key))return false;
+        pending.push([a[key],b[key]]);
+      }
+    }
+    return true;
+  }
+  function sameJsonText(text,value) {
+    if(typeof text!=='string')return false;
+    try{return sameJsonValue(JSON.parse(text),value);}
+    catch(_){return false;}
+  }
+
   function workspaceChecksum(tracker, featureState) {
     const text = tracker + '\n' + featureState;
     let hash = 2166136261;
@@ -453,7 +531,7 @@
   // Read the workspace-only version without parsing the potentially very large
   // compatibility snapshots. Unrelated queue/preferences writes must not make a
   // valid entity projection look stale.
-  function readWorkspaceRevision(ownerId) {
+  function readWorkspaceRevision(ownerId,metrics=null) {
     if (!enabled || !database) return Promise.resolve(null);
     return transaction([WORKSPACES], 'readonly', (tx, set) => {
       const request = tx.objectStore(WORKSPACES).get(workspaceKey(ownerId));
@@ -468,12 +546,12 @@
           : (Number.isSafeInteger(Number(row.revision)) ? Number(row.revision) : null);
         set(value);
       };
-    });
+    },event=>recordProjectionTransaction(metrics,event));
   }
 
   // The workspace row revision advances for tracker/Study Hub snapshot writes only.
   // Unlike the database-wide revision, it is unaffected by offline-queue metadata.
-  function readWorkspaceSnapshotRevision(ownerId) {
+  function readWorkspaceSnapshotRevision(ownerId,metrics=null) {
     if (!enabled || !database) return Promise.resolve(null);
     return transaction([WORKSPACES], 'readonly', (tx, set) => {
       const request = tx.objectStore(WORKSPACES).get(workspaceKey(ownerId));
@@ -486,7 +564,7 @@
         const value = Number(row.revision);
         set(Number.isSafeInteger(value) && value >= 0 ? value : null);
       };
-    });
+    },event=>recordProjectionTransaction(metrics,event));
   }
 
   // Staged per-entity persistence foundation. The JSON compatibility snapshots remain
@@ -496,6 +574,13 @@
   const ENTITY_META_COLLECTIONS=['trackerMeta','featureMeta'];
   const ALL_ENTITY_COLLECTIONS=new Set([...TRACKER_ENTITY_COLLECTIONS,...FEATURE_ENTITY_COLLECTIONS,...ENTITY_META_COLLECTIONS]);
   const ENTITY_BATCH_SIZE=400;
+  // Permit inbound work beside local changes only after verifying every pending
+  // sequence row atomically and proving that the entity IDs are disjoint.
+  const ENTITY_REMOTE_APPLY_MAX_PENDING_CHANGES=10000;
+  // Snapshot backfill writes many immutable entity rows. Use a larger bounded
+  // transaction page than ordinary outbox/cleanup scans to amortize IndexedDB
+  // commit overhead, while yielding between pages so the UI remains responsive.
+  const ENTITY_MIGRATION_BATCH_SIZE=8000;
   let entityGenerationSequence=0;
   let entitySyncSerial=Promise.resolve();
   // Prevent new entity writes from recreating rows while an account is being deleted.
@@ -523,6 +608,12 @@
   }
   function entityOutboxKey(ownerId,sequence){
     return entityOutboxPrefix(ownerId)+'seq:'+String(sequence).padStart(16,'0');
+  }
+  function workspaceOperationOutboxPrefix(ownerId){
+    return 'workspace-operation-outbox:'+encodeURIComponent(entityOwnerKey(ownerId))+':';
+  }
+  function workspaceOperationOutboxKey(ownerId,operationId){
+    return workspaceOperationOutboxPrefix(ownerId)+encodeURIComponent(String(operationId||''));
   }
   function entityOperationSequenceKey(ownerId,sequence,operationId){
     return entityOutboxPrefix(ownerId)+'opseq:'+String(sequence).padStart(16,'0')+':'+encodeURIComponent(operationId);
@@ -571,7 +662,7 @@
     for(const key of Object.keys(snapshot||{}))if(!collections.includes(key))rootValue[key]=snapshot[key];
     return rootValue;
   }
-  function entityProjectionFailure(error,stage){
+  function entityProjectionFailure(error,stage,details={}){
     const source=error&&(typeof error==='object'||typeof error==='function')?error:null;
     const target=source||new Error('Local entity projection rebuild failed.');
     const defaults={
@@ -580,22 +671,48 @@
       'publish-manifest':'manifest-publish-failed',
       'verify-publication':'manifest-verification-failed'
     };
-    try{
-      target.nexusEntityProjectionFailureStage=stage;
-      if(!target.nexusEntityProjectionFailureReason){
-        target.nexusEntityProjectionFailureReason=defaults[stage]||'other';
+    const assignDetails=destination=>{
+      destination.nexusEntityProjectionFailureStage=stage;
+      if(!destination.nexusEntityProjectionFailureReason){
+        destination.nexusEntityProjectionFailureReason=
+          source&&source.nexusEntityProjectionFailureReason||defaults[stage]||'other';
       }
-      return target;
+      for(const [key,value] of Object.entries(details)){
+        if(value!==undefined)destination[key]=value;
+      }
+      return destination;
+    };
+    try{
+      return assignDetails(target);
     }catch(_){
       const wrapped=new Error(source&&typeof source.message==='string'
         ?source.message:'Local entity projection rebuild failed.');
+      if(source&&typeof source.name==='string')wrapped.name=source.name;
+      if(source&&source.code!==undefined)wrapped.code=source.code;
       wrapped.cause=source;
-      wrapped.nexusEntityProjectionFailureStage=stage;
-      wrapped.nexusEntityProjectionFailureReason=
-        source&&source.nexusEntityProjectionFailureReason||defaults[stage]||'other';
-      return wrapped;
+      return assignDetails(wrapped);
     }
   }
+  async function readIndexedDbQuotaEstimate(){
+    const manager=root&&root.navigator&&root.navigator.storage;
+    if(!manager||typeof manager.estimate!=='function'){
+      return {available:false,quotaBytes:null,usageBytes:null};
+    }
+    try{
+      const estimate=await manager.estimate();
+      const toBytes=value=>{
+        const number=Number(value);
+        return Number.isFinite(number)&&number>=0&&number<=Number.MAX_SAFE_INTEGER
+          ?Math.floor(number):null;
+      };
+      const quotaBytes=toBytes(estimate&&estimate.quota);
+      const usageBytes=toBytes(estimate&&estimate.usage);
+      return {available:quotaBytes!==null||usageBytes!==null,quotaBytes,usageBytes};
+    }catch(_){
+      return {available:false,quotaBytes:null,usageBytes:null};
+    }
+  }
+
   function* generateWorkspaceEntityRows(ownerId,generation,state,featureState){
     const trackerRoot=entityRootValue(state,TRACKER_ENTITY_COLLECTIONS);
     const featureRoot=entityRootValue(featureState,FEATURE_ENTITY_COLLECTIONS);
@@ -626,15 +743,69 @@
       }
     }
   }
-  async function writeWorkspaceEntityBatch(rows){
+  async function writeWorkspaceEntityBatch(rows,metrics=null,context={}){
     if(!rows.length)return 0;
-    return transaction([WORKSPACES],'readwrite',(tx,set)=>{
-      const store=tx.objectStore(WORKSPACES);
-      for(const row of rows)store.put(row);
-      set(rows.length);
-    });
+    let transactionFailure=null;
+    try{
+      return await transaction([WORKSPACES],'readwrite',(tx,set)=>{
+        const store=tx.objectStore(WORKSPACES);
+        for(const row of rows)store.put(row);
+        set(rows.length);
+      },event=>recordProjectionTransaction(metrics,event),failure=>{transactionFailure=failure;});
+    }catch(error){
+      const wrapped=new Error(error&&typeof error.message==='string'
+        ?error.message:'IndexedDB entity batch write failed.');
+      wrapped.name=transactionFailure&&transactionFailure.errorName||
+        (error&&typeof error.name==='string'?error.name:'Error');
+      if(transactionFailure&&transactionFailure.errorCodeString)wrapped.code=transactionFailure.errorCodeString;
+      else if(error&&error.code!==undefined)wrapped.code=error.code;
+      wrapped.cause=error;
+      wrapped.nexusEntityProjectionFailureStore='workspaces';
+      wrapped.nexusEntityProjectionFailureTransactionMode='readwrite';
+      wrapped.nexusEntityProjectionFailureTransactionOutcome=
+        transactionFailure&&transactionFailure.outcome||'unknown';
+      wrapped.nexusEntityProjectionFailureBatchIndex=
+        Number.isSafeInteger(context.batchIndex)&&context.batchIndex>0?context.batchIndex:null;
+      wrapped.nexusEntityProjectionFailureBatchRowCount=rows.length;
+      wrapped.nexusEntityProjectionFailureName=wrapped.name;
+      wrapped.nexusEntityProjectionFailureCode=
+        typeof wrapped.code==='string'&&/^[A-Z][A-Z0-9_]{0,63}$/.test(wrapped.code)
+          ?wrapped.code:null;
+      wrapped.nexusEntityProjectionDomExceptionCode=
+        transactionFailure&&Number.isSafeInteger(transactionFailure.errorDomExceptionCode)
+          ?transactionFailure.errorDomExceptionCode
+          :(Number.isSafeInteger(wrapped.code)?wrapped.code:null);
+      throw wrapped;
+    }
   }
-  async function pruneWorkspaceEntityOutbox(ownerId){
+
+  async function hasWorkspaceEntityOutboxRecords(ownerId,metrics=null){
+    const owner=entityOwnerKey(ownerId);
+    if(!owner||!enabled||!database)return false;
+    const prefix=entityOutboxPrefix(owner),range=entityPrefixRange(prefix);
+    // If an owner-bounded query cannot be constructed, fail closed. A projection
+    // replacement must never assume that an unreadable outbox is empty.
+    if(!range)return true;
+    return transaction(['outbox'],'readonly',(tx,set)=>{
+      const startedAt=Date.now();let recorded=false;
+      const recordWait=()=>{
+        if(recorded)return;
+        recorded=true;
+        if(metrics)metrics.keyRangeWaitDurationMs+=Math.max(0,Date.now()-startedAt);
+      };
+      const request=tx.objectStore('outbox').getAll(range,1);
+      request.onsuccess=()=>{
+        recordWait();
+        const rows=request.result||[];
+        // Any owner-prefixed row is retained until a receipt-bound acknowledgement
+        // or a verified recovery commit removes it. Orphaned/unknown rows also block.
+        set(rows.length>0);
+      };
+      request.onerror=recordWait;
+    },event=>recordProjectionTransaction(metrics,event));
+  }
+
+  async function pruneWorkspaceEntityOutbox(ownerId,metrics=null){
     const owner=entityOwnerKey(ownerId);
     if(!enabled||!database||committedOwnerId!==owner)return 0;
     const prefix=entityOutboxPrefix(owner),range=entityPrefixRange(prefix);
@@ -645,8 +816,16 @@
     let removed=0;
     while(true){
       const count=await transaction(['outbox'],'readwrite',(tx,set)=>{
-        const store=tx.objectStore('outbox'),request=store.getAll(range,ENTITY_BATCH_SIZE);
+        const store=tx.objectStore('outbox');
+        const requestStartedAt=Date.now();let requestWaitRecorded=false;
+        const recordRequestWait=()=>{
+          if(requestWaitRecorded)return;
+          requestWaitRecorded=true;
+          if(metrics)metrics.keyRangeWaitDurationMs+=Math.max(0,Date.now()-requestStartedAt);
+        };
+        const request=store.getAll(range,ENTITY_BATCH_SIZE);
         request.onsuccess=()=>{
+          recordRequestWait();
           const rows=request.result||[];
           for(const row of rows){
             if(!row||row.ownerId!==owner||typeof row.key!=='string'||!row.key.startsWith(prefix)){
@@ -657,73 +836,104 @@
           }
           set(rows.length);
         };
-      });
+        request.onerror=recordRequestWait;
+      },event=>recordProjectionTransaction(metrics,event));
       removed+=count;
       if(count<ENTITY_BATCH_SIZE)break;
       await new Promise(resolve=>root.setTimeout(resolve,0));
     }
     return removed;
   }
-  async function pruneInactiveWorkspaceEntityGenerations(ownerId,activeGeneration){
+  async function pruneInactiveWorkspaceEntityGenerations(ownerId,activeGeneration,metrics=null){
     const owner=entityOwnerKey(ownerId);
-    if(committedOwnerId!==owner||!enabled||!database)return 0;
+    if(entityRemovalOwners.has(owner)||committedOwnerId!==owner||!enabled||!database)return {removed:0,scanned:0};
     const prefix=entityOwnerRecordPrefix(owner);
+    const activePrefix=entityRecordPrefix(owner,activeGeneration);
     const keyRanges=root&&root.IDBKeyRange;
     // Entity cleanup is best-effort. If key ranges are unavailable, retain stale
     // generations instead of materialising an unbounded owner-wide row set.
-    if(!keyRanges||typeof keyRanges.bound!=='function')return 0;
+    if(!keyRanges||typeof keyRanges.bound!=='function')return {removed:0,scanned:0};
     const upper=prefix+'\uffff';
-    let removed=0,afterKey=null;
-    while(true){
-      if(committedOwnerId!==owner||!enabled||!database)return removed;
-      const range=afterKey
-        ?keyRanges.bound(afterKey+'\u0000',upper)
-        :entityPrefixRange(prefix);
-      if(!range)return removed;
-      const rows=await transaction([WORKSPACES],'readonly',(tx,set)=>{
-        const request=tx.objectStore(WORKSPACES).getAll(range,ENTITY_BATCH_SIZE);
-        request.onsuccess=()=>set(request.result||[]);
-      });
-      if(!rows.length)break;
-      const last=rows[rows.length-1];
-      if(!last||typeof last.key!=='string'||!last.key.startsWith(prefix)){
-        throw new Error('IndexedDB returned an invalid row while pruning inactive entity generations.');
-      }
-      const staleKeys=[];
-      for(const row of rows){
-        if(!row||row.ownerId!==owner||typeof row.key!=='string'||!row.key.startsWith(prefix)){
-          throw new Error('Owner-scoped entity cleanup encountered a row outside the requested account prefix.');
-        }
-        if(row.entityRow===true&&row.generation!==activeGeneration)staleKeys.push(row.key);
-      }
-      if(staleKeys.length){
-        const count=await transaction([WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
-          const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta');
-          const request=meta.get(entityManifestKey(owner));
-          request.onsuccess=()=>{
-            const manifest=request.result;
-            // Never prune the pending generation or race a concurrent replacement.
-            if(committedOwnerId!==owner||!manifest||manifest.status!=='ready'||
-               manifest.activeGeneration!==activeGeneration||manifest.pendingGeneration){
-              set(0);return;
-            }
-            for(const key of staleKeys)entities.delete(key);
-            set(staleKeys.length);
+    // Do not scan the generation just published. A full owner-prefix sweep reads
+    // every new entity row only to discard it, turning first-time cold restore cleanup
+    // into an O(active-workspace-size) pass. These two bounded ranges cover every
+    // other generation on either side of the active generation's key prefix.
+    const ranges=[
+      {lower:prefix,upper:activePrefix},
+      {lower:activePrefix+'\uffff',upper}
+    ];
+    let removed=0,scanned=0;
+    for(const bounds of ranges){
+      let afterKey=null;
+      while(true){
+        if(entityRemovalOwners.has(owner)||committedOwnerId!==owner||!enabled||!database)return {removed,scanned};
+        const range=keyRanges.bound(afterKey?afterKey+'\u0000':bounds.lower,bounds.upper);
+        if(!range)return {removed,scanned};
+        const rows=await transaction([WORKSPACES],'readonly',(tx,set)=>{
+          const requestStartedAt=Date.now();let requestWaitRecorded=false;
+          const recordRequestWait=()=>{
+            if(requestWaitRecorded)return;
+            requestWaitRecorded=true;
+            if(metrics)metrics.keyRangeWaitDurationMs+=Math.max(0,Date.now()-requestStartedAt);
           };
-        });
-        removed+=count;
-        if(count===0)break;
+          const request=tx.objectStore(WORKSPACES).getAll(range,ENTITY_BATCH_SIZE);
+          request.onsuccess=()=>{recordRequestWait();set(request.result||[]);};
+          request.onerror=recordRequestWait;
+        },event=>recordProjectionTransaction(metrics,event));
+        scanned+=rows.length;
+        if(!rows.length)break;
+        const last=rows[rows.length-1];
+        if(!last||typeof last.key!=='string'||!last.key.startsWith(prefix)){
+          throw new Error('IndexedDB returned an invalid row while pruning inactive entity generations.');
+        }
+        const staleKeys=[];
+        for(const row of rows){
+          if(!row||row.ownerId!==owner||typeof row.key!=='string'||!row.key.startsWith(prefix)){
+            throw new Error('Owner-scoped entity cleanup encountered a row outside the requested account prefix.');
+          }
+          if(row.entityRow===true&&row.generation!==activeGeneration)staleKeys.push(row.key);
+        }
+        if(staleKeys.length){
+          const count=await transaction([WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
+            const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta');
+            const request=meta.get(entityManifestKey(owner));
+            request.onsuccess=()=>{
+              const manifest=request.result;
+              // Never prune the pending generation or race a concurrent replacement.
+              if(entityRemovalOwners.has(owner)||committedOwnerId!==owner||!manifest||manifest.status!=='ready'||
+                 manifest.activeGeneration!==activeGeneration||manifest.pendingGeneration){
+                set(0);return;
+              }
+              for(const key of staleKeys)entities.delete(key);
+              set(staleKeys.length);
+            };
+          },event=>recordProjectionTransaction(metrics,event));
+          removed+=count;
+          if(count===0)return {removed,scanned};
+        }
+        if(rows.length<ENTITY_BATCH_SIZE)break;
+        // Continue after the last key read, not the last key deleted. The next bounded
+        // range therefore advances even when the entire page contained stale rows.
+        afterKey=last.key;
+        await new Promise(resolve=>root.setTimeout(resolve,0));
       }
-      if(rows.length<ENTITY_BATCH_SIZE)break;
-      // Continue after the last key read, not the last key deleted. The next bounded
-      // range therefore advances even when the entire page contained stale rows.
-      afterKey=last.key;
-      await new Promise(resolve=>root.setTimeout(resolve,0));
     }
-    return removed;
+    return {removed,scanned};
   }
   async function migrateWorkspaceEntities(ownerId,stateSnapshot,featureSnapshot,options={}){
-    const owner=entityOwnerKey(ownerId);
+    const owner=entityOwnerKey(ownerId),signal=options.signal||null;
+    const projectionMetrics={
+      transactionWaitDurationMs:0,transactionCount:0,keyRangeWaitDurationMs:0,rowGenerationDurationMs:0
+    };
+    const throwIfAborted=()=>{
+      if(!signal||!signal.aborted)return;
+      const reason=signal.reason;
+      const error=new Error(reason&&typeof reason.message==='string'
+        ?reason.message:'The active account changed while rebuilding its entity projection.');
+      if(reason)error.cause=reason;
+      error.name='AbortError';error.code='NEXUS_SYNC_CANCELLED';throw error;
+    };
+    throwIfAborted();
     if(entityRemovalOwners.has(owner))throw new Error('This account workspace is being permanently deleted.');
     if(!enabled||!database)throw new Error('IndexedDB must be enabled before the per-entity migration can run.');
     if(committedOwnerId!==owner)throw new Error('The active account does not match the requested entity migration owner.');
@@ -736,7 +946,7 @@
     const sourceRevision=revision;
     const sourceWorkspaceRevision=Number.isSafeInteger(Number(options.sourceWorkspaceRevision))
       ?Number(options.sourceWorkspaceRevision)
-      :await readWorkspaceRevision(owner);
+      :await readWorkspaceRevision(owner,projectionMetrics);
     if(!Number.isSafeInteger(sourceWorkspaceRevision)){
       throw new Error('A valid durable workspace revision is required before entity migration.');
     }
@@ -750,7 +960,7 @@
     const sourceWorkspaceSnapshotRevision=hasSourceSnapshotGuard
       ?(Number.isSafeInteger(Number(options.sourceWorkspaceSnapshotRevision))
         ?Number(options.sourceWorkspaceSnapshotRevision)
-        :await readWorkspaceSnapshotRevision(owner))
+        :await readWorkspaceSnapshotRevision(owner,projectionMetrics))
       :null;
     if(hasSourceSnapshotGuard&&!Number.isSafeInteger(sourceWorkspaceSnapshotRevision)){
       const error=new Error('A valid durable workspace snapshot revision is required before entity migration.');
@@ -762,7 +972,7 @@
       if(!hasSourceSnapshotGuard)return revision===sourceRevision;
       if(cache.get(TRACKER_KEY)!==options.trackerSnapshotJson||
          cache.get(FEATURE_KEY)!==options.featureSnapshotJson)return false;
-      const currentSnapshotRevision=await readWorkspaceSnapshotRevision(owner);
+      const currentSnapshotRevision=await readWorkspaceSnapshotRevision(owner,projectionMetrics);
       return Number.isSafeInteger(currentSnapshotRevision)&&
         currentSnapshotRevision===sourceWorkspaceSnapshotRevision;
     };
@@ -777,7 +987,14 @@
     const previous=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
       const request=tx.objectStore('migrationMeta').get(manifestKey);
       request.onsuccess=()=>set(request.result||null);
-    });
+    },event=>recordProjectionTransaction(projectionMetrics,event));
+    throwIfAborted();
+    if(options.deferActivation!==true&&await hasWorkspaceEntityOutboxRecords(owner,projectionMetrics)){
+      const error=new Error('A normal entity projection replacement is blocked while owner-scoped Delta outbox records remain pending. Complete a receipt-bound acknowledgement or use the protected recovery path first.');
+      error.code='NEXUS_PENDING_OUTBOX_REQUIRES_RECOVERY';
+      error.nexusEntityProjectionFailureReason='pending-outbox-requires-recovery';
+      throw error;
+    }
     if(hasSourceSnapshotGuard&&!(await sourceWorkspaceIsCurrent())){
       const error=new Error('The compatibility workspace changed before its entity projection rebuild could start.');
       error.nexusEntityProjectionFailureReason='source-snapshot-changed';
@@ -789,8 +1006,17 @@
       throw new Error('A verified active entity generation and recovery intent are required before staging snapshot recovery.');
     }
     const counts={},positionBounds={},batch=[];
-    let rowCount=0,failureStage='stage-manifest',publicationFailureReason=null;
+    let rowCount=0,batchCount=0,writeDurationMs=0,
+      failureStage='stage-manifest',publicationFailureReason=null;
+    const writeBatch=async()=>{
+      if(!batch.length)return;
+      const rows=batch.splice(0,batch.length),startedAt=Date.now();
+      await writeWorkspaceEntityBatch(rows,projectionMetrics,{batchIndex:batchCount+1});
+      writeDurationMs+=Math.max(0,Date.now()-startedAt);
+      batchCount++;
+    };
     try{
+    throwIfAborted();
     await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
       tx.objectStore('migrationMeta').put({
         // Retain the prior generation's integrity metadata (rowCount, counts,
@@ -810,9 +1036,16 @@
         migrationStatus:deferActivation?'recovery-staging':'building',updatedAt:timestamp()
       });
       set(true);
-    });
+    },event=>recordProjectionTransaction(projectionMetrics,event));
       failureStage='generate-rows';
-      for(const row of generateWorkspaceEntityRows(owner,generation,stateSnapshot,featureSnapshot)){
+      const rowIterator=generateWorkspaceEntityRows(owner,generation,stateSnapshot,featureSnapshot)[Symbol.iterator]();
+      while(true){
+        const generationStartedAt=Date.now();
+        const nextRow=rowIterator.next();
+        projectionMetrics.rowGenerationDurationMs+=Math.max(0,Date.now()-generationStartedAt);
+        if(nextRow.done)break;
+        const row=nextRow.value;
+        throwIfAborted();
         batch.push(row);rowCount++;
         if(row.collection!=='_meta'){
           counts[row.collection]=(counts[row.collection]||0)+1;
@@ -820,9 +1053,10 @@
           bounds.min=Math.min(bounds.min,row.position);
           bounds.max=Math.max(bounds.max,row.position);
         }
-        if(batch.length>=ENTITY_BATCH_SIZE){
+        if(batch.length>=ENTITY_MIGRATION_BATCH_SIZE){
           failureStage='write-row-batch';
-          await writeWorkspaceEntityBatch(batch.splice(0,batch.length));
+          await writeBatch();
+          throwIfAborted();
           failureStage='generate-rows';
           if(!(await sourceWorkspaceIsCurrent())){
             const error=new Error('The active workspace changed during entity migration. The previous entity generation remains active.');
@@ -830,13 +1064,16 @@
             throw error;
           }
           await new Promise(resolve=>root.setTimeout(resolve,0));
+          throwIfAborted();
         }
       }
       if(batch.length){
         failureStage='write-row-batch';
-        await writeWorkspaceEntityBatch(batch.splice(0,batch.length));
+        await writeBatch();
+        throwIfAborted();
       }
       failureStage='verify-publication';
+      throwIfAborted();
       if(!(await sourceWorkspaceIsCurrent())){
         const error=new Error('The active workspace changed during entity migration. The previous entity generation remains active.');
         if(hasSourceSnapshotGuard)error.nexusEntityProjectionFailureReason='source-snapshot-changed';
@@ -844,7 +1081,16 @@
       }
       failureStage='publish-manifest';
       publicationFailureReason=null;
+      let publicationTransaction=null;
+      const abortPublication=()=>{
+        if(signal&&signal.aborted&&publicationTransaction){
+          try{publicationTransaction.abort();}catch(_){}
+        }
+      };
+      if(signal)signal.addEventListener('abort',abortPublication);
+      try{
       await transaction(['migrationMeta',WORKSPACES],'readwrite',(tx,set)=>{
+        publicationTransaction=tx;
         const store=tx.objectStore('migrationMeta'),workspaces=tx.objectStore(WORKSPACES);
         const manifestRequest=store.get(manifestKey);
         const workspaceRequest=hasSourceSnapshotGuard
@@ -852,6 +1098,11 @@
         const values={manifest:null,workspace:null};let remaining=hasSourceSnapshotGuard?2:1;
         const publish=()=>{
           remaining--;if(remaining!==0)return;
+          if(signal&&signal.aborted){
+            publicationFailureReason='cancelled';
+            try{tx.abort();}catch(_){}
+            return;
+          }
           const current=values.manifest,workspace=values.workspace;
           const snapshotRowIsCurrent=!hasSourceSnapshotGuard||(
             validWorkspaceRow(workspace,owner)&&
@@ -916,30 +1167,72 @@
         if(workspaceRequest){
           workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;publish();};
         }
-      });
+      },event=>recordProjectionTransaction(projectionMetrics,event));
+      }finally{
+        if(signal)signal.removeEventListener('abort',abortPublication);
+        publicationTransaction=null;
+      }
+      throwIfAborted();
       failureStage='verify-publication';
-      let prunedRows=0,prunedOutboxRows=0;
+      let prunedRows=0,prunedOutboxRows=0,pruneRowsScanned=0,
+        pruneDurationMs=0,outboxPruneDurationMs=0;
       if(deferActivation){
         const intent=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
           const request=tx.objectStore('migrationMeta').get(entityDeltaRecoveryKey(owner));
           request.onsuccess=()=>set(request.result||null);
-        });
+        },event=>recordProjectionTransaction(projectionMetrics,event));
         if(!intent||intent.intentId!==recoveryIntentId||intent.phase!=='staged'||intent.pendingGeneration!==generation){
           throw new Error('The staged recovery generation could not be verified.');
         }
         return {ownerId:owner,generation,rowCount,counts,sourceRevision:revision,
-          sourceWorkspaceRevision,staged:true,prunedRows:0,prunedOutboxRows:0};
+          sourceWorkspaceRevision,staged:true,prunedRows:0,prunedOutboxRows:0,
+          batchCount,writeDurationMs,pruneRowsScanned:0,pruneDurationMs:0,
+          outboxPruneDurationMs:0,
+          transactionWaitDurationMs:projectionMetrics.transactionWaitDurationMs,
+          transactionCount:projectionMetrics.transactionCount,
+          keyRangeWaitDurationMs:projectionMetrics.keyRangeWaitDurationMs,
+          rowGenerationDurationMs:projectionMetrics.rowGenerationDurationMs,
+          serializationDurationMs:null,
+          serializationMode:'indexeddb-structured-clone-in-write-transaction'};
       }
-      try{prunedRows=await pruneInactiveWorkspaceEntityGenerations(owner,generation);}
-      catch(error){console.warn('Inactive Nexus entity generations could not be fully pruned; the active generation remains safe.',error);}
-      try{prunedOutboxRows=await pruneWorkspaceEntityOutbox(owner);}
-      catch(error){console.warn('Superseded Nexus entity outbox records could not be fully pruned; the active generation remains safe.',error);}
+      const pruneStartedAt=Date.now();
+      try{
+        const pruneResult=await pruneInactiveWorkspaceEntityGenerations(owner,generation,projectionMetrics);
+        prunedRows=pruneResult.removed;
+        pruneRowsScanned=pruneResult.scanned;
+      }catch(error){
+        console.warn('Inactive Nexus entity generations could not be fully pruned; the active generation remains safe.',error);
+      }finally{
+        pruneDurationMs=Math.max(0,Date.now()-pruneStartedAt);
+      }
+      // Outbox rows are not superseded by a local projection rebuild. The
+      // preflight above blocks non-recovery replacement while any owner-scoped
+      // operation remains; only verified acknowledgement/recovery may retire them.
+      prunedOutboxRows=0;
+      outboxPruneDurationMs=0;
       return {ownerId:owner,generation,rowCount,counts,sourceRevision:revision,
-        sourceWorkspaceRevision,prunedRows,prunedOutboxRows};
+        sourceWorkspaceRevision,prunedRows,prunedOutboxRows,batchCount,writeDurationMs,
+        pruneRowsScanned,pruneDurationMs,outboxPruneDurationMs,
+        transactionWaitDurationMs:projectionMetrics.transactionWaitDurationMs,
+        transactionCount:projectionMetrics.transactionCount,
+        keyRangeWaitDurationMs:projectionMetrics.keyRangeWaitDurationMs,
+        rowGenerationDurationMs:projectionMetrics.rowGenerationDurationMs,
+        serializationDurationMs:null,
+        serializationMode:'indexeddb-structured-clone-in-write-transaction'};
     }catch(error){
+      if(signal&&signal.aborted){
+        const reason=signal.reason;
+        const cancelled=new Error(reason&&typeof reason.message==='string'
+          ?reason.message:'The active account changed while rebuilding its entity projection.');
+        cancelled.name='AbortError';cancelled.code='NEXUS_SYNC_CANCELLED';
+        cancelled.cause=reason||error;error=cancelled;
+      }
       if(publicationFailureReason&&error&&typeof error==='object'){
         error.nexusEntityProjectionFailureReason=publicationFailureReason;
       }
+      const quotaEstimate=failureStage==='write-row-batch'&&!(signal&&signal.aborted)
+        ?await readIndexedDbQuotaEstimate()
+        :{available:false,quotaBytes:null,usageBytes:null};
       try{
         await transaction(['migrationMeta'],'readwrite',(tx,set)=>{
           const store=tx.objectStore('migrationMeta'),request=store.get(manifestKey);
@@ -962,7 +1255,39 @@
           };
         });
       }catch(_){}
-      throw entityProjectionFailure(error,failureStage);
+      let activeGenerationPreserved=false,pendingGenerationCleared=false;
+      if(failureStage==='write-row-batch'&&previous&&previous.activeGeneration){
+        try{
+          const afterFailure=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
+            const request=tx.objectStore('migrationMeta').get(manifestKey);
+            request.onsuccess=()=>set(request.result||null);
+          });
+          activeGenerationPreserved=!!afterFailure&&afterFailure.status==='ready'&&
+            afterFailure.activeGeneration===previous.activeGeneration;
+          pendingGenerationCleared=!!afterFailure&&!afterFailure.pendingGeneration&&
+            !afterFailure.pendingRecoveryIntentId;
+        }catch(_){}
+      }
+      const failureDetails={
+        nexusEntityProjectionFailureStore:error&&error.nexusEntityProjectionFailureStore||null,
+        nexusEntityProjectionFailureTransactionMode:error&&error.nexusEntityProjectionFailureTransactionMode||null,
+        nexusEntityProjectionFailureTransactionOutcome:error&&error.nexusEntityProjectionFailureTransactionOutcome||null,
+        nexusEntityProjectionFailureBatchIndex:error&&error.nexusEntityProjectionFailureBatchIndex,
+        nexusEntityProjectionFailureBatchRowCount:error&&error.nexusEntityProjectionFailureBatchRowCount,
+        nexusEntityProjectionFailureCommittedBatchCount:batchCount,
+        nexusEntityProjectionFailureRowsGenerated:rowCount,
+        nexusEntityProjectionFailureQuotaEstimateAvailable:quotaEstimate.available,
+        nexusEntityProjectionFailureQuotaBytes:quotaEstimate.quotaBytes,
+        nexusEntityProjectionFailureUsageBytes:quotaEstimate.usageBytes,
+        nexusEntityProjectionFailureRemainingQuotaBytes:
+          quotaEstimate.quotaBytes!==null&&quotaEstimate.usageBytes!==null
+            ?Math.max(0,quotaEstimate.quotaBytes-quotaEstimate.usageBytes):null,
+        nexusEntityProjectionFailureActiveGenerationPreserved:activeGenerationPreserved,
+        nexusEntityProjectionFailurePendingGenerationCleared:pendingGenerationCleared,
+        nexusEntityProjectionDomExceptionCode:error&&Number.isSafeInteger(error.nexusEntityProjectionDomExceptionCode)
+          ?error.nexusEntityProjectionDomExceptionCode:null
+      };
+      throw entityProjectionFailure(error,failureStage,failureDetails);
     }
   }
   async function readWorkspaceEntities(ownerId,options={}){
@@ -1093,6 +1418,49 @@
     return fingerprint;
   }
 
+  async function fingerprintWorkspaceOperation(operation){
+    const payload={ownerId:operation.ownerId,operationId:operation.operationId,
+      operationType:operation.operationType,payloadVersion:operation.payloadVersion,
+      baseRevision:operation.baseRevision,sequence:operation.sequence,
+      dependsOn:Array.isArray(operation.dependsOn)?operation.dependsOn:[],
+      payload:operation.payload,changes:operation.changes||null,
+      trackerRoot:operation.trackerRoot||null,featureRoot:operation.featureRoot||null,
+      replaceEntities:operation.replaceEntities===true};
+    let canonical;
+    try{canonical=JSON.stringify(payload);if(typeof canonical!=='string')throw new Error('invalid');}
+    catch(_){throw new Error('Workspace outbox operations must be JSON-compatible before a durable payload hash can be created.');}
+    const cryptoApi=root&&root.crypto,Encoder=root&&root.TextEncoder;
+    if(!cryptoApi||!cryptoApi.subtle||typeof cryptoApi.subtle.digest!=='function'||typeof Encoder!=='function')
+      throw new Error('Secure SHA-256 support is unavailable; workspace outbox persistence is paused.');
+    const digest=await cryptoApi.subtle.digest('SHA-256',new Encoder().encode(canonical));
+    let fingerprint='';for(const byte of new Uint8Array(digest))fingerprint+=byte.toString(16).padStart(2,'0');
+    return fingerprint;
+  }
+
+  async function fingerprintEntityOutboxGroups(groups){
+    const normalized=(Array.isArray(groups)?groups:[]).map(group=>({
+      operationId:String(group&&group.operationId||''),
+      firstSequence:Number(group&&group.firstSequence),
+      lastSequence:Number(group&&group.lastSequence),
+      changeCount:Number(group&&group.changeCount),
+      changes:(Array.isArray(group&&group.changes)?group.changes:[]).map(change=>({
+        collection:change.collection,id:change.id,operation:change.operation,
+        position:change.position,
+        ...(change.operation==='put'?{value:change.value}:{})
+      }))
+    }));
+    const canonical=stableEntityOperationJson(normalized);
+    const cryptoApi=root&&root.crypto,Encoder=root&&root.TextEncoder;
+    if(!cryptoApi||!cryptoApi.subtle||typeof cryptoApi.subtle.digest!=='function'||
+       typeof Encoder!=='function'){
+      throw new Error('Secure SHA-256 support is unavailable; recovery cannot prove the pending outbox.');
+    }
+    const digest=await cryptoApi.subtle.digest('SHA-256',new Encoder().encode(canonical));
+    let fingerprint='';
+    for(const byte of new Uint8Array(digest))fingerprint+=byte.toString(16).padStart(2,'0');
+    return fingerprint;
+  }
+
   async function writeWorkspaceEntityChanges(ownerId,changes,options={}){
     const owner=entityOwnerKey(ownerId);
     if(entityRemovalOwners.has(owner))throw new Error('This account workspace is being permanently deleted.');
@@ -1121,7 +1489,10 @@
       const storageCollection=change.collection==='trackerMeta'||change.collection==='featureMeta'?'_meta':change.collection;
       const storageId=change.collection==='trackerMeta'?'tracker':change.collection==='featureMeta'?'features':change.id;
       return {collection:change.collection,id:change.id,storageCollection,storageId,operation:change.operation,
-        value:change.value,position:isMeta?0:(change.operation==='put'?(change.position==='prepend'?'prepend':(change.position??null)):null)};
+        value:change.value,position:isMeta?0:(change.operation==='put'?(change.position==='prepend'?'prepend':(change.position??null)):null),
+        positionMode:isMeta?'meta':(change.operation==='put'?
+          (change.position===null||change.position===undefined?'append':
+            (change.position==='prepend'?'prepend':'absolute')):'none')};
     });
     const operationId=String(options.operationId||(
       root&&root.crypto&&typeof root.crypto.randomUUID==='function'?root.crypto.randomUUID():
@@ -1168,7 +1539,8 @@
           outbox.put({key:entityOutboxKey(owner,next),ownerId:owner,generation:manifest.activeGeneration,
             kind:'change',sequence:next,operationId,collection:change.collection,
             entityId:change.id,operation:change.operation,
-            value:change.operation==='put'?change.value:undefined,position,createdAt:timestamp()});
+            value:change.operation==='put'?change.value:undefined,position,
+            positionMode:change.positionMode,createdAt:timestamp()});
         }
         const counts={...(manifest.counts||{})};
         for(const [collection,delta] of Object.entries(countDeltas)){
@@ -1287,6 +1659,23 @@
     return rows.filter(row=>row&&row.ownerId===owner&&
       row.generation===manifest.activeGeneration&&row.kind==='change'&&Number(row.sequence)>after);
   }
+  async function readWorkspacePendingOperations(ownerId,limit=100){
+    const owner=entityOwnerKey(ownerId),size=Math.max(1,Math.min(MAX_PENDING_WORKSPACE_OPERATIONS,Math.floor(Number(limit)||100)));
+    if(!owner||!enabled||!database||entityRemovalOwners.has(owner))return {ok:false,reason:'workspace_outbox_owner_unavailable'};
+    const range=entityPrefixRange(workspaceOperationOutboxPrefix(owner));
+    if(!range)return {ok:false,reason:'workspace_outbox_key_range_unavailable'};
+    const rows=await transaction(['outbox'],'readonly',(tx,set)=>{
+      const request=tx.objectStore('outbox').getAll(range,size+1);
+      request.onsuccess=()=>set(request.result||[]);
+    });
+    if(!enabled||committedOwnerId!==owner||entityRemovalOwners.has(owner))return {ok:false,reason:'workspace_outbox_owner_changed'};
+    const operations=rows.filter(row=>row&&row.kind==='workspace-operation'&&row.ownerId===owner&&
+      typeof row.operationId==='string'&&row.operationId&&row.recordVersion===1&&
+      typeof row.requestHash==='string'&&/^[a-f0-9]{64}$/.test(row.requestHash))
+      .sort((a,b)=>Number(a.sequence)-Number(b.sequence)).slice(0,size);
+    return {ok:true,ownerId:owner,operations,hasMore:rows.length>size};
+  }
+
   function entityOutboxUtf8ByteLength(value){
     const text=String(value),length=text.length;
     let bytes=0;
@@ -1684,6 +2073,274 @@
     });
   }
 
+  // Read-only recovery view for a cursor whose generation metadata is stale.
+  // It does not rebind or trust that cursor for writes: it independently verifies
+  // the active owner, ready manifest, durable workspace revision and every outbox
+  // row against the active generation before exposing parked local operations.
+  async function readWorkspaceEntityDeltaRecoveryState(ownerId){
+    const owner=entityOwnerKey(ownerId),key=entityDeltaCursorKey(owner);
+    const fail=reason=>({ok:false,snapshotRequired:true,reason});
+    const unavailable=reason=>({ok:false,unavailable:true,reason});
+    if(!owner||entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner){
+      return unavailable('recovery_owner_unavailable');
+    }
+    if(pending.size)return fail('recovery_local_writes_pending');
+    const readCore=()=>transaction([WORKSPACES,'migrationMeta'],'readonly',(tx,set)=>{
+      const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta');
+      const values={manifest:null,workspace:null,cursor:null,sequence:null};let remaining=4;
+      const finish=()=>{remaining--;if(remaining===0)set(values);};
+      const manifestRequest=meta.get(entityManifestKey(owner));
+      const workspaceRequest=entities.get(workspaceKey(owner));
+      const cursorRequest=meta.get(key);
+      const sequenceRequest=meta.get(entitySequenceKey(owner));
+      manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;finish();};
+      workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;finish();};
+      cursorRequest.onsuccess=()=>{values.cursor=cursorRequest.result||null;finish();};
+      sequenceRequest.onsuccess=()=>{values.sequence=sequenceRequest.result||null;finish();};
+    });
+    try{
+      const initial=await readCore();
+      const manifest=initial&&initial.manifest,row=initial&&initial.workspace,cursor=initial&&initial.cursor,
+        sequence=initial&&initial.sequence;
+      const workspaceRevision=row&&Number.isSafeInteger(Number(row.workspaceRevision))
+        ?Number(row.workspaceRevision):(row&&Number.isSafeInteger(Number(row.revision))?Number(row.revision):null);
+      const sequenceHighWatermark=sequence&&Number.isSafeInteger(Number(sequence.value))
+        ?Number(sequence.value):0;
+      if(entityRemovalOwners.has(owner)||!enabled||committedOwnerId!==owner||
+         !manifest||manifest.ownerId!==owner||manifest.status!=='ready'||
+         !manifest.activeGeneration||!validWorkspaceRow(row,owner)||
+         !Number.isSafeInteger(workspaceRevision)||
+         Number(manifest.sourceWorkspaceRevision)!==workspaceRevision){
+        return fail('recovery_projection_not_ready');
+      }
+      const cursorValid=!!(cursor&&cursor.key===key&&cursor.ownerId===owner&&
+        cursor.protocolVersion===1&&typeof cursor.generation==='string'&&cursor.generation.length>0&&
+        Number.isSafeInteger(Number(cursor.workspaceRevision))&&
+        Number(cursor.workspaceRevision)<=workspaceRevision&&
+        Number.isSafeInteger(Number(cursor.publishRevision))&&Number(cursor.publishRevision)>=0&&
+        Number.isSafeInteger(Number(cursor.acknowledgedSequence))&&Number(cursor.acknowledgedSequence)>=0&&
+        Number.isSafeInteger(Number(cursor.remoteHeadRevision))&&
+        Number(cursor.remoteHeadRevision)>=Number(cursor.publishRevision)&&
+        typeof cursor.snapshotUpdatedAt==='string'&&cursor.snapshotUpdatedAt.length>0&&
+        typeof cursor.requiresPull==='boolean'&&
+        cursor.requiresPull===(Number(cursor.remoteHeadRevision)>Number(cursor.publishRevision)));
+      if(!cursorValid)return fail('recovery_cursor_invalid');
+      if(!Number.isSafeInteger(sequenceHighWatermark)||
+         sequenceHighWatermark<Number(cursor.acknowledgedSequence)){
+        return fail('recovery_outbox_high_watermark_invalid');
+      }
+      const groups=[];
+      let after=Number(cursor.acknowledgedSequence),totalChanges=0,totalBytes=0,pages=0,complete=false;
+      const maxPages=256,maxChanges=250000,maxBytes=64*1024*1024;
+      while(pages<maxPages){
+        const page=await readWorkspaceEntityOutboxGroups(owner,after,1000,1024*1024);
+        if(!page||page.unavailable)return unavailable(page&&page.reason||'recovery_outbox_unavailable');
+        if(page.snapshotRequired||page.ownerId!==owner||
+           page.generation!==manifest.activeGeneration||
+           Number(page.workspaceRevision)!==workspaceRevision||
+           !Array.isArray(page.groups)||typeof page.hasMore!=='boolean'){
+          return fail(page&&page.reason||'recovery_outbox_integrity_mismatch');
+        }
+        let expectedSequence=after+1;
+        for(const group of page.groups){
+          const first=Number(group&&group.firstSequence),last=Number(group&&group.lastSequence),
+            count=Number(group&&group.changeCount);
+          if(!group||typeof group.operationId!=='string'||!group.operationId||
+             !Number.isSafeInteger(first)||!Number.isSafeInteger(last)||
+             !Number.isSafeInteger(count)||count<1||first!==expectedSequence||
+             last-first+1!==count||!Array.isArray(group.changes)||group.changes.length!==count){
+            return fail('recovery_outbox_sequence_or_group_invalid');
+          }
+          expectedSequence=last+1;
+          totalChanges+=count;
+          if(totalChanges>maxChanges)return fail('recovery_outbox_change_limit');
+        }
+        const through=Number(page.throughSequence);
+        const expectedThrough=page.groups.length?expectedSequence-1:after;
+        if(!Number.isSafeInteger(through)||through!==expectedThrough){
+          return fail('recovery_outbox_through_sequence_mismatch');
+        }
+        const pageBytes=Number.isSafeInteger(Number(page.bytes))
+          ?Number(page.bytes):utf8ByteLength(JSON.stringify(page.groups));
+        if(pageBytes<0)return fail('recovery_outbox_byte_count_invalid');
+        totalBytes+=pageBytes;
+        if(totalBytes>maxBytes)return fail('recovery_outbox_byte_limit');
+        if(page.hasMore&&(!page.groups.length||through<=after)){
+          return fail('recovery_outbox_pagination_made_no_progress');
+        }
+        groups.push(...page.groups);
+        after=through;
+        pages++;
+        if(!page.hasMore){complete=true;break;}
+      }
+      if(!complete)return fail('recovery_outbox_page_limit');
+      if(groups.length===0&&Number(cursor.workspaceRevision)!==workspaceRevision){
+        return fail('recovery_outbox_missing_for_workspace_revision');
+      }
+      if(Number(cursor.workspaceRevision)>workspaceRevision)return fail('recovery_cursor_revision_ahead');
+      const latest=await readCore();
+      if(after!==sequenceHighWatermark)return fail('recovery_outbox_high_watermark_mismatch');
+      const digest=await fingerprintEntityOutboxGroups(groups);
+      const latestManifest=latest&&latest.manifest,latestRow=latest&&latest.workspace,
+        latestCursor=latest&&latest.cursor,latestSequence=latest&&latest.sequence;
+      const latestWorkspaceRevision=latestRow&&Number.isSafeInteger(Number(latestRow.workspaceRevision))
+        ?Number(latestRow.workspaceRevision):(latestRow&&Number.isSafeInteger(Number(latestRow.revision))
+          ?Number(latestRow.revision):null);
+      if(pending.size||!latestManifest||latestManifest.ownerId!==owner||
+         latestManifest.status!=='ready'||latestManifest.activeGeneration!==manifest.activeGeneration||
+         !validWorkspaceRow(latestRow,owner)||latestWorkspaceRevision!==workspaceRevision||
+         JSON.stringify(latestCursor)!==JSON.stringify(cursor)||
+         JSON.stringify(latestSequence)!==JSON.stringify(sequence)){
+        return fail('recovery_state_changed_during_outbox_read');
+      }
+      return {
+        ok:true,ownerId:owner,activeGeneration:manifest.activeGeneration,
+        generationMismatch:cursor.generation!==manifest.activeGeneration,
+        workspaceRevision,cursor:{...cursor},
+        outbox:{groups,throughSequence:after,highWatermark:sequenceHighWatermark,
+          groupCount:groups.length,changeCount:totalChanges,bytes:totalBytes,hasMore:false,digest}
+      };
+    }catch(error){
+      return unavailable('recovery_outbox_read_failed');
+    }
+  }
+
+  // Rebind a stale cursor generation only when the active projection, remote
+  // snapshot baseline, and every currently queued local operation are independently
+  // verified. This repairs generation metadata without discarding or rebuilding rows.
+  async function repairWorkspaceEntityDeltaCursorGeneration(ownerId,expectedRemoteState={}){
+    const owner=entityOwnerKey(ownerId),key=entityDeltaCursorKey(owner),
+      snapshotUpdatedAt=String(expectedRemoteState&&expectedRemoteState.snapshotUpdatedAt||''),
+      head=Number(expectedRemoteState&&expectedRemoteState.headRevision),
+      floor=Number(expectedRemoteState&&expectedRemoteState.compactedThroughRevision);
+    const fail=reason=>({ok:false,snapshotRequired:true,reason});
+    if(!owner||!snapshotUpdatedAt||!Number.isSafeInteger(head)||head<0||
+       !Number.isSafeInteger(floor)||floor<0||floor>head){
+      return fail('invalid_cursor_repair_state');
+    }
+    if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner||
+       entityRecoveryLockedOwners.has(owner)){
+      return fail('cursor_repair_owner_unavailable');
+    }
+    // This repair can be invoked from inside the sync coordinator. Do not wait on
+    // entitySyncSerial/serial here: that can deadlock the very sync operation invoking it.
+    // A non-empty in-memory queue is not safe to rebind; let the caller use full recovery.
+    if(!enabled||committedOwnerId!==owner||entityRemovalOwners.has(owner)||
+       entityRecoveryLockedOwners.has(owner)||pending.size){
+      return fail('cursor_repair_local_writes_pending');
+    }
+    const initial=await transaction([WORKSPACES,'migrationMeta'],'readonly',(tx,set)=>{
+      const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta');
+      const values={manifest:null,workspace:null,cursor:null,intent:null};let remaining=4;
+      const finish=()=>{remaining--;if(remaining===0)set(values);};
+      const manifestRequest=meta.get(entityManifestKey(owner));
+      const workspaceRequest=entities.get(workspaceKey(owner));
+      const cursorRequest=meta.get(key);
+      const intentRequest=meta.get(entityDeltaRecoveryKey(owner));
+      manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;finish();};
+      workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;finish();};
+      cursorRequest.onsuccess=()=>{values.cursor=cursorRequest.result||null;finish();};
+      intentRequest.onsuccess=()=>{values.intent=intentRequest.result||null;finish();};
+    });
+    const manifest=initial&&initial.manifest,workspace=initial&&initial.workspace,
+      cursor=initial&&initial.cursor,intent=initial&&initial.intent;
+    const workspaceRevision=workspace&&Number.isSafeInteger(Number(workspace.workspaceRevision))
+      ?Number(workspace.workspaceRevision)
+      :(workspace&&Number.isSafeInteger(Number(workspace.revision))?Number(workspace.revision):null);
+    const activeGeneration=manifest&&manifest.activeGeneration;
+    if(!manifest||manifest.ownerId!==owner||manifest.status!=='ready'||manifest.formatVersion!==1||
+       typeof activeGeneration!=='string'||!activeGeneration||manifest.pendingGeneration||
+       manifest.pendingRecoveryIntentId||intent||!validWorkspaceRow(workspace,owner)||
+       !Number.isSafeInteger(workspaceRevision)||
+       Number(manifest.sourceWorkspaceRevision)!==workspaceRevision){
+      return fail('cursor_repair_projection_not_ready');
+    }
+    const cursorValid=!!(cursor&&cursor.key===key&&cursor.ownerId===owner&&
+      cursor.protocolVersion===1&&typeof cursor.generation==='string'&&cursor.generation.length>0&&
+      Number.isSafeInteger(Number(cursor.workspaceRevision))&&
+      Number(cursor.workspaceRevision)<=workspaceRevision&&
+      Number.isSafeInteger(Number(cursor.publishRevision))&&
+      Number(cursor.publishRevision)>=floor&&Number(cursor.publishRevision)<=head&&
+      Number.isSafeInteger(Number(cursor.acknowledgedSequence))&&
+      Number(cursor.acknowledgedSequence)>=0&&
+      Number.isSafeInteger(Number(cursor.remoteHeadRevision))&&
+      Number(cursor.remoteHeadRevision)>=Number(cursor.publishRevision)&&
+      Number(cursor.remoteHeadRevision)<=head&&
+      cursor.snapshotUpdatedAt===snapshotUpdatedAt&&
+      typeof cursor.requiresPull==='boolean'&&
+      cursor.requiresPull===(Number(cursor.remoteHeadRevision)>Number(cursor.publishRevision)));
+    if(!cursorValid)return fail('cursor_repair_cursor_not_compatible');
+    const readiness=await getWorkspaceEntityProjectionReadiness(owner);
+    if(!readiness||readiness.ready!==true||readiness.generation!==activeGeneration||
+       Number(readiness.workspaceRevision)!==workspaceRevision){
+      return fail('cursor_repair_projection_not_verified');
+    }
+    const outbox=await readWorkspaceEntityOutboxGroups(
+      owner,Number(cursor.acknowledgedSequence),1000,1048576);
+    if(!outbox||outbox.unavailable||outbox.snapshotRequired||outbox.ownerId!==owner||
+       outbox.generation!==activeGeneration||Number(outbox.workspaceRevision)!==workspaceRevision||
+       !Array.isArray(outbox.groups)||outbox.hasMore===true){
+      return fail(outbox&&outbox.reason||'cursor_repair_outbox_not_verified');
+    }
+    // Never rebind a cursor while an unacknowledged local operation exists.
+    // The caller must use full owner/revision/manifest-fenced recovery so the
+    // operation is merged and remotely read back before any local acknowledgement.
+    if(outbox.groups.length>0)return fail('cursor_repair_outbox_pending');
+    if(outbox.groups.length===0&&Number(cursor.workspaceRevision)!==workspaceRevision){
+      return fail('cursor_repair_workspace_revision_mismatch');
+    }
+    if(cursor.generation===activeGeneration){
+      return {ok:true,repaired:false,cursor:{...cursor},generation:activeGeneration,workspaceRevision};
+    }
+    const cursorWithoutGeneration=value=>JSON.stringify({...value,generation:''});
+    const expectedCursor=cursorWithoutGeneration(cursor);
+    const committed=await transaction([WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
+      const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta');
+      const values={manifest:null,workspace:null,cursor:null,intent:null};
+      let remaining=4,finished=false;
+      const finish=()=>{
+        remaining--;if(remaining!==0||finished)return;finished=true;
+        const currentManifest=values.manifest,currentWorkspace=values.workspace,
+          currentCursor=values.cursor;
+        const currentWorkspaceRevision=currentWorkspace&&Number.isSafeInteger(Number(currentWorkspace.workspaceRevision))
+          ?Number(currentWorkspace.workspaceRevision)
+          :(currentWorkspace&&Number.isSafeInteger(Number(currentWorkspace.revision))
+            ?Number(currentWorkspace.revision):null);
+        const currentReady=!!(enabled&&committedOwnerId===owner&&!entityRemovalOwners.has(owner)&&
+          !entityRecoveryLockedOwners.has(owner)&&pending.size===0&&
+          currentManifest&&currentManifest.ownerId===owner&&currentManifest.status==='ready'&&
+          currentManifest.formatVersion===1&&currentManifest.activeGeneration===activeGeneration&&
+          !currentManifest.pendingGeneration&&!currentManifest.pendingRecoveryIntentId&&
+          !values.intent&&validWorkspaceRow(currentWorkspace,owner)&&
+          currentWorkspaceRevision===workspaceRevision&&
+          Number(currentManifest.sourceWorkspaceRevision)===workspaceRevision&&
+          currentCursor&&cursorWithoutGeneration(currentCursor)===expectedCursor);
+        if(!currentReady){set(fail('cursor_generation_changed_during_repair'));return;}
+        if(currentCursor.generation===activeGeneration){
+          set({ok:true,repaired:false,cursor:{...currentCursor},generation:activeGeneration,
+            workspaceRevision:currentWorkspaceRevision});
+          return;
+        }
+        if(currentCursor.generation!==cursor.generation){
+          set(fail('cursor_generation_changed_during_repair'));return;
+        }
+        const next={...currentCursor,generation:activeGeneration};
+        meta.put(next);
+        set({ok:true,repaired:true,cursor:next,generation:activeGeneration,
+          workspaceRevision:currentWorkspaceRevision});
+      };
+      const manifestRequest=meta.get(entityManifestKey(owner));
+      const workspaceRequest=entities.get(workspaceKey(owner));
+      const cursorRequest=meta.get(key);
+      const intentRequest=meta.get(entityDeltaRecoveryKey(owner));
+      manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;finish();};
+      workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;finish();};
+      cursorRequest.onsuccess=()=>{values.cursor=cursorRequest.result||null;finish();};
+      intentRequest.onsuccess=()=>{values.intent=intentRequest.result||null;finish();};
+    });
+    return committed||fail('cursor_generation_changed_during_repair');
+  }
+
   async function initializeWorkspaceEntityDeltaCursor(ownerId,expectedServerRevision,snapshotUpdatedAt,baselineVerified){
     const owner=entityOwnerKey(ownerId),key=entityDeltaCursorKey(owner),
       expected=Number(expectedServerRevision);
@@ -1939,13 +2596,15 @@
       const committed=await transaction([WORKSPACES,'migrationMeta','outbox'],'readwrite',(tx,set)=>{
         const entities=tx.objectStore(WORKSPACES),meta=tx.objectStore('migrationMeta'),
           outbox=tx.objectStore('outbox');
-        const values={manifest:null,workspace:null,cursor:null};
-        let coreRemaining=3,started=false;
+        const values={manifest:null,workspace:null,cursor:null,sequence:null};
+        let coreRemaining=4,started=false;
         const fail=(reason)=>set({ok:false,snapshotRequired:true,reason});
-        const applyRows=existingRows=>{
+        const applyRows=(existingRows,pendingRows)=>{
           const manifest=values.manifest,row=values.workspace,cursor=values.cursor;
           const workspaceRevision=row&&Number.isSafeInteger(Number(row.workspaceRevision))
             ?Number(row.workspaceRevision):(row&&Number.isSafeInteger(Number(row.revision))?Number(row.revision):null);
+          const cursorWorkspaceRevision=Number(cursor&&cursor.workspaceRevision);
+          const pendingCount=Array.isArray(pendingRows)?pendingRows.length:0;
           if(entityRemovalOwners.has(owner)||!enabled||committedOwnerId!==owner){
             fail('active_entity_owner_changed');return;
           }
@@ -1957,7 +2616,8 @@
           }
           if(!cursor||cursor.key!==cursorKey||cursor.ownerId!==owner||
              cursor.protocolVersion!==1||cursor.generation!==manifest.activeGeneration||
-             Number(cursor.workspaceRevision)!==workspaceRevision||
+             !Number.isSafeInteger(cursorWorkspaceRevision)||cursorWorkspaceRevision>workspaceRevision||
+             (pendingCount===0&&cursorWorkspaceRevision!==workspaceRevision)||
              !Number.isSafeInteger(Number(cursor.publishRevision))||
              !Number.isSafeInteger(Number(cursor.acknowledgedSequence))||
              !Number.isSafeInteger(Number(cursor.remoteHeadRevision))||
@@ -1980,6 +2640,31 @@
           }
           if(!Array.isArray(existingRows)||existingRows.length!==normalized.length){
             fail('remote_entity_rows_unavailable');return;
+          }
+          // A lagging cursor is safe only while every intervening local change is
+          // represented by the verified outbox above. For collections with pending
+          // local positions, only in-place updates are safe: inserts, deletes, and
+          // moves would invalidate the queued absolute positions and require recovery.
+          const pendingByCollection=new Map();
+          for(const pending of pendingRows||[]){
+            if(!pendingByCollection.has(pending.collection))pendingByCollection.set(pending.collection,[]);
+            pendingByCollection.get(pending.collection).push(pending);
+          }
+          for(let index=0;index<normalized.length;index++){
+            const change=normalized[index],existing=existingRows[index];
+            if(ENTITY_META_COLLECTIONS.includes(change.collection))continue;
+            const pendingInCollection=pendingByCollection.get(change.collection)||[];
+            if(!pendingInCollection.length)continue;
+            // A local append (position:null) is order-independent: it remains at
+            // the end after a remote insert/delete. Other pending positions are
+            // absolute, so same-collection inserts/deletes/moves require recovery.
+            const appendOnly=pendingInCollection.every(item=>
+              item.operation==='put'&&item.positionMode==='append'
+            );
+            if(appendOnly)continue;
+            if(change.operation==='delete'||!existing||Number(existing.position)!==change.position){
+              fail('local_outbox_position_rebase_required');return;
+            }
           }
           const rowCount=Number(manifest.rowCount);
           if(!Number.isSafeInteger(rowCount)||rowCount<2){
@@ -2032,7 +2717,7 @@
             counts[collection]=current+delta;
           }
           const nextCursor={
-            ...cursor,publishRevision:revisionValue,
+            ...cursor,workspaceRevision,publishRevision:revisionValue,
             remoteHeadRevision:Math.max(Number(cursor.remoteHeadRevision),remoteHead),
             requiresPull:Math.max(Number(cursor.remoteHeadRevision),remoteHead)>revisionValue,
             lastAppliedOperationId:operationId,updatedAt:timestamp()
@@ -2056,16 +2741,50 @@
              Number(manifest.sourceWorkspaceRevision)!==workspaceRevision||
              !cursor||cursor.key!==cursorKey||cursor.ownerId!==owner||
              cursor.protocolVersion!==1||cursor.generation!==manifest.activeGeneration||
-             Number(cursor.workspaceRevision)!==workspaceRevision||
+             !Number.isSafeInteger(Number(cursor.workspaceRevision))||
+             Number(cursor.workspaceRevision)>workspaceRevision||
              !Number.isSafeInteger(Number(cursor.acknowledgedSequence))||
              Number(cursor.acknowledgedSequence)<0){
             fail('entity_projection_or_cursor_unavailable');return;
           }
-          const pendingRange=entityOutboxSequenceRange(owner,Number(cursor.acknowledgedSequence));
-          if(!pendingRange){fail('local_outbox_cursor_unavailable');return;}
-          const pendingRequest=outbox.getAll(pendingRange,1);
-          pendingRequest.onsuccess=()=>{
-            if((pendingRequest.result||[]).length){
+          const acknowledgedSequence=Number(cursor.acknowledgedSequence);
+          const highWatermark=values.sequence?Number(values.sequence.value):acknowledgedSequence;
+          if((values.sequence&&values.sequence.ownerId!==owner)||
+             (!values.sequence&&acknowledgedSequence!==0)||
+             !Number.isSafeInteger(highWatermark)||highWatermark<acknowledgedSequence){
+            fail('local_outbox_cursor_unavailable');return;
+          }
+          const expectedPendingCount=highWatermark-acknowledgedSequence;
+          if(expectedPendingCount>ENTITY_REMOTE_APPLY_MAX_PENDING_CHANGES){
+            fail('local_outbox_pending_limit');return;
+          }
+          const pendingRange=entityOutboxSequenceRange(owner,acknowledgedSequence);
+          if(!pendingRange&&expectedPendingCount>0){fail('local_outbox_cursor_unavailable');return;}
+          const pendingRequest=pendingRange?outbox.getAll(
+            pendingRange,ENTITY_REMOTE_APPLY_MAX_PENDING_CHANGES+1
+          ):null;
+          const continueWithPendingRows=pendingRows=>{
+            if(!Array.isArray(pendingRows)||pendingRows.length!==expectedPendingCount||
+               pendingRows.length>ENTITY_REMOTE_APPLY_MAX_PENDING_CHANGES){
+              fail('local_outbox_unverified');return;
+            }
+            const pendingIdentities=new Set();
+            for(let index=0;index<pendingRows.length;index++){
+              const pending=pendingRows[index],sequence=acknowledgedSequence+index+1;
+              if(!pending||pending.ownerId!==owner||
+                 pending.generation!==manifest.activeGeneration||pending.kind!=='change'||
+                 Number(pending.sequence)!==sequence||
+                 pending.key!==entityOutboxKey(owner,sequence)||
+                 !ALL_ENTITY_COLLECTIONS.has(pending.collection)||
+                 typeof pending.entityId!=='string'||!pending.entityId||
+                 !['put','delete'].includes(pending.operation)){
+                fail('local_outbox_unverified');return;
+              }
+              pendingIdentities.add(pending.collection+'\u0000'+pending.entityId);
+            }
+            // Applying over a locally edited entity would discard its local value.
+            // True identity overlaps still stop for three-way conflict recovery.
+            if(normalized.some(change=>pendingIdentities.has(change.collection+'\u0000'+change.id))){
               fail('local_outbox_pending');return;
             }
             const existingRows=new Array(normalized.length);let remaining=normalized.length;
@@ -2076,17 +2795,24 @@
               request.onsuccess=()=>{
                 existingRows[index]=request.result||null;
                 remaining--;
-                if(remaining===0)applyRows(existingRows);
+                if(remaining===0)applyRows(existingRows,pendingRows);
               };
             });
           };
+          if(pendingRequest){
+            pendingRequest.onsuccess=()=>continueWithPendingRows(pendingRequest.result||[]);
+          }else{
+            continueWithPendingRows([]);
+          }
         };
         const manifestRequest=meta.get(entityManifestKey(owner));
         const workspaceRequest=entities.get(workspaceKey(owner));
         const cursorRequest=meta.get(cursorKey);
+        const sequenceRequest=meta.get(entitySequenceKey(owner));
         manifestRequest.onsuccess=()=>{values.manifest=manifestRequest.result||null;coreRemaining--;start();};
         workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;coreRemaining--;start();};
         cursorRequest.onsuccess=()=>{values.cursor=cursorRequest.result||null;coreRemaining--;start();};
+        sequenceRequest.onsuccess=()=>{values.sequence=sequenceRequest.result||null;coreRemaining--;start();};
       });
       if(!committed||committed.ok!==true)return committed||{ok:false,snapshotRequired:true,reason:'remote_apply_commit_failed'};
       if(entityRemovalOwners.has(owner)||!enabled||committedOwnerId!==owner){
@@ -2117,6 +2843,59 @@
       const request=tx.objectStore('migrationMeta').get(key);
       request.onsuccess=()=>set(request.result||null);
     });
+  }
+  // Compare exact durable snapshot bytes without parsing or cloning a large workspace.
+  // This lets an account return preserve its current workspace revision and projection.
+  async function isWorkspaceSnapshotCurrent(ownerId,trackerJson,featureJson){
+    const owner=entityOwnerKey(ownerId);
+    if(!enabled||!database||typeof trackerJson!=='string'||typeof featureJson!=='string')return false;
+    const row=await transaction([WORKSPACES],'readonly',(tx,set)=>{
+      const request=tx.objectStore(WORKSPACES).get(workspaceKey(owner));
+      request.onsuccess=()=>set(request.result||null);
+    });
+    return validWorkspaceRow(row,owner)&&row.tracker===trackerJson&&row.featureState===featureJson&&
+      Number.isSafeInteger(Number(row.workspaceRevision))&&Number(row.workspaceRevision)>=0;
+  }
+  // Cheap, owner/revision-aware readiness probe for snapshot handoff. It reads only
+  // the manifest and two generation roots; it never scans or materializes the large
+  // entity collection merely to decide whether a full rebuild can be skipped.
+  async function getWorkspaceEntityProjectionReadiness(ownerId){
+    const owner=entityOwnerKey(ownerId);
+    const unavailable=reason=>({ready:false,ownerId:owner,reason});
+    if(entityRemovalOwners.has(owner))return unavailable('workspace-removal-locked');
+    if(!enabled||!database)return unavailable('indexeddb-unavailable');
+    if(committedOwnerId!==owner)return unavailable('owner-mismatch');
+    if(entityRecoveryLockedOwners.has(owner))return unavailable('recovery-locked');
+    const manifest=await readEntityManifest(owner);
+    if(!manifest||manifest.ownerId!==owner||manifest.status!=='ready'||
+       manifest.formatVersion!==1||typeof manifest.activeGeneration!=='string'||!manifest.activeGeneration||
+       !Number.isSafeInteger(Number(manifest.rowCount))||Number(manifest.rowCount)<2||
+       !manifest.counts||typeof manifest.counts!=='object'||Array.isArray(manifest.counts)||
+       manifest.pendingRecoveryIntentId||manifest.pendingGeneration){
+      return unavailable('manifest-not-ready');
+    }
+    const workspaceRevision=await readWorkspaceRevision(owner);
+    if(!Number.isSafeInteger(workspaceRevision)||
+       !Number.isSafeInteger(Number(manifest.sourceWorkspaceRevision))||
+       Number(manifest.sourceWorkspaceRevision)!==workspaceRevision){
+      return unavailable('stale-workspace-revision');
+    }
+    const roots=await readWorkspaceEntityRoots(owner,manifest.activeGeneration);
+    if(!roots||!roots.tracker||!roots.features)return unavailable('active-generation-roots-invalid');
+    // Close races with account rotation, a new manifest, or a workspace commit.
+    const [latestManifest,latestWorkspaceRevision]=await Promise.all([
+      readEntityManifest(owner),readWorkspaceRevision(owner)
+    ]);
+    if(!enabled||committedOwnerId!==owner||entityRemovalOwners.has(owner)||
+       entityRecoveryLockedOwners.has(owner)||!latestManifest||latestManifest.ownerId!==owner||
+       latestManifest.status!=='ready'||latestManifest.activeGeneration!==manifest.activeGeneration||
+       latestManifest.pendingGeneration||latestManifest.pendingRecoveryIntentId||
+       latestWorkspaceRevision!==workspaceRevision||
+       Number(latestManifest.sourceWorkspaceRevision)!==workspaceRevision){
+      return unavailable('projection-changed-during-readiness-check');
+    }
+    return {ready:true,ownerId:owner,generation:manifest.activeGeneration,
+      workspaceRevision,rowCount:Number(manifest.rowCount)};
   }
   async function waitForWorkspaceEntitySync(ownerId){
     const owner=entityOwnerKey(ownerId);
@@ -2198,8 +2977,19 @@
     const featureSnapshotJson=typeof options.featureSnapshotJson==='string'?options.featureSnapshotJson:null;
     const replace=options.replace===true||capturedChanges===null;
     const task=entitySyncSerial.catch(()=>undefined).then(async()=>{
+      const throwIfAborted=()=>{
+        const signal=options.signal;
+        if(!signal||!signal.aborted)return;
+        const reason=signal.reason;
+        const error=new Error(reason&&typeof reason.message==='string'
+          ?reason.message:'The active account changed before entity synchronization could begin.');
+        if(reason)error.cause=reason;
+        error.name='AbortError';error.code='NEXUS_SYNC_CANCELLED';throw error;
+      };
+      throwIfAborted();
       if(entityRemovalOwners.has(owner))throw new Error('This account workspace is being permanently deleted.');
       if(options.durablePromise&&typeof options.durablePromise.then==='function')await options.durablePromise;
+      throwIfAborted();
       if(!enabled||committedOwnerId!==owner)throw new Error('The active account changed before entity synchronization could begin.');
       // A later compatibility save can be committed before an earlier entity task
       // starts (both use the same serialized IndexedDB queue). Never publish an
@@ -2276,7 +3066,8 @@
           // Re-read the database-wide revision immediately before entering migration.
           // Queue-only writes may advance it while the workspace revision stays stable.
           expectedRevision:revision,sourceWorkspaceRevision,sourceWorkspaceSnapshotRevision,
-          trackerSnapshotJson:sourceTrackerSnapshotJson,featureSnapshotJson:sourceFeatureSnapshotJson
+          trackerSnapshotJson:sourceTrackerSnapshotJson,featureSnapshotJson:sourceFeatureSnapshotJson,
+          signal:options.signal
         });
         entitySyncError=null;entitySyncLastSuccessAt=timestamp();
         return {...result,mode:'snapshot-backfill'};
@@ -2351,17 +3142,47 @@
   async function beginWorkspaceEntityRecovery(ownerId,input){
     const owner=entityOwnerKey(ownerId),intentId=String(input&&input.intentId||'').trim(),
       candidateDigest=String(input&&input.candidateDigest||''),baseUpdatedAt=String(input&&input.baseUpdatedAt||''),
-      expectedHeadRevision=Number(input&&input.expectedHeadRevision),snapshotRevision=Number(input&&input.snapshotRevision);
+      expectedHeadRevision=Number(input&&input.expectedHeadRevision),snapshotRevision=Number(input&&input.snapshotRevision),
+      pendingSnapshotProof=input&&input.pendingSnapshotProof,
+      pendingOutboxProof=input&&input.pendingOutboxProof;
     if(!input||typeof input!=='object'||entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner)
       throw new Error('The active account is not available for local recovery staging.');
-    if(!intentId||intentId.length>160||!/^[a-f0-9]{64}$/i.test(candidateDigest)||!baseUpdatedAt||
+    const validPendingProof=pendingSnapshotProof===undefined||pendingSnapshotProof===null||
+      (!!pendingSnapshotProof&&typeof pendingSnapshotProof==='object'&&!Array.isArray(pendingSnapshotProof)&&
+       pendingSnapshotProof.ownerId===owner&&typeof pendingSnapshotProof.operationId==='string'&&
+       !!pendingSnapshotProof.operationId&&Number.isSafeInteger(Number(pendingSnapshotProof.localSequence))&&
+       typeof pendingSnapshotProof.baseServerVersion==='string'&&!!pendingSnapshotProof.baseServerVersion&&
+       typeof pendingSnapshotProof.payloadDigest==='string'&&/^[a-f0-9]{64}$/i.test(pendingSnapshotProof.payloadDigest));
+    const validPendingOutboxProof=pendingOutboxProof===undefined||pendingOutboxProof===null||
+      (!!pendingOutboxProof&&typeof pendingOutboxProof==='object'&&!Array.isArray(pendingOutboxProof)&&
+       pendingOutboxProof.ownerId===owner&&typeof pendingOutboxProof.activeGeneration==='string'&&
+       !!pendingOutboxProof.activeGeneration&&Number.isSafeInteger(Number(pendingOutboxProof.workspaceRevision))&&
+       Number.isSafeInteger(Number(pendingOutboxProof.throughSequence))&&
+       Number.isSafeInteger(Number(pendingOutboxProof.groupCount))&&Number(pendingOutboxProof.groupCount)>=0&&
+       Number.isSafeInteger(Number(pendingOutboxProof.changeCount))&&Number(pendingOutboxProof.changeCount)>=0&&
+       typeof pendingOutboxProof.digest==='string'&&/^[a-f0-9]{64}$/i.test(pendingOutboxProof.digest)&&
+        typeof pendingOutboxProof.localPayloadDigest==='string'&&/^[a-f0-9]{64}$/i.test(pendingOutboxProof.localPayloadDigest)&&
+       pendingOutboxProof.cursor&&typeof pendingOutboxProof.cursor==='object'&&
+       typeof pendingOutboxProof.cursor.generation==='string'&&
+       Number.isSafeInteger(Number(pendingOutboxProof.cursor.publishRevision))&&
+       Number.isSafeInteger(Number(pendingOutboxProof.cursor.acknowledgedSequence))&&
+       Number.isSafeInteger(Number(pendingOutboxProof.cursor.remoteHeadRevision))&&
+        Number(pendingOutboxProof.cursor.remoteHeadRevision)>=Number(pendingOutboxProof.cursor.publishRevision)&&
+       typeof pendingOutboxProof.cursor.snapshotUpdatedAt==='string'&&!!pendingOutboxProof.cursor.snapshotUpdatedAt&&
+       typeof pendingOutboxProof.cursor.requiresPull==='boolean'&&
+        pendingOutboxProof.cursor.requiresPull===
+          (Number(pendingOutboxProof.cursor.remoteHeadRevision)>Number(pendingOutboxProof.cursor.publishRevision)));
+    if(!validPendingProof||!validPendingOutboxProof||!intentId||intentId.length>160||!/^[a-f0-9]{64}$/i.test(candidateDigest)||!baseUpdatedAt||
        !Number.isSafeInteger(expectedHeadRevision)||expectedHeadRevision<0||
        !Number.isSafeInteger(snapshotRevision)||snapshotRevision<0||snapshotRevision>expectedHeadRevision||
        !Array.isArray(input.conflicts)||input.conflicts.length>10000||
        (input.payloadMetadata!==undefined&&(!input.payloadMetadata||typeof input.payloadMetadata!=='object'||Array.isArray(input.payloadMetadata))))
-      throw new Error('The entity-delta recovery intent is invalid.');
-    const conflictsJson=JSON.stringify(input.conflicts),payloadMetadata=JSON.stringify(input.payloadMetadata||{});
-    if(conflictsJson.length>5*1024*1024||payloadMetadata.length>64*1024)
+      throw new Error('The entity-delta recovery intent is invalid. The pending snapshot proof must remain owner- and revision-bound.');
+    const conflictsJson=JSON.stringify(input.conflicts),payloadMetadata=JSON.stringify(input.payloadMetadata||{}),
+      pendingSnapshotProofJson=JSON.stringify(pendingSnapshotProof||null),
+      pendingOutboxProofJson=JSON.stringify(pendingOutboxProof||null);
+    if(conflictsJson.length>5*1024*1024||payloadMetadata.length>64*1024||
+       pendingSnapshotProofJson.length>8192||pendingOutboxProofJson.length>8192)
       throw new Error('The recovery intent metadata exceeds the safe size limit.');
     // Acquire the account write lock before yielding. Existing serialized
     // entity tasks are drained below; all new compatibility/entity mutations
@@ -2389,6 +3210,8 @@
         const intent={key:intentKey,ownerId:owner,intentId,phase:'prepared',activeGeneration:manifest.activeGeneration,
           baseUpdatedAt,expectedHeadRevision,snapshotRevision,candidateDigest,
           conflicts:JSON.parse(conflictsJson),payloadMetadata:JSON.parse(payloadMetadata),
+          pendingSnapshotProof:JSON.parse(pendingSnapshotProofJson),
+          pendingOutboxProof:JSON.parse(pendingOutboxProofJson),
           createdAt:timestamp(),updatedAt:timestamp()};
         store.put(intent);set({ok:true,created:true,intent});
       };
@@ -2404,6 +3227,118 @@
       if(!persisted||persisted.ownerId!==owner)entityRecoveryLockedOwners.delete(owner);
     }
     return result;
+  }
+
+  // A recovery candidate that is semantically identical to the durable workspace may reuse
+  // its already-published owner/revision-bound generation. This avoids writing a
+  // second 100k+ row generation merely to reset a verified Delta cursor.
+  async function stageWorkspaceEntityRecoveryFromActive(ownerId,intentId,candidateDigest,
+      trackerSnapshotJson,featureSnapshotJson){
+    const owner=entityOwnerKey(ownerId),id=String(intentId||''),
+      digest=String(candidateDigest||'');
+    if(!id||id.length>160||!/^[a-f0-9]{64}$/i.test(digest)||
+       typeof trackerSnapshotJson!=='string'||typeof featureSnapshotJson!=='string'){
+      return {ok:false,reason:'active_projection_reuse_preconditions_failed'};
+    }
+    let tracker,features;
+    try{tracker=JSON.parse(trackerSnapshotJson);features=JSON.parse(featureSnapshotJson);}
+    catch(_){return {ok:false,reason:'active_projection_reuse_preconditions_failed'};}
+    if(!tracker||typeof tracker!=='object'||Array.isArray(tracker)||
+       !features||typeof features!=='object'||Array.isArray(features)){
+      return {ok:false,reason:'active_projection_reuse_preconditions_failed'};
+    }
+    if(entityRemovalOwners.has(owner)||!enabled||!database||committedOwnerId!==owner||
+       !entityRecoveryLockedOwners.has(owner)){
+      return {ok:false,reason:'active_projection_reuse_preconditions_failed'};
+    }
+    await entitySyncSerial.catch(()=>undefined);
+    await serial.catch(()=>undefined);
+    await persistPending();
+    if(!enabled||committedOwnerId!==owner||entityRemovalOwners.has(owner)||pending.size){
+      return {ok:false,reason:'active_projection_reuse_preconditions_failed'};
+    }
+    return transaction(['migrationMeta',WORKSPACES],'readwrite',(tx,set)=>{
+      const migration=tx.objectStore('migrationMeta'),workspaces=tx.objectStore(WORKSPACES);
+      const values={manifest:null,intent:null,workspace:null,trackerRoot:null,featureRoot:null};
+      let remaining=3,finished=false;
+      const finish=()=>{
+        remaining--;
+        if(remaining!==0||finished)return;
+        finished=true;
+        const manifest=values.manifest,intent=values.intent,workspace=values.workspace;
+        const workspaceRevision=workspace&&Number(workspace.workspaceRevision);
+        const rowCount=manifest&&Number(manifest.rowCount);
+        const counts=manifest&&manifest.counts;
+        const collections=TRACKER_ENTITY_COLLECTIONS.concat(FEATURE_ENTITY_COLLECTIONS);
+        const expectedRowCount=collections.reduce((sum,key)=>{
+          const source=TRACKER_ENTITY_COLLECTIONS.includes(key)?tracker:features;
+          return sum+(Array.isArray(source[key])?source[key].length:0);
+        },2);
+        const countsMatch=!!(counts&&typeof counts==='object'&&!Array.isArray(counts)&&
+          collections.every(key=>{
+            const source=TRACKER_ENTITY_COLLECTIONS.includes(key)?tracker:features;
+            const expected=Array.isArray(source[key])?source[key].length:0;
+            const recorded=counts[key];
+            return expected===0
+              ?(recorded===undefined||recorded===0)
+              :(Number.isSafeInteger(Number(recorded))&&Number(recorded)===expected);
+          }));
+        const rootsMatch=!!(values.trackerRoot&&values.featureRoot&&
+          values.trackerRoot.ownerId===owner&&values.featureRoot.ownerId===owner&&
+          values.trackerRoot.generation===manifest?.activeGeneration&&
+          values.featureRoot.generation===manifest?.activeGeneration&&
+          values.trackerRoot.collection==='_meta'&&values.trackerRoot.entityId==='tracker'&&
+          values.featureRoot.collection==='_meta'&&values.featureRoot.entityId==='features'&&
+          sameJsonValue(values.trackerRoot.value,entityRootValue(tracker,TRACKER_ENTITY_COLLECTIONS))&&
+          sameJsonValue(values.featureRoot.value,entityRootValue(features,FEATURE_ENTITY_COLLECTIONS)));
+        const valid=enabled&&committedOwnerId===owner&&!entityRemovalOwners.has(owner)&&
+          entityRecoveryLockedOwners.has(owner)&&pending.size===0&&
+          manifest&&manifest.ownerId===owner&&manifest.status==='ready'&&
+          manifest.formatVersion===1&&typeof manifest.activeGeneration==='string'&&manifest.activeGeneration&&
+          !manifest.pendingGeneration&&!manifest.pendingRecoveryIntentId&&
+          Number.isSafeInteger(rowCount)&&rowCount===expectedRowCount&&countsMatch&&
+          validWorkspaceRow(workspace,owner)&&
+          sameJsonText(workspace.tracker,tracker)&&sameJsonText(workspace.featureState,features)&&
+          Number.isSafeInteger(workspaceRevision)&&workspaceRevision>=0&&
+          Number.isSafeInteger(Number(manifest.sourceWorkspaceRevision))&&
+          Number(manifest.sourceWorkspaceRevision)===workspaceRevision&&
+          Number.isSafeInteger(Number(manifest.sourceRevision))&&rootsMatch&&
+          intent&&intent.ownerId===owner&&intent.intentId===id&&intent.phase==='prepared'&&
+          intent.candidateDigest===digest&&intent.activeGeneration===manifest.activeGeneration;
+        if(!valid){
+          set({ok:false,reason:'active_projection_reuse_preconditions_failed'});
+          return;
+        }
+        const generation=manifest.activeGeneration;
+        migration.put({...manifest,pendingGeneration:generation,pendingRecoveryIntentId:id,
+          pendingRowCount:rowCount,pendingCounts:manifest.counts||{},
+          pendingPositionBounds:manifest.positionBounds||{},
+          pendingSourceRevision:manifest.sourceRevision,
+          pendingSourceWorkspaceRevision:workspaceRevision,
+          migrationStatus:'recovery-staged',updatedAt:timestamp()});
+        migration.put({...intent,phase:'staged',pendingGeneration:generation,
+          reusedActiveGeneration:true,updatedAt:timestamp()});
+        set({ok:true,reusedActiveGeneration:true,generation,rowCount,
+          counts:manifest.counts||{},sourceRevision:manifest.sourceRevision,
+          sourceWorkspaceRevision:workspaceRevision});
+      };
+      const manifestRequest=migration.get(entityManifestKey(owner));
+      const intentRequest=migration.get(entityDeltaRecoveryKey(owner));
+      const workspaceRequest=workspaces.get(workspaceKey(owner));
+      manifestRequest.onsuccess=()=>{
+        values.manifest=manifestRequest.result||null;
+        const generation=values.manifest&&values.manifest.activeGeneration;
+        if(!generation){finish();return;}
+        remaining+=2;
+        const trackerRequest=workspaces.get(entityRecordKey(owner,generation,'_meta','tracker'));
+        const featureRequest=workspaces.get(entityRecordKey(owner,generation,'_meta','features'));
+        trackerRequest.onsuccess=()=>{values.trackerRoot=trackerRequest.result||null;finish();};
+        featureRequest.onsuccess=()=>{values.featureRoot=featureRequest.result||null;finish();};
+        finish();
+      };
+      intentRequest.onsuccess=()=>{values.intent=intentRequest.result||null;finish();};
+      workspaceRequest.onsuccess=()=>{values.workspace=workspaceRequest.result||null;finish();};
+    });
   }
 
   async function readWorkspaceEntityRecovery(ownerId){
@@ -2427,6 +3362,76 @@
     return recovery;
   }
 
+  function validRecoveryRemoteReadbackProof(owner,intent,publication){
+    if(!intent||(!intent.pendingSnapshotProof&&!intent.pendingOutboxProof))return true;
+    const proof=publication&&publication.remoteReadbackProof;
+    const exactOutboxRequired=!!(intent.pendingOutboxProof&&
+      Number(intent.pendingOutboxProof.groupCount)>0);
+    return !!(proof&&proof.proofVersion===1&&proof.remoteReadbackVerified===true&&
+      proof.pendingLocalChangesPreserved===true&&
+      (!exactOutboxRequired||(proof.pendingOutboxOverlayApplied===true&&
+        Number(proof.pendingLocalChangeCount)>0))&&proof.ownerId===owner&&
+      proof.candidateDigest===intent.candidateDigest&&
+      proof.remotePayloadDigest===intent.candidateDigest&&
+      typeof proof.snapshotUpdatedAt==='string'&&proof.snapshotUpdatedAt===publication.updated_at&&
+      Number.isSafeInteger(Number(proof.snapshotRevision))&&
+      Number(proof.snapshotRevision)===Number(publication.snapshotRevision)&&
+      Number.isSafeInteger(Number(proof.headRevision))&&
+      Number(proof.headRevision)===Number(publication.headRevision)&&
+      Number.isSafeInteger(Number(proof.compactedThroughRevision))&&
+      Number(proof.compactedThroughRevision)===Number(publication.compactedThroughRevision)&&
+      Number.isSafeInteger(Number(proof.pendingLocalChangeCount))&&
+      Number(proof.pendingLocalChangeCount)>=0&&
+      stableEntityOperationJson(proof.pendingSnapshotProof||null)===
+        stableEntityOperationJson(intent.pendingSnapshotProof||null)&&
+      stableEntityOperationJson(proof.pendingOutboxProof||null)===
+        stableEntityOperationJson(intent.pendingOutboxProof||null));
+  }
+
+
+  function workspaceContainsPendingOutboxChanges(tracker,features,groups){
+    if(!isRecord(tracker)||!isRecord(features)||!Array.isArray(groups))return false;
+    const touchedRows=new Map(),metadataFields={trackerMeta:new Map(),featureMeta:new Map()};
+    for(const group of groups){
+      if(!group||!Array.isArray(group.changes)||!group.changes.length)return false;
+      for(const change of group.changes){
+        if(!change||typeof change.collection!=='string'||typeof change.id!=='string'||!change.id)
+          return false;
+        if(change.collection==='trackerMeta'||change.collection==='featureMeta'){
+          if(change.operation!=='put'||!isRecord(change.value))return false;
+          for(const [field,value] of Object.entries(change.value))
+            metadataFields[change.collection].set(field,value);
+          continue;
+        }
+        const trackerCollection=TRACKER_ENTITY_COLLECTIONS.includes(change.collection);
+        const featureCollection=FEATURE_ENTITY_COLLECTIONS.includes(change.collection);
+        if((!trackerCollection&&!featureCollection)||
+           !['put','delete'].includes(change.operation))return false;
+        if(change.operation==='put'&&
+           (!isRecord(change.value)||String(change.value.id)!==change.id))return false;
+        touchedRows.set(change.collection+'\u0000'+change.id,change);
+      }
+    }
+    for(const change of touchedRows.values()){
+      const root=TRACKER_ENTITY_COLLECTIONS.includes(change.collection)?tracker:features;
+      const rows=Array.isArray(root[change.collection])?root[change.collection]:[];
+      const row=rows.find(item=>isRecord(item)&&String(item.id)===change.id)||null;
+      if(change.operation==='delete'){
+        if(row)return false;
+      }else if(!row||!sameJsonValue(row,change.value)){
+        return false;
+      }
+    }
+    for(const collection of ['trackerMeta','featureMeta']){
+      const root=collection==='trackerMeta'?tracker:features;
+      for(const [field,value] of metadataFields[collection]){
+        if(!Object.prototype.hasOwnProperty.call(root,field)||!sameJsonValue(root[field],value))
+          return false;
+      }
+    }
+    return true;
+  }
+
   async function markWorkspaceEntityRecoveryPublished(ownerId,intentId,publication){
     const owner=entityOwnerKey(ownerId),id=String(intentId||''),
       stamp=String(publication&&publication.updated_at||''),snapshot=Number(publication&&publication.snapshotRevision),
@@ -2444,6 +3449,9 @@
            snapshot!==intent.expectedHeadRevision){
           set({ok:false,reason:'recovery_publication_does_not_match_staged_generation'});return;
         }
+        if(!validRecoveryRemoteReadbackProof(owner,intent,publication)){
+          set({ok:false,reason:'recovery_remote_readback_proof_required'});return;
+        }
         if(intent.phase==='published'){
           const prior=intent.publication||{};
           if(prior.updated_at!==stamp||Number(prior.snapshotRevision)!==snapshot){
@@ -2454,7 +3462,8 @@
           // cursor created by the final local commit.
           const refreshed={...intent,publication:{...prior,
             headRevision:Math.max(Number(prior.headRevision)||snapshot,head),
-            compactedThroughRevision:Math.max(Number(prior.compactedThroughRevision)||snapshot,compacted)},
+            compactedThroughRevision:Math.max(Number(prior.compactedThroughRevision)||snapshot,compacted),
+            remoteReadbackProof:publication.remoteReadbackProof||prior.remoteReadbackProof||null},
             updatedAt:timestamp()};
           store.put(refreshed);
           set({ok:true,alreadyPublished:true,intent:refreshed});
@@ -2463,7 +3472,8 @@
         if(intent.phase!=='staged'){set({ok:false,reason:'recovery_generation_not_staged'});return;}
         const next={...intent,phase:'published',
           publication:{updated_at:stamp,snapshotRevision:snapshot,headRevision:head,
-            compactedThroughRevision:compacted,storageMode:String(publication.storageMode||'unknown')},
+            compactedThroughRevision:compacted,storageMode:String(publication.storageMode||'unknown'),
+            remoteReadbackProof:publication.remoteReadbackProof||null},
           publishedAt:timestamp(),updatedAt:timestamp()};
         store.put(next);set({ok:true,alreadyPublished:false,intent:next});
       };
@@ -2474,7 +3484,7 @@
   }
 
   async function commitWorkspaceEntityRecovery(ownerId,intentId,entries,candidateDigest){
-    const owner=entityOwnerKey(ownerId),id=String(intentId||'');
+    const owner=entityOwnerKey(ownerId),id=String(intentId||''),completedKey=entityDeltaRecoveryCompletedKey(owner);
     if(!Array.isArray(entries)||entries.length<4)throw new Error('A complete local recovery transaction is required.');
     const seen=new Set(),normalized=entries.map(entry=>{
       if(!entry||typeof entry.key!=='string'||!(typeof entry.value==='string'||entry.value===null)||
@@ -2497,15 +3507,91 @@
       await persistPending();
       if(!enabled||committedOwnerId!==owner||pending.size)
         throw new Error('Local workspace writes could not be quiesced for recovery commit.');
-      const capturedWriteSequence=writeSequence,manifestKey=entityManifestKey(owner),
+      // A completed recovery removes its live intent. Check the durable completion
+      // receipt first so a retry after a successful atomic commit is idempotent
+      // instead of being mistaken for an unowned/missing intent.
+      const completedReceipt=await transaction(['migrationMeta'],'readonly',(tx,set)=>{
+        const request=tx.objectStore('migrationMeta').get(completedKey);
+        request.onsuccess=()=>set(request.result||null);
+      });
+      if(completedReceipt&&completedReceipt.ownerId===owner&&completedReceipt.intentId===id){
+        const receiptCursor=completedReceipt.cursor,receiptPublication=completedReceipt.publication||{};
+        if(completedReceipt.candidateDigest!==candidateDigest)
+          throw new Error('recovery_intent_id_reused');
+        if(!completedReceipt.generation||!receiptCursor||receiptCursor.key!==entityDeltaCursorKey(owner)||
+           receiptCursor.ownerId!==owner||receiptCursor.generation!==completedReceipt.generation||
+           receiptPublication.updated_at!==receiptCursor.snapshotUpdatedAt||
+           Number(receiptPublication.snapshotRevision)!==Number(receiptCursor.publishRevision)||
+           Number(receiptPublication.headRevision)!==Number(receiptCursor.remoteHeadRevision)||
+           receiptCursor.requiresPull!==(Number(receiptCursor.remoteHeadRevision)>Number(receiptCursor.publishRevision))){
+          throw new Error('recovery_completion_receipt_invalid');
+        }
+        return {ok:true,alreadyCommitted:true,revision,generation:completedReceipt.generation,
+          cursor:{...receiptCursor}};
+      }
+      const recoveryBeforeCommit=await readWorkspaceEntityRecovery(owner);
+      if(!recoveryBeforeCommit||!recoveryBeforeCommit.intent||
+         recoveryBeforeCommit.intent.intentId!==id){
+        throw new Error('The owner-bound recovery intent could not be verified before local commit.');
+      }
+      if(!validRecoveryRemoteReadbackProof(owner,recoveryBeforeCommit.intent,
+          recoveryBeforeCommit.intent.publication)){
+        throw new Error('The owner-bound exact remote snapshot read-back proof is missing or invalid; pending local changes remain preserved.');
+      }
+      const outboxBeforeCommit=await readWorkspaceEntityDeltaRecoveryState(owner);
+      if(!outboxBeforeCommit||outboxBeforeCommit.ok!==true){
+        throw new Error('The local Delta outbox could not be verified before recovery commit; pending changes remain preserved.');
+      }
+      const pendingOutboxProof=recoveryBeforeCommit.intent.pendingOutboxProof||null,
+        proofCursor=pendingOutboxProof&&pendingOutboxProof.cursor||null;
+      if(pendingOutboxProof){
+        const cursor=outboxBeforeCommit.cursor,outbox=outboxBeforeCommit.outbox;
+        if(pendingOutboxProof.ownerId!==owner||
+           outboxBeforeCommit.activeGeneration!==pendingOutboxProof.activeGeneration||
+           outboxBeforeCommit.workspaceRevision!==Number(pendingOutboxProof.workspaceRevision)||
+           outbox.highWatermark!==Number(pendingOutboxProof.throughSequence)||
+           outbox.throughSequence!==Number(pendingOutboxProof.throughSequence)||
+           outbox.groupCount!==Number(pendingOutboxProof.groupCount)||
+           outbox.changeCount!==Number(pendingOutboxProof.changeCount)||
+           outbox.groups.length!==Number(pendingOutboxProof.groupCount)||outbox.hasMore===true||
+           outbox.digest!==pendingOutboxProof.digest||
+           !proofCursor||cursor.generation!==proofCursor.generation||
+           Number(cursor.publishRevision)!==Number(proofCursor.publishRevision)||
+           Number(cursor.acknowledgedSequence)!==Number(proofCursor.acknowledgedSequence)||
+           Number(cursor.remoteHeadRevision)!==Number(proofCursor.remoteHeadRevision)||
+           cursor.snapshotUpdatedAt!==proofCursor.snapshotUpdatedAt||
+           cursor.requiresPull!==proofCursor.requiresPull){
+          throw new Error('The pending Delta outbox changed after verified recovery preparation; local changes remain preserved.');
+        }
+        if(Number(pendingOutboxProof.groupCount)>0&&
+           !workspaceContainsPendingOutboxChanges(tracker,features,outbox.groups)){
+          throw new Error('The exact pending Delta outbox values are not present in the recovery candidate; local changes remain preserved.');
+        }
+      }else if(outboxBeforeCommit.outbox.groups.length||outboxBeforeCommit.outbox.hasMore===true){
+        throw new Error('Pending local Delta outbox entries have no exact verified recovery proof; local recovery commit was blocked.');
+      }
+      const expectedOutboxHighWatermark=outboxBeforeCommit.outbox.highWatermark,
+        pendingOutboxGroups=pendingOutboxProof?outboxBeforeCommit.outbox.groups:[],
+        pendingOutboxChangeCount=pendingOutboxProof?Number(pendingOutboxProof.changeCount):0,
+        pendingOutboxRange=pendingOutboxProof&&pendingOutboxChangeCount>0
+          ?entityOutboxSequenceRange(owner,Number(proofCursor.acknowledgedSequence),
+            Number(pendingOutboxProof.throughSequence)):null,
+        capturedWriteSequence=writeSequence,manifestKey=entityManifestKey(owner),
         intentKey=entityDeltaRecoveryKey(owner),cursorKey=entityDeltaCursorKey(owner),
-        sequenceKey=entitySequenceKey(owner),completedKey=entityDeltaRecoveryCompletedKey(owner);
-      const result=await transaction([RECORDS,META,WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
+        sequenceKey=entitySequenceKey(owner);
+      if(pendingOutboxProof&&(!Array.isArray(pendingOutboxGroups)||
+         pendingOutboxGroups.length!==Number(pendingOutboxProof.groupCount)||
+         pendingOutboxGroups.reduce((sum,group)=>sum+(Array.isArray(group&&group.changes)?group.changes.length:0),0)!==pendingOutboxChangeCount||
+         (pendingOutboxChangeCount>0&&!pendingOutboxRange))){
+        throw new Error('The proof-bound Delta outbox cannot be reconciled for an atomic recovery commit.');
+      }
+      const result=await transaction([RECORDS,META,WORKSPACES,'migrationMeta','outbox'],'readwrite',(tx,set)=>{
         const records=tx.objectStore(RECORDS),meta=tx.objectStore(META),workspaces=tx.objectStore(WORKSPACES),
-          migration=tx.objectStore('migrationMeta');
+          migration=tx.objectStore('migrationMeta'),outbox=tx.objectStore('outbox');
         const values={owner:null,workspace:null,manifest:null,intent:null,sequence:null,
-          lastRevision:null,trackerRoot:null,featureRoot:null,completed:null};
-        let remaining=9,finished=false;
+          lastRevision:null,trackerRoot:null,featureRoot:null,completed:null,
+          outboxRows:null,outboxMarkers:new Map()};
+        let remaining=9+(pendingOutboxRange?1+pendingOutboxGroups.length*2:0),finished=false;
         const finish=()=>{
           remaining--;if(remaining!==0||finished)return;finished=true;
           const completed=values.completed;
@@ -2519,6 +3605,9 @@
             workspaceRevision=workspace&&Number.isSafeInteger(Number(workspace.workspaceRevision))
               ?Number(workspace.workspaceRevision):(workspace&&Number.isSafeInteger(Number(workspace.revision))?Number(workspace.revision):null),
             publication=intent&&intent.publication;
+          if(!validRecoveryRemoteReadbackProof(owner,intent,publication)){
+            set({ok:false,reason:'recovery_remote_readback_proof_invalid'});return;
+          }
           if(writeSequence!==capturedWriteSequence||!enabled||committedOwnerId!==owner||entityRemovalOwners.has(owner)||
              rowValue(values.owner)!==owner||!manifest||manifest.ownerId!==owner||manifest.status!=='ready'||
              manifest.activeGeneration!==intent?.activeGeneration||manifest.pendingRecoveryIntentId!==id||
@@ -2542,6 +3631,56 @@
           if(!Number.isSafeInteger(highWatermark)||highWatermark<0){
             set({ok:false,reason:'invalid_local_outbox_high_watermark'});return;
           }
+          if(highWatermark!==expectedOutboxHighWatermark||
+             stableEntityOperationJson(intent.pendingOutboxProof||null)!==
+               stableEntityOperationJson(pendingOutboxProof||null)||
+             (pendingOutboxProof&&(manifest.activeGeneration!==pendingOutboxProof.activeGeneration||
+               workspaceRevision!==Number(pendingOutboxProof.workspaceRevision)||
+               highWatermark!==Number(pendingOutboxProof.throughSequence)))){
+            set({ok:false,reason:'pending_outbox_changed_before_recovery_commit'});return;
+          }
+          if(pendingOutboxRange){
+            const rows=values.outboxRows||[];
+            let rowIndex=0,proofMatches=rows.length===pendingOutboxChangeCount;
+            for(const group of pendingOutboxGroups){
+              const first=Number(group.firstSequence),last=Number(group.lastSequence),
+                count=Number(group.changeCount),markers=values.outboxMarkers.get(group.operationId)||{},
+                marker=markers.marker,sequenceMarker=markers.sequenceMarker;
+              if(!Array.isArray(group.changes)||!Number.isSafeInteger(first)||first<1||
+                 !Number.isSafeInteger(last)||last<first||last-first+1!==count||
+                 count!==group.changes.length||!marker||marker.ownerId!==owner||
+                 marker.generation!==pendingOutboxProof.activeGeneration||
+                 marker.kind!=='operation-marker'||marker.operationId!==group.operationId||
+                 Number(marker.firstSequence)!==first||Number(marker.lastSequence)!==last||
+                 Number(marker.count)!==count||typeof marker.payloadFingerprint!=='string'||
+                 !/^[a-f0-9]{64}$/.test(marker.payloadFingerprint)||
+                 !sequenceMarker||sequenceMarker.ownerId!==owner||
+                 sequenceMarker.generation!==pendingOutboxProof.activeGeneration||
+                 sequenceMarker.kind!=='operation-marker-sequence'||
+                 sequenceMarker.operationId!==group.operationId||
+                 Number(sequenceMarker.lastSequence)!==last){
+                proofMatches=false;break;
+              }
+              for(let offset=0;offset<group.changes.length;offset++){
+                const row=rows[rowIndex++],change=group.changes[offset],sequence=first+offset;
+                if(!row||row.key!==entityOutboxKey(owner,sequence)||row.ownerId!==owner||
+                   row.generation!==pendingOutboxProof.activeGeneration||row.kind!=='change'||
+                   Number(row.sequence)!==sequence||row.operationId!==group.operationId||
+                   row.collection!==change.collection||row.entityId!==change.id||
+                   row.operation!==change.operation||
+                   (change.operation==='put'&&
+                     (row.position!==change.position||
+                      stableEntityOperationJson(row.value)!==stableEntityOperationJson(change.value)))||
+                   (change.operation==='delete'&&row.value!==undefined&&row.value!==null)){
+                  proofMatches=false;break;
+                }
+              }
+              if(!proofMatches)break;
+            }
+            if(!proofMatches||rowIndex!==rows.length){
+              set({ok:false,reason:'pending_outbox_changed_before_recovery_commit'});return;
+            }
+          }
           for(const entry of normalized)records.put({key:entry.key,value:entry.value,
             deleted:entry.value===null,revision:nextRevision,updatedAt:timestamp()});
           workspaces.put(makeWorkspaceRow(owner,trackerEntry.value,featureEntry.value,nextRevision,workspaceRevision));
@@ -2563,6 +3702,16 @@
           migration.put({key:completedKey,ownerId:owner,intentId:id,candidateDigest:intent.candidateDigest,
             generation,publication:{...publication},cursor:{...cursor},completedAt:timestamp()});
           migration.delete(intentKey);
+          // The exact proof-bound Delta rows and both idempotency markers are
+          // retired in this same transaction as the generation/cursor switch.
+          // A later owner write must never be caught by an owner-wide cleanup.
+          if(pendingOutboxRange){
+            for(const row of values.outboxRows||[])outbox.delete(row.key);
+            for(const group of pendingOutboxGroups){
+              outbox.delete(entityOperationKey(owner,group.operationId));
+              outbox.delete(entityOperationSequenceKey(owner,Number(group.lastSequence),group.operationId));
+            }
+          }
           set({ok:true,alreadyCommitted:false,revision:nextRevision,generation,cursor});
         };
         const ownerRequest=records.get(OWNER_KEY),workspaceRequest=workspaces.get(workspaceKey(owner)),
@@ -2584,6 +3733,22 @@
         sequenceRequest.onsuccess=()=>{values.sequence=sequenceRequest.result||null;finish();};
         revisionRequest.onsuccess=()=>{values.lastRevision=revisionRequest.result||null;finish();};
         completedRequest.onsuccess=()=>{values.completed=completedRequest.result||null;finish();};
+        if(pendingOutboxRange){
+          const rowsRequest=outbox.getAll(pendingOutboxRange,pendingOutboxChangeCount+1);
+          rowsRequest.onsuccess=()=>{values.outboxRows=rowsRequest.result||[];finish();};
+          rowsRequest.onerror=()=>{try{tx.abort();}catch(_){}};
+          for(const group of pendingOutboxGroups){
+            const markers={marker:null,sequenceMarker:null};
+            values.outboxMarkers.set(group.operationId,markers);
+            const markerRequest=outbox.get(entityOperationKey(owner,group.operationId));
+            markerRequest.onsuccess=()=>{markers.marker=markerRequest.result||null;finish();};
+            markerRequest.onerror=()=>{try{tx.abort();}catch(_){}};
+            const sequenceMarkerRequest=outbox.get(
+              entityOperationSequenceKey(owner,Number(group.lastSequence),group.operationId));
+            sequenceMarkerRequest.onsuccess=()=>{markers.sequenceMarker=sequenceMarkerRequest.result||null;finish();};
+            sequenceMarkerRequest.onerror=()=>{try{tx.abort();}catch(_){}};
+          }
+        }
       });
       if(!result||result.ok!==true)throw new Error(result&&result.reason||'The local entity-delta recovery commit was not completed.');
       if(!result.alreadyCommitted){
@@ -2592,15 +3757,37 @@
           for(const entry of normalized){if(entry.value===null)cache.delete(entry.key);else cache.set(entry.key,entry.value);knownKeys.add(entry.key);}
           mirrorBatch(normalized);
         }
-        try{await pruneInactiveWorkspaceEntityGenerations(owner,result.generation);}
-        catch(error){console.warn('Old Nexus entity recovery generations could not be pruned; the new active generation remains verified.',error);}
-        try{await pruneWorkspaceEntityOutbox(owner);}
-        catch(error){console.warn('Superseded Nexus entity outbox rows could not be pruned; the new active generation remains verified.',error);}
+        // The proof-bound Delta outbox rows and markers were deleted atomically
+        // with the active-generation/cursor switch above. Do not run an owner-wide
+        // post-commit sweep: another tab may append a new-generation operation as
+        // soon as this transaction releases its IndexedDB locks.
+        // The manifest/cursor/snapshot switch and completion receipt are already
+        // committed atomically. Removing the previous entity generation is only
+        // storage hygiene, but can require hundreds of IndexedDB batches for a
+        // large workspace. Do not hold initial cloud verification open for it.
+        const scheduleInactiveGenerationPrune=()=>{
+          const prune=()=>pruneInactiveWorkspaceEntityGenerations(owner,result.generation)
+            .catch(error=>{
+              console.warn('Old Nexus entity recovery generations could not be pruned; the active generation remains verified.',error);
+              return {removed:0,scanned:0,error:true};
+            });
+          try{
+            if(root&&typeof root.setTimeout==='function')root.setTimeout(prune,1500);
+            else Promise.resolve().then(prune);
+          }catch(error){
+            console.warn('Old Nexus entity recovery generation cleanup could not be scheduled; the active generation remains verified.',error);
+          }
+        };
+        scheduleInactiveGenerationPrune();
       }
       entityRecoveryLockedOwners.delete(owner);
       return result;
     });
-    serial=task.then(()=>revision);task.catch(reportFailure);return task;
+    serial=task.then(()=>revision);
+    // Keep a failed task observable to its caller while marking the serial tail
+    // handled; the next queued operation already recovers from this rejection.
+    serial.catch(()=>undefined);
+    task.catch(reportFailure);return task;
   }
 
   async function deleteWorkspaceEntities(ownerId){
@@ -2683,9 +3870,11 @@
     };
 
     const entityRowsRemoved=await removeOwnerPrefix('workspaces',entityOwnerRecordPrefix(owner));
-    const outboxRowsRemoved=await removeOwnerPrefix('outbox',entityOutboxPrefix(owner));
+    const entityOutboxRowsRemoved=await removeOwnerPrefix('outbox',entityOutboxPrefix(owner));
+    const workspaceOutboxRowsRemoved=await removeOwnerPrefix('outbox',workspaceOperationOutboxPrefix(owner));
+    const outboxRowsRemoved=entityOutboxRowsRemoved+workspaceOutboxRowsRemoved;
     entityRecoveryLockedOwners.delete(owner);
-    return {ownerId:owner,entityRowsRemoved,outboxRowsRemoved,
+    return {ownerId:owner,entityRowsRemoved,outboxRowsRemoved,entityOutboxRowsRemoved,workspaceOutboxRowsRemoved,
       manifestRemoved:removedMetadata.manifestRemoved,sequenceRemoved:removedMetadata.sequenceRemoved,
       cursorRemoved:removedMetadata.cursorRemoved,recoveryRemoved:removedMetadata.recoveryRemoved};
   }
@@ -2771,11 +3960,85 @@
     }
   }
 
-  function persistBatch(batch) {
-    return transaction([RECORDS, META, WORKSPACES], 'readwrite', (tx, set) => {
+  async function persistBatch(batch, workspaceOperations = null) {
+    const preparedWorkspaceOperations=[];
+    if(Array.isArray(workspaceOperations)){
+      const seenOwners=new Set();
+      for(const item of workspaceOperations){
+        if(!isRecord(item)||typeof item.ownerUserId!=='string'||!item.ownerUserId||
+           typeof item.operationId!=='string'||!item.operationId||
+           !Number.isSafeInteger(Number(item.localSequence))||Number(item.localSequence)<1||
+           !isRecord(item.payload)||!isRecord(item.payload.state)||!isRecord(item.payload.featureState))
+          throw new Error('A workspace outbox operation is missing its owner, stable ID, sequence, or complete snapshot.');
+        if(seenOwners.has(item.ownerUserId))throw new Error('A local workspace transaction contains duplicate owner outbox operations.');
+        seenOwners.add(item.ownerUserId);
+        const operation={ownerId:item.ownerUserId,operationId:item.operationId,
+          operationType:String(item.operationType||'snapshot'),payloadVersion:Number(item.schemaVersion)||1,
+          baseRevision:typeof item.baseServerVersion==='string'?item.baseServerVersion:null,
+          sequence:Number(item.localSequence),payload:item.payload,
+          changes:Array.isArray(item.entityChanges)?item.entityChanges:null,
+          trackerRoot:isRecord(item.trackerRoot)?item.trackerRoot:null,
+          featureRoot:isRecord(item.featureRoot)?item.featureRoot:null,
+          replaceEntities:item.replaceEntities===true,createdAt:String(item.createdAt||timestamp()),
+          updatedAt:String(item.updatedAt||timestamp())};
+        operation.requestHash=await fingerprintWorkspaceOperation(operation);
+        preparedWorkspaceOperations.push(operation);
+      }
+    }
+    return transaction([RECORDS, META, WORKSPACES, 'outbox'], 'readwrite', (tx, set) => {
       const records = tx.objectStore(RECORDS);
       const meta = tx.objectStore(META);
       const workspaces = tx.objectStore(WORKSPACES);
+      const outbox = tx.objectStore('outbox');
+      const persistWorkspaceOperations = onComplete => {
+        if(!preparedWorkspaceOperations.length){onComplete();return;}
+        let remaining=preparedWorkspaceOperations.length,failed=false;
+        const complete=()=>{remaining--;if(remaining===0&&!failed)onComplete();};
+        for(const operation of preparedWorkspaceOperations){
+          const range=entityPrefixRange(workspaceOperationOutboxPrefix(operation.ownerId));
+          if(!range){failed=true;try{tx.abort();}catch(_){}return;}
+          const request=outbox.getAll(range,MAX_PENDING_WORKSPACE_OPERATIONS+1);
+          request.onsuccess=()=>{
+            if(failed)return;
+            const rows=(request.result||[]).filter(row=>row&&row.kind==='workspace-operation'&&row.ownerId===operation.ownerId);
+            for(const row of rows)if(row.deliveryState==='acknowledged')outbox.delete(row.key);
+            const unresolved=rows.filter(row=>row.deliveryState!=='acknowledged');
+            if(unresolved.length>MAX_PENDING_WORKSPACE_OPERATIONS){failed=true;try{tx.abort();}catch(_){}return;}
+            const key=workspaceOperationOutboxKey(operation.ownerId,operation.operationId);
+            const same=rows.find(row=>row.operationId===operation.operationId);
+            if(same){
+              if(same.requestHash!==operation.requestHash){failed=true;try{tx.abort();}catch(_){}return;}
+              complete();return;
+            }
+            const dependencies=unresolved.filter(row=>row.deliveryState==='in_flight'||
+              row.deliveryState==='awaiting_receipt'||Number(row.attemptCount)>0);
+            if(dependencies.length+1>MAX_PENDING_WORKSPACE_OPERATIONS){failed=true;try{tx.abort();}catch(_){}return;}
+            const superseded=unresolved.filter(row=>!dependencies.includes(row));
+            for(const row of superseded)outbox.delete(row.key);
+            const supersededIds=[];
+            let supersededCount=0;
+            for(const row of superseded){
+              supersededIds.push(row.operationId);
+              for(const priorId of Array.isArray(row.supersededOperationIds)?row.supersededOperationIds:[])supersededIds.push(priorId);
+              supersededCount+=1+Math.max(0,Number(row.supersededOperationCount)||0);
+            }
+            const envelope={key,kind:'workspace-operation',recordVersion:1,protocolVersion:1,
+              ownerId:operation.ownerId,operationId:operation.operationId,
+              operationType:operation.operationType,payloadVersion:operation.payloadVersion,
+              baseRevision:operation.baseRevision,targetRevision:null,sequence:operation.sequence,
+              dependsOn:dependencies.map(row=>row.operationId),
+              supersededOperationIds:Array.from(new Set(supersededIds)).slice(-64),
+              supersededOperationCount:supersededCount,
+              requestHash:operation.requestHash,payload:operation.payload,changes:operation.changes,
+              trackerRoot:operation.trackerRoot,featureRoot:operation.featureRoot,
+              replaceEntities:operation.replaceEntities,createdAt:operation.createdAt,
+              updatedAt:operation.updatedAt,attemptCount:0,lastAttemptAt:null,nextAttemptAt:null,
+              lastErrorCode:null,deliveryState:'pending',acknowledgement:null};
+            outbox.put(envelope);complete();
+          };
+          request.onerror=()=>{failed=true;try{tx.abort();}catch(_){}};
+        }
+      };
       const request = meta.get('lastCommittedRevision');
       request.onsuccess = () => {
         const nextRevision = Math.max(0, Number(request.result && request.result.value) || 0) + 1;
@@ -2861,7 +4124,7 @@
               workspaces.put(makeWorkspaceRow(
                 owner, tracker, featureState, nextRevision, nextWorkspaceRevision
               ));
-              set(nextRevision);
+              persistWorkspaceOperations(()=>set(nextRevision));
             };
           };
           ownerRequest.onsuccess = () => { values.owner = ownerRequest.result || null; done(); };
@@ -2880,7 +4143,8 @@
   async function persistPending() {
     while (enabled && pending.size) {
       const batch = Array.from(pending.values());
-      const nextRevision = await persistBatch(batch);
+      const operationItem=batch.find(item=>Array.isArray(item.workspaceOperations));
+      const nextRevision = await persistBatch(batch,operationItem?operationItem.workspaceOperations:null);
       revision = nextRevision;
       for (const item of batch) {
         if (item.key === OWNER_KEY) committedOwnerId = item.value;
@@ -2892,7 +4156,7 @@
       lastError = null;
       if (root && root.document) {
         const status = root.document.getElementById('saveStatus');
-        if (status && (String(status.textContent || '').startsWith('Save failed') || String(status.textContent || '').startsWith('Saving to this device'))) {
+        if (status && !pending.size && (String(status.textContent || '').startsWith('Save failed') || String(status.textContent || '').startsWith('Saving to this device'))) {
           status.textContent = 'Saved on this device';
           status.style.color = '';
         }
@@ -2911,6 +4175,7 @@
   }
 
   function commitLocalStorageEntries(entries) {
+    const transactionOptions=arguments.length>1&&isRecord(arguments[1])?arguments[1]:{};
     if (!Array.isArray(entries) || entries.length === 0) throw new Error('Invalid Nexus storage transaction.');
     const seen = new Set();
     const normalized = entries.map(entry => {
@@ -2960,6 +4225,8 @@
       else cache.set(entry.key, entry.value);
       knownKeys.add(entry.key);
       const item = { ...entry, sequence: ++writeSequence };
+      if(entry.key===OFFLINE_QUEUE_KEY&&Array.isArray(transactionOptions.workspaceOperations))
+        item.workspaceOperations=transactionOptions.workspaceOperations;
       staged.push(item);
       pending.set(entry.key, item);
     }
@@ -3199,7 +4466,10 @@
     getWorkspaceEntityRevisionKey,
     migrateWorkspaceEntities,
     readWorkspaceEntities,
+    isWorkspaceSnapshotCurrent,
+    getWorkspaceEntityProjectionReadiness,
     beginWorkspaceEntityRecovery,
+    stageWorkspaceEntityRecoveryFromActive,
     readWorkspaceEntityRecovery,
     markWorkspaceEntityRecoveryPublished,
     commitWorkspaceEntityRecovery,
@@ -3208,9 +4478,12 @@
     syncWorkspaceEntities,
     waitForWorkspaceEntitySync,
     readWorkspaceEntityOutbox,
+    readWorkspacePendingOperations,
     readWorkspaceEntityOutboxGroups,
     acknowledgeWorkspaceEntityOutbox,
     readWorkspaceEntityDeltaCursor,
+    readWorkspaceEntityDeltaRecoveryState,
+    repairWorkspaceEntityDeltaCursorGeneration,
     initializeWorkspaceEntityDeltaCursor,
     acknowledgeWorkspaceEntityOutboxGroup,
     applyWorkspaceEntityDeltaGroup,

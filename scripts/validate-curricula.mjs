@@ -87,7 +87,7 @@ assert(!appSource.includes("$('homeOpenAnalytics').addEventListener('click',open
 assert(appSource.includes("document.addEventListener('click',e=>{\n    const openButton=e.target.closest('#homeOpenAnalytics');") && appSource.includes("hubEl('openDangerZoneBtn').addEventListener('click',openDangerZone)"), 'Open Analytics must use stable document delegation while Danger Zone remains wired in the Study Hub scope.');
 assert(!appSource.includes('data-hub-tab="analytics"'), 'Analytics must not remain a Study Hub tab.');
 assert(!appSource.includes('data-view="history"') && appSource.includes('id="dangerZoneStandalone"'), 'Review history must be moved out of the main navigation and into Danger Zone.');
-assert(appSource.includes('DANGER ZONE — Clear every saved review-history entry?'), 'History deletion must warn users that analytics records will be lost.');
+assert(appSource.includes('DANGER ZONE - Clear every saved review history entry?'), 'History deletion must warn users that analytics records will be lost.');
 assert(appSource.includes('async function exportAnalyticsPdf(options={})') && appSource.includes('data-hub-action="analytics-export-pdf"'), 'Analytics must include the configurable detailed printable PDF report action.');
 assert(!appSource.includes("downloadBlob('nexus-study-review-report.html'") && !appSource.includes("const fallbackReport='<!doctype html>"), 'PDF export must use the clean live-app print flow, not the preview-only HTML fallback.');
 assert(appSource.includes('function paperScoreTrendsMarkup') && appSource.includes('paper-trend-line') && appSource.includes('paper-trend-area'), 'Paper analytics must retain its smooth subject-separated trend charts in the app.');
@@ -95,7 +95,7 @@ assert(!appSource.includes('reviewHeatmapMarkup') && !appSource.includes('pdf-he
 assert(appSource.includes('.paper-trend-svg') && appSource.includes('nexus-activity-svg{display:block;width:100%'), 'Paper charts and rebuilt Activity charts must retain responsive graph styling.');
 assert(appSource.includes('ra-svg-dense') && appSource.includes("period==='month'") && appSource.includes("period==='year'"), 'Month/year graphs must retain their day/month axis labels.');
 assert(appSource.includes('function ratingAnalyticsTimelineTableMarkup') && appSource.includes('View exact counts by date / interval'), 'Analytics must provide exact per-rating counts for each timeline interval.');
-assert(appSource.includes('DANGER ZONE — Delete this review record?'), 'Deleting an individual review must warn that it will be removed from analytics.');
+assert(appSource.includes('DANGER ZONE - Delete this review record?'), 'Deleting an individual review must warn that it will be removed from analytics.');
 
 // Execute the real analytics selection, binning, SVG, and table functions against
 // deterministic review records for each supported timeframe.

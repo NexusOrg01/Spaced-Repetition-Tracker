@@ -219,4 +219,31 @@ const snap=(state,featureState={})=>({app:'Nexus',schema:4,exportedAt:'2026-10-2
  console.log('Large structural equality regression passed: '+total+' records, cooperative yields='+yielded+'.');
 }
 
+{
+ // A cancelled account-A comparison must stop inspecting records after its first
+ // cooperative yield, not merely reject the outer timeout/waiter.
+ const controller=new AbortController();
+ let inspectedAfterAbort=0;
+ const abortLeft=Array.from({length:12000},(_,index)=>Object.defineProperty({},'value',{
+  enumerable:true,get(){inspectedAfterAbort++;return index;}
+ }));
+ const abortRight=abortLeft.map((row,index)=>({value:index}));
+ const nativeSetTimeout=globalThis.setTimeout;
+ globalThis.setTimeout=(callback,...args)=>nativeSetTimeout(()=>{
+  controller.abort(new Error('comparison test cancelled'));
+  callback();
+ },0,...args);
+ try{
+  await assert.rejects(
+   merge.sameAsync({state:{topics:abortLeft},featureState:{}},
+    {state:{topics:abortRight},featureState:{}},controller.signal),
+   /comparison test cancelled/,
+   'an aborted comparison must reject with the cancellation reason'
+  );
+ }finally{globalThis.setTimeout=nativeSetTimeout;}
+ assert.ok(inspectedAfterAbort<4096,
+  'comparison must stop inspecting records promptly after its first cancellation yield');
+ console.log('Cooperative comparison cancellation passed: inspected='+inspectedAfterAbort+' before abort.');
+}
+
 console.log('Automatic three-way workspace merge tests passed.');

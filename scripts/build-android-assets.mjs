@@ -187,9 +187,20 @@ await patchFile('cloud-sync.js', source => {
     'Android cloud safety guard'
   );
 
-  const webLoader = "function loadSupabaseLibrary(){if(window.supabase&&window.supabase.createClient)return Promise.resolve();if(supabaseLoadPromise)return supabaseLoadPromise;supabaseLoadPromise=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3';script.async=true;script.onload=()=>window.supabase&&window.supabase.createClient?resolve():reject(new Error('Supabase client did not initialize.'));script.onerror=()=>reject(new Error('Could not load Supabase client. Check internet access.'));document.head.appendChild(script);});return supabaseLoadPromise;}";
+  // Keep the Android WebView offline from the CDN loader. The app already
+  // injects its pinned local UMD bundle before cloud-sync.js executes. Replace
+  // the whole loader function rather than matching a minified implementation:
+  // web sync adds bounded timeout/error handling here, and Android must keep
+  // rejecting safely if its bundled Supabase client is unexpectedly absent.
+  const loaderStart = next.indexOf('function loadSupabaseLibrary(){');
+  const loaderEnd = next.indexOf('\nfunction setControls(){', loaderStart);
+  assert.ok(loaderStart >= 0 && loaderEnd > loaderStart,
+    'Android local-only Supabase loader could not locate the current cloud-sync loader block.');
+  const currentLoader = next.slice(loaderStart, loaderEnd);
+  assert.equal((next.match(/function loadSupabaseLibrary\(\)\{/g) || []).length, 1,
+    'Android cloud-sync must contain exactly one Supabase loader.');
   const localOnlyLoader = "function loadSupabaseLibrary(){if(window.supabase&&window.supabase.createClient)return Promise.resolve();return Promise.reject(new Error('The locally bundled Supabase client is unavailable. Reinstall or update this Nexus build.'));}";
-  next = replaceExactlyOnce(next, webLoader, localOnlyLoader, 'Android local-only Supabase loader');
+  next = next.slice(0, loaderStart) + localOnlyLoader + next.slice(loaderEnd);
 
   next = replaceExactlyOnce(
     next,

@@ -13,6 +13,7 @@ const backup = require('../backup-restore-utils.js');
 const cloudChunks = require('../cloud-chunk-storage.js');
 const queue = require('../offline-sync-queue.js');
 const recovery = require('../cloud-sync-recovery.js');
+const workspaceIsolationGuard = require('../workspace-isolation-guard.js');
 const curriculumIntegrity = require('../curriculum-integrity.js');
 // workspace-sync-merge.js captures the browser global at module load. Mirror the
 // browser's window.NexusCurriculumIntegrity on Node's globalThis for runtime tests.
@@ -22,6 +23,1060 @@ globalThis.NexusCurriculumPacks = commerceCatalogue.packs;
 const commercePack = commerceCatalogue.packs.find(pack => pack.id === 'sl-al-commerce-si');
 const workspaceMerge = require('../workspace-sync-merge.js');
 const source = readFileSync(resolve(root, 'cloud-sync.js'), 'utf8');
+const timeoutBudgetMatch = source.match(/const SYNC_REQUEST_TIMEOUT_MS=([0-9]+),SESSION_INITIALIZATION_TIMEOUT_MS=([0-9]+)/);
+assert.ok(timeoutBudgetMatch, 'the upload and initialization safety deadlines must remain explicit and testable');
+assert.ok(Number(timeoutBudgetMatch[2]) > Number(timeoutBudgetMatch[1]),
+  'session initialization must not cancel a valid upload/recovery before its own bounded sync deadline');
+
+const markerHelperStart = source.indexOf('function restoreVerifiedChunkedDeltaMarker(');
+const markerHelperEnd = source.indexOf('\nasync function fetchRemote', markerHelperStart);
+assert.ok(markerHelperStart >= 0 && markerHelperEnd > markerHelperStart,
+  'verified chunk-manifest Delta marker restoration must remain independently testable');
+const markerSandbox = {};
+vm.createContext(markerSandbox);
+vm.runInContext(
+  source.slice(markerHelperStart, markerHelperEnd) +
+    '\nglobalThis.restoreVerifiedChunkedDeltaMarker = restoreVerifiedChunkedDeltaMarker;',
+  markerSandbox,
+  { filename: 'verified-chunked-delta-marker.js' }
+);
+{
+  const reconstructedPayload = { app: 'Nexus', state: { streams: [] }, featureState: {} };
+  const activeManifest = {
+    __nexusStorage: 'chunked-v1', __nexusDeltaSync: 'entity-delta-v1',
+    revisionId: 'revision-A', chunkCount: 103, totalBytes: 26900000
+  };
+  const remote = {
+    storageMode: 'chunked', chunkManifest: activeManifest,
+    payload: reconstructedPayload, updated_at: '2026-11-24T05:00:00.000Z'
+  };
+  const restored = markerSandbox.restoreVerifiedChunkedDeltaMarker(remote, 'delta');
+  assert.equal(restored.payload.__nexusDeltaSync, 'entity-delta-v1',
+    'a verified active Delta manifest must restore protocol metadata omitted from pre-Delta immutable chunk bytes');
+  assert.notEqual(restored.payload, reconstructedPayload,
+    'marker restoration must return a new payload rather than mutate the verified reconstructed object');
+  assert.equal(reconstructedPayload.__nexusDeltaSync, undefined,
+    'the reconstructed chunk payload must remain immutable');
+  assert.equal(restored.chunkManifest, activeManifest,
+    'the exact verified active manifest reference must remain unchanged');
+  const unmarkedManifest = { ...activeManifest };
+  delete unmarkedManifest.__nexusDeltaSync;
+  const unmarked = markerSandbox.restoreVerifiedChunkedDeltaMarker({
+    ...remote, chunkManifest: unmarkedManifest, payload: { ...reconstructedPayload }
+  }, 'delta');
+  assert.equal(unmarked.payload.__nexusDeltaSync, undefined,
+    'a Delta marker must never be invented when the active manifest does not carry it');
+  const snapshotPayload = { ...reconstructedPayload, __nexusDeltaSync: 'entity-delta-v1' };
+  const snapshot = markerSandbox.restoreVerifiedChunkedDeltaMarker({
+    ...remote, payload: snapshotPayload
+  }, 'snapshot');
+  assert.equal(snapshot.payload.__nexusDeltaSync, undefined,
+    'snapshot mode must continue stripping the protocol-only Delta marker');
+  const legacy = { storageMode: 'legacy', payload: { ...reconstructedPayload } };
+  assert.equal(markerSandbox.restoreVerifiedChunkedDeltaMarker(legacy, 'delta'), legacy,
+    'legacy JSONB snapshots must not receive chunk-manifest metadata');
+  const legacySnapshot = markerSandbox.restoreVerifiedChunkedDeltaMarker({
+    storageMode: 'legacy',
+    payload: { ...reconstructedPayload, __nexusDeltaSync: 'entity-delta-v1' }
+  }, 'snapshot');
+  assert.equal(legacySnapshot.payload.__nexusDeltaSync, undefined,
+    'snapshot mode must continue stripping the Delta marker from legacy JSONB snapshots too');
+}
+assert.ok(source.includes('remote=restoreVerifiedChunkedDeltaMarker(remote,syncMode);'),
+  'the verified marker helper must be applied by the actual remote-read path after mode verification');
+const uploadStatusHelperStart = source.indexOf('function setUploadInProgressStatus()');
+const uploadStatusHelperEnd = source.indexOf('\nasync function performUpload()', uploadStatusHelperStart);
+assert.ok(uploadStatusHelperStart >= 0 && uploadStatusHelperEnd > uploadStatusHelperStart,
+  'upload-start status policy must remain independently testable');
+const uploadStatusSandbox = {
+  currentStatus: 'Sync pending',
+  statusCalls: []
+};
+uploadStatusSandbox.el = (id) => {
+  assert.equal(id, 'cloudStatus');
+  return { textContent: uploadStatusSandbox.currentStatus };
+};
+uploadStatusSandbox.status = (value) => {
+  uploadStatusSandbox.statusCalls.push(value);
+  uploadStatusSandbox.currentStatus = value;
+};
+vm.createContext(uploadStatusSandbox);
+vm.runInContext(
+  source.slice(uploadStatusHelperStart, uploadStatusHelperEnd) +
+    '\nglobalThis.setUploadInProgressStatus = setUploadInProgressStatus;',
+  uploadStatusSandbox,
+  { filename: 'upload-start-status-policy.js' }
+);
+for (const delayedStatus of ['Sync pending','Account verification delayed','Sync delayed · local data ready']) {
+  uploadStatusSandbox.currentStatus = delayedStatus;
+  uploadStatusSandbox.statusCalls.length = 0;
+  uploadStatusSandbox.setUploadInProgressStatus();
+  assert.equal(uploadStatusSandbox.currentStatus, delayedStatus,
+    'bounded retries must preserve the explicit delayed state: ' + delayedStatus);
+  assert.equal(uploadStatusSandbox.statusCalls.length, 0,
+    'a retry must not overwrite the delayed state with a generic spinner');
+}
+uploadStatusSandbox.currentStatus = 'Synced';
+uploadStatusSandbox.statusCalls.length = 0;
+uploadStatusSandbox.setUploadInProgressStatus();
+assert.equal(uploadStatusSandbox.currentStatus, 'Syncing…',
+  'a new upload from a terminal verified state may display an active syncing status');
+assert.deepEqual(uploadStatusSandbox.statusCalls, ['Syncing…']);
+const performUploadStart = source.indexOf('async function performUpload()');
+assert.ok(performUploadStart >= 0 &&
+  source.slice(performUploadStart, performUploadStart + 900).includes('setUploadInProgressStatus();'),
+  'the upload retry path must use the tested delayed-status-preserving policy');
+
+const comparisonHelpersStart = source.indexOf('function workspaceComparisonProofMatches(');
+const comparisonHelpersEnd = source.indexOf('async function sameWorkspace(', comparisonHelpersStart);
+assert.ok(comparisonHelpersStart >= 0 && comparisonHelpersEnd > comparisonHelpersStart,
+  'the large-workspace comparison proof and revision-fence helpers must remain testable');
+const comparisonSandbox = {};
+vm.createContext(comparisonSandbox);
+vm.runInContext(
+  source.slice(comparisonHelpersStart, comparisonHelpersEnd) +
+    '\nglobalThis.workspaceComparisonProofMatches = workspaceComparisonProofMatches;' +
+    '\nglobalThis.compareWorkspaceWithRevisionFence = compareWorkspaceWithRevisionFence;',
+  comparisonSandbox,
+  { filename: 'workspace-comparison-reuse.js' }
+);
+{
+  const localData = { state: { topics: [{ id: 'topic-A' }] }, featureState: {} };
+  const remoteData = { state: { topics: [{ id: 'topic-A' }] }, featureState: {} };
+  const remoteManifest = { chunkCount: 103, totalBytes: 26900000 };
+  const proof = {
+    ownerId: 'account-A', sessionEpoch: 12, revisionToken: 'workspace-revision-1',
+    remoteUpdatedAt: '2026-11-22T20:00:00.000Z', remoteManifest,
+    generation: 'generation-A', workspaceRevision: 44, localData, remoteData, same: true
+  };
+  assert.equal(comparisonSandbox.workspaceComparisonProofMatches(proof, { ...proof }), true,
+    'a verified comparison may be reused only for the exact same owner, session, local revision, manifest, generation, workspace revision and snapshot objects');
+  const invalidContexts = [
+    { ownerId: 'account-B' }, { sessionEpoch: 13 }, { revisionToken: 'workspace-revision-2' },
+    { remoteUpdatedAt: '2026-11-22T20:01:00.000Z' }, { remoteManifest: { ...remoteManifest } },
+    { generation: 'generation-B' }, { workspaceRevision: 45 },
+    { localData: { state: {}, featureState: {} } }, { remoteData: { state: {}, featureState: {} } }
+  ];
+  for (const change of invalidContexts) {
+    assert.equal(comparisonSandbox.workspaceComparisonProofMatches(proof, { ...proof, ...change }), false,
+      'comparison reuse must be rejected when any owner, epoch, revision, manifest, generation or snapshot identity fence changes');
+  }
+}
+{
+  let revision = 'revision-1';
+  let snapshotVersion = 'before-edit';
+  let comparisonCalls = 0;
+  let refreshCalls = 0;
+  const result = await comparisonSandbox.compareWorkspaceWithRevisionFence({
+    readRevision: () => revision,
+    compare: async () => {
+      comparisonCalls++;
+      if (comparisonCalls === 1) {
+        revision = 'revision-2';
+        return true;
+      }
+      return snapshotVersion === 'before-edit';
+    },
+    refresh: async () => {
+      refreshCalls++;
+      snapshotVersion = 'after-edit';
+    },
+    maxAttempts: 2
+  });
+  assert.equal(comparisonCalls, 2, 'an edit arriving during a large comparison must trigger one fresh comparison');
+  assert.equal(refreshCalls, 1, 'the local snapshot and pending outbox must be refreshed before retrying');
+  assert.equal(result.same, false, 'the post-edit comparison result must replace the stale pre-edit equality result');
+  assert.equal(result.stable, true, 'a stable second revision may be used after a concurrent edit');
+  assert.equal(result.revision, 'revision-2');
+  assert.equal(result.refreshed, true);
+}
+{
+  let revision = 'revision-1';
+  let comparisonCalls = 0;
+  const unstable = await comparisonSandbox.compareWorkspaceWithRevisionFence({
+    readRevision: () => revision,
+    compare: async () => {
+      comparisonCalls++;
+      revision = 'revision-' + (comparisonCalls + 1);
+      return true;
+    },
+    refresh: async () => {},
+    maxAttempts: 2
+  });
+  assert.equal(comparisonCalls, 2);
+  assert.equal(unstable.changed, true);
+  assert.equal(unstable.stable, false,
+    'repeated local edits must prevent a comparison result from being accepted or reused');
+}
+{
+  await assert.rejects(
+    comparisonSandbox.compareWorkspaceWithRevisionFence({
+      readRevision: () => 'revision-1',
+      compare: async () => { throw new Error('account changed during comparison'); },
+      refresh: async () => {},
+      maxAttempts: 2
+    }),
+    /account changed during comparison/,
+    'account rotation/cancellation during comparison must abort without producing a reusable result'
+  );
+}
+
+
+// An unchanged outgoing account checkpoint must preserve its valid IndexedDB
+// entity projection. The pending outbox snapshot is still committed under its
+// original owner; only the unnecessary workspace-mutation marker is omitted.
+{
+  const checkpointStart = source.indexOf('async function checkpointPreviousAccountWorkspace(');
+  const checkpointEnd = source.indexOf(
+    'async function recoverCachedWorkspaceForOfflineAccount(', checkpointStart
+  );
+  assert.ok(checkpointStart >= 0 && checkpointEnd > checkpointStart,
+    'the real outgoing-account checkpoint helper must remain available for regression testing');
+
+  let projectionMatches = true;
+  let pending = null;
+  let sequence = 0;
+  const commits = [];
+  const markerKey = 'nexus.workspace.entity-revision:account-A';
+  const sandbox = {
+    OWNER_KEY: 'nexus.cloud.last-user-id',
+    localStorage: {
+      getItem(key) {
+        return key === 'nexus.cloud.last-user-id' ? 'account-A' : null;
+      }
+    },
+    window: {
+      NexusStorageKey: 'recall.study.tracker.v1',
+      NexusFeatureStorageKey: 'recall.study.features.v1',
+      NexusStorage: {
+        async isWorkspaceSnapshotCurrent(ownerId, trackerJson, featureJson) {
+          assert.equal(ownerId, 'account-A');
+          assert.equal(typeof trackerJson, 'string');
+          assert.equal(typeof featureJson, 'string');
+          return projectionMatches;
+        }
+      },
+      NexusWorkspaceEntityRevisionEntry(ownerId) {
+        return { key: 'nexus.workspace.entity-revision:' + ownerId, value: 'changed' };
+      },
+      NexusOfflineSyncQueue: {
+        getPending() { return pending; },
+        getBase() { return null; },
+        getStamp() { return null; },
+        commitWorkspace(storage, entries, checkpoint, options) {
+          sequence++;
+          const operation = { operationId: 'handoff-' + sequence, localSequence: sequence };
+          commits.push({
+            entries: entries.map(entry => ({ key: entry.key, value: entry.value })),
+            checkpoint: JSON.parse(JSON.stringify(checkpoint)),
+            options
+          });
+          pending = {
+            status: 'pending',
+            ownerUserId: 'account-A',
+            payload: JSON.parse(JSON.stringify(checkpoint)),
+            operationId: operation.operationId,
+            localSequence: operation.localSequence
+          };
+          return { operation };
+        }
+      }
+    }
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(
+    source.slice(checkpointStart, checkpointEnd) +
+      `
+globalThis.runCheckpoint = checkpointPreviousAccountWorkspace;
+      `,
+    sandbox,
+    { filename: 'unchanged-account-checkpoint.js' }
+  );
+
+  const unchangedPayload = {
+    state: { topics: [{ id: 'account-A-topic', name: 'Saved A topic' }] },
+    featureState: { journal: [{ id: 'account-A-journal', text: 'Saved A note' }] }
+  };
+  assert.equal(await sandbox.runCheckpoint('account-A', 'account-B', unchangedPayload), true);
+  assert.equal(commits.length, 1,
+    'an unchanged account must still commit its outgoing pending checkpoint');
+  assert.equal(commits[0].entries.some(entry => entry.key === markerKey), false,
+    'an exact durable snapshot match must not advance the entity workspace revision');
+  assert.equal(pending.ownerUserId, 'account-A',
+    'the pending checkpoint must remain bound to the outgoing account');
+  assert.equal(pending.payload.state.topics[0].id, 'account-A-topic',
+    'the outgoing account tracker records must remain in its pending checkpoint');
+  assert.equal(pending.payload.featureState.journal[0].id, 'account-A-journal',
+    'the outgoing account Study Hub records must remain in its pending checkpoint');
+
+  projectionMatches = false;
+  pending = null;
+  const changedPayload = {
+    state: { topics: [{ id: 'account-A-topic', name: 'Actually changed A topic' }] },
+    featureState: { journal: [] }
+  };
+  assert.equal(await sandbox.runCheckpoint('account-A', 'account-B', changedPayload), true);
+  assert.equal(commits.length, 2);
+  assert.equal(commits[1].entries.some(entry => entry.key === markerKey), true,
+    'a changed durable snapshot must retain the conservative projection-invalidation marker');
+
+  sandbox.window.NexusStorage.isWorkspaceSnapshotCurrent = async () => {
+    throw new Error('simulated IndexedDB verification failure');
+  };
+  pending = null;
+  assert.equal(await sandbox.runCheckpoint('account-A', 'account-B', unchangedPayload), true);
+  assert.equal(commits.length, 3);
+  assert.equal(commits[2].entries.some(entry => entry.key === markerKey), true,
+    'an unavailable durable comparison must fail closed and retain the projection-invalidation marker');
+}
+
+
+// The UI normalizer rewrites the Unicode ellipsis before putting status text
+// into the DOM. Recovery and the 30-second watchdog must match the displayed
+// normalized string, not the pre-normalized source value.
+const statusUiStart = source.indexOf('function normalizeSyncUiText(');
+const statusUiEnd = source.indexOf('\nconst el=id=>', statusUiStart);
+assert.ok(statusUiStart >= 0 && statusUiEnd > statusUiStart,
+  'the real UI normalizer and status setter must remain available for regression testing');
+const statusRecoveryStart = source.indexOf('function recoverStaleInitializationStatus(');
+const statusRecoveryEnd = source.indexOf('async function initializeSession(', statusRecoveryStart);
+assert.ok(statusRecoveryStart >= 0 && statusRecoveryEnd > statusRecoveryStart,
+  'account initialization must include a terminal-status recovery guard');
+const watchdogStart = source.indexOf('const statusWatchdog=setTimeout(()=>{', statusRecoveryEnd);
+const watchdogMarker = '},30000);';
+const watchdogEnd = source.indexOf(watchdogMarker, watchdogStart);
+assert.ok(watchdogStart >= 0 && watchdogEnd > watchdogStart,
+  'account initialization must retain its 30-second loading-state watchdog');
+
+const statusRecoverySandbox = {
+  OWNER_KEY: 'nexus.cloud.last-user-id',
+  sessionEpoch: 12,
+  session: { user: { id: 'account-A' } },
+  requestedUserId: 'account-A',
+  requestedEpoch: 12,
+  initScope: { id: 'active-initialization' },
+  activeInitializationScope: null,
+  ready: true,
+  statusNode: {
+    textContent: '',
+    attributes: {},
+    setAttribute(name, value) { this.attributes[name] = value; }
+  },
+  get statusValue() { return this.statusNode.textContent; },
+  retryCalls: 0,
+  retryTimer: null,
+  watchdogEvents: [],
+  watchdogDelay: null,
+  watchdogCallback: null,
+  localStorage: { getItem: key => key === 'nexus.cloud.last-user-id' ? 'account-A' : null },
+  el: id => id === 'cloudStatus' ? statusRecoverySandbox.statusNode : null,
+  status: value => statusRecoverySandbox.setCloudStatus(value),
+  say: () => {},
+  syncDiag: (stage, payload, extra) => {
+    if (stage === 'initialize-status-watchdog') statusRecoverySandbox.watchdogEvents.push(extra || {});
+  },
+  diagnosticWorkspace: () => ({}),
+  scheduleRetry: () => { statusRecoverySandbox.retryCalls++; },
+  setTimeout: (callback, delay) => {
+    statusRecoverySandbox.watchdogDelay = delay;
+    statusRecoverySandbox.watchdogCallback = callback;
+    return delay;
+  }
+};
+statusRecoverySandbox.activeInitializationScope = statusRecoverySandbox.initScope;
+vm.createContext(statusRecoverySandbox);
+vm.runInContext(source.slice(statusUiStart, statusUiEnd) +
+  '\nglobalThis.setCloudStatus = setCloudStatus;' +
+  '\nglobalThis.isTransientInitializationStatus = isTransientInitializationStatus;',
+  statusRecoverySandbox, { filename: 'normalized-sync-status.js' });
+vm.runInContext(source.slice(statusRecoveryStart, statusRecoveryEnd) +
+  '\nglobalThis.recoverStatus = recoverStaleInitializationStatus;',
+  statusRecoverySandbox, { filename: 'initialization-status-recovery.js' });
+vm.runInContext(source.slice(watchdogStart, watchdogEnd + watchdogMarker.length) +
+  '\nglobalThis.runStatusWatchdog = statusWatchdog;',
+  statusRecoverySandbox, { filename: 'initialization-status-watchdog.js' });
+
+for (const label of [
+  'Loading account…',
+  'Checking local and cloud data…',
+  'Comparing local and cloud data…',
+  'Restoring account workspace…',
+  'Syncing…'
+]) {
+  statusRecoverySandbox.setCloudStatus(label);
+  assert.equal(statusRecoverySandbox.statusValue, label.replace(/…/g, '...'),
+    'setCloudStatus must expose the normalized punctuation in the real UI node');
+  assert.equal(statusRecoverySandbox.isTransientInitializationStatus(statusRecoverySandbox.statusValue), true,
+    'the canonical status helper must recognize every normalized loading label');
+  assert.equal(statusRecoverySandbox.statusNode.attributes['data-sync-state'], 'attention',
+    'every non-Synced state must use the red attention treatment');
+}
+statusRecoverySandbox.setCloudStatus('Sync pending');
+assert.equal(statusRecoverySandbox.statusNode.attributes['data-sync-state'], 'attention',
+  'pending verification must remain in the red attention treatment');
+assert.equal(statusRecoverySandbox.statusNode.attributes['aria-busy'], 'false',
+  'idle pending verification must not display an active spinner');
+for (const label of [
+  'Offline · local workspace',
+  'Offline · local workspace loaded',
+  'Offline · changes saved locally',
+  'Not signed in · offline ready',
+  'Snapshot mode · synced'
+]) {
+  statusRecoverySandbox.setCloudStatus(label);
+  assert.equal(statusRecoverySandbox.statusNode.attributes['aria-busy'], 'false',
+    'idle status must not animate its indicator: ' + label);
+}
+for (const label of [
+  'Loading account…',
+  'Checking local and cloud data…',
+  'Reconciling cloud changes…',
+  'Syncing…'
+]) {
+  statusRecoverySandbox.setCloudStatus(label);
+  assert.equal(statusRecoverySandbox.statusNode.attributes['aria-busy'], 'true',
+    'active work must keep the animated indicator: ' + label);
+}
+statusRecoverySandbox.setCloudStatus('Synced');
+assert.equal(statusRecoverySandbox.statusNode.attributes['data-sync-state'], 'synced',
+  'only the exact Synced state may use the green treatment');
+assert.equal(statusRecoverySandbox.statusNode.attributes['aria-busy'], 'false',
+  'verified Synced state must not be marked busy');
+
+const indexHtml = readFileSync(resolve(root, 'index.html'), 'utf8');
+const statusStyleStart = indexHtml.indexOf('<style id="nexus-sync-progress-indicators">');
+const statusStyleEnd = indexHtml.indexOf('</style>', statusStyleStart);
+assert.ok(statusStyleStart >= 0 && statusStyleEnd > statusStyleStart,
+  'the real sync status CSS must remain available for regression testing');
+const statusStyle = indexHtml.slice(statusStyleStart, statusStyleEnd);
+const idleStatusRule = statusStyle.match(/#cloudStatus\{([^}]+)\}/);
+const syncedStatusRule = statusStyle.match(/#cloudStatus\[data-sync-state="synced"\]\{([^}]+)\}/);
+assert.ok(idleStatusRule && /box-shadow:none/.test(idleStatusRule[1]),
+  'the default sync indicator must not glow');
+assert.ok(syncedStatusRule && /box-shadow:none/.test(syncedStatusRule[1]),
+  'the Synced indicator must not glow');
+assert.match(statusStyle, /#cloudStatus::before\{[^}]*animation:none/,
+  'idle status must use a static dot');
+assert.match(statusStyle, /#cloudStatus\[aria-busy="true"\]::before\{[^}]*animation:nexus-sync-spin/,
+  'only active status may animate the spinner');
+assert.match(statusStyle, /@media\(prefers-reduced-motion:reduce\)\{[^}]*#cloudStatus\[aria-busy="true"\]::before\{animation:none\}/,
+  'reduced-motion preference must disable active spinner animation');
+
+statusRecoverySandbox.setCloudStatus('Loading account…');
+assert.equal(statusRecoverySandbox.recoverStatus('account-A', 12), true);
+assert.equal(statusRecoverySandbox.statusValue, 'Sync pending',
+  'a restored account with matching ownership must leave Loading and remain explicitly unverified');
+assert.equal(statusRecoverySandbox.retryCalls, 1,
+  'a restored account with pending verification must schedule a reconnect retry');
+assert.notEqual(statusRecoverySandbox.statusValue, 'Synced',
+  'the status fallback must never claim cloud verification without a successful sync');
+
+statusRecoverySandbox.setCloudStatus('Restoring account workspace…');
+statusRecoverySandbox.ready = false;
+assert.equal(statusRecoverySandbox.recoverStatus('account-A', 12), true);
+assert.equal(statusRecoverySandbox.statusValue, 'Account verification delayed',
+  'an account that is not ready must expose a truthful verification delay');
+assert.equal(statusRecoverySandbox.retryCalls, 2,
+  'an unready account must also schedule a reconnect retry');
+statusRecoverySandbox.setCloudStatus('Loading account…');
+assert.equal(statusRecoverySandbox.recoverStatus('account-A', 11), false,
+  'a stale initialization must not alter the newer session status');
+
+statusRecoverySandbox.ready = true;
+statusRecoverySandbox.setCloudStatus('Syncing…');
+assert.equal(statusRecoverySandbox.isTransientInitializationStatus(statusRecoverySandbox.statusValue), true,
+  'an active Syncing status must remain transient until cloud verification settles');
+assert.equal(statusRecoverySandbox.watchdogDelay, 30000,
+  'the real initialization watchdog must remain set to the 30-second deadline');
+statusRecoverySandbox.watchdogCallback();
+assert.equal(statusRecoverySandbox.statusValue, 'Sync pending',
+  'the 30-second watchdog must recognize the normalized loading label and leave it pending');
+assert.equal(statusRecoverySandbox.watchdogEvents[0].watchdogOutcome, 'local-ready-unverified',
+  'the watchdog diagnostic must record a verified local workspace that still needs cloud verification');
+assert.equal(statusRecoverySandbox.retryCalls, 3,
+  'the watchdog must schedule retry after the pending status transition');
+
+statusRecoverySandbox.ready = false;
+statusRecoverySandbox.setCloudStatus('Restoring account workspace…');
+statusRecoverySandbox.watchdogCallback();
+assert.equal(statusRecoverySandbox.statusValue, 'Account verification delayed',
+  'the 30-second watchdog must show a verification delay when no verified local workspace is ready');
+assert.equal(statusRecoverySandbox.watchdogEvents[1].watchdogOutcome, 'account-verification-delayed',
+  'the watchdog diagnostic must record the owner-safe delayed state');
+assert.equal(statusRecoverySandbox.retryCalls, 4,
+  'the delayed watchdog branch must schedule retry');
+
+statusRecoverySandbox.setCloudStatus('Synced');
+statusRecoverySandbox.watchdogCallback();
+assert.equal(statusRecoverySandbox.statusValue, 'Synced',
+  'the watchdog must leave an already terminal verified status unchanged');
+assert.equal(statusRecoverySandbox.watchdogEvents[2].watchdogOutcome, 'already-terminal',
+  'the watchdog diagnostic must distinguish an already-terminal state from a timeout transition');
+assert.equal(statusRecoverySandbox.retryCalls, 4,
+  'the watchdog must not schedule another retry after the status is already terminal');
+
+// A delayed but owner-verified local workspace must retry its sync coordinator, not
+// restart account initialization and re-enter the full workspace-loading handoff.
+const retryStart = source.indexOf('function scheduleRetry(){');
+const retryEnd = source.indexOf('function clearDeltaRemotePoll()', retryStart);
+assert.ok(retryStart >= 0 && retryEnd > retryStart,
+  'the real account retry scheduler must remain available for regression testing');
+function makeRetrySandbox(ownerId, ready = true) {
+  const sandbox = {
+    authSessionVerificationPending: false,
+    verifyCurrentAuthSessionAfterMismatch() {},
+    retryTimer: null, retryAttempt: 0, syncing: false, initializing: false, ready,
+    session: { user: { id: 'account-A' } }, OWNER_KEY: 'nexus.cloud.last-user-id',
+    localStorage: { getItem: key => key === 'nexus.cloud.last-user-id' ? ownerId : null },
+    navigator: { onLine: true }, window: { NexusCloudSyncRecovery: recovery },
+    isUnsafeCloudOrigin: () => false, el: id => id === 'cloudStatus' ? { textContent: 'Sync delayed - local data ready' } : null,
+    uploadCalls: 0, connectCalls: 0, retryCallback: null,
+    syncDiag() {}, diagnosticWorkspace() { return {}; },
+    upload() { sandbox.uploadCalls++; }, connect() { sandbox.connectCalls++; },
+    setTimeout(callback) { sandbox.retryCallback = callback; return 7; }, clearTimeout() {}
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(source.slice(retryStart, retryEnd) +
+    '\nglobalThis.runScheduleRetry = scheduleRetry;', sandbox,
+    { filename: 'account-handoff-retry.js' });
+  return sandbox;
+}
+const ownerVerifiedRetry = makeRetrySandbox('account-A');
+ownerVerifiedRetry.runScheduleRetry();
+assert.equal(typeof ownerVerifiedRetry.retryCallback, 'function',
+  'a delayed local-ready account must schedule its normal bounded retry');
+ownerVerifiedRetry.retryCallback();
+assert.equal(ownerVerifiedRetry.uploadCalls, 1,
+  'a local-ready retry must resume the authenticated account sync coordinator');
+assert.equal(ownerVerifiedRetry.connectCalls, 0,
+  'a local-ready retry must not rerun account initialization or show the workspace-loading handoff');
+const wrongOwnerRetry = makeRetrySandbox('account-B');
+wrongOwnerRetry.runScheduleRetry();
+wrongOwnerRetry.retryCallback();
+assert.equal(wrongOwnerRetry.uploadCalls, 0,
+  'a retry must never sync when the cached workspace belongs to a different account');
+assert.equal(wrongOwnerRetry.connectCalls, 1,
+  'a workspace-owner mismatch must use the guarded full account-verification path');
+const unreadyRetry = makeRetrySandbox('account-A', false);
+unreadyRetry.runScheduleRetry();
+unreadyRetry.retryCallback();
+assert.equal(unreadyRetry.uploadCalls, 0,
+  'an account without a verified local workspace must not skip initialization');
+assert.equal(unreadyRetry.connectCalls, 1,
+  'an unready account must retain the normal account-verification retry');
+
+// Account ownership changes must synchronously hide the prior workspace before the
+// browser can paint while the MutationObserver refreshes the visible isolation card.
+const workspaceLockStart = source.indexOf('function lockWorkspaceBeforeAccountChange(');
+const workspaceLockEnd = source.indexOf('function connect()', workspaceLockStart);
+assert.ok(workspaceLockStart >= 0 && workspaceLockEnd > workspaceLockStart,
+  'account handoff must synchronously lock the workspace during session rotation');
+const accountLockApp = { inert: false };
+const accountLockOverlay = {
+  hidden: true,
+  attributes: {},
+  setAttribute(name, value) { this.attributes[name] = value; }
+};
+const accountLockRoot = { dataset: { workspaceAuth: 'ready' } };
+const accountLockDocument = {
+  documentElement: accountLockRoot,
+  querySelector(selector) { return selector === '.app' ? accountLockApp : null; },
+  getElementById(id) { return id === 'workspaceIsolationLock' ? accountLockOverlay : null; }
+};
+let oldUploadAborted=false;
+const oldUploadScope={abort(){oldUploadAborted=true;}};
+const rotationSandbox = {
+  document: accountLockDocument,
+  sessionEpoch: 4,
+  sessionOwnerId: 'account-A',
+  sessionAbortController: null,
+  activeInitializationScope: null,
+  activeUploadScope: oldUploadScope,
+  activeUploadPromises: new Map([[4,Promise.resolve(true)]]),
+  syncing: true,
+  syncingEpoch: 4,
+  connectAttemptId: 8,
+  connectPromise: null,
+  timer: null,
+  clearTimeout,
+  clearRetry() {},
+  clearSyncVerificationWatchdog() {},
+  pendingSync: false,
+  hostedDeltaPollingEnabled: true,
+  clearDeltaRemotePoll() {},
+  clearAuthSessionVerification() {},
+  ready: true,
+  AbortController
+};
+vm.createContext(rotationSandbox);
+vm.runInContext(source.slice(workspaceLockStart, workspaceLockEnd) +
+  '\nglobalThis.rotateForTest = rotateSessionContext;', rotationSandbox,
+  { filename: 'account-handoff-lock-test.js' });
+const switchedEpoch = rotationSandbox.rotateForTest({ user: { id: 'account-B' } });
+assert.equal(switchedEpoch, 5, 'the account switch must rotate its session epoch');
+assert.equal(oldUploadAborted,true,
+  'account rotation must abort the outgoing account upload scope');
+assert.equal(rotationSandbox.syncing,false,
+  'an outgoing account must not retain the global syncing lock after its epoch is revoked');
+assert.equal(rotationSandbox.syncingEpoch,null,
+  'the old session epoch must no longer own the global sync coordinator');
+assert.equal(rotationSandbox.activeUploadScope,null,
+  'the outgoing upload scope must be detached before the next account starts');
+assert.equal(rotationSandbox.activeUploadPromises.size,0,
+  'the old epoch upload promise must be removed from the active coordinator map');
+assert.equal(accountLockRoot.dataset.workspaceAuth, 'pending',
+  'the document must enter the hidden state synchronously on account change');
+assert.equal(accountLockApp.inert, true,
+  'the prior account app must become non-interactive before asynchronous guard refresh');
+assert.equal(accountLockOverlay.hidden, false,
+  'the isolation card must be displayed immediately while the new account loads');
+assert.equal(accountLockOverlay.attributes['aria-hidden'], 'false',
+  'the isolation card must remain exposed to assistive technology while locked');
+accountLockRoot.dataset.workspaceAuth = 'ready';
+accountLockApp.inert = false;
+accountLockOverlay.hidden = true;
+assert.equal(rotationSandbox.rotateForTest({ user: { id: 'account-B' } }), 5,
+  'a duplicate auth event for the same owner must not rotate the account epoch');
+assert.equal(accountLockRoot.dataset.workspaceAuth, 'ready',
+  'a same-owner auth refresh must not unnecessarily re-lock the active workspace');
+
+const downgradeStart = source.indexOf('async function downgradeEntityDelta(){');
+const downgradeEnd = source.indexOf('function hostedQaReplayGateOpen()',downgradeStart);
+assert.ok(downgradeStart>=0&&downgradeEnd>downgradeStart,
+  'the snapshot downgrade must remain independently testable for session-epoch cancellation');
+
+// A cancelled snapshot downgrade from the previous account must not clear a
+// newer account's coordinator slot when its asynchronous finally block runs.
+{
+  let resolveDowngrade;
+  let downgradeScopeCleared=false;
+  const deferredDowngrade=new Promise(resolve=>{resolveDowngrade=resolve;});
+  const downgradeScope={signal:{},clear(){downgradeScopeCleared=true;},race(promise){return Promise.resolve(promise);}};
+  const newerScope={};
+  const sandbox={
+    deletingAccount:false,localQueueHealthy:true,client:{},session:{user:{id:'account-A'}},ready:true,
+    syncing:false,syncingEpoch:null,sessionEpoch:3,activeUploadScope:null,
+    OWNER_KEY:'nexus.cloud.last-user-id',localStorage:{getItem:()=> 'account-A'},
+    status(){},say(){},createSyncAbortScope:()=>downgradeScope,
+    runStagingEntityDeltaSync:()=>deferredDowngrade,
+    assertActiveUser:async(owner,epoch)=>{
+      if(sandbox.sessionEpoch!==epoch)throw sandbox.syncCancelledError();
+    },
+    syncCancelledError:()=>{const error=new Error('The account changed.');error.code='NEXUS_SYNC_CANCELLED';return error;},
+    productionDeltaClientGateOpen:()=>false,productionDeltaIneligibleOwners:new Set(),
+    lastRemoteStamp:null,pendingSync:false,schedule(){},scheduleRetry(){},
+    flushDurableLocalWrites:async()=>{}
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(source.slice(downgradeStart,downgradeEnd)+
+    '\nglobalThis.runDowngrade=downgradeEntityDelta;',sandbox,
+    {filename:'epoch-fenced-snapshot-downgrade.js'});
+  const oldDowngrade=sandbox.runDowngrade();
+  assert.equal(sandbox.syncing,true);
+  assert.equal(sandbox.syncingEpoch,3,
+    'the snapshot downgrade must claim the current account epoch');
+  assert.equal(sandbox.activeUploadScope,downgradeScope,
+    'the snapshot downgrade must be cancellable by account rotation');
+  sandbox.sessionEpoch=4;
+  sandbox.syncing=true;
+  sandbox.syncingEpoch=4;
+  sandbox.activeUploadScope=newerScope;
+  resolveDowngrade({ok:true,mode:'snapshot',updated_at:'old-account-stamp'});
+  const outcome=await oldDowngrade;
+  assert.equal(outcome.reason,'account_changed',
+    'the outgoing account downgrade must stop when its owner epoch is revoked');
+  assert.equal(downgradeScopeCleared,true,
+    'the cancelled downgrade must release its own abort scope');
+  assert.equal(sandbox.syncing,true,
+    'the outgoing downgrade must not clear the new account syncing state');
+  assert.equal(sandbox.syncingEpoch,4,
+    'the outgoing downgrade must not overwrite the new account sync epoch');
+  assert.equal(sandbox.activeUploadScope,newerScope,
+    'the outgoing downgrade must not detach the new account upload scope');
+}
+
+// A late token-refresh/profile event can still arrive for the outgoing auth
+// session after A→B→A. Verify the event owner before allowing any transition.
+const authScopeStart = source.indexOf('function syncCancelledError(');
+const authScopeEnd = source.indexOf('function attachAbortSignal(', authScopeStart);
+assert.ok(authScopeStart >= 0 && authScopeEnd > authScopeStart,
+  'the bounded sync-abort scope must be available to authentication verification tests');
+const authScopeSource = source.slice(authScopeStart, authScopeEnd);
+const authGuardStart = source.indexOf('function clearAuthSessionVerification(');
+const authGuardEnd = source.indexOf('async function ensureClient()', authGuardStart);
+assert.ok(authGuardStart >= 0 && authGuardEnd > authGuardStart,
+  'auth refresh ownership and queued initialization epoch guards must be available');
+
+function makeAuthVerificationSandbox(getSession) {
+  let nextTimerId = 0;
+  const timers = new Map();
+  const timerHistory = [];
+  const statusValues = [];
+  const messages = [];
+  const warnings = [];
+  const metrics = {
+    getSessionCalls: 0,
+    controlRefreshes: 0,
+    schedules: 0,
+    rotations: 0,
+    initializations: 0
+  };
+  const sandbox = {
+    authSessionVerificationPending: true,
+    authSessionVerificationAttempt: 0,
+    authSessionVerificationTimer: null,
+    sessionEpoch: 12,
+    sessionOwnerId: 'account-A',
+    OWNER_KEY: 'nexus.cloud.last-user-id',
+    session: { user: { id: 'account-A' } },
+    client: { auth: { getSession() {
+      metrics.getSessionCalls++;
+      return getSession();
+    } } },
+    ready: true,
+    activeInitializationScope: null,
+    sessionAbortController: new AbortController(),
+    AbortController,
+    AUTH_SESSION_VERIFICATION_TIMEOUT_MS: 15000,
+    AUTH_SESSION_VERIFICATION_RETRY_MS: 15000,
+    localStorage: { getItem: () => 'account-A' },
+    setTimeout(callback, delay = 0) {
+      const id = ++nextTimerId;
+      timers.set(id, { callback, delay });
+      timerHistory.push(delay);
+      return id;
+    },
+    clearTimeout(id) { timers.delete(id); },
+    setControls() { metrics.controlRefreshes++; },
+    schedule() { metrics.schedules++; },
+    status(value) { statusValues.push(value); },
+    say(value) { messages.push(value); },
+    rotateSessionContext(next) {
+      metrics.rotations++;
+      sandbox.sessionOwnerId = next && next.user ? next.user.id : null;
+      sandbox.sessionEpoch++;
+    },
+    async initializeSession(next) {
+      metrics.initializations++;
+      sandbox.session = next;
+    },
+    console: { warn(...args) { warnings.push(args); }, error() {}, log() {} }
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(authScopeSource + source.slice(authGuardStart, authGuardEnd) +
+    '\nglobalThis.runAuthSessionRecheck = verifyCurrentAuthSessionAfterMismatch;' +
+    '\nglobalThis.clearAuthSessionVerificationForTest = clearAuthSessionVerification;' +
+    '\nglobalThis.authStateEventBelongsToCurrentOwner = authStateEventBelongsToCurrentOwner;' +
+    '\nglobalThis.authInitializationCallbackIsCurrent = authInitializationCallbackIsCurrent;',
+    sandbox, { filename: 'auth-session-reconciliation.js' });
+  function takeTimer(delay) {
+    const found = [...timers.entries()].find(([, timer]) => timer.delay === delay);
+    assert.ok(found, 'expected an active ' + delay + 'ms timer');
+    timers.delete(found[0]);
+    return found[1];
+  }
+  async function runTimer(delay) {
+    const timer = takeTimer(delay);
+    return timer.callback();
+  }
+  return { sandbox, timers, timerHistory, statusValues, messages, warnings, metrics, takeTimer, runTimer };
+}
+
+async function runAuthSessionRecheck(getSession) {
+  const test = makeAuthVerificationSandbox(getSession);
+  test.sandbox.runAuthSessionRecheck();
+  await test.runTimer(0);
+  return test;
+}
+const staleRefresh = await runAuthSessionRecheck(async () => ({
+  data: { session: { user: { id: 'account-A' } } }, error: null
+}));
+assert.equal(staleRefresh.metrics.rotations, 0,
+  'a delayed B refresh followed by authoritative A session must not rotate the workspace epoch');
+assert.equal(staleRefresh.metrics.initializations, 0,
+  'a stale B refresh must not restart Account A workspace initialization');
+assert.equal(staleRefresh.sandbox.authSessionVerificationPending, false,
+  'successful same-owner verification must release the temporary sync pause');
+assert.equal(staleRefresh.metrics.schedules, 1,
+  'successful same-owner verification must resume the existing sync coordinator');
+const confirmedAccountChange = await runAuthSessionRecheck(async () => ({
+  data: { session: { user: { id: 'account-B' } } }, error: null
+}));
+assert.equal(confirmedAccountChange.metrics.rotations, 1,
+  'a mismatched refresh confirmed by getSession as Account B must perform the real identity rotation');
+assert.equal(confirmedAccountChange.metrics.initializations, 1,
+  'a verified new owner must enter the normal owner-scoped initialization path');
+
+// Repeated getSession failures (both { error } and rejected promises) must retain
+// the pending state, expose a truthful delayed status, and schedule fixed 15s retries.
+// A later successful authoritative read for the same owner must resume the coordinator.
+const recoveryResponses = [
+  () => Promise.resolve({
+    data: { session: { user: { id: 'account-A' } } },
+    error: new Error('temporary Supabase auth error')
+  }),
+  () => Promise.reject(new Error('temporary getSession rejection')),
+  () => Promise.resolve({
+    data: { session: { user: { id: 'account-A' } } },
+    error: null
+  })
+];
+const repeatedRecovery = makeAuthVerificationSandbox(() => recoveryResponses.shift()());
+repeatedRecovery.sandbox.runAuthSessionRecheck();
+await repeatedRecovery.runTimer(0);
+assert.deepEqual([...repeatedRecovery.timers.values()].map(timer => timer.delay), [15000],
+  'a getSession error response must schedule the documented 15-second retry');
+assert.equal(repeatedRecovery.sandbox.authSessionVerificationPending, true,
+  'a failed auth read must keep cloud writes paused');
+assert.equal(repeatedRecovery.metrics.schedules, 0,
+  'a failed auth read must not resume the cloud coordinator');
+assert.equal(repeatedRecovery.statusValues.at(-1), 'Account verification delayed',
+  'a failed auth read must leave a truthful non-spinner verification status');
+assert.deepEqual(workspaceIsolationGuard.resolveWorkspaceLock(
+  'account-A', 'account-A', 'Account verification delayed', 'account-A', false),
+  { locked: true, phase: 'error' },
+  'a mismatched auth event must hide the previous workspace even while its old owner marker still matches');
+assert.deepEqual(workspaceIsolationGuard.resolveWorkspaceLock(
+  'account-A', 'account-A', 'Sync pending', 'account-A', false),
+  { locked: false, phase: 'owned' },
+  'authoritative same-owner recovery may reveal that owner’s cached workspace while cloud sync resumes');
+assert.match(repeatedRecovery.messages.at(-1), /stored but hidden/i,
+  'the pending auth state must explain that local data is preserved but not exposed');
+assert.match(repeatedRecovery.messages.at(-1), /cloud writes are paused/,
+  'the delayed state must explain that cloud writes remain paused');
+await repeatedRecovery.runTimer(15000);
+await repeatedRecovery.runTimer(0);
+assert.deepEqual([...repeatedRecovery.timers.values()].map(timer => timer.delay), [15000],
+  'a second rejected getSession call must schedule another 15-second retry');
+assert.equal(repeatedRecovery.sandbox.authSessionVerificationPending, true,
+  'repeated auth failures must not release the ownership gate');
+assert.equal(repeatedRecovery.metrics.rotations, 0,
+  'transient auth errors must not be misread as sign-out or account change');
+await repeatedRecovery.runTimer(15000);
+await repeatedRecovery.runTimer(0);
+assert.equal(repeatedRecovery.metrics.getSessionCalls, 3,
+  'the recovery sequence must exercise two failures followed by an authoritative success');
+assert.equal(repeatedRecovery.sandbox.authSessionVerificationPending, false,
+  'eventual same-owner success must clear the pending verification gate');
+assert.equal(repeatedRecovery.metrics.schedules, 1,
+  'eventual same-owner success must resume the existing sync coordinator exactly once');
+assert.equal(repeatedRecovery.statusValues.at(-1), 'Sync pending',
+  'same-owner session recovery must leave a truthful pending state until cloud verification completes');
+assert.equal(repeatedRecovery.metrics.rotations, 0,
+  'same-owner recovery must not rotate or rebuild the workspace');
+assert.equal(repeatedRecovery.sandbox.session.user.id, 'account-A',
+  'same-owner recovery must preserve the active account');
+assert.equal(repeatedRecovery.timers.size, 0,
+  'successful recovery must clear all verification and retry timers');
+assert.equal(repeatedRecovery.statusValues.includes('Synced'), false,
+  'session verification alone must never claim cloud sync is complete');
+
+// A getSession promise that never settles must time out, retain the local workspace,
+// and enter the same 15-second retry path. A late result after timeout is ignored.
+let resolveLateSession;
+const timedOutVerification = makeAuthVerificationSandbox(() =>
+  new Promise(resolve => { resolveLateSession = resolve; }));
+timedOutVerification.sandbox.runAuthSessionRecheck();
+const timeoutAttempt = timedOutVerification.takeTimer(0).callback();
+assert.equal([...timedOutVerification.timers.values()].filter(timer => timer.delay === 15000).length, 1,
+  'an in-flight getSession call must have a finite 15-second verification deadline');
+timedOutVerification.takeTimer(15000).callback();
+await timeoutAttempt;
+assert.equal(timedOutVerification.sandbox.authSessionVerificationPending, true,
+  'a getSession timeout must keep the ownership gate closed');
+assert.equal(timedOutVerification.statusValues.at(-1), 'Account verification delayed',
+  'a getSession timeout must leave the truthful delayed state rather than a spinner');
+assert.deepEqual([...timedOutVerification.timers.values()].map(timer => timer.delay), [15000],
+  'a getSession timeout must schedule a fresh 15-second retry');
+resolveLateSession({
+  data: { session: { user: { id: 'account-B' } } }, error: null
+});
+await Promise.resolve();
+assert.equal(timedOutVerification.metrics.rotations, 0,
+  'a late result from a timed-out auth read must not rotate the active account');
+assert.equal(timedOutVerification.sandbox.sessionOwnerId, 'account-A',
+  'a late timed-out response must not replace the verified workspace owner');
+
+// A getSession result from a revoked epoch must be inert even if it resolves after
+// another account has already become the active owner.
+let resolveStaleSession;
+const staleInFlightVerification = makeAuthVerificationSandbox(() =>
+  new Promise(resolve => { resolveStaleSession = resolve; }));
+staleInFlightVerification.sandbox.runAuthSessionRecheck();
+const staleVerificationAttempt = staleInFlightVerification.takeTimer(0).callback();
+staleInFlightVerification.sandbox.clearAuthSessionVerificationForTest();
+staleInFlightVerification.sandbox.sessionEpoch = 13;
+staleInFlightVerification.sandbox.sessionOwnerId = 'account-B';
+staleInFlightVerification.sandbox.session = { user: { id: 'account-B' } };
+resolveStaleSession({
+  data: { session: { user: { id: 'account-A' } } }, error: null
+});
+await staleVerificationAttempt;
+assert.equal(staleInFlightVerification.sandbox.sessionOwnerId, 'account-B',
+  'a stale Account A getSession completion must not replace Account B after rotation');
+assert.equal(staleInFlightVerification.sandbox.session.user.id, 'account-B',
+  "the new owner's active session must survive an old verification completion");
+assert.equal(staleInFlightVerification.metrics.rotations, 0,
+  'a revoked verification attempt must not initiate another account rotation');
+assert.equal(staleInFlightVerification.metrics.initializations, 0,
+  'a revoked verification attempt must not initialize the outgoing account');
+
+// While ownership is uncertain, the actual public upload and local-save scheduler
+// must remain closed; the cached workspace is usable, but no cloud write can start.
+const authPauseUploadStart = source.indexOf('function upload(){');
+const authPauseUploadEnd = source.indexOf('async function performUpload()', authPauseUploadStart);
+assert.ok(authPauseUploadStart >= 0 && authPauseUploadEnd > authPauseUploadStart,
+  'the public upload coordinator must remain available for the ownership-pause regression');
+const uploadSandbox = {
+  authSessionVerificationPending: true,
+  deletingAccount: false,
+  localQueueHealthy: true,
+  client: {},
+  session: { user: { id: 'account-A' } },
+  ready: true
+};
+vm.createContext(uploadSandbox);
+vm.runInContext(source.slice(authPauseUploadStart, authPauseUploadEnd) +
+  '\nglobalThis.runUploadWhileUnverified = upload;', uploadSandbox,
+  { filename: 'auth-verification-upload-pause.js' });
+assert.equal(await uploadSandbox.runUploadWhileUnverified(), false,
+  'cloud upload must return without starting while session ownership is unverified');
+
+const authPauseScheduleStart = source.indexOf('function schedule(){');
+const authPauseScheduleEnd = source.indexOf('function createSafeAuthStorage(', authPauseScheduleStart);
+assert.ok(authPauseScheduleStart >= 0 && authPauseScheduleEnd > authPauseScheduleStart,
+  'the local-save scheduler must remain available for the ownership-pause regression');
+let scheduledLocalWrites = 0;
+const scheduleSandbox = {
+  authSessionVerificationPending: true,
+  deletingAccount: false,
+  localQueueHealthy: true,
+  client: {},
+  session: { user: { id: 'account-A' } },
+  ready: true,
+  navigator: { onLine: true },
+  timer: null,
+  setTimeout() { scheduledLocalWrites++; return 1; },
+  clearTimeout() {}
+};
+vm.createContext(scheduleSandbox);
+vm.runInContext(source.slice(authPauseScheduleStart, authPauseScheduleEnd) +
+  '\nglobalThis.runScheduleWhileUnverified = schedule;', scheduleSandbox,
+  { filename: 'auth-verification-scheduler-pause.js' });
+scheduleSandbox.runScheduleWhileUnverified();
+assert.equal(scheduledLocalWrites, 0,
+  'the local-save scheduler must not start a cloud upload while auth ownership is uncertain');
+
+const authGuardSandbox = makeAuthVerificationSandbox(async () => ({
+  data: { session: { user: { id: 'account-A' } } }, error: null
+}));
+assert.equal(authGuardSandbox.sandbox.authStateEventBelongsToCurrentOwner(
+  'TOKEN_REFRESHED', { user: { id: 'account-B' } }), false,
+  'a late refresh for outgoing Account B must be rejected while Account A owns the active session');
+assert.equal(authGuardSandbox.sandbox.authStateEventBelongsToCurrentOwner(
+  'USER_UPDATED', { user: { id: 'account-B' } }), false,
+  'a late profile update for outgoing Account B must not rotate Account A');
+assert.equal(authGuardSandbox.sandbox.authStateEventBelongsToCurrentOwner(
+  'TOKEN_REFRESHED', { user: { id: 'account-A' } }), true,
+  'a token refresh for the active owner must still be accepted');
+assert.equal(authGuardSandbox.sandbox.authStateEventBelongsToCurrentOwner(
+  'SIGNED_IN', { user: { id: 'account-B' } }), false,
+  'even a delayed sign-in for another owner must be verified against the current auth session');
+assert.equal(authGuardSandbox.sandbox.authStateEventBelongsToCurrentOwner(
+  'INITIAL_SESSION', { user: { id: 'account-B' } }), false,
+  'a delayed initial-session event for another owner must not rotate the active workspace');
+assert.equal(authGuardSandbox.sandbox.authStateEventBelongsToCurrentOwner(
+  'SIGNED_OUT', null), false,
+  'a sign-out notification must be reconciled when it conflicts with the active owner');
+assert.equal(authGuardSandbox.sandbox.authStateEventBelongsToCurrentOwner(
+  'SIGNED_IN', { user: { id: 'account-A' } }), true,
+  'a sign-in notification for the already active owner may proceed without relocking');
+assert.equal(authGuardSandbox.sandbox.authInitializationCallbackIsCurrent('account-A', 12), true,
+  'a queued initialization callback for the still-active session may proceed');
+assert.equal(authGuardSandbox.sandbox.authInitializationCallbackIsCurrent('account-A', 11), false,
+  'a queued initialization callback from before the most recent account rotation must be inert');
+
+const authListenerStart = source.indexOf('client.auth.onAuthStateChange((event,newSession)=>{');
+const authListenerEnd = source.indexOf('\n  });', authListenerStart);
+assert.ok(authListenerStart >= 0 && authListenerEnd > authListenerStart,
+  'the actual Supabase auth-state listener must be available for the pending-gate regression');
+const authListenerSource = source.slice(authListenerStart, authListenerEnd);
+assert.match(authListenerSource,
+  /if\(authSessionVerificationPending\)\{[\s\S]*?return;\s*\}/,
+  'all auth events must be ignored while an authoritative session verification is pending');
+assert.ok(authListenerSource.indexOf('if(authSessionVerificationPending){') <
+  authListenerSource.indexOf('if(!authStateEventBelongsToCurrentOwner(event,newSession)){'),
+  'the pending verification gate must run before the event-owner predicate');
+assert.doesNotMatch(source,
+  /if\(authSessionVerificationPending\)clearAuthSessionVerification\(\)/,
+  'no auth event may clear an unresolved verification gate without an authoritative getSession result');
+assert.match(source,
+  /authSessionVerificationPending=true;[\s\S]*?verifyCurrentAuthSessionAfterMismatch\(\);/,
+  'a mismatched refresh must request authoritative getSession verification rather than silently switching owners');
+assert.match(source,
+  /authSessionVerificationPending=true;\s*if\(activeUploadScope\)activeUploadScope\.abort\(\);/,
+  'an already running cloud upload must be aborted while the auth owner is uncertain');
+assert.match(source,
+  /status\('Account verification delayed'\);\s*say\('Checking the current account session before resuming cloud sync\. Your local workspace is hidden until session ownership is verified\.'\);/,
+  'the mismatched auth event must hide the prior workspace while session ownership is uncertain');
+assert.match(source,
+  /function schedule\(\)\{if\(authSessionVerificationPending\|\|/,
+  'normal upload scheduling must pause until a mismatched auth session has been verified');
+assert.match(source,
+  /async function assertActiveUser\(userId,expectedEpoch=sessionEpoch\)\{\s*if\(authSessionVerificationPending\|\|expectedEpoch!==sessionEpoch/,
+  'all owner-bound cloud operations must stop while auth ownership is being re-verified, even before the session epoch rotates');
+assert.match(source,
+  /function upload\(\)\{\s*if\(authSessionVerificationPending\|\|/,
+  'the public upload coordinator must stop while active auth identity is uncertain');
+assert.match(source,
+  /async function performUpload\(\)\{\s*if\(authSessionVerificationPending\|\|/,
+  'the underlying account upload must re-check auth identity before doing work');
+assert.match(source,
+  /const active=activeUploadPromises\.get\(epoch\);[\s\S]*?if\(active\)return active;/,
+  'concurrent callers for one session epoch must join the in-flight verified upload instead of receiving a false failure');
+assert.match(source,
+  /const callbackEpoch=sessionEpoch;[\s\S]*?if\(!authInitializationCallbackIsCurrent\(uid,callbackEpoch\)\)return;/,
+  'the actual deferred sign-in initialization callback must be fenced by the epoch that scheduled it');
+assert.match(indexHtml,
+  /html\[data-workspace-auth="pending"\] \.app\s*\{\s*visibility:\s*hidden\s*!important;/,
+  'the first-paint pending state must hide the full app before account verification');
+assert.match(indexHtml,
+  /#workspaceIsolationLock\{[^}]*background:\s*var\(--bg,#09090b\)/,
+  'the account isolation surface must use a fully opaque background');
+assert.doesNotMatch(indexHtml,
+  /#workspaceIsolationLock\{[^}]*background:\s*rgba\(/,
+  'the isolation background must not reveal prior-account content through transparency');
+
+// Timeout errors must carry the actual scope duration and operation label, rather
+// than rewriting 30/60/120-second deadlines as the global 180-second deadline.
+assert.match(source, /syncTimeoutError\(activeOperation,timeoutMs\)/,
+  'a sync scope timeout must report its own configured deadline');
+assert.match(source, /race:\(promise,operation\)=>\{if\(typeof operation==='string'&&operation\.trim\(\)\)activeOperation=operation/,
+  'the timeout diagnostic must name the operation waiting on the scope');
+assert.match(source, /interrupt\(syncTimeoutError\(isAuth\?'Supabase Auth request':'Supabase data request',timeoutMs\)\)/,
+  'the Supabase fetch deadline must be reported with its configured 15/60-second timeout');
+assert.match(source, /if\(timedOut\)throw syncTimeoutError\(isAuth\?'Supabase Auth request':'Supabase data request',timeoutMs\)/,
+  'the bounded fetch error path must preserve the actual request deadline');
+assert.match(source, /previousAccountHasChanges=await initScope\.race\(hasUnassignedWorkspaceChanges\(owner,newUserId,localPayload\),'previous account workspace comparison'\)/,
+  'account handoff must await and cancel the previous-owner workspace comparison instead of leaving a detached rejection');
+assert.match(source, /if\(pendingForUser&&owner!==newUserId&&!previousAccountHasChanges\)\{await applyWorkspaceSnapshot\(/,
+  'the target account pending snapshot must only be restored after the previous-owner workspace comparison is complete');
+
+// A cloud restore must reveal its atomically committed, owner-verified workspace
+// without waiting for the Delta-only IndexedDB projection. The subsequent upload
+// checks the rollout gate and performs the guarded rebuild before any Delta access.
+assert.match(source,
+  /if\(typeof window\.NexusRebuildEntityProjection==='function'&&options\.deferProjectionToUpload!==true\)/,
+  'cloud restore must be able to defer the Delta projection without changing other snapshot-replacement flows');
+assert.match(source,
+  /else if\(options\.deferProjectionToUpload===true\)[\s\S]*?projection-deferred-to-upload/,
+  'a deferred cloud-restore projection must be recorded explicitly in diagnostics');
+assert.match(source,
+  /async function applyRemote\([\s\S]*?await applyWorkspaceSnapshot\(payload\.state,payload\.featureState,ownerId,null,\{deferProjectionToUpload:true\}\)/,
+  'cloud restore must return after durable owner-bound application and hand projection work to upload');
+assert.match(source,
+  /if\(!gateOpen\)return \{skipped:true,reason:'staging_delta_gate_closed'\};[\s\S]*?storage\.waitForWorkspaceEntitySync\(ownerId\)[\s\S]*?storage\.syncWorkspaceEntities\(ownerId,null,\{replace:true\}\)/,
+  'the upload coordinator must skip projection for snapshot-mode accounts and rebuild it before using an enabled Delta path');
 
 // Hosted Delta must actively pull remote edits; local-save and reconnect-only triggers
 // leave an already-open second device stale indefinitely. Poll only after the gated
@@ -35,8 +1090,21 @@ assert.match(source,/if\(deltaResult&&deltaResult\.ok===true\)\{hostedDeltaPolli
 assert.ok(source.includes('if(pending||hostedDeltaPollingEnabled)schedule();')&&
   source.includes("window.addEventListener('focus',resumeAfterConnectivity)"),
   'returning to an active tab must immediately pull remote changes even when its local queue is empty');
-assert.match(source,/async function acknowledgeDeltaShadowSnapshot\([\s\S]*?current\.operationId!==pending\.operationId[\s\S]*?sameWorkspace\(current\.payload,snapshot\(\)\)[\s\S]*?queue\.acknowledge\(/,
+assert.match(source,/async function acknowledgeDeltaShadowSnapshot\([\s\S]*?current\.operationId!==pending\.operationId[\s\S]*?sameWorkspace\(current\.payload,snapshot\(\),signal\)[\s\S]*?queue\.acknowledge\(/,
   'a compatibility snapshot may be retired only after matching owner, operation, server stamp and current workspace');
+
+assert.ok(Number(timeoutBudgetMatch[2]) <= 300000,
+  'workspace initialization must retain a bounded hard upper deadline');
+assert.match(source,/function rotateSessionContext\(nextSession\)[\s\S]*?activeInitializationScope\.abort\(\)[\s\S]*?activeUploadScope\.abort\(\)/,
+  'an account identity change must cancel the previous initializer and uploader immediately');
+assert.match(source,/function createBoundedSupabaseFetch\([\s\S]*?SUPABASE_AUTH_REQUEST_TIMEOUT_MS[\s\S]*?SUPABASE_DATA_REQUEST_TIMEOUT_MS[\s\S]*?Promise\.race/,
+  'Auth and Data API fetches must settle on timeout or session cancellation');
+assert.match(source,/function loadSupabaseLibrary\([\s\S]*?within 12 seconds/,
+  'a failed Supabase SDK load must have a bounded loading deadline');
+assert.match(source,/if\(supabaseLoadPromise===attempt\)supabaseLoadPromise=null/,
+  'a failed Supabase SDK load must reset the rejected cached promise');
+assert.match(source,/getActiveOwner:\(\)=>operationEpoch===sessionEpoch/,
+  'a stale Delta operation must be rejected even after an A-to-B-to-A account switch');
 
 const syncMarkerLimitMatch=source.match(/const MAX_SYNC_CURRICULUM_MARKERS=(\d+);/);
 const mergeStateStart=source.indexOf('function mergeState(local,remote){');
@@ -70,15 +1138,18 @@ const initializationStart=source.indexOf('async function initializeSession(s){')
 const initializationEnd=source.indexOf('async function sameWorkspace(',initializationStart);
 assert.ok(initializationStart>=0&&initializationEnd>initializationStart,'cloud initialization source must be inspectable');
 const initializationSource=source.slice(initializationStart,initializationEnd);
-const initializationRemoteRead=initializationSource.indexOf('const remote=await fetchRemote(newUserId);');
+const initializationRemoteRead=initializationSource.indexOf('fetchRemote(newUserId,null,initScope.signal,reusableLocalBaseline)');
 const initializationLocalSnapshot=initializationSource.indexOf('let localPayload=snapshot();');
 assert.ok(initializationRemoteRead>=0&&initializationLocalSnapshot>initializationRemoteRead,
   'large local state must be snapshotted after the asynchronous cloud read so an offline edit during the request is included');
+assert.ok(initializationSource.includes('localBaselineReused')&&
+  initializationSource.includes('same-account-workspace-restored'),
+  'same-account refresh may reuse only an owner-verified local baseline while still snapshotting live local state after the cloud request');
 assert.ok(!initializationSource.includes("localPayload=snapshot();const remote=await fetchRemote(newUserId);")&&
   !initializationSource.includes('sameWorkspace(localPayload,latestLocalPayload)'),
   'account initialization must not deep-clone and compare the entire local workspace twice before any account decision');
 
-const uploadStart=source.indexOf('async function upload(){');
+const uploadStart=source.indexOf('function upload(){');
 const uploadEnd=source.indexOf('let localQueueHealthy=',uploadStart);
 assert.ok(uploadStart>=0&&uploadEnd>uploadStart,'the cloud upload coordinator must be available for restore-path checks');
 const uploadSource=source.slice(uploadStart,uploadEnd);
@@ -95,10 +1166,44 @@ assert.ok(source.includes("runStagingEntityDeltaSync(ownerId,signal,{downgrade:t
   'automatic fallback must verify snapshot mode before the compatibility writer resumes');
 assert.ok(uploadSource.includes('if(!pending&&deltaResult&&deltaResult.skipped)')&&
   uploadSource.includes('verifiedBase.serverVersion===lastRemoteStamp')&&
-  uploadSource.includes('await sameWorkspace(verifiedBase,snapshot())'),
+  uploadSource.includes('await sameWorkspace(verifiedBase,snapshot(),uploadScope.signal)'),
   'a no-change cloud restore must be verified against its committed base without rewriting the compatibility snapshot');
+const keepLocalStart=source.indexOf('function preserveLocalWorkspaceAfterSyncFailure(');
+const keepLocalEnd=source.indexOf('async function initializeSession(s){',keepLocalStart);
+assert.ok(keepLocalStart>=0&&keepLocalEnd>keepLocalStart,
+  'sync failure handling must preserve a previously owner-verified local workspace');
+const keepLocalSandbox={
+  OWNER_KEY:'nexus.cloud.last-user-id',session:{user:{id:'account-A'}},ready:false,
+  localStorage:{getItem:()=> 'account-A'},statusValue:'',helpText:'',retryCalls:0,
+  status(value){keepLocalSandbox.statusValue=value;},say(value){keepLocalSandbox.helpText=value;},scheduleRetry(){keepLocalSandbox.retryCalls++;}
+};
+vm.createContext(keepLocalSandbox);
+vm.runInContext(source.slice(keepLocalStart,keepLocalEnd)+
+  '\nglobalThis.preserveForTest=preserveLocalWorkspaceAfterSyncFailure;',
+  keepLocalSandbox,{filename:'owner-verified-sync-failure.js'});
+assert.equal(keepLocalSandbox.preserveForTest('account-A'),true,
+  'a failed cloud verification must retain the active owner-verified local workspace');
+assert.equal(keepLocalSandbox.ready,true,
+  'cloud verification failure must not relock an already owner-verified local workspace');
+assert.equal(keepLocalSandbox.statusValue,'Sync pending',
+  'a local-ready account must report pending sync rather than an unavailable workspace');
+assert.equal(keepLocalSandbox.retryCalls,1,
+  'a local-ready account must receive a bounded automatic sync retry');
+assert.equal(keepLocalSandbox.preserveForTest('account-B'),false,
+  'a cached workspace must never be exposed when its owner differs from the active session');
+assert.equal(keepLocalSandbox.ready,false,
+  'an owner mismatch must continue to fail closed');
+assert.equal(keepLocalSandbox.statusValue,'Account verification delayed',
+  'an owner mismatch must retain the explicit verification-delayed state');
+assert.ok((initializationSource.match(/preserveLocalWorkspaceAfterSyncFailure\(newUserId/g)||[]).length>=10,
+  'initialization, account-handoff, and merge verification failures must preserve an owner-verified local workspace and schedule retry');
+assert.ok(uploadSource.includes('ready=ownerStillMatches')&&
+  uploadSource.includes("scheduleRetry();return false;")&&
+  uploadSource.includes("status(ownerStillMatches?'Sync pending':'Sync error')"),
+  'blocked or failed sync must retry while preserving a matching owner workspace');
+
 const deltaSyncStart=source.indexOf('async function runStagingEntityDeltaSync');
-const deltaSyncEnd=source.indexOf('async function upload(){',deltaSyncStart);
+const deltaSyncEnd=source.indexOf('function upload(){',deltaSyncStart);
 const deltaSyncSource=source.slice(deltaSyncStart,deltaSyncEnd);
 assert.ok(deltaSyncSource.includes('cursor.requiresPull===false')&&
   deltaSyncSource.includes('Number(cursor.publishRevision)===Number(cursor.remoteHeadRevision)')&&
@@ -315,6 +1420,7 @@ const document = {
   head: { appendChild() {} }
 };
 const entityProjectionRebuilds = [];
+const entityProjectionReadinessProbes = [];
 const window = {
   NexusBackupRestoreUtils: backup,
   NexusCloudChunkStorage: cloudChunks,
@@ -335,12 +1441,17 @@ const window = {
   NexusFSRS: { currentSettings: { ...DEFAULT_FSRS }, settings() { return { ...this.currentSettings }; }, setSettings(value) { this.currentSettings = { ...value }; } },
   NexusStorageKey: STATE_KEY,
   NexusFeatureStorageKey: FEATURE_KEY,
-  NexusRebuildEntityProjection: async () => {
-    entityProjectionRebuilds.push({
+  NexusRebuildEntityProjection: async (options = {}) => {
+    const snapshot = {
       ownerId: storage.getItem(OWNER),
       state: JSON.parse(storage.getItem(STATE_KEY) || 'null'),
       featureState: JSON.parse(storage.getItem(FEATURE_KEY) || 'null')
-    });
+    };
+    if (options.reuseOnly === true) {
+      entityProjectionReadinessProbes.push(snapshot);
+      return { ownerId: snapshot.ownerId, mode: 'deferred', reason: 'manifest-not-ready' };
+    }
+    entityProjectionRebuilds.push(snapshot);
     return { mode: 'snapshot-backfill' };
   },
   NexusGetFeatureState: () => JSON.parse(storage.getItem(FEATURE_KEY) || '{}'),
@@ -423,7 +1534,15 @@ context = {
   window, document, navigator: { get onLine() { return networkAvailable; } },
   location: { hostname: 'preview.example', origin: 'https://preview.example', pathname: '/' },
   localStorage: storage, URL, URLSearchParams, console, Promise, Date, Map, Array, Object, JSON, String, Math, Number, Error, AbortController,
-  setTimeout, clearTimeout, setInterval, clearInterval,
+  setTimeout(callback, delay, ...args) {
+    // The real-browser lifecycle test covers the 30s cloud-verification watchdog.
+    // Keep this deterministic runtime harness from retaining background retry timers.
+    if (delay === 30000 && String(callback).includes('syncVerificationWatchdogOwner')) {
+      return Number.MAX_SAFE_INTEGER;
+    }
+    return setTimeout(callback, delay, ...args);
+  },
+  clearTimeout, setInterval, clearInterval,
   state: localState,
   clone: v => JSON.parse(JSON.stringify(v)),
   normalizeState: v => {
@@ -450,7 +1569,7 @@ assert.equal(remoteReadCount,0,
   'cold offline account initialization must use the owner-bound local workspace without waiting on a network snapshot read');
 assert.equal(rows.has(accountA.id), false, 'offline startup must not write to cloud');
 assert.ok(queue.hasPending(storage, accountA.id), 'offline startup must retain the account-A pending snapshot');
-assert.equal(getElement('cloudStatus').textContent, 'Offline · local workspace', 'an authenticated account with its own local workspace should remain usable offline without claiming sync success');
+assert.equal(getElement('cloudStatus').textContent, 'Offline - local workspace', 'an authenticated account with its own local workspace should remain usable offline without claiming sync success');
 
 networkAvailable = true;
 listeners['window:online']();
@@ -467,6 +1586,56 @@ assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'offline-A', 'the
 assert.equal(queue.hasPending(storage, accountA.id), false, 'the queue must be cleared only after verified cloud read-back');
 assert.equal(getElement('cloudStatus').textContent, 'Synced', 'verified recovery must report synced');
 
+// Concurrent callers for the same account epoch must share the actual upload
+// result. Returning false merely because another upload is active makes an
+// initializer misclassify a healthy in-flight verification as a failed sync.
+{
+  const currentA=rows.get(accountA.id);
+  const coalescedState=stateFor('coalesced-upload-A');
+  const coalescedPayload=payloadFor('coalesced-upload-A');
+  queue.rememberStamp(storage,accountA.id,currentA.updated_at);
+  queue.rememberBase(storage,accountA.id,{
+    state:currentA.payload.state,featureState:currentA.payload.featureState
+  },currentA.updated_at);
+  context.state=coalescedState;
+  storage.setItem(STATE_KEY,JSON.stringify(coalescedState));
+  storage.setItem(FEATURE_KEY,JSON.stringify(coalescedPayload.featureState));
+  queue.commitWorkspace(storage,[
+    {key:STATE_KEY,value:JSON.stringify(coalescedState)},
+    {key:FEATURE_KEY,value:JSON.stringify(coalescedPayload.featureState)}
+  ],coalescedPayload,{baseServerVersion:currentA.updated_at});
+  deferNextRemoteRead=true;
+  const firstUpload=window.NexusCloudSync.upload();
+  for(let i=0;i<200&&!releaseDeferredRemoteRead;i++)await new Promise(resolve=>setTimeout(resolve,5));
+  assert.equal(typeof releaseDeferredRemoteRead,'function',
+    'the first same-account upload must reach its deliberately deferred remote verification read');
+  const secondUpload=window.NexusCloudSync.upload();
+  assert.equal(secondUpload,firstUpload,
+    'a second same-epoch upload request must join the first upload promise');
+  const releaseCoalescedRead=releaseDeferredRemoteRead;
+  releaseCoalescedRead();
+  releaseDeferredRemoteRead=null;
+  const [firstResult,secondResult]=await Promise.all([firstUpload,secondUpload]);
+  assert.equal(firstResult,true,'the shared upload must report its verified result to the first caller');
+  assert.equal(secondResult,true,'the shared upload must report the same verified result to the concurrent caller');
+  assert.equal(rows.get(accountA.id).payload.state.topics[0].id,'coalesced-upload-A',
+    'the coalesced upload must publish the exact owner-bound pending snapshot');
+  assert.equal(queue.hasPending(storage,accountA.id),false,
+    'the shared operation may be considered complete only after the queue is acknowledged');
+  assert.equal(getElement('cloudStatus').textContent,'Synced',
+    'both callers must observe a terminal verified sync state');
+  // Restore the deterministic offline-A fixture so the following A→B isolation
+  // tests continue from their original remote/base state.
+  rows.set(accountA.id,currentA);
+  queue.rememberStamp(storage,accountA.id,currentA.updated_at);
+  queue.rememberBase(storage,accountA.id,{
+    state:currentA.payload.state,featureState:currentA.payload.featureState
+  },currentA.updated_at);
+  context.state=currentA.payload.state;
+  storage.setItem(STATE_KEY,JSON.stringify(currentA.payload.state));
+  storage.setItem(FEATURE_KEY,JSON.stringify(currentA.payload.featureState));
+}
+ 
 const revisionA = rows.get(accountA.id).updated_at;
 queue.rememberStamp(storage, accountA.id, revisionA);
 queue.commitWorkspace(storage, [
@@ -485,14 +1654,41 @@ assert.equal(getElement('cloudStatus').textContent, 'Synced', 'a safe account sw
 assert.ok(queue.hasPending(storage, accountA.id), 'account A pending work must remain parked during the account B session');
 assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'offline-A', 'account B login must not overwrite account A cloud data');
 activeSession = { user: accountA };
+const accountReturnSameAsync=window.NexusWorkspaceSyncMerge.sameAsync;
+const accountReturnSetTimeout=context.setTimeout;
+window.NexusWorkspaceSyncMerge.sameAsync=()=>new Promise(()=>{});
+context.setTimeout=(callback,delay,...args)=>
+  accountReturnSetTimeout(callback,delay===60000?25:delay,...args);
+try{
+ await window.NexusCloudSync.reconnect();
+ assert.equal(window.NexusCloudSync.getAccountState().signedIn,true,
+   'returning to account A during a stalled large-workspace comparison must keep A signed in');
+ assert.equal(window.NexusCloudSync.getAccountState().ready,true,
+   'returning to account A must recover its owner-bound workspace instead of remaining in account loading');
+ assert.equal(storage.getItem(OWNER),accountA.id,
+   'account A local recovery must establish A ownership before it becomes ready');
+ assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id,'second-offline-A',
+   'account A fallback must restore A’s queued data, not account B data');
+ assert.equal(queue.hasPending(storage,accountA.id),true,
+   'account A’s cloud-pending snapshot must remain queued until a later verified retry');
+ assert.equal(getElement('cloudStatus').textContent,'Sync delayed - local data ready',
+   'account A return must leave indefinite loading and show an honest delayed-sync status');
+ assert.notEqual(getElement('cloudStatus').textContent,'Synced',
+   'local-ready fallback must not falsely claim account A cloud verification completed');
+}finally{
+ window.NexusWorkspaceSyncMerge.sameAsync=accountReturnSameAsync;
+ context.setTimeout=accountReturnSetTimeout;
+}
 await window.NexusCloudSync.reconnect();
-for (let i = 0; i < 100 && queue.hasPending(storage, accountA.id); i++) {
+for (let i = 0; i < 200 && queue.hasPending(storage, accountA.id); i++) {
   await new Promise(resolve => setTimeout(resolve, 10));
 }
 assert.equal(rows.get(accountA.id).payload.state.topics[0].id, 'second-offline-A', 'returning to account A must upload its own pending snapshot');
 assert.equal(rows.has(accountB.id), true, 'account B retains its own workspace while account A pending work is restored');
 assert.equal(rows.get(accountB.id).payload.state.topics.length, 0, 'returning to account A must not copy account A changes into account B cloud');
 assert.equal(queue.hasPending(storage, accountA.id), false, 'account A pending work must be acknowledged after verification');
+assert.equal(getElement('cloudStatus').textContent, 'Synced',
+  'returning to account A must finish in a terminal synced state after its queued snapshot is verified');
 
 
 const stableBase=rows.get(accountA.id);
@@ -1469,6 +2665,120 @@ for (const scenario of [
     'the lightweight committed-save hook must leave the already-committed queue payload intact');
 }
 
+// Online account handoff must reveal the incoming owner's queued workspace
+// before waiting on that owner's intentionally delayed remote snapshot read.
+{
+  if (queue.hasPending(storage, accountA.id)) queue.archive(storage, accountA.id, 'online-account-handoff-reset');
+  if (queue.hasPending(storage, accountB.id)) queue.archive(storage, accountB.id, 'online-account-handoff-reset');
+
+  const baseA = payloadFor('online-handoff-A-base');
+  const outgoingA = JSON.parse(JSON.stringify(baseA));
+  outgoingA.state.topics.push({
+    id: 'online-handoff-A-pending-topic', name: 'A pending local edit',
+    subjectId: outgoingA.state.subjects[0].id, custom: true
+  });
+  const stampA = '2026-11-21T03:10:00.000Z';
+  rows.set(accountA.id, { user_id: accountA.id, payload: baseA, updated_at: stampA });
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(outgoingA.state));
+  storage.setItem(FEATURE_KEY, JSON.stringify(outgoingA.featureState));
+  context.state = JSON.parse(JSON.stringify(outgoingA.state));
+  queue.rememberBase(storage, accountA.id,
+    { state: baseA.state, featureState: baseA.featureState }, stampA);
+  queue.rememberStamp(storage, accountA.id, stampA);
+  queue.commitWorkspace(storage, [
+    { key: STATE_KEY, value: JSON.stringify(outgoingA.state) },
+    { key: FEATURE_KEY, value: JSON.stringify(outgoingA.featureState) }
+  ], outgoingA, { baseServerVersion: stampA });
+
+  const baseB = payloadFor('online-handoff-B-base');
+  const pendingB = JSON.parse(JSON.stringify(baseB));
+  pendingB.state.topics.push({
+    id: 'online-handoff-B-pending-topic', name: 'B pending local edit',
+    subjectId: pendingB.state.subjects[0].id, custom: true
+  });
+  const stampB = '2026-11-21T03:11:00.000Z';
+  rows.set(accountB.id, { user_id: accountB.id, payload: baseB, updated_at: stampB });
+  queue.rememberBase(storage, accountB.id,
+    { state: baseB.state, featureState: baseB.featureState }, stampB);
+  queue.rememberStamp(storage, accountB.id, stampB);
+  storage.setItem(OWNER, accountB.id);
+  storage.setItem(STATE_KEY, JSON.stringify(pendingB.state));
+  storage.setItem(FEATURE_KEY, JSON.stringify(pendingB.featureState));
+  context.state = JSON.parse(JSON.stringify(pendingB.state));
+  queue.commitWorkspace(storage, [
+    { key: STATE_KEY, value: JSON.stringify(pendingB.state) },
+    { key: FEATURE_KEY, value: JSON.stringify(pendingB.featureState) }
+  ], pendingB, { baseServerVersion: stampB });
+
+  storage.setItem(OWNER, accountA.id);
+  storage.setItem(STATE_KEY, JSON.stringify(outgoingA.state));
+  storage.setItem(FEATURE_KEY, JSON.stringify(outgoingA.featureState));
+  context.state = JSON.parse(JSON.stringify(outgoingA.state));
+
+  const remoteABefore = JSON.stringify(rows.get(accountA.id));
+  const remoteBBefore = JSON.stringify(rows.get(accountB.id));
+  activeSession = { user: accountB };
+  networkAvailable = true;
+  deferNextRemoteRead = true;
+  releaseDeferredRemoteRead = null;
+
+  const initialization = window.NexusCloudSync.reconnect();
+  for (let i = 0; i < 200 && !releaseDeferredRemoteRead; i++) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.equal(typeof releaseDeferredRemoteRead, 'function',
+    'the online handoff test must stop at B’s remote-read boundary');
+  assert.equal(storage.getItem(OWNER), accountB.id,
+    'B’s owner-bound local cache must become active before B’s cloud read resolves');
+  const localB = JSON.parse(storage.getItem(STATE_KEY));
+  assert.ok(localB.topics.some(topic => topic.id === 'online-handoff-B-pending-topic'),
+    'the cached B pending snapshot must be revealed while its cloud read is still pending');
+  assert.equal(localB.topics.some(topic => topic.id === 'online-handoff-A-pending-topic'), false,
+    'A’s committed workspace must never be displayed as B while the cloud read is pending');
+  assert.equal(getElement('cloudStatus').textContent, 'Sync pending',
+    'a local-ready handoff must expose a truthful pending state before cloud verification');
+  assert.equal(window.NexusCloudSync.getAccountState().ready, true,
+    'B’s owner-verified local workspace must be ready while cloud verification continues');
+  assert.ok(queue.getPending(storage, accountA.id).payload.state.topics.some(topic => topic.id === 'online-handoff-A-pending-topic'),
+    'A’s outgoing edit must be checkpointed under A before B is shown');
+  assert.ok(queue.hasPending(storage, accountB.id),
+    'B’s pending cloud update must remain queued until its own cloud read can be reconciled');
+  assert.equal(JSON.stringify(rows.get(accountA.id)), remoteABefore,
+    'the handoff checkpoint must not write A’s pending data to A cloud as part of local restoration');
+  assert.equal(JSON.stringify(rows.get(accountB.id)), remoteBBefore,
+    'the cached B workspace must not be uploaded before B’s remote baseline is read');
+
+  const releaseIncomingRead = releaseDeferredRemoteRead;
+  releaseIncomingRead();
+  releaseDeferredRemoteRead = null;
+  let handoffTimeout;
+  try {
+    await Promise.race([
+      initialization,
+      new Promise((_, reject) => {
+        handoffTimeout = setTimeout(() => reject(new Error('The cached online account handoff did not reconcile after the remote read was released.')), 10000);
+      })
+    ]);
+  } finally {
+    clearTimeout(handoffTimeout);
+  }
+  assert.equal(storage.getItem(OWNER), accountB.id,
+    'B must remain the active owner after its cloud reconciliation');
+  assert.ok(rows.get(accountB.id).payload.state.topics.some(topic => topic.id === 'online-handoff-B-pending-topic'),
+    'B’s cached changes must be verified in B cloud after reconciliation');
+  assert.ok(queue.hasPending(storage, accountA.id),
+    'A’s pending workspace must remain parked after B reaches sync');
+  assert.equal(queue.hasPending(storage, accountB.id), false,
+    'B’s pending queue must clear only after its own cloud state is verified');
+  assert.equal(rows.get(accountB.id).payload.state.topics.some(topic => topic.id === 'online-handoff-A-pending-topic'), false,
+    'A’s outgoing workspace must never be uploaded into B cloud');
+  assert.equal(JSON.stringify(rows.get(accountA.id)), remoteABefore,
+    'B synchronization must not modify A cloud data');
+  assert.equal(getElement('cloudStatus').textContent, 'Synced',
+    'the online account handoff must finish with a verified terminal sync state');
+}
+
 // A different authenticated account must recover only its own cached local workspace
 // when the cloud is unreachable; account A's visible data must never be uploaded as B.
 {
@@ -1496,15 +2806,18 @@ for (const scenario of [
   activeSession = { user: accountB };
   networkAvailable = false;
   const rebuildsBeforeAccountBCacheRestore = entityProjectionRebuilds.length;
+  const probesBeforeAccountBCacheRestore = entityProjectionReadinessProbes.length;
   await window.NexusCloudSync.reconnect();
-  assert.equal(entityProjectionRebuilds.length, rebuildsBeforeAccountBCacheRestore + 1,
-    'restoring a different account cache must rebuild the entity projection after its snapshot commit');
-  assert.equal(entityProjectionRebuilds.at(-1).ownerId, accountB.id,
-    'the account-handoff entity projection must be bound to the newly committed owner');
-  assert.equal(entityProjectionRebuilds.at(-1).state.topics[0].id, 'cached-B-offline',
-    'the entity projection rebuild must observe the restored target-account snapshot, not the previous account');
-  assert.equal(entityProjectionRebuilds.at(-1).featureState.journal[0].text, 'cached-B-offline',
-    'the entity projection rebuild must include the restored target-account Study Hub data');
+  assert.equal(entityProjectionReadinessProbes.length, probesBeforeAccountBCacheRestore + 1,
+    'restoring a different account cache must perform a cheap owner-scoped projection readiness probe');
+  assert.equal(entityProjectionReadinessProbes.at(-1).ownerId, accountB.id,
+    'the projection readiness probe must be bound to the newly committed owner');
+  assert.equal(entityProjectionReadinessProbes.at(-1).state.topics[0].id, 'cached-B-offline',
+    'the projection readiness probe must inspect the restored target-account snapshot, not the previous account');
+  assert.equal(entityProjectionReadinessProbes.at(-1).featureState.journal[0].text, 'cached-B-offline',
+    'the projection readiness probe must use the restored target-account Study Hub data');
+  assert.equal(entityProjectionRebuilds.length, rebuildsBeforeAccountBCacheRestore,
+    'offline account handoff must defer a stale projection rebuild until the authenticated Delta gate can be checked');
   assert.equal(storage.getItem(OWNER), accountB.id,
     'offline account handoff should activate only the target account when its local snapshot is found');
   assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id, 'cached-B-offline',
@@ -1521,7 +2834,7 @@ for (const scenario of [
     'the offline handoff must not change account A cloud data');
   assert.equal(rows.get(accountB.id) ? JSON.stringify(rows.get(accountB.id)) : null, remoteBBefore,
     'the cached workspace must not trigger a cloud write while offline');
-  assert.equal(getElement('cloudStatus').textContent, 'Offline · local workspace',
+  assert.equal(getElement('cloudStatus').textContent, 'Offline - local workspace',
     'offline restoration must be shown as local-only, not synced');
 
   const accountC = { id: 'account-C-no-cache', email: 'c@example.test' };
@@ -1742,13 +3055,147 @@ try{
     })
   ]);
 }finally{clearTimeout(authRaceTimeout);}
-await new Promise(resolve=>setTimeout(resolve,100));
+const authRaceSyncDeadline=Date.now()+10000;
+while(getElement('cloudStatus').textContent!=='Synced'&&Date.now()<authRaceSyncDeadline){
+  await new Promise(resolve=>setTimeout(resolve,10));
+}
 assert.equal(window.NexusCloudSync.getAccountState().signedIn,true,
   'the latest same-user SIGNED_IN event must replace a queued SIGNED_OUT null session');
 assert.equal(window.NexusCloudSync.getAccountState().ready,true,
   'the account must finish initialization after the duplicate auth-event burst');
 assert.equal(getElement('cloudStatus').textContent,'Synced',
-  'duplicate auth events must not leave the sync status in a signed-out or loading state');
+  'duplicate auth events must eventually resume and complete verified sync after the authoritative session read');
+
+// Account A's cloud read can remain unresolved while the user signs into account B.
+// B must load and become usable without waiting for A's promise to settle. Releasing A
+// afterwards must not apply or publish any stale A workspace into B.
+const accountStalledA={id:'account-stalled-A',email:'stalled-a@example.test'};
+const accountFastB={id:'account-fast-B',email:'fast-b@example.test'};
+const payloadStalledA=payloadFor('stalled-A-local');
+const payloadFastB=payloadFor('fast-B-cloud');
+const stampStalledA='2026-11-21T02:00:00.000Z';
+const stampFastB='2026-11-21T02:01:00.000Z';
+rows.set(accountStalledA.id,{user_id:accountStalledA.id,payload:payloadStalledA,updated_at:stampStalledA});
+rows.set(accountFastB.id,{user_id:accountFastB.id,payload:payloadFastB,updated_at:stampFastB});
+queue.rememberStamp(storage,accountStalledA.id,stampStalledA);
+queue.rememberBase(storage,accountStalledA.id,
+  {state:payloadStalledA.state,featureState:payloadStalledA.featureState},stampStalledA);
+storage.setItem(OWNER,accountStalledA.id);
+storage.setItem(STATE_KEY,JSON.stringify(payloadStalledA.state));
+storage.setItem(FEATURE_KEY,JSON.stringify(payloadStalledA.featureState));
+context.state=payloadStalledA.state;
+activeSession={user:accountStalledA};
+networkAvailable=true;
+releaseDeferredRemoteRead=null;
+deferNextRemoteRead=true;
+const stalledAccountInitialization=window.NexusCloudSync.reconnect();
+for(let i=0;i<200&&!releaseDeferredRemoteRead;i++)await new Promise(resolve=>setTimeout(resolve,5));
+assert.equal(typeof releaseDeferredRemoteRead,'function',
+  'the previous account cloud read must be held before switching accounts');
+const stalledReadRelease=releaseDeferredRemoteRead;
+const switchStartedAt=Date.now();
+authStateCallback('SIGNED_OUT',null);
+activeSession={user:accountFastB};
+authStateCallback('SIGNED_IN',{user:accountFastB});
+for(let i=0;i<1000&&(
+  storage.getItem(OWNER)!==accountFastB.id||
+  window.NexusCloudSync.getAccountState().ready!==true||
+  getElement('cloudStatus').textContent!=='Synced'
+);i++)await new Promise(resolve=>setTimeout(resolve,10));
+const switchDurationMs=Date.now()-switchStartedAt;
+assert.equal(storage.getItem(OWNER),accountFastB.id,
+  'the new account must take ownership after the old session is cancelled');
+assert.equal(window.NexusCloudSync.getAccountState().signedIn,true,
+  'the newly selected account must remain signed in');
+assert.equal(window.NexusCloudSync.getAccountState().ready,true,
+  'account B must finish workspace verification while A’s cloud read is still unresolved');
+assert.equal(getElement('cloudStatus').textContent,'Synced',
+  'account B must reach a terminal synced state without releasing account A’s pending read');
+assert.ok(switchDurationMs<10000,
+  'account switching must not wait for the previous unresponsive cloud read');
+assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id,'fast-B-cloud',
+  'account B must display its own workspace rather than account A local data');
+stalledReadRelease();
+releaseDeferredRemoteRead=null;
+await Promise.race([
+ stalledAccountInitialization,
+ new Promise((_,reject)=>setTimeout(()=>reject(new Error('Cancelled account-A initialization did not settle after the account switch.')),10000))
+]);
+await new Promise(resolve=>setTimeout(resolve,100));
+assert.equal(storage.getItem(OWNER),accountFastB.id,
+  'a late account-A read must not change the active local owner marker');
+assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id,'fast-B-cloud',
+  'a late account-A read must not overwrite account B workspace contents');
+assert.equal(rows.get(accountFastB.id).payload.state.topics[0].id,'fast-B-cloud',
+  'a cancelled account-A request must not publish into account B cloud data');
+
+// Repeat the handoff while account B has an actual snapshot upload in flight.
+// The in-flight upload must release its coordinator slot immediately on B -> C,
+// while B's account-bound pending snapshot remains parked for a later return to B.
+const accountQuickC={id:'account-quick-C',email:'quick-c@example.test'};
+const payloadQuickC=payloadFor('quick-C-cloud');
+rows.set(accountQuickC.id,{user_id:accountQuickC.id,payload:payloadQuickC,updated_at:'2026-11-21T02:02:00.000Z'});
+const cloudBBeforeUpload=rows.get(accountFastB.id);
+queue.rememberStamp(storage,accountFastB.id,cloudBBeforeUpload.updated_at);
+queue.rememberBase(storage,accountFastB.id,{
+ state:cloudBBeforeUpload.payload.state,
+ featureState:cloudBBeforeUpload.payload.featureState
+},cloudBBeforeUpload.updated_at);
+const payloadPendingB=payloadFor('fast-B-pending-upload');
+context.state=payloadPendingB.state;
+storage.setItem(STATE_KEY,JSON.stringify(payloadPendingB.state));
+storage.setItem(FEATURE_KEY,JSON.stringify(payloadPendingB.featureState));
+queue.commitWorkspace(storage,[
+ {key:STATE_KEY,value:JSON.stringify(payloadPendingB.state)},
+ {key:FEATURE_KEY,value:JSON.stringify(payloadPendingB.featureState)}
+],payloadPendingB,{baseServerVersion:cloudBBeforeUpload.updated_at});
+assert.equal(queue.hasPending(storage,accountFastB.id),true,
+  'account B must have a durable pending snapshot before its upload is interrupted');
+activeSession={user:accountFastB};
+releaseDeferredRemoteRead=null;
+deferNextRemoteRead=true;
+const interruptedBUpload=window.NexusCloudSync.upload();
+for(let i=0;i<200&&!releaseDeferredRemoteRead;i++)await new Promise(resolve=>setTimeout(resolve,5));
+assert.equal(typeof releaseDeferredRemoteRead,'function',
+  'account B upload must reach its deliberately stalled cloud read');
+const interruptedBReadRelease=releaseDeferredRemoteRead;
+const uploadSwitchStartedAt=Date.now();
+authStateCallback('SIGNED_OUT',null);
+activeSession={user:accountQuickC};
+authStateCallback('SIGNED_IN',{user:accountQuickC});
+for(let i=0;i<1000&&(
+ storage.getItem(OWNER)!==accountQuickC.id||
+ window.NexusCloudSync.getAccountState().ready!==true||
+ getElement('cloudStatus').textContent!=='Synced'
+);i++)await new Promise(resolve=>setTimeout(resolve,10));
+const uploadSwitchDurationMs=Date.now()-uploadSwitchStartedAt;
+assert.equal(storage.getItem(OWNER),accountQuickC.id,
+  'account C must take over while account B upload is still unresolved');
+assert.equal(window.NexusCloudSync.getAccountState().ready,true,
+  'account C workspace verification must finish without waiting for B upload');
+assert.equal(getElement('cloudStatus').textContent,'Synced',
+  'account C must reach a terminal synced state while B upload remains unresolved');
+assert.ok(uploadSwitchDurationMs<10000,
+  'account switching must release the previous account upload coordinator promptly');
+assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id,'quick-C-cloud',
+  'account C must display only its own workspace after the interrupted B upload');
+assert.equal(queue.hasPending(storage,accountFastB.id),true,
+  'account B pending work must remain parked after its upload is cancelled');
+interruptedBReadRelease();
+releaseDeferredRemoteRead=null;
+await Promise.race([
+ interruptedBUpload,
+ new Promise((_,reject)=>setTimeout(()=>reject(new Error('Cancelled account-B upload did not settle after switching to account C.')),10000))
+]);
+await new Promise(resolve=>setTimeout(resolve,100));
+assert.equal(storage.getItem(OWNER),accountQuickC.id,
+  'a late account-B upload read must not alter account C local ownership');
+assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id,'quick-C-cloud',
+  'a late account-B upload read must not overwrite account C workspace');
+assert.equal(rows.get(accountFastB.id).payload.state.topics[0].id,'fast-B-cloud',
+  'the cancelled B upload must not publish its pending snapshot to the wrong cloud account');
+assert.equal(rows.get(accountQuickC.id).payload.state.topics[0].id,'quick-C-cloud',
+  'account C cloud workspace must remain isolated from account B pending work');
 
 // Production can receive the Web build before OPS-01 installs the chunk table.
 // A bounded legacy JSONB workspace must keep syncing until that schema is ready.
@@ -1846,4 +3293,53 @@ assert.equal(queue.hasPending(storage,accountG.id),false,
 assert.equal(getElement('cloudStatus').textContent,'Synced',
   'the clean second-device restore must settle in the synced state');
 
-console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, target-account pending-snapshot isolation, first-login conflict gating, auth-session queue recovery, 77,144-record second-device deletion reconciliation, and pre-migration chunk-table compatibility.');
+// A 26 MB class workspace can take longer to compare than the initialization
+// budget on a constrained device. A comparison that never settles must not leave
+// the account screen displaying "Loading account…" forever or unlock another owner.
+const accountH={id:'account-H',email:'h@example.test'};
+const payloadH=payloadFor('large-workspace-H');
+const stampH='2026-11-21T03:00:00.000Z';
+rows.set(accountH.id,{user_id:accountH.id,payload:payloadH,updated_at:stampH});
+storage.setItem(OWNER,accountH.id);
+storage.setItem(STATE_KEY,JSON.stringify(payloadH.state));
+storage.setItem(FEATURE_KEY,JSON.stringify(payloadH.featureState));
+queue.rememberStamp(storage,accountH.id,stampH);
+queue.rememberBase(storage,accountH.id,
+  {state:payloadH.state,featureState:payloadH.featureState},stampH);
+context.state=payloadH.state;
+activeSession={user:accountH};
+networkAvailable=true;
+const originalSameAsync=window.NexusWorkspaceSyncMerge.sameAsync;
+const originalSetTimeout=context.setTimeout;
+window.NexusWorkspaceSyncMerge.sameAsync=()=>new Promise(()=>{});
+context.setTimeout=(callback,delay,...args)=>
+  originalSetTimeout(callback,delay===60000?25:delay,...args);
+try{
+ await window.NexusCloudSync.reconnect();
+ assert.equal(window.NexusCloudSync.getAccountState().signedIn,true,
+   'a comparison timeout must not sign the active account out');
+ assert.equal(window.NexusCloudSync.getAccountState().ready,true,
+   'a timed-out comparison must recover the active account-bound local workspace');
+ assert.equal(storage.getItem(OWNER),accountH.id,
+   'local-ready fallback must retain only the active account owner');
+ assert.equal(JSON.parse(storage.getItem(STATE_KEY)).topics[0].id,'large-workspace-H',
+   'local-ready fallback must preserve the active account workspace');
+ assert.equal(getElement('cloudStatus').textContent,'Sync delayed - local data ready',
+   'a timed-out large comparison must replace the indefinite loading status with an honest local-ready status');
+ assert.notEqual(getElement('cloudStatus').textContent,'Synced',
+   'local fallback must never claim cloud verification succeeded');
+}finally{
+ window.NexusWorkspaceSyncMerge.sameAsync=originalSameAsync;
+ context.setTimeout=originalSetTimeout;
+}
+await window.NexusCloudSync.reconnect();
+assert.equal(window.NexusCloudSync.getAccountState().ready,true,
+  'the account must remain ready after its large-workspace comparison can complete');
+assert.equal(getElement('cloudStatus').textContent,'Synced',
+  'a subsequent successful retry must clear the delayed status and confirm sync');
+assert.equal(rows.get(accountH.id).updated_at,stampH,
+  'a no-change retry must not rewrite the account snapshot');
+assert.equal(storage.getItem(OWNER),accountH.id,
+  'a successful retry must keep the same active account owner');
+
+console.log('Cloud sync runtime tests passed: offline recovery, account isolation, auto-merge, ambiguous-write baseline repair, metadata-only handling, live revision-race convergence, network-drop recovery, pending-snapshot Commerce reconciliation, clean-baseline recovery from incomplete cloud snapshots, target-account pending-snapshot isolation, first-login conflict gating, auth-session queue recovery, stalled account read/upload handoff, bounded large-workspace comparison and local-ready recovery, 77,144-record second-device deletion reconciliation, and pre-migration chunk-table compatibility.');

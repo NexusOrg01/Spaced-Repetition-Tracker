@@ -19,13 +19,46 @@ const migrations=[
 await rm(target,{recursive:true,force:true});
 await mkdir(target,{recursive:true});
 const npx=process.platform==='win32'?'npx.cmd':'npx';
-const init=spawnSync(npx,['--yes','supabase@latest','init','--force'],{cwd:target,stdio:'inherit',env:process.env,shell:process.platform==='win32'});
+const init=spawnSync(npx,['--yes','supabase@latest','init','--force'],{
+  cwd:target,stdio:'inherit',
+  // Supabase CLI otherwise walks upward and may select the repository's
+  // existing supabase/ directory instead of this disposable test project.
+  env:{...process.env,SUPABASE_WORKDIR:target},
+  shell:process.platform==='win32'
+});
 if(init.error)throw init.error;
 if(init.status!==0)throw new Error('Supabase CLI init failed: '+init.status);
-const supa=join(target,'supabase'),configPath=join(supa,'config.toml');
-let config=await readFile(configPath,'utf8');
-if(/^project_id\s*=.*$/m.test(config))config=config.replace(/^project_id\s*=.*$/m,'project_id = "nexus-phase34-local"');
-else config='project_id = "nexus-phase34-local"\n'+config;
+const supa=join(target,'supabase');
+let configPath=null,config=null;
+for(const name of ['config.toml','config.jsonc','config.json']){
+  const candidate=join(supa,name);
+  try{
+    config=await readFile(candidate,'utf8');
+    configPath=candidate;
+    break;
+  }catch(error){
+    if(error&&error.code!=='ENOENT')throw error;
+  }
+}
+if(!configPath){
+  throw new Error('Supabase CLI init completed without config.toml, config.jsonc, or config.json in the explicit disposable workdir.');
+}
+if(configPath.endsWith('.toml')){
+  if(/^project_id\s*=.*$/m.test(config)){
+    config=config.replace(/^project_id\s*=.*$/m,'project_id = "nexus-phase34-local"');
+  }else{
+    config='project_id = "nexus-phase34-local"\n'+config;
+  }
+}else{
+  const projectIdPattern=/("project_id"\s*:\s*")[^"]*(")/;
+  if(projectIdPattern.test(config)){
+    config=config.replace(projectIdPattern,'$1nexus-phase34-local$2');
+  }else{
+    const objectStart=config.indexOf('{');
+    if(objectStart<0)throw new Error('Supabase JSON config has no top-level object.');
+    config=config.slice(0,objectStart+1)+'\n  "project_id": "nexus-phase34-local",'+config.slice(objectStart+1);
+  }
+}
 await writeFile(configPath,config,'utf8');
 const dir=join(supa,'migrations');await mkdir(dir,{recursive:true});
 await cp(join(root,'supabase','local-phase34','20261108000000_phase34_local_workspace_baseline.sql'),join(dir,'20261108000000_phase34_local_workspace_baseline.sql'));

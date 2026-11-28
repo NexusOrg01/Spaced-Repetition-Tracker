@@ -51,6 +51,10 @@ const projectionEvent={
  projectionRebuildMode:'snapshot-backfill',projectionRebuildErrorCategory:'other',
  projectionRebuildFailureStage:'write-row-batch',projectionRebuildFailureReason:'indexeddb-write-failed',
  workspaceRevision:5,projectionWorkspaceRevision:5,projectionRevisionMatches:true,
+ projectionTransactionWaitDurationMs:25,projectionTransactionCount:6,
+ projectionKeyRangeWaitDurationMs:7,projectionRowGenerationDurationMs:11,
+ projectionSerializationDurationMs:null,
+ projectionSerializationMode:'indexeddb-structured-clone-in-write-transaction',
  reason:'entity_projection_unavailable',
  errorMessage:'PRIVATE DATABASE DETAIL',ownerId:'PRIVATE-OWNER'
 };
@@ -63,6 +67,10 @@ assert.deepEqual(safeProjectionEvent,{
  projectionRebuildMode:'snapshot-backfill',projectionRebuildErrorCategory:'other',
  projectionRebuildFailureStage:'write-row-batch',projectionRebuildFailureReason:'indexeddb-write-failed',
  workspaceRevision:5,projectionWorkspaceRevision:5,projectionRevisionMatches:true,
+ projectionTransactionWaitDurationMs:25,projectionTransactionCount:6,
+ projectionKeyRangeWaitDurationMs:7,projectionRowGenerationDurationMs:11,
+ projectionSerializationDurationMs:null,
+ projectionSerializationMode:'indexeddb-structured-clone-in-write-transaction',
  reason:'entity_projection_unavailable'
 },'projection diagnostics must preserve only safe owner-free rebuild and revision facts');
 for(const forbidden of ['PRIVATE','ownerId','errorMessage'])assert.equal(
@@ -102,6 +110,48 @@ assert.deepEqual(safeRecoveryTrigger,{
  triggerConflict:false,triggerSnapshotRequired:true,triggerRequiresSnapshotReconciliation:false,
  appliedCount:0,publishedCount:0,acknowledgedCount:0,rounds:1
 },'recovery trigger diagnostics must expose only the allowlisted failure cause and aggregate counters');
+
+const recoveryProgressEvent={
+ at:'2026-11-22T12:00:00.000Z',stage:'snapshot-recovery-progress',
+ recoveryStep:'verify-pending-snapshot-readback',progressPhase:'failed',journalPhase:'published',
+ durationMs:48,ok:false,failureReason:'pending_snapshot_remote_readback_mismatch',
+ retryable:true,snapshotRequired:true,remotePayloadMatches:false,remotePayloadDigestMatches:false,
+ remoteStateMatches:true,remoteUpdatedAtMatches:true,remoteSnapshotRevisionMatches:true,
+ remoteHeadRevisionMatches:true,remoteCompactedThroughMatches:true,pendingOutboxProofPresent:true,
+ pendingOutboxOverlayApplied:true,pendingLocalChangesPreserved:true,projectionReused:false,
+ remoteSnapshotPresent:true,remoteUpdatedAtMatchesState:true,remotePayloadShapeValid:true,
+ remotePayloadDeltaMarkerMatches:true,remoteManifestDeltaMarkerMatches:true,
+ manifestDeltaMarker:true,payloadDeltaMarkerBeforeRestore:false,payloadDeltaMarkerAfterRestore:true,
+ deltaMarkerRestored:true,
+ ownerId:'PRIVATE-OWNER',operationId:'PRIVATE-OPERATION',
+ candidateDigest:'PRIVATE-DIGEST',errorMessage:'PRIVATE ERROR',rawPayload:{secret:'PRIVATE'}
+};
+vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(recoveryProgressEvent)+')',sanitizerSandbox,
+ {filename:'sync-diagnostic-recovery-progress-test.js'});
+const safeRecoveryProgress=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.deepEqual(safeRecoveryProgress,{
+ at:recoveryProgressEvent.at,stage:'snapshot-recovery-progress',
+ recoveryStep:'verify-pending-snapshot-readback',progressPhase:'failed',journalPhase:'published',
+ durationMs:48,ok:false,failureReason:'pending_snapshot_remote_readback_mismatch',
+ retryable:true,snapshotRequired:true,remotePayloadMatches:false,remotePayloadDigestMatches:false,
+ remoteStateMatches:true,remoteUpdatedAtMatches:true,remoteSnapshotRevisionMatches:true,
+ remoteHeadRevisionMatches:true,remoteCompactedThroughMatches:true,pendingOutboxProofPresent:true,
+ pendingOutboxOverlayApplied:true,pendingLocalChangesPreserved:true,projectionReused:false,
+ remoteSnapshotPresent:true,remoteUpdatedAtMatchesState:true,remotePayloadShapeValid:true,
+ remotePayloadDeltaMarkerMatches:true,remoteManifestDeltaMarkerMatches:true,
+ manifestDeltaMarker:true,payloadDeltaMarkerBeforeRestore:false,payloadDeltaMarkerAfterRestore:true,
+ deltaMarkerRestored:true
+},'recovery progress must preserve the exact safe failure boundary and boolean proof facts without exposing private data');
+for(const forbidden of ['PRIVATE','ownerId','operationId','candidateDigest','errorMessage','rawPayload'])
+ assert.equal(JSON.stringify(safeRecoveryProgress).includes(forbidden),false,
+  'recovery progress diagnostics must exclude '+forbidden);
+vm.runInContext('result=sanitizeSyncDiagEvent({at:"2026-11-22T12:00:01.000Z",stage:"snapshot-recovery-progress",recoveryStep:"untrusted-step",progressPhase:"untrusted",journalPhase:"untrusted",durationMs:125,ok:true})',sanitizerSandbox);
+const safeUnknownRecoveryProgress=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.equal(safeUnknownRecoveryProgress.recoveryStep,'other');
+assert.equal(safeUnknownRecoveryProgress.progressPhase,'other');
+assert.equal(safeUnknownRecoveryProgress.journalPhase,'other');
+assert.equal(safeUnknownRecoveryProgress.durationMs,125);
+assert.equal(safeUnknownRecoveryProgress.ok,true);
 
 const recoveryFailureEvent={
  at:'2026-11-18T12:00:29.058Z',stage:'snapshot-recovery-complete',ok:false,resumed:false,
@@ -165,6 +215,23 @@ assert.deepEqual(safeRestoredBaseline,{
 assert.equal(JSON.stringify(safeRestoredBaseline).includes('PRIVATE'),false,
  'baseline-recovery diagnostics must not expose account identifiers or private values');
 
+vm.runInContext('result=sanitizeSyncDiagEvent({at:"2026-11-22T08:00:00.000Z",stage:"cloud-chunk-read-skipped",reason:"verified_local_baseline_matches_remote_manifest",chunkCount:103,payloadUtf8Bytes:26974531,ownerId:"PRIVATE",errorMessage:"PRIVATE"})',sanitizerSandbox);
+const safeChunkReuse=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.deepEqual(safeChunkReuse,{
+ at:'2026-11-22T08:00:00.000Z',stage:'cloud-chunk-read-skipped',
+ reason:'verified_local_baseline_matches_remote_manifest',chunkCount:103,payloadUtf8Bytes:26974531
+},'same-account chunk reuse diagnostics must retain only the safe manifest-match reason and aggregate size metrics');
+
+vm.runInContext('result=sanitizeSyncDiagEvent({at:"2026-11-22T08:00:01.000Z",stage:"same-account-workspace-restored",source:"active-local-workspace",durationMs:14,ownerVerified:true,cloudVerificationPending:true,workspace:{topicCount:77144},ownerId:"PRIVATE",email:"PRIVATE"})',sanitizerSandbox);
+const safeSameAccountRestore=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.deepEqual(safeSameAccountRestore,{
+ at:'2026-11-22T08:00:01.000Z',stage:'same-account-workspace-restored',
+ workspace:{topicCount:77144},durationMs:14,ownerVerified:true,
+ cloudVerificationPending:true,source:'active-local-workspace'
+},'same-account cached reveal diagnostics must retain safe readiness facts without account identity');
+assert.equal(JSON.stringify(safeSameAccountRestore).includes('PRIVATE'),false,
+ 'same-account refresh diagnostics must not expose identifiers or raw values');
+
 const recoveryVerificationEvent={
  at:'2026-11-18T08:37:34.000Z',stage:'delta-recovery-verification',
  ok:true,recoveryTriggerReason:'local_snapshot_baseline_mismatch',
@@ -223,6 +290,27 @@ vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(localOutboxFailur
 assert.equal(JSON.parse(JSON.stringify(sanitizerSandbox.result)).reason,'local_entity_outbox_unavailable',
  'Delta diagnostics must preserve the storage layer outbox failure reason');
 
+const projectionRebuildTimingEvent={
+ at:'2026-11-23T12:00:00.000Z',stage:'entity-projection-rebuild',durationMs:110000,
+ projectionRebuildAttempted:true,projectionRebuildOk:true,projectionRebuildMode:'snapshot-backfill',
+ projectionBatchCount:19,projectionRowsWritten:149148,projectionWriteDurationMs:42000,
+ projectionPruneDurationMs:3,projectionPruneRowsScanned:2,projectionPruneRowsRemoved:2,
+ projectionOutboxPruneDurationMs:1,projectionOutboxPruneRowsRemoved:0,
+ ownerId:'PRIVATE_OWNER',workspacePayload:'PRIVATE_WORKSPACE'
+};
+vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(projectionRebuildTimingEvent)+')',sanitizerSandbox,
+ {filename:'sync-diagnostic-projection-rebuild-timing-test.js'});
+const safeProjectionRebuildTiming=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.deepEqual(safeProjectionRebuildTiming,{
+ at:projectionRebuildTimingEvent.at,stage:'entity-projection-rebuild',durationMs:110000,
+ projectionRebuildAttempted:true,projectionRebuildOk:true,projectionRebuildMode:'snapshot-backfill',
+ projectionBatchCount:19,projectionRowsWritten:149148,projectionWriteDurationMs:42000,
+ projectionPruneDurationMs:3,projectionPruneRowsScanned:2,projectionPruneRowsRemoved:2,
+ projectionOutboxPruneDurationMs:1,projectionOutboxPruneRowsRemoved:0
+},'projection diagnostics must expose only aggregate build/prune timings and bounded row counts');
+assert.equal(JSON.stringify(safeProjectionRebuildTiming).includes('PRIVATE'),false,
+ 'projection performance diagnostics must exclude account and workspace payload data');
+
 const collectorStart=source.indexOf('async function collectSyncOperationalDiagnostics(){');
 const collectorEnd=source.indexOf('\nasync function downloadSyncDiagnostics()',collectorStart);
 assert.ok(collectorStart>0&&collectorEnd>collectorStart,'diagnostic collector must be present');
@@ -240,4 +328,35 @@ assert.ok(source.includes('events:events.slice(-80).map(sanitizeSyncDiagEvent).f
 assert.ok(!source.includes('errorMessage'),'free-form exception messages must not be written into diagnostics');
 assert.ok(!source.includes('errorCode'),'raw server/runtime error codes must not be written into diagnostics');
 assert.ok(source.includes("r.stage==='cloud-write-error'&&r.errorCategory==='conflict'"),'conflict counters must use the safe aggregate category');
+const restoreTimingEvent={
+ at:'2026-11-22T15:00:00.000Z',stage:'cloud-chunk-pages-read',
+ durationMs:91234,pageCount:7,completedPageCount:7,rowsRead:103,chunkCount:103,
+ payloadUtf8Bytes:26900000,maxPageDurationMs:21000,minPageDurationMs:800,
+ chunkDataIncluded:true,ok:true,ownerId:'PRIVATE_OWNER',revisionId:'PRIVATE_REVISION',
+ topicName:'PRIVATE_TOPIC',chunkData:'PRIVATE_CHUNK',accessToken:'PRIVATE_TOKEN',
+ workspacePayload:{secret:'PRIVATE_WORKSPACE'}
+};
+vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(restoreTimingEvent)+')',sanitizerSandbox,
+ {filename:'sync-diagnostic-cold-restore-timing-test.js'});
+const safeRestoreTiming=JSON.parse(JSON.stringify(sanitizerSandbox.result));
+assert.deepEqual(safeRestoreTiming,{
+ at:restoreTimingEvent.at,stage:'cloud-chunk-pages-read',durationMs:91234,
+ pageCount:7,completedPageCount:7,rowsRead:103,chunkCount:103,
+ payloadUtf8Bytes:26900000,maxPageDurationMs:21000,minPageDurationMs:800,
+ chunkDataIncluded:true,ok:true
+},'cold restore page timings must retain aggregate measurements and strip all workspace/account identifiers');
+for(const forbidden of ['PRIVATE','ownerId','revisionId','topicName','PRIVATE_CHUNK','accessToken','workspacePayload'])
+ assert.equal(JSON.stringify(safeRestoreTiming).includes(forbidden),false,
+  'cold restore timing diagnostics must exclude '+forbidden);
+for(const stage of [
+ 'cloud-manifest-read','cloud-chunk-pages-read','cloud-chunk-validation',
+ 'cloud-snapshot-assembly','cloud-snapshot-hash','cloud-snapshot-parse','cloud-sync-mode-read'
+]){
+ const event={at:'2026-11-22T15:00:01.000Z',stage,durationMs:12,ok:true,
+  storageMode:'chunked',syncMode:'delta',chunkCount:103,payloadUtf8Bytes:26900000};
+ vm.runInContext('result=sanitizeSyncDiagEvent('+JSON.stringify(event)+')',sanitizerSandbox,
+  {filename:'sync-diagnostic-stage-allowlist-test.js'});
+ assert.equal(sanitizerSandbox.result.stage,stage,
+  'the safe event allowlist must accept '+stage);
+}
 console.log('Phase 3.5 diagnostics tests passed: bounded metrics, last-known cursor, recovery journal/outbox/cleanup data, strict event allowlist, legacy export sanitization and privacy exclusions.');
