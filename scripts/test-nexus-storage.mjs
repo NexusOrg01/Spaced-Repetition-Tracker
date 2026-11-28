@@ -2702,10 +2702,11 @@ assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,1000
   const remaining=await loaded.api.readWorkspaceEntityOutboxGroups(owner,0,1000,4096);
   assert.equal(remaining.groups.length,0,
     'only the proof-bound outbox sequence may be acknowledged after the verified recovery commit');
+  const committedOutboxRows=idb.databases.get('nexus-workspace-v1').stores.get('outbox');
   const deltaPrefix='workspace-entity-change:'+encodeURIComponent(owner)+':';
-  assert.equal([...sharedOutboxRows.keys()].some(key=>String(key).startsWith(deltaPrefix)),false,
+  assert.equal([...committedOutboxRows.keys()].some(key=>String(key).startsWith(deltaPrefix)),false,
     'the exact proof-bound Delta changes and markers must be retired in the recovery transaction');
-  assert.deepEqual(sharedOutboxRows.get(workspaceEnvelope.key),workspaceEnvelope,
+  assert.deepEqual(committedOutboxRows.get(workspaceEnvelope.key),workspaceEnvelope,
     'DLA-09 recovery must preserve the separate DLA-10B operation envelope until its own receipt');
   const finalProjection=await loaded.api.readWorkspaceEntities(owner);
   assert.equal(finalProjection.state.topics[0].name,'PARKED LOCAL EDIT');
@@ -2731,7 +2732,8 @@ assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,1000
     'a new-generation operation appended after recovery must remain visible and must not be swept by old cleanup');
   assert.equal(postRecoveryGroups.groups[0].operationId,'post-recovery-operation');
   assert.equal(postRecoveryGroups.generation,finalProjection.generation);
-  assert.deepEqual(sharedOutboxRows.get(workspaceEnvelope.key),workspaceEnvelope,
+  const afterPostRecoveryOutboxRows=idb.databases.get('nexus-workspace-v1').stores.get('outbox');
+  assert.deepEqual(afterPostRecoveryOutboxRows.get(workspaceEnvelope.key),workspaceEnvelope,
     'the DLA-10B envelope remains intact alongside the new Delta generation');
   await loaded.api.deleteWorkspaceEntities(owner);
 }
