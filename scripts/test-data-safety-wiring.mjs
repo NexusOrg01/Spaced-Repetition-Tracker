@@ -77,6 +77,7 @@ assert.ok(storageSource.includes('FALLBACK_JOURNAL_KEY') && storageSource.includ
 assert.ok(cloudSync.includes('async function recoverCachedWorkspaceForOfflineAccount(userId,parentSignal)') && cloudSync.includes('queue.getPending(localStorage,userId)') && cloudSync.includes('durable.getWorkspace(userId)') && cloudSync.includes('queue.getBase(localStorage,userId)'), 'offline sign-in must restore only the exact account’s pending/cache/base workspace');
 const durableTrackerSave=section(appCore,'function save(options={}){','window.NexusRebuildEntityProjection=','durable tracker save');
 assert.ok(appCore.includes('window.NexusGetTrackerEntityRootForCommit=') &&
+  studyHub.includes('window.NexusGetFeatureEntityRootForCommit=') &&
   appCore.includes('window.NexusTrackDurableSave=trackDurableSave;') &&
   durableTrackerSave.includes('window.NexusTrackDurableSave(storage.flush())') &&
   durableTrackerSave.includes('durableFlush.catch(error=>{'),

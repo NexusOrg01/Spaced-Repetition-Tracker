@@ -25,11 +25,12 @@
     if(rows.length>1000)return save({replaceEntities:true});
     return save({entityChanges:rows.map(topic=>window.NexusTrackerEntityPutChange('topics',topic,'keep'))});
   }
-  function featureEntityRoot(){
-    const value={...fsState};
+  function featureEntityRoot(source=fsState){
+    const value={...(source||{})};
     for(const collection of ['journal','papers','goals','studyLogs'])delete value[collection];
     return value;
   }
+  window.NexusGetFeatureEntityRootForCommit=source=>featureEntityRoot(source||fsState);
   function saveFs(entityChanges=[]){
     focusGoalCacheKey='';
     // Do not evict the large topic/history aggregate for journal, paper, goal or other
@@ -1943,7 +1944,7 @@
       {state:nextState,featureState:nextFeatures},
       {returnOperationPayload:false,entityChanges:null,
         trackerRoot:window.NexusGetTrackerEntityRootForCommit?.(nextState)||null,
-        featureRoot:featureEntityRoot(nextFeatures),replaceEntities:true});
+        featureRoot:window.NexusGetFeatureEntityRootForCommit?.(nextFeatures)||null,replaceEntities:true});
     const storage=window.NexusStorage;
     if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function'){
       await (window.NexusTrackDurableSave?window.NexusTrackDurableSave(storage.flush()):storage.flush());
@@ -2021,7 +2022,7 @@
         {state:nextState,featureState:nextFeatures},
         {archivePending:mode==='REPLACE',reason:'manual-restore-replace',returnOperationPayload:false,
           entityChanges:null,trackerRoot:window.NexusGetTrackerEntityRootForCommit?.(nextState)||null,
-          featureRoot:featureEntityRoot(nextFeatures),replaceEntities:true});
+          featureRoot:window.NexusGetFeatureEntityRootForCommit?.(nextFeatures)||null,replaceEntities:true});
       const storage=window.NexusStorage;
       if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function'){
         await (window.NexusTrackDurableSave?window.NexusTrackDurableSave(storage.flush()):storage.flush());
@@ -2305,7 +2306,7 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
       queue.commitWorkspace(localStorage,entries,{state:resetState,featureState:resetFeatures},{
         archivePending:true,reason:'manual-reset',returnOperationPayload:false,entityChanges:null,
         trackerRoot:window.NexusGetTrackerEntityRootForCommit?.(resetState)||null,
-        featureRoot:featureEntityRoot(resetFeatures),replaceEntities:true
+        featureRoot:window.NexusGetFeatureEntityRootForCommit?.(resetFeatures)||null,replaceEntities:true
       });
       const storage=window.NexusStorage;
       if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function'){
