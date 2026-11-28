@@ -25,12 +25,17 @@
     if(rows.length>1000)return save({replaceEntities:true});
     return save({entityChanges:rows.map(topic=>window.NexusTrackerEntityPutChange('topics',topic,'keep'))});
   }
-  function featureEntityRoot(source=fsState){
-    const value={...(source||{})};
+  function featureEntityRoot(){
+    const value={...fsState};
     for(const collection of ['journal','papers','goals','studyLogs'])delete value[collection];
     return value;
   }
-  window.NexusGetFeatureEntityRootForCommit=source=>featureEntityRoot(source||fsState);
+  function featureEntityRootFor(source){
+    const value={...(source||fsState)};
+    for(const collection of ['journal','papers','goals','studyLogs'])delete value[collection];
+    return value;
+  }
+  window.NexusGetFeatureEntityRootForCommit=source=>featureEntityRootFor(source||fsState);
   function saveFs(entityChanges=[]){
     focusGoalCacheKey='';
     // Do not evict the large topic/history aggregate for journal, paper, goal or other
@@ -70,7 +75,7 @@
           console.error('Nexus Study Hub durable save failed',error);
         });
       }else{
-        const status=$('saveStatus');
+        const status=window.document?.getElementById?.('saveStatus')||null;
         if(status){status.textContent='Saved on this device';status.style.color='';}
       }
       if(owner&&durableFlush&&typeof storage.syncWorkspaceEntities==='function'){
@@ -1948,7 +1953,8 @@
     const storage=window.NexusStorage;
     if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function'){
       await (window.NexusTrackDurableSave?window.NexusTrackDurableSave(storage.flush()):storage.flush());
-    }else{
+    }
+    if(!window.NexusTrackDurableSave||!storage||!storage.isEnabled?.()){
       const saveStatus=$('saveStatus');
       if(saveStatus){saveStatus.textContent='Saved on this device';saveStatus.style.color='';}
     }
@@ -2044,7 +2050,7 @@
       if(focusTimer){clearInterval(focusTimer);focusTimer=null;}
       if(focusStart){focusTimer=setInterval(refreshLiveFocusUi,1000);}
       if(window.NexusCloudSync)window.NexusCloudSync.schedule();
-      if(!storage||!storage.isEnabled?.()){
+      if(!window.NexusTrackDurableSave||!storage||!storage.isEnabled?.()){
         $('saveStatus').textContent='Saved on this device';
         $('saveStatus').style.color='';
       }
@@ -2311,7 +2317,8 @@ Reconstructed: ${recalled||'Not recorded.'}`,fix:gaps||'No specific gap recorded
       const storage=window.NexusStorage;
       if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function'){
         await (window.NexusTrackDurableSave?window.NexusTrackDurableSave(storage.flush()):storage.flush());
-      }else{
+      }
+      if(!window.NexusTrackDurableSave||!storage||!storage.isEnabled?.()){
         const status=$('saveStatus');
         if(status){status.textContent='Saved on this device';status.style.color='';}
       }
