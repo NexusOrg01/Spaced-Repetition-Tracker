@@ -79,9 +79,15 @@ const durableTrackerSave=section(appCore,'function save(options={}){','window.Ne
 assert.ok(appCore.includes('window.NexusGetTrackerEntityRootForCommit=') &&
   studyHub.includes('window.NexusGetFeatureEntityRootForCommit=') &&
   appCore.includes('window.NexusTrackDurableSave=trackDurableSave;') &&
+  appCore.includes('window.NexusPendingDurableSaveNotification=tracked;') &&
   durableTrackerSave.includes('window.NexusTrackDurableSave(storage.flush())') &&
   durableTrackerSave.includes('durableFlush.catch(error=>{'),
   'tracker save status and metadata roots must use the shared durable-commit gate');
+const durableNotify=section(appCore,'function notify(text,undoable=false,options={}){','function clearUndoPresentation()');
+assert.ok(durableNotify.includes('window.NexusPendingDurableSaveNotification') &&
+  durableNotify.includes('reportsSaveSuccess&&pending') &&
+  durableNotify.includes('Promise.resolve(pending).then('),
+  'success notifications must wait for the durable local transaction and be suppressed when it fails');
 const durableStudyHubSave=section(studyHub,'function saveFs(entityChanges=[]){','window.NexusFeatureStorageKey=');
 assert.ok(durableStudyHubSave.includes('entityChanges:frozenEntityChanges') &&
   durableStudyHubSave.includes('trackerRoot:window.NexusGetTrackerEntityRootForCommit?.(state)') &&

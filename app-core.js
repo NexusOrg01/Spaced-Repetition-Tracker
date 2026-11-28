@@ -353,13 +353,18 @@
     const revision=++storageSaveRevision;
     const status=$('saveStatus');
     if(status){status.textContent='Saving to this device…';status.style.color='';}
-    return Promise.resolve(promise).then(result=>{
+    let tracked;
+    tracked=Promise.resolve(promise).then(result=>{
       if(revision===storageSaveRevision&&status){status.textContent='Saved on this device';status.style.color='';}
+      if(window.NexusPendingDurableSaveNotification===tracked)window.NexusPendingDurableSaveNotification=null;
       return result;
     },error=>{
       if(revision===storageSaveRevision&&status){status.textContent='Save failed — export backup';status.style.color='var(--red)';}
+      if(window.NexusPendingDurableSaveNotification===tracked)window.NexusPendingDurableSaveNotification=null;
       throw error;
     });
+    window.NexusPendingDurableSaveNotification=tracked;
+    return tracked;
   }
   window.NexusTrackDurableSave=trackDurableSave;
   function save(options={}){
@@ -519,7 +524,23 @@
       return {ok:false,error:String(error&&error.message||error)};
     }
   };
-  function notify(text,undoable=false,options={}){$('toastText').textContent=text;$('undoBtn').style.display=undoable?'':'none';$('toast').classList.toggle('undoable',undoable);$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),2600);}
+  function notify(text,undoable=false,options={}){
+    const message=String(text||'');
+    const reportsSaveSuccess=/(saved|recorded|added|deleted|updated|restored|import complete|reset|cleared|logged)/i.test(message)&&
+      !/(failed|could not|unable|not saved|no data|cancelled|canceled)/i.test(message);
+    const pending=window.NexusPendingDurableSaveNotification;
+    if(reportsSaveSuccess&&pending){
+      Promise.resolve(pending).then(()=>{
+        if(window.NexusPendingDurableSaveNotification!==pending){notify(text,undoable,options);return;}
+        window.NexusPendingDurableSaveNotification=null;
+        notify(text,undoable,options);
+      },()=>{
+        if(window.NexusPendingDurableSaveNotification===pending)window.NexusPendingDurableSaveNotification=null;
+      });
+      return;
+    }
+    $('toastText').textContent=text;$('undoBtn').style.display=undoable?'':'none';$('toast').classList.toggle('undoable',undoable);$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),2600);
+  }
   function clearUndoPresentation(){
     $('undoBtn').style.display='none';
     $('toastText').hidden=false;
