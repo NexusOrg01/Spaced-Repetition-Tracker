@@ -846,7 +846,7 @@
   }
   async function pruneInactiveWorkspaceEntityGenerations(ownerId,activeGeneration,metrics=null){
     const owner=entityOwnerKey(ownerId);
-    if(committedOwnerId!==owner||!enabled||!database)return {removed:0,scanned:0};
+    if(entityRemovalOwners.has(owner)||committedOwnerId!==owner||!enabled||!database)return {removed:0,scanned:0};
     const prefix=entityOwnerRecordPrefix(owner);
     const activePrefix=entityRecordPrefix(owner,activeGeneration);
     const keyRanges=root&&root.IDBKeyRange;
@@ -866,7 +866,7 @@
     for(const bounds of ranges){
       let afterKey=null;
       while(true){
-        if(committedOwnerId!==owner||!enabled||!database)return {removed,scanned};
+        if(entityRemovalOwners.has(owner)||committedOwnerId!==owner||!enabled||!database)return {removed,scanned};
         const range=keyRanges.bound(afterKey?afterKey+'\u0000':bounds.lower,bounds.upper);
         if(!range)return {removed,scanned};
         const rows=await transaction([WORKSPACES],'readonly',(tx,set)=>{
@@ -900,7 +900,7 @@
             request.onsuccess=()=>{
               const manifest=request.result;
               // Never prune the pending generation or race a concurrent replacement.
-              if(committedOwnerId!==owner||!manifest||manifest.status!=='ready'||
+              if(entityRemovalOwners.has(owner)||committedOwnerId!==owner||!manifest||manifest.status!=='ready'||
                  manifest.activeGeneration!==activeGeneration||manifest.pendingGeneration){
                 set(0);return;
               }
@@ -3677,10 +3677,25 @@
           for(const entry of normalized){if(entry.value===null)cache.delete(entry.key);else cache.set(entry.key,entry.value);knownKeys.add(entry.key);}
           mirrorBatch(normalized);
         }
-        try{await pruneInactiveWorkspaceEntityGenerations(owner,result.generation);}
-        catch(error){console.warn('Old Nexus entity recovery generations could not be pruned; the new active generation remains verified.',error);}
+        // Retire the proof-acknowledged Delta outbox while the recovery write lock
+        // still prevents a new operation from entering the old generation.
         try{await pruneWorkspaceEntityOutbox(owner);}
         catch(error){console.warn('Superseded Nexus entity outbox rows could not be pruned; the new active generation remains verified.',error);}
+        // The manifest/cursor/snapshot switch and completion receipt are already
+        // committed atomically. Removing the previous entity generation is only
+        // storage hygiene, but can require hundreds of IndexedDB batches for a
+        // large workspace. Do not hold initial cloud verification open for it.
+        const scheduleInactiveGenerationPrune=()=>{
+          const prune=()=>{void pruneInactiveWorkspaceEntityGenerations(owner,result.generation)
+            .catch(error=>console.warn('Old Nexus entity recovery generations could not be pruned; the active generation remains verified.',error));};
+          try{
+            if(root&&typeof root.setTimeout==='function')root.setTimeout(prune,1500);
+            else Promise.resolve().then(prune);
+          }catch(error){
+            console.warn('Old Nexus entity recovery generation cleanup could not be scheduled; the active generation remains verified.',error);
+          }
+        };
+        scheduleInactiveGenerationPrune();
       }
       entityRecoveryLockedOwners.delete(owner);
       return result;

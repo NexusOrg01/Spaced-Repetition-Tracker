@@ -2713,7 +2713,12 @@ try {
             quotaEstimate,
             accountAOwnerMatches:localStorage.getItem('nexus.cloud.last-user-id')===context.ownerA,
             activeProjectionReadable:!!active,
-            activeGenerationMatches:!!active&&active.generation===context.projectionGeneration,
+            // Successful recovery is expected to replace the old generation and
+            // acknowledge its parked sequence. Compare final durable records with
+            // each other, not with the pre-recovery generation/sequence.
+            activeGenerationMatches:!!active&&!!recoveryState&&recoveryState.ok===true&&
+              active.generation===recoveryState.activeGeneration,
+            activeGenerationAdvanced:!!active&&active.generation!==context.projectionGeneration,
             localEditPreserved:localTopic&&localTopic.notes===context.expectedNotes,
             pendingEditPreserved:pendingTopic&&pendingTopic.notes===context.expectedNotes,
             activeProjectionEditPreserved:activeTopic&&activeTopic.notes===context.expectedNotes,
@@ -2723,11 +2728,12 @@ try {
             outboxRecoveryStateReason:recoveryState&&recoveryState.reason||null,
             cursorReadReason:cursorResult&&cursorResult.reason||null,
             outboxOwnerMatches:!!recoveryState&&recoveryState.ok===true&&recoveryState.ownerId===context.ownerA,
-            outboxGenerationMatches:!!recoveryState&&recoveryState.ok===true&&recoveryState.activeGeneration===context.projectionGeneration,
-            cursorGenerationMatches:!!cursor&&cursor.generation===context.projectionGeneration,
+            outboxGenerationMatches:!!recoveryState&&recoveryState.ok===true&&!!active&&
+              recoveryState.activeGeneration===active.generation,
+            cursorGenerationMatches:!!cursor&&!!active&&cursor.generation===active.generation,
             cursorGenerationMismatchExpected:!!recoveryState&&recoveryState.generationMismatch===true,
-            cursorAcknowledgedSequenceUnchanged:!!cursor&&
-              Number(cursor.acknowledgedSequence)===context.cursorAcknowledgedSequence,
+            cursorAcknowledgedSequenceNonRegressing:!!cursor&&
+              Number(cursor.acknowledgedSequence)>=context.cursorAcknowledgedSequence,
             pendingOutboxGroupCount:Number(outbox&&outbox.groupCount)||0,
             accountBEditAbsentFromA:!!active&&
               !active.state.topics.some(topic=>String(topic.id)===context.accountBOfflineEditId)

@@ -2598,6 +2598,18 @@ assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,1000
     deferActivation:true,recoveryIntentId:intentId,recoveryCandidateDigest:digest
   });
   assert.equal(staged.staged,true);
+  // A realistic old-generation cleanup backlog must not hold the successful
+  // recovery commit open after its new generation and cursor are already durable.
+  const staleGeneration='000000000000-stale-recovery-generation';
+  const staleGenerationPrefix='workspace-entity:'+encodeURIComponent(owner)+
+    ':'+encodeURIComponent(staleGeneration)+':';
+  const workspaceRows=idb.databases.get('nexus-workspace-v1').stores.get('workspaces');
+  for(let index=0;index<2000;index++){
+    const key=staleGenerationPrefix+'topics:'+String(index).padStart(5,'0');
+    workspaceRows.set(key,{key,ownerId:owner,generation:staleGeneration,entityRow:true,
+      collection:'topics',entityId:'stale-recovery-'+index});
+  }
+  const staleRowsRemain=()=>[...workspaceRows.keys()].some(key=>key.startsWith(staleGenerationPrefix));
   const publication={verified:true,updated_at:'proven-outbox-published',
     snapshotRevision:0,headRevision:0,compactedThroughRevision:0,storageMode:'jsonb'};
   const entries=[
@@ -2643,11 +2655,27 @@ assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,1000
   assert.equal(marked.ok,true);
   const committed=await loaded.api.commitWorkspaceEntityRecovery(owner,intentId,entries,digest);
   assert.equal(committed.ok,true,'a matching exact outbox proof should permit atomic recovery commit');
+  assert.equal(staleRowsRemain(),true,
+    'the recovery commit must return before a large inactive-generation cleanup finishes');
   const remaining=await loaded.api.readWorkspaceEntityOutboxGroups(owner,0,1000,4096);
   assert.equal(remaining.groups.length,0,
     'only the proof-bound outbox sequence may be acknowledged after the verified recovery commit');
   const finalProjection=await loaded.api.readWorkspaceEntities(owner);
   assert.equal(finalProjection.state.topics[0].name,'PARKED LOCAL EDIT');
+  const finalCursor=await loaded.api.readWorkspaceEntityDeltaCursor(owner);
+  assert.equal(finalCursor.ok,true);
+  assert.equal(finalCursor.cursor.generation,finalProjection.generation,
+    'the replacement cursor must point to the atomically activated generation');
+  assert.equal(finalCursor.cursor.acknowledgedSequence,proof.throughSequence,
+    'the cursor may acknowledge the parked group only after the exact read-back proof');
+  const finalRecoveryState=await loaded.api.readWorkspaceEntityDeltaRecoveryState(owner);
+  assert.equal(finalRecoveryState.ok,true);
+  assert.equal(finalRecoveryState.generationMismatch,false);
+  assert.equal(finalRecoveryState.outbox.groupCount,0);
+  await new Promise(resolve=>setTimeout(resolve,1600));
+  for(let attempt=0;attempt<100&&staleRowsRemain();attempt++)await wait();
+  assert.equal(staleRowsRemain(),false,
+    'deferred cleanup must eventually remove stale rows without blocking recovery completion');
   await loaded.api.deleteWorkspaceEntities(owner);
 }
 
