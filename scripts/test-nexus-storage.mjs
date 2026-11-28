@@ -2609,6 +2609,9 @@ assert.equal((await loaded.api.readWorkspaceEntityOutbox('entity-owner-a',0,1000
     workspaceRows.set(key,{key,ownerId:owner,generation:staleGeneration,entityRow:true,
       collection:'topics',entityId:'stale-recovery-'+index});
   }
+  // Direct fixture writes bypass FakeObjectStore.put(), which normally invalidates
+  // the cached key order used by bounded getAll() range queries.
+  idb.sortedKeys.delete(workspaceRows);
   const staleRowsRemain=()=>[...workspaceRows.keys()].some(key=>key.startsWith(staleGenerationPrefix));
   const publication={verified:true,updated_at:'proven-outbox-published',
     snapshotRevision:0,headRevision:0,compactedThroughRevision:0,storageMode:'jsonb'};
