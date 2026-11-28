@@ -76,13 +76,39 @@ assert.ok(storageSource.includes("const WORKSPACES = 'workspaces'") && storageSo
 assert.ok(storageSource.includes('FALLBACK_JOURNAL_KEY') && storageSource.includes('function fallbackAtomicWrite(entries)') && storageSource.includes('valueHash(currentNativeValue)'), 'browser-storage fallback edits must be checksummed and reconciled before an older IndexedDB snapshot can overwrite them');
 assert.ok(cloudSync.includes('async function recoverCachedWorkspaceForOfflineAccount(userId,parentSignal)') && cloudSync.includes('queue.getPending(localStorage,userId)') && cloudSync.includes('durable.getWorkspace(userId)') && cloudSync.includes('queue.getBase(localStorage,userId)'), 'offline sign-in must restore only the exact account’s pending/cache/base workspace');
 const durableTrackerSave=section(appCore,'function save(options={}){','window.NexusRebuildEntityProjection=','durable tracker save');
-assert.ok(durableTrackerSave.includes("textContent='Saving to this device…';") &&
-  durableTrackerSave.includes('const durableFlush=storage.flush();') &&
-  durableTrackerSave.includes('durableFlush.then(()=>{') &&
-  durableTrackerSave.indexOf('durableFlush.then(()=>{') < durableTrackerSave.indexOf("textContent='Saved on this device';") &&
-  durableTrackerSave.includes('}).catch(error=>{') &&
-  durableTrackerSave.includes("textContent='Save failed — export backup';"),
-  'the tracker must show a pending state and report success only after the durable storage promise resolves');
+assert.ok(appCore.includes('window.NexusGetTrackerEntityRootForCommit=') &&
+  appCore.includes('window.NexusTrackDurableSave=trackDurableSave;') &&
+  durableTrackerSave.includes('window.NexusTrackDurableSave(storage.flush())') &&
+  durableTrackerSave.includes('durableFlush.catch(error=>{'),
+  'tracker save status and metadata roots must use the shared durable-commit gate');
+const durableStudyHubSave=section(studyHub,'function saveFs(entityChanges=[]){','window.NexusFeatureStorageKey=');
+assert.ok(durableStudyHubSave.includes('entityChanges:frozenEntityChanges') &&
+  durableStudyHubSave.includes('trackerRoot:window.NexusGetTrackerEntityRootForCommit?.(state)') &&
+  durableStudyHubSave.includes('featureRoot,replaceEntities:frozenEntityChanges===null') &&
+  durableStudyHubSave.includes('window.NexusTrackDurableSave(storage.flush())') &&
+  durableStudyHubSave.indexOf('window.NexusTrackDurableSave(storage.flush())') < durableStudyHubSave.indexOf('storage.syncWorkspaceEntities('),
+  'all Study Hub saves must persist their owner-scoped operation metadata atomically and gate Saved status on IndexedDB commit');
+assert.ok(studyHub.includes("featureEntityPutChange('journal',entry)") &&
+  studyHub.includes("featureEntityPutChange('papers',p)") &&
+  studyHub.includes("featureEntityPutChange('goals',goal)") &&
+  studyHub.includes("featureEntityPutChange('studyLogs',entry)"),
+  'journal, paper, goal, recall and study-log saves must route through the durable Study Hub save path');
+const csvImport=section(studyHub,'async function importTopicCsv(file){','function backupPayload()');
+const csvFlush='window.NexusTrackDurableSave?window.NexusTrackDurableSave(storage.flush()):storage.flush()';
+assert.ok(csvImport.includes('entityChanges:null') && csvImport.includes('replaceEntities:true') &&
+  csvImport.includes(csvFlush) && csvImport.indexOf(csvFlush) < csvImport.indexOf('state=nextState;'),
+  'CSV imports must durably commit a complete replacement envelope before publishing the imported state');
+const jsonRestore=section(studyHub,'async function restoreOrMerge(file){','function formatElapsed(');
+assert.ok(jsonRestore.includes('entityChanges:null') && jsonRestore.includes('replaceEntities:true') &&
+  jsonRestore.includes(csvFlush) && jsonRestore.indexOf(csvFlush) < jsonRestore.indexOf('committed=true'),
+  'JSON REPLACE/MERGE restore must not report success before its complete durable envelope commits');
+const workspaceReset=section(studyHub,'resetAll=async function(){','// Gentle reminder check');
+assert.ok(workspaceReset.includes('entityChanges:null') && workspaceReset.includes('replaceEntities:true') &&
+  workspaceReset.includes(csvFlush) && workspaceReset.indexOf(csvFlush) < workspaceReset.indexOf('state=resetState;'),
+  'full workspace reset must commit its owner-scoped replacement envelope before publishing reset state');
+assert.ok(storageSource.includes('if (status && !pending.size &&') &&
+  storageSource.includes('persistWorkspaceOperations(()=>set(nextRevision))'),
+  'the save indicator must not switch to Saved while a newer local write remains queued; snapshot and operation still commit together');
 assert.ok(bootstrap.includes('registerServiceWorker();') && bootstrap.includes("navigator.serviceWorker.register('./sw.js', { scope: './' })"), 'the storage-gated bootstrap must register the service worker directly without waiting for the window load event');
 assert.ok(cloudSync.includes('await uploadScope.race(durableStorage.flush()'), 'cloud uploads must wait for the IndexedDB write queue to commit before selecting a snapshot');
 assert.ok(cloudSync.includes("{key:'nexus.fsrs.settings.v1',value:JSON.stringify(nextFeatures.fsrsSettings)}") && cloudSync.includes('NexusFSRS.setSettings(nextFeatures.fsrsSettings'), 'account hydration must persist and activate the account-scoped FSRS scheduler preferences');

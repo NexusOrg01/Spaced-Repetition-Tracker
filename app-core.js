@@ -337,17 +337,31 @@
   }
   window.NexusTrackerEntityPutChange=trackerEntityPutChange;
   window.NexusTrackerEntityDeleteChange=trackerEntityDeleteChange;
-  function trackerEntityRoot(){
-    const value={...state};
+  function trackerEntityRoot(source=state){
+    const value={...(source||{})};
     for(const collection of TRACKER_ENTITY_ARRAYS)delete value[collection];
     return value;
   }
+  window.NexusGetTrackerEntityRootForCommit=source=>trackerEntityRoot(source||state);
   function featureEntityRoot(value){
     const rootValue={...(value||{})};
     for(const collection of ['journal','papers','goals','studyLogs'])delete rootValue[collection];
     return rootValue;
   }
   let storageSaveRevision=0;
+  function trackDurableSave(promise){
+    const revision=++storageSaveRevision;
+    const status=$('saveStatus');
+    if(status){status.textContent='Saving to this device…';status.style.color='';}
+    return Promise.resolve(promise).then(result=>{
+      if(revision===storageSaveRevision&&status){status.textContent='Saved on this device';status.style.color='';}
+      return result;
+    },error=>{
+      if(revision===storageSaveRevision&&status){status.textContent='Save failed — export backup';status.style.color='var(--red)';}
+      throw error;
+    });
+  }
+  window.NexusTrackDurableSave=trackDurableSave;
   function save(options={}){
     try{
       if(state.history!==historyMetricsObservedSource||state.history.length!==historyMetricsObservedLength){
@@ -402,18 +416,13 @@
       window.NexusOfflineSyncQueue.commitWorkspace(localStorage,workspaceEntries,{state,featureState},{returnOperationPayload:false,entityChanges:frozenEntityChanges,trackerRoot,featureRoot,replaceEntities:entityReplace});
       const storage=window.NexusStorage;
       if(storage&&typeof storage.isEnabled==='function'&&storage.isEnabled()&&typeof storage.flush==='function'){
-        const saveRevision=++storageSaveRevision;
-        $('saveStatus').textContent='Saving to this device…';
-        $('saveStatus').style.color='';
-        const durableFlush=storage.flush();
-        durableFlush.then(()=>{
-          if(saveRevision!==storageSaveRevision)return;
-          $('saveStatus').textContent='Saved on this device';
-          $('saveStatus').style.color='';
-        }).catch(error=>{
-          if(saveRevision!==storageSaveRevision)return;
-          $('saveStatus').textContent='Save failed — export backup';
-          $('saveStatus').style.color='var(--red)';
+        const durableFlush=window.NexusTrackDurableSave
+          ?window.NexusTrackDurableSave(storage.flush()):storage.flush();
+        durableFlush.catch(error=>{
+          if(!window.NexusTrackDurableSave){
+            $('saveStatus').textContent='Save failed — export backup';
+            $('saveStatus').style.color='var(--red)';
+          }
           notify('Could not finish saving to durable device storage. Keep Nexus open and export a backup before continuing.');
           console.error('Nexus durable save failed',error);
         });

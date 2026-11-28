@@ -4156,7 +4156,7 @@
       lastError = null;
       if (root && root.document) {
         const status = root.document.getElementById('saveStatus');
-        if (status && (String(status.textContent || '').startsWith('Save failed') || String(status.textContent || '').startsWith('Saving to this device'))) {
+        if (status && !pending.size && (String(status.textContent || '').startsWith('Save failed') || String(status.textContent || '').startsWith('Saving to this device'))) {
           status.textContent = 'Saved on this device';
           status.style.color = '';
         }
