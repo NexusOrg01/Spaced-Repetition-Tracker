@@ -3571,15 +3571,27 @@
         throw new Error('Pending local Delta outbox entries have no exact verified recovery proof; local recovery commit was blocked.');
       }
       const expectedOutboxHighWatermark=outboxBeforeCommit.outbox.highWatermark,
+        pendingOutboxGroups=pendingOutboxProof?outboxBeforeCommit.outbox.groups:[],
+        pendingOutboxChangeCount=pendingOutboxProof?Number(pendingOutboxProof.changeCount):0,
+        pendingOutboxRange=pendingOutboxProof&&pendingOutboxChangeCount>0
+          ?entityOutboxSequenceRange(owner,Number(proofCursor.acknowledgedSequence),
+            Number(pendingOutboxProof.throughSequence)):null,
         capturedWriteSequence=writeSequence,manifestKey=entityManifestKey(owner),
         intentKey=entityDeltaRecoveryKey(owner),cursorKey=entityDeltaCursorKey(owner),
         sequenceKey=entitySequenceKey(owner);
-      const result=await transaction([RECORDS,META,WORKSPACES,'migrationMeta'],'readwrite',(tx,set)=>{
+      if(pendingOutboxProof&&(!Array.isArray(pendingOutboxGroups)||
+         pendingOutboxGroups.length!==Number(pendingOutboxProof.groupCount)||
+         pendingOutboxGroups.reduce((sum,group)=>sum+(Array.isArray(group&&group.changes)?group.changes.length:0),0)!==pendingOutboxChangeCount||
+         (pendingOutboxChangeCount>0&&!pendingOutboxRange))){
+        throw new Error('The proof-bound Delta outbox cannot be reconciled for an atomic recovery commit.');
+      }
+      const result=await transaction([RECORDS,META,WORKSPACES,'migrationMeta','outbox'],'readwrite',(tx,set)=>{
         const records=tx.objectStore(RECORDS),meta=tx.objectStore(META),workspaces=tx.objectStore(WORKSPACES),
-          migration=tx.objectStore('migrationMeta');
+          migration=tx.objectStore('migrationMeta'),outbox=tx.objectStore('outbox');
         const values={owner:null,workspace:null,manifest:null,intent:null,sequence:null,
-          lastRevision:null,trackerRoot:null,featureRoot:null,completed:null};
-        let remaining=9,finished=false;
+          lastRevision:null,trackerRoot:null,featureRoot:null,completed:null,
+          outboxRows:null,outboxMarkers:new Map()};
+        let remaining=9+(pendingOutboxRange?1+pendingOutboxGroups.length*2:0),finished=false;
         const finish=()=>{
           remaining--;if(remaining!==0||finished)return;finished=true;
           const completed=values.completed;
@@ -3627,6 +3639,48 @@
                highWatermark!==Number(pendingOutboxProof.throughSequence)))){
             set({ok:false,reason:'pending_outbox_changed_before_recovery_commit'});return;
           }
+          if(pendingOutboxRange){
+            const rows=values.outboxRows||[];
+            let rowIndex=0,proofMatches=rows.length===pendingOutboxChangeCount;
+            for(const group of pendingOutboxGroups){
+              const first=Number(group.firstSequence),last=Number(group.lastSequence),
+                count=Number(group.changeCount),markers=values.outboxMarkers.get(group.operationId)||{},
+                marker=markers.marker,sequenceMarker=markers.sequenceMarker;
+              if(!Array.isArray(group.changes)||!Number.isSafeInteger(first)||first<1||
+                 !Number.isSafeInteger(last)||last<first||last-first+1!==count||
+                 count!==group.changes.length||!marker||marker.ownerId!==owner||
+                 marker.generation!==pendingOutboxProof.activeGeneration||
+                 marker.kind!=='operation-marker'||marker.operationId!==group.operationId||
+                 Number(marker.firstSequence)!==first||Number(marker.lastSequence)!==last||
+                 Number(marker.count)!==count||typeof marker.payloadFingerprint!=='string'||
+                 !/^[a-f0-9]{64}$/.test(marker.payloadFingerprint)||
+                 !sequenceMarker||sequenceMarker.ownerId!==owner||
+                 sequenceMarker.generation!==pendingOutboxProof.activeGeneration||
+                 sequenceMarker.kind!=='operation-marker-sequence'||
+                 sequenceMarker.operationId!==group.operationId||
+                 Number(sequenceMarker.lastSequence)!==last){
+                proofMatches=false;break;
+              }
+              for(let offset=0;offset<group.changes.length;offset++){
+                const row=rows[rowIndex++],change=group.changes[offset],sequence=first+offset;
+                if(!row||row.key!==entityOutboxKey(owner,sequence)||row.ownerId!==owner||
+                   row.generation!==pendingOutboxProof.activeGeneration||row.kind!=='change'||
+                   Number(row.sequence)!==sequence||row.operationId!==group.operationId||
+                   row.collection!==change.collection||row.entityId!==change.id||
+                   row.operation!==change.operation||
+                   (change.operation==='put'&&
+                     (row.position!==change.position||
+                      stableEntityOperationJson(row.value)!==stableEntityOperationJson(change.value)))||
+                   (change.operation==='delete'&&row.value!==undefined&&row.value!==null)){
+                  proofMatches=false;break;
+                }
+              }
+              if(!proofMatches)break;
+            }
+            if(!proofMatches||rowIndex!==rows.length){
+              set({ok:false,reason:'pending_outbox_changed_before_recovery_commit'});return;
+            }
+          }
           for(const entry of normalized)records.put({key:entry.key,value:entry.value,
             deleted:entry.value===null,revision:nextRevision,updatedAt:timestamp()});
           workspaces.put(makeWorkspaceRow(owner,trackerEntry.value,featureEntry.value,nextRevision,workspaceRevision));
@@ -3648,6 +3702,16 @@
           migration.put({key:completedKey,ownerId:owner,intentId:id,candidateDigest:intent.candidateDigest,
             generation,publication:{...publication},cursor:{...cursor},completedAt:timestamp()});
           migration.delete(intentKey);
+          // The exact proof-bound Delta rows and both idempotency markers are
+          // retired in this same transaction as the generation/cursor switch.
+          // A later owner write must never be caught by an owner-wide cleanup.
+          if(pendingOutboxRange){
+            for(const row of values.outboxRows||[])outbox.delete(row.key);
+            for(const group of pendingOutboxGroups){
+              outbox.delete(entityOperationKey(owner,group.operationId));
+              outbox.delete(entityOperationSequenceKey(owner,Number(group.lastSequence),group.operationId));
+            }
+          }
           set({ok:true,alreadyCommitted:false,revision:nextRevision,generation,cursor});
         };
         const ownerRequest=records.get(OWNER_KEY),workspaceRequest=workspaces.get(workspaceKey(owner)),
@@ -3669,6 +3733,22 @@
         sequenceRequest.onsuccess=()=>{values.sequence=sequenceRequest.result||null;finish();};
         revisionRequest.onsuccess=()=>{values.lastRevision=revisionRequest.result||null;finish();};
         completedRequest.onsuccess=()=>{values.completed=completedRequest.result||null;finish();};
+        if(pendingOutboxRange){
+          const rowsRequest=outbox.getAll(pendingOutboxRange,pendingOutboxChangeCount+1);
+          rowsRequest.onsuccess=()=>{values.outboxRows=rowsRequest.result||[];finish();};
+          rowsRequest.onerror=()=>{try{tx.abort();}catch(_){}};
+          for(const group of pendingOutboxGroups){
+            const markers={marker:null,sequenceMarker:null};
+            values.outboxMarkers.set(group.operationId,markers);
+            const markerRequest=outbox.get(entityOperationKey(owner,group.operationId));
+            markerRequest.onsuccess=()=>{markers.marker=markerRequest.result||null;finish();};
+            markerRequest.onerror=()=>{try{tx.abort();}catch(_){}};
+            const sequenceMarkerRequest=outbox.get(
+              entityOperationSequenceKey(owner,Number(group.lastSequence),group.operationId));
+            sequenceMarkerRequest.onsuccess=()=>{markers.sequenceMarker=sequenceMarkerRequest.result||null;finish();};
+            sequenceMarkerRequest.onerror=()=>{try{tx.abort();}catch(_){}};
+          }
+        }
       });
       if(!result||result.ok!==true)throw new Error(result&&result.reason||'The local entity-delta recovery commit was not completed.');
       if(!result.alreadyCommitted){
@@ -3677,10 +3757,10 @@
           for(const entry of normalized){if(entry.value===null)cache.delete(entry.key);else cache.set(entry.key,entry.value);knownKeys.add(entry.key);}
           mirrorBatch(normalized);
         }
-        // Retire the proof-acknowledged Delta outbox while the recovery write lock
-        // still prevents a new operation from entering the old generation.
-        try{await pruneWorkspaceEntityOutbox(owner);}
-        catch(error){console.warn('Superseded Nexus entity outbox rows could not be pruned; the new active generation remains verified.',error);}
+        // The proof-bound Delta outbox rows and markers were deleted atomically
+        // with the active-generation/cursor switch above. Do not run an owner-wide
+        // post-commit sweep: another tab may append a new-generation operation as
+        // soon as this transaction releases its IndexedDB locks.
         // The manifest/cursor/snapshot switch and completion receipt are already
         // committed atomically. Removing the previous entity generation is only
         // storage hygiene, but can require hundreds of IndexedDB batches for a
