@@ -86,6 +86,7 @@ assert.ok(appCore.includes('window.NexusGetTrackerEntityRootForCommit=') &&
 const durableNotify=section(appCore,'function notify(text,undoable=false,options={}){','function clearUndoPresentation()');
 assert.ok(durableNotify.includes('window.NexusPendingDurableSaveNotification') &&
   durableNotify.includes('reportsSaveSuccess&&pending') &&
+  durableNotify.includes("text='Saving to this device — '+message;") &&
   durableNotify.includes('Promise.resolve(pending).then('),
   'success notifications must wait for the durable local transaction and be suppressed when it fails');
 const durableStudyHubSave=section(studyHub,'function saveFs(entityChanges=[]){','window.NexusFeatureStorageKey=');

@@ -530,14 +530,18 @@
       !/(failed|could not|unable|not saved|no data|cancelled|canceled)/i.test(message);
     const pending=window.NexusPendingDurableSaveNotification;
     if(reportsSaveSuccess&&pending){
-      Promise.resolve(pending).then(()=>{
-        if(window.NexusPendingDurableSaveNotification!==pending){notify(text,undoable,options);return;}
-        window.NexusPendingDurableSaveNotification=null;
-        notify(text,undoable,options);
-      },()=>{
-        if(window.NexusPendingDurableSaveNotification===pending)window.NexusPendingDurableSaveNotification=null;
-      });
-      return;
+      if(undoable){
+        text='Saving to this device — '+message;
+      }else{
+        Promise.resolve(pending).then(()=>{
+          if(window.NexusPendingDurableSaveNotification!==pending){notify(text,undoable,options);return;}
+          window.NexusPendingDurableSaveNotification=null;
+          notify(text,undoable,options);
+        },()=>{
+          if(window.NexusPendingDurableSaveNotification===pending)window.NexusPendingDurableSaveNotification=null;
+        });
+        return;
+      }
     }
     $('toastText').textContent=text;$('undoBtn').style.display=undoable?'':'none';$('toast').classList.toggle('undoable',undoable);$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),2600);
   }
